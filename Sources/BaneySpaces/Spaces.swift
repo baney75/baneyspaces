@@ -14,8 +14,8 @@ final class Spaces {
     private var switching = false
     /// Shortcuts pressed mid-switch run, in order, once it finishes.
     private var queued: [() -> Void] = []
-    /// The app our own switch activated, so its activation isn't mistaken for the person's.
-    private var expectedPid: pid_t?
+    /// Until then, app activations come from BaneySpaces' own switch, not the person.
+    private var settleUntil = Date.distantPast
     /// Bumped on every switch, so a late focus check from an older switch stands down.
     private var generation = 0
     var onChange: (() -> Void)?
@@ -33,6 +33,7 @@ final class Spaces {
     /// any other window that is mostly off screen (another window manager's leftovers, an
     /// unplugged display) is centered.
     func start() {
+        for pid in saved.hiddenApps { NSRunningApplication(processIdentifier: pid)?.unhide() }
         refresh()
         let screens = Windows.screens()
         for w in windows.values {
@@ -56,6 +57,7 @@ final class Spaces {
         windows = next
         let added = model.sync(seen: list.map(\.id), alive: alive)
         saved.frames = saved.frames.filter { alive.contains($0.key) }
+        saved.hiddenApps = saved.hiddenApps.filter { NSRunningApplication(processIdentifier: $0).map { !$0.isTerminated } ?? false }
         // An app that autosaves its window position can reopen a window at the hiding spot.
         let screens = Windows.screens()
         for id in added {
@@ -150,9 +152,7 @@ final class Spaces {
     /// Clicking a Dock icon or using ⌘Tab can focus a window on another workspace. Go there,
     /// and land on the window that was picked.
     func appActivated(_ app: NSRunningApplication) {
-        let pid = app.processIdentifier
-        guard pid != getpid() else { return }
-        if pid == expectedPid { expectedPid = nil; return }
+        guard app.processIdentifier != getpid(), Date() > settleUntil else { return }
         if switching { return queued.append { [weak self] in self?.followFocus() } }
         followFocus()
     }
@@ -183,6 +183,8 @@ final class Spaces {
             guard let w = windows[id], restore(w, to: frame, screens: screens) else { continue }
             saved.frames[id] = nil
         }
+        for pid in saved.hiddenApps { NSRunningApplication(processIdentifier: pid)?.unhide() }
+        saved.hiddenApps = []
         persist()
     }
 
@@ -200,29 +202,64 @@ final class Spaces {
 
     private func apply(_ plan: SwitchPlan) {
         let screens = Windows.screens()
-        let spot = Geometry.hidingSpot(screens: screens)
-        for id in plan.hide {
-            guard let w = windows[id], !w.isMinimized else { continue }
-            if saved.frames[id] == nil {
-                // Visible until now: remember where it stood. No readable frame, no hiding.
-                guard let f = w.frame else { continue }
-                saved.frames[id] = f
-            }
-            w.setOrigin(spot)
+        let how = Concealment(plan: plan, owner: windows.mapValues(\.pid))
+        // 1. Everything on this workspace comes back. That includes an app hidden with ⌘H:
+        //    going to its workspace means wanting to see it.
+        for pid in how.showApps {
+            if let app = NSRunningApplication(processIdentifier: pid), app.isHidden { app.unhide() }
+            saved.hiddenApps.remove(pid)
         }
         for id in plan.show {
             guard let frame = saved.frames[id], let w = windows[id] else { continue }
             if restore(w, to: frame, screens: screens) { saved.frames[id] = nil }
         }
-        focus(plan)
-        persist()
-        switching = false
-        onChange?()
-        while !switching, !queued.isEmpty { queued.removeFirst()() }
+        // 2. Focus moves before anything hides. Hiding the app in front makes macOS pick another
+        //    app to activate, and an Electron app may un-hide itself in the shuffle. Once the new
+        //    workspace's window is in front, the apps being hidden are all in the background.
+        let target = ([plan.focus].compactMap { $0 } + plan.show)
+            .compactMap { windows[$0] }.first { !$0.isMinimized && saved.frames[$0.id] == nil }
+        let frontPid = target?.pid ?? getpid()
+        if let target { target.focus() } else { takeFocus() }
+        waitUntil(timeout: 0.6, { Windows.focusedPid() == frontPid || (target == nil && Windows.focusedPid() == Self.finderPid) }) { [self] in
+            // 3. Everything else goes out of sight.
+            conceal(how, screens: screens)
+            if target == nil, Windows.focusedPid() != getpid() { takeFocus(finderFallback: true) }
+            persist()
+            settleUntil = Date().addingTimeInterval(0.3)
+            switching = false
+            onChange?()
+            while !switching, !queued.isEmpty { queued.removeFirst()() }
+        }
     }
 
-    /// Brings a hidden window back and reads it back. A busy app can drop the move, so the
-    /// window only counts as shown once it is actually on screen; otherwise it stays hidden in
+    private func conceal(_ how: Concealment, screens: [CGRect]) {
+        // Apps with nothing here are hidden whole, as ⌘H does.
+        for pid in how.hideApps {
+            guard let app = NSRunningApplication(processIdentifier: pid) else { continue }
+            // hide() can report failure and still hide the app, so record every request.
+            app.hide()
+            saved.hiddenApps.insert(pid)
+        }
+        // A hidden app's parked windows can go home now; nobody sees them move.
+        for (id, frame) in saved.frames {
+            guard let w = windows[id], how.hideApps.contains(w.pid) else { continue }
+            if restore(w, to: frame, screens: screens) { saved.frames[id] = nil }
+        }
+        // Only windows whose app also has a window here need parking out of view.
+        let spot = Geometry.hidingSpot(screens: screens)
+        for id in how.park {
+            guard let w = windows[id], !w.isMinimized else { continue }
+            if saved.frames[id] == nil {
+                // Visible until now: remember where it stood. No readable frame, no parking.
+                guard let f = w.frame else { continue }
+                saved.frames[id] = f
+            }
+            w.setOrigin(spot)
+        }
+    }
+
+    /// Brings a parked window back and reads it back. A busy app can drop the move, so the
+    /// window only counts as shown once it is actually on screen; otherwise it stays parked in
     /// the record and the next switch tries again.
     private func restore(_ w: Window, to frame: CGRect, screens: [CGRect]) -> Bool {
         guard let f = w.frame else { return false }
@@ -231,51 +268,17 @@ final class Spaces {
         return !Geometry.isStranded(now, screens: screens)
     }
 
-    /// Focuses the workspace's window, then checks that it took. If no window can take focus,
-    /// BaneySpaces takes it, so typing never lands in a hidden window.
-    private func focus(_ plan: SwitchPlan) {
-        let candidates = ([plan.focus].compactMap { $0 } + plan.show)
-            .compactMap { windows[$0] }.filter { !$0.isMinimized && saved.frames[$0.id] == nil }
-        guard let target = candidates.first else {
-            expectedPid = nil
-            return takeFocus()
-        }
-        let gen = generation
-        expectedPid = target.pid
-        target.focus()
-        // Focus lands asynchronously. If typing would go to a hidden window, focus the target once
-        // more, then take focus ourselves. A newer switch makes these checks stand down.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [self] in
-            guard gen == generation, saved.frames[target.id] == nil,
-                  let f = Windows.focused(in: Array(windows.values)), saved.frames[f.id] != nil else { return }
-            target.focus()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [self] in
-                guard gen == generation,
-                      let f = Windows.focused(in: Array(windows.values)), saved.frames[f.id] != nil else { return }
-                expectedPid = nil
-                takeFocus()
-            }
-        }
-        // If the app was already in front, no activation comes to clear this.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [self] in
-            if gen == generation { expectedPid = nil }
-        }
+    private static var finderPid: pid_t? {
+        NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.finder").first?.processIdentifier
     }
 
     /// Nothing on this workspace can take focus, so BaneySpaces takes it and typing goes nowhere.
-    /// If macOS won't give it to us, Finder gets it, as on an empty Mac desktop.
-    private func takeFocus() {
-        let gen = generation
+    /// If macOS won't hand it over, Finder gets it, as on an empty Mac desktop.
+    private func takeFocus(finderFallback: Bool = false) {
         Windows.makeFrontmost(getpid())
         NSApp.activate(ignoringOtherApps: true)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [self] in
-            guard gen == generation, Windows.focusedPid() != getpid() else { return }
-            guard let f = Windows.focused(in: Array(windows.values)), saved.frames[f.id] != nil else { return }
-            NSLog("BaneySpaces: focus stayed on a hidden window; handing it to Finder")
-            if let finder = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.finder").first {
-                Windows.makeFrontmost(finder.processIdentifier)
-            }
-        }
+        guard finderFallback, Windows.focusedPid() != getpid(), let finder = Self.finderPid else { return }
+        Windows.makeFrontmost(finder)
     }
 
     private func persist() {
@@ -283,7 +286,8 @@ final class Spaces {
         // state.json is for scripts and checks: the current workspace and where each window lives.
         let state: [String: Any] = [
             "current": model.current,
-            "hidden": saved.frames.keys.sorted(),
+            "parked": saved.frames.keys.sorted(),
+            "hiddenApps": saved.hiddenApps.sorted(),
             "workspaces": Dictionary(uniqueKeysWithValues: Workspaces.range.map { n in
                 (String(n), model.windows(on: n).map { ["id": $0, "app": windows[$0]?.appName ?? ""] as [String: Any] })
             }),

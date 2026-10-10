@@ -24,6 +24,12 @@ final class Hotkeys {
         }, 1, &spec, nil, &handler)
     }
 
+    func removeAll() {
+        refs.forEach { UnregisterEventHotKey($0) }
+        refs.removeAll()
+        actions.removeAll()
+    }
+
     /// Returns false if macOS refused the shortcut.
     @discardableResult
     func register(keyCode: Int, modifiers: Int, _ action: @escaping () -> Void) -> Bool {

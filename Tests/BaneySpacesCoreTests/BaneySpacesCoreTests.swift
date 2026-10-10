@@ -123,6 +123,7 @@ final class SavedFramesTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         var s = SavedFrames()
         s.frames[42] = CGRect(x: 1, y: 2, width: 3, height: 4)
+        s.hiddenApps = [501, 777]
         s.save(to: url)
         XCTAssertEqual(SavedFrames.load(from: url), s)
     }
@@ -135,5 +136,34 @@ final class SavedFramesTests: XCTestCase {
         let bad = dir.appendingPathComponent("bad.json")
         try Data("{not json".utf8).write(to: bad)
         XCTAssertEqual(SavedFrames.load(from: bad), SavedFrames())
+    }
+
+    func testAFileFromBeforeAppHidingStillLoads() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("bs-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let old = dir.appendingPathComponent("frames.json")
+        try Data(#"{"frames":[7,[[1,2],[3,4]]]}"#.utf8).write(to: old)
+        let s = SavedFrames.load(from: old)
+        XCTAssertEqual(s.frames[7], CGRect(x: 1, y: 2, width: 3, height: 4))
+        XCTAssertEqual(s.hiddenApps, [])
+    }
+}
+
+final class ConcealmentTests: XCTestCase {
+    func testAppsWithNothingHereAreHiddenWhole() {
+        let plan = SwitchPlan(hide: [1, 2, 3], show: [4], focus: 4)
+        let c = Concealment(plan: plan, owner: [1: 100, 2: 100, 3: 200, 4: 300])
+        XCTAssertEqual(c.hideApps, [100, 200])
+        XCTAssertEqual(c.showApps, [300])
+        XCTAssertEqual(c.park, [])
+    }
+
+    func testAnAppSplitAcrossWorkspacesParksOnlyItsOtherWindows() {
+        // Two Helium windows: one stays here, one belongs elsewhere.
+        let plan = SwitchPlan(hide: [1, 2], show: [3], focus: 3)
+        let c = Concealment(plan: plan, owner: [1: 100, 2: 200, 3: 100])
+        XCTAssertEqual(c.hideApps, [200])
+        XCTAssertEqual(c.park, [1])
     }
 }

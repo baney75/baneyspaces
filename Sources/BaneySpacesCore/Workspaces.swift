@@ -67,3 +67,19 @@ public struct Workspaces: Codable, Equatable {
         return SwitchPlan(hide: hide, show: show, focus: focus)
     }
 }
+
+/// How a switch keeps windows out of sight. Hiding the whole app (as ⌘H does) is clean: the
+/// windows don't move and Mission Control doesn't show them. That only works when none of the
+/// app's windows belong on the workspace being shown; those few windows get parked out of view.
+public struct Concealment: Equatable {
+    public var hideApps: Set<Int32>
+    public var showApps: Set<Int32>
+    public var park: [WindowID]
+
+    public init(plan: SwitchPlan, owner: [WindowID: Int32]) {
+        let shown = Set(plan.show.compactMap { owner[$0] })
+        showApps = shown
+        hideApps = Set(plan.hide.compactMap { owner[$0] }).subtracting(shown)
+        park = plan.hide.filter { owner[$0].map(shown.contains) ?? false }
+    }
+}
