@@ -17,6 +17,8 @@ final class ViewerModel: ObservableObject {
     @Published var tiles: [Int: [Spaces.Entry]] = [:]
     @Published var hovered: Int?
     @Published var drag: Drag?
+    /// Icons supplied directly, for rendered product images with sample windows.
+    var icons: [WindowID: NSImage] = [:]
     /// Each tile's frame in the viewer, to find the tile under a dragged card.
     var tileFrames: [Int: CGRect] = [:]
     var onPick: (Int) -> Void = { _ in }
@@ -65,12 +67,19 @@ private struct TileFrames: PreferenceKey {
 
 struct ViewerView: View {
     @ObservedObject var model: ViewerModel
+    /// Rendered images can't capture a live blur, so they draw a still backdrop instead.
+    var stillBackdrop = false
     private let accent = Color(red: 0.91, green: 0.26, blue: 0.29)
 
     var body: some View {
         ZStack {
             // Clicking the backdrop closes the viewer, like clicking the desktop in Mission Control.
-            Backdrop().ignoresSafeArea()
+            if stillBackdrop {
+                LinearGradient(colors: [Color(red: 0.05, green: 0.06, blue: 0.11), Color(red: 0.11, green: 0.07, blue: 0.13)],
+                               startPoint: .topLeading, endPoint: .bottomTrailing)
+            } else {
+                Backdrop().ignoresSafeArea()
+            }
             Color.black.opacity(0.35).ignoresSafeArea().onTapGesture { model.onClose() }
             GeometryReader { g in
                 // Three rows share the screen's height, so a tile grows with the display.
@@ -132,13 +141,18 @@ struct ViewerView: View {
                     .frame(maxWidth: .infinity)
                 Spacer()
             } else {
-                // Every window is listed; a full tile scrolls instead of hiding any.
-                ScrollView(.vertical) {
-                    VStack(spacing: 6) {
-                        ForEach(entries) { e in draggableCard(e, from: n) }
+                // Every window is listed; a full tile scrolls instead of hiding any. Rendered images
+                // can't draw a scroll view, so they get the plain list.
+                if stillBackdrop {
+                    VStack(spacing: 6) { ForEach(entries) { e in draggableCard(e, from: n) } }
+                } else {
+                    ScrollView(.vertical) {
+                        VStack(spacing: 6) {
+                            ForEach(entries) { e in draggableCard(e, from: n) }
+                        }
                     }
+                    .scrollIndicators(.automatic)
                 }
-                .scrollIndicators(.automatic)
                 if isTarget {
                     Text("Move here").font(.caption.weight(.semibold)).foregroundStyle(accent)
                 }
@@ -189,7 +203,7 @@ struct ViewerView: View {
 
     private func card(_ e: Spaces.Entry, lifted: Bool) -> some View {
         HStack(spacing: 8) {
-            Image(nsImage: NSRunningApplication(processIdentifier: e.pid)?.icon ?? NSImage())
+            Image(nsImage: model.icons[e.id] ?? NSRunningApplication(processIdentifier: e.pid)?.icon ?? NSImage())
                 .resizable().frame(width: 20, height: 20)
             // One line per window: the app, then its title, trimmed in the middle if long.
             (Text(e.app).font(.callout.weight(.medium))
