@@ -36,8 +36,9 @@ enum Render {
         // Tile frames as the live layout places them, so the drag image can light its target.
         // Drawn by AppKit in an offscreen window (never shown), so colors match the live app.
         func save(_ view: some View, _ name: String, _ size: CGSize) -> Bool {
-            let host = NSHostingView(rootView: view.frame(width: size.width, height: size.height == 0 ? nil : size.height)
-                .environment(\.colorScheme, .dark))
+            let height: CGFloat? = size.height == 0 ? nil : size.height
+            let framed = view.frame(width: size.width, height: height).environment(\.colorScheme, .dark)
+            let host = NSHostingView(rootView: framed)
             // Height 0 means "as tall as the content".
             let size = size.height == 0 ? CGSize(width: size.width, height: host.fittingSize.height) : size
             let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless],
@@ -56,9 +57,14 @@ enum Render {
 
         // The same overview mid-drag: Mail's window on its way to workspace 6.
         let mail = model.tiles[2]![0]
-        let tileW = (min(size.width, 1600) - 2 * 48 - 2 * 20) / 3
-        let tileH = (size.height - 2 * 48 - 40 - 2 * 20) / 3
-        let target = CGRect(x: 48 + 2 * (tileW + 20), y: 48 + tileH + 20, width: tileW, height: tileH)
+        // Mirrors ViewerView's layout: 48pt padding, 20pt gaps, a 40pt footer.
+        let pad: CGFloat = 48, gap: CGFloat = 20, footer: CGFloat = 40
+        let gridWidth: CGFloat = min(size.width, 1600) - 2 * pad
+        let tileW: CGFloat = (gridWidth - 2 * gap) / 3
+        let tileH: CGFloat = (size.height - 2 * pad - footer - 2 * gap) / 3
+        let targetX: CGFloat = pad + 2 * (tileW + gap)
+        let targetY: CGFloat = pad + tileH + gap
+        let target = CGRect(x: targetX, y: targetY, width: tileW, height: tileH)
         model.tileFrames = [6: target]
         model.drag = ViewerModel.Drag(entry: mail, from: 2, location: CGPoint(x: target.midX - 40, y: target.midY + 10))
         guard save(ViewerView(model: model, stillBackdrop: true), "overview-drag.png", size) else { return 1 }
