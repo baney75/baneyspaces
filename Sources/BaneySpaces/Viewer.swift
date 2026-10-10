@@ -65,7 +65,6 @@ private struct TileFrames: PreferenceKey {
 
 struct ViewerView: View {
     @ObservedObject var model: ViewerModel
-    private let columns = Array(repeating: GridItem(.flexible(), spacing: 20), count: 3)
     private let accent = Color(red: 0.91, green: 0.26, blue: 0.29)
 
     var body: some View {
@@ -73,22 +72,27 @@ struct ViewerView: View {
             // Clicking the backdrop closes the viewer, like clicking the desktop in Mission Control.
             Backdrop().ignoresSafeArea()
             Color.black.opacity(0.35).ignoresSafeArea().onTapGesture { model.onClose() }
-            VStack(spacing: 18) {
-                LazyVGrid(columns: columns, spacing: 20) {
-                    ForEach(Array(Workspaces.range), id: \.self) { n in tile(n) }
+            GeometryReader { g in
+                // Three rows share the screen's height, so a tile grows with the display.
+                let tileHeight = max(160, (g.size.height - 2 * 48 - 40 - 2 * 20) / 3)
+                VStack(spacing: 18) {
+                    VStack(spacing: 20) {
+                        ForEach(0..<3, id: \.self) { row in
+                            HStack(spacing: 20) {
+                                ForEach(1...3, id: \.self) { col in tile(row * 3 + col, height: tileHeight) }
+                            }
+                        }
+                    }
+                    footer
                 }
-                Text(model.drag == nil
-                     ? "Click a workspace or press its number  ·  Drag a window to another workspace  ·  Esc to close"
-                     : "Drop on a workspace to move the window there")
-                    .font(.callout)
-                    .foregroundStyle(.white.opacity(0.7))
+                .padding(48)
+                .frame(maxWidth: 1600)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .padding(48)
-            .frame(maxWidth: 1400)
             // The lifted card follows the cursor.
             if let drag = model.drag {
                 card(drag.entry, lifted: true)
-                    .frame(width: 280)
+                    .frame(width: 300)
                     .position(drag.location)
                     .allowsHitTesting(false)
             }
@@ -97,7 +101,16 @@ struct ViewerView: View {
         .onPreferenceChange(TileFrames.self) { model.tileFrames = $0 }
     }
 
-    private func tile(_ n: Int) -> some View {
+    private var footer: some View {
+        Text(model.drag == nil
+                     ? "Click a workspace or press its number  ·  Drag a window to another workspace  ·  Esc to close"
+                     : "Drop on a workspace to move the window there")
+            .font(.callout)
+            .foregroundStyle(.white.opacity(0.7))
+            .frame(height: 40)
+    }
+
+    private func tile(_ n: Int, height: CGFloat) -> some View {
         let entries = model.tiles[n] ?? []
         let isCurrent = n == model.current
         let isTarget = model.dropTarget == n
@@ -105,8 +118,12 @@ struct ViewerView: View {
         return VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("\(n)").font(.system(size: 22, weight: .bold, design: .rounded))
+                if !entries.isEmpty {
+                    Text(entries.count == 1 ? "1 window" : "\(entries.count) windows")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Spacer()
-                if isCurrent { Text("You're here").font(.caption.weight(.semibold)).foregroundStyle(.secondary) }
+                if isCurrent { Text("You're here").font(.caption.weight(.semibold)).foregroundStyle(accent) }
             }
             if entries.isEmpty {
                 Spacer()
@@ -115,18 +132,20 @@ struct ViewerView: View {
                     .frame(maxWidth: .infinity)
                 Spacer()
             } else {
-                ForEach(entries.prefix(4)) { e in draggableCard(e, from: n) }
-                if entries.count > 4 {
-                    Text("+\(entries.count - 4) more").font(.caption).foregroundStyle(.secondary)
+                // Every window is listed; a full tile scrolls instead of hiding any.
+                ScrollView(.vertical) {
+                    VStack(spacing: 6) {
+                        ForEach(entries) { e in draggableCard(e, from: n) }
+                    }
                 }
-                Spacer(minLength: 0)
+                .scrollIndicators(.automatic)
                 if isTarget {
                     Text("Move here").font(.caption.weight(.semibold)).foregroundStyle(accent)
                 }
             }
         }
         .padding(14)
-        .frame(maxWidth: .infinity, minHeight: 210, maxHeight: 210, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: height, maxHeight: height, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 16).fill(isTarget ? Color(white: 0.19) : Color(white: 0.13)))
         .overlay(
             RoundedRectangle(cornerRadius: 16)
@@ -171,16 +190,15 @@ struct ViewerView: View {
     private func card(_ e: Spaces.Entry, lifted: Bool) -> some View {
         HStack(spacing: 8) {
             Image(nsImage: NSRunningApplication(processIdentifier: e.pid)?.icon ?? NSImage())
-                .resizable().frame(width: 24, height: 24)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(e.app).font(.callout.weight(.medium)).lineLimit(1)
-                if !e.title.isEmpty && e.title != e.app {
-                    Text(e.title).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
-            }
+                .resizable().frame(width: 20, height: 20)
+            // One line per window: the app, then its title, trimmed in the middle if long.
+            (Text(e.app).font(.callout.weight(.medium))
+             + Text(e.title.isEmpty || e.title == e.app ? "" : "  \(e.title)").font(.callout).foregroundColor(.secondary))
+                .lineLimit(1)
+                .truncationMode(.middle)
             Spacer(minLength: 0)
         }
-        .padding(.vertical, 5)
+        .padding(.vertical, 6)
         .padding(.horizontal, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 9).fill(lifted ? Color(white: 0.26) : Color.white.opacity(0.06)))
