@@ -14,7 +14,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var watchdog: Timer?
     private var signalSources: [DispatchSourceSignal] = []
     private lazy var viewer = ViewerController(spaces: spaces)
-    private lazy var missionControlKeys = MissionControlKeys { [weak self] in self?.viewer.toggle() }
+    private lazy var switcher = WorkspaceSwitcher(spaces: spaces)
+    private lazy var missionControlKeys: MissionControlKeys = {
+        let keys = MissionControlKeys { [weak self] in self?.viewer.toggle() }
+        keys.onCmdTab = { [weak self] forward in
+            guard let self, self.started, !self.viewer.isOpen else { return }
+            self.switcher.step(forward: forward)
+        }
+        keys.onCmdReleased = { [weak self] in self?.switcher.commit() }
+        keys.onCancel = { [weak self] in self?.switcher.cancel() }
+        return keys
+    }()
     private lazy var setup: SetupWindowController = {
         let c = SetupWindowController()
         c.model.onModifierChange = { [weak self] _ in self?.registerShortcuts() }
@@ -22,10 +32,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         c.model.onViewerKeysChange = { [weak self] on in
             MissionControlKeys.enabled = on
             guard let self, self.started else { return }
-            on ? self.missionControlKeys.start() : self.missionControlKeys.stop()
+            self.restartKeyWatcher()
+        }
+        c.model.onCmdTabChange = { [weak self] on in
+            MissionControlKeys.cmdTabEnabled = on
+            guard let self, self.started else { return }
+            self.restartKeyWatcher()
         }
         return c
     }()
+
+    /// The key watcher reads its settings when it starts, so a change restarts it.
+    private func restartKeyWatcher() {
+        missionControlKeys.stop()
+        missionControlKeys.start()
+    }
 
     func applicationDidFinishLaunching(_ n: Notification) {
         // `BaneySpaces --restore-shortcuts`: the uninstaller's way to turn macOS's screenshot
@@ -103,6 +124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationWillTerminate(_ n: Notification) {
         if started { spaces.restoreAll() }
+        spaces.flushWrites()
     }
 
     // MARK: Accessibility
@@ -139,7 +161,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return }
             guard self.stillTrusted() else { return }
             // A key watcher macOS refused earlier gets another chance.
-            if MissionControlKeys.enabled && !self.missionControlKeys.isActive { self.missionControlKeys.start() }
+            if (MissionControlKeys.enabled || MissionControlKeys.cmdTabEnabled) && !self.missionControlKeys.isActive { self.missionControlKeys.start() }
         }
     }
 

@@ -78,6 +78,18 @@ enum Render {
         setup.viewerKeys = true
         guard save(SetupView(model: setup, close: {}).background(Color(nsColor: .windowBackgroundColor)),
                    "setup.png", CGSize(width: 520, height: 0)) else { return 1 }
+        // The ⌘Tab workspace switcher, second tile selected.
+        let switcher = SwitcherModel()
+        let icon = { (path: String) in NSWorkspace.shared.icon(forFile: path) }
+        switcher.tiles = [
+            .init(n: 1, icons: [icon("/Applications/Safari.app"), icon("/System/Applications/Notes.app"), icon("/System/Applications/Utilities/Terminal.app")], count: 3),
+            .init(n: 2, icons: [icon("/System/Applications/Mail.app"), icon("/System/Applications/Calendar.app")], count: 2),
+            .init(n: 5, icons: [icon("/System/Applications/Photos.app")], count: 1),
+            .init(n: 3, icons: [icon("/System/Applications/Music.app")], count: 1),
+        ]
+        switcher.selected = 1
+        guard save(SwitcherView(model: switcher), "switcher.png", CGSize(width: 520, height: 0)) else { return 1 }
+
         // The first thing a new person sees: permission not granted yet.
         let fresh = SetupModel()
         fresh.trusted = false

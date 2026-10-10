@@ -7,6 +7,8 @@ import CoreGraphics
 final class MissionControlKeys {
     static let missionControlKey: Int64 = 160
     static let upArrow: Int64 = 126
+    static let tabKey: Int64 = 48
+    static let escapeKey: Int64 = 53
 
     private var tap: CFMachPort?
     private let onPress: () -> Void
@@ -15,6 +17,25 @@ final class MissionControlKeys {
     init(onPress: @escaping () -> Void) {
         self.onPress = onPress
     }
+
+    /// ⌘Tab switches workspaces instead of apps. Off unless chosen in setup.
+    static var cmdTabEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: "cmdTabSwitchesWorkspaces") }
+        set { UserDefaults.standard.set(newValue, forKey: "cmdTabSwitchesWorkspaces") }
+    }
+
+    /// Called on the main thread while ⌘ is held: Tab (forward) or ⇧Tab (back), ⌘ released, Esc.
+    var onCmdTab: (Bool) -> Void = { _ in }
+    var onCmdReleased: () -> Void = {}
+    var onCancel: () -> Void = {}
+    /// Read on the tap thread; set when a ⌘Tab gesture starts, cleared when it ends.
+    private static let gestureLock = NSLock()
+    private static var _inGesture = false
+    static var inGesture: Bool {
+        get { gestureLock.lock(); defer { gestureLock.unlock() }; return _inGesture }
+        set { gestureLock.lock(); _inGesture = newValue; gestureLock.unlock() }
+    }
+    private static var tabEnabledOnTap = false
 
     static var enabled: Bool {
         get { UserDefaults.standard.object(forKey: "viewerReplacesMissionControl") as? Bool ?? true }
@@ -35,10 +56,12 @@ final class MissionControlKeys {
     var isActive: Bool { tap != nil }
 
     func start() {
-        guard tap == nil, MissionControlKeys.enabled else { return }
+        guard tap == nil, MissionControlKeys.enabled || MissionControlKeys.cmdTabEnabled else { return }
+        MissionControlKeys.tabEnabledOnTap = MissionControlKeys.cmdTabEnabled
         MissionControlKeys.shared = self
         MissionControlKeys.takeControlUp = SystemShortcuts.missionControlOnControlUp
         let mask = CGEventMask(1 << CGEventType.keyDown.rawValue) | CGEventMask(1 << CGEventType.keyUp.rawValue)
+            | CGEventMask(1 << CGEventType.flagsChanged.rawValue)
         // The HID tap sees keys before macOS turns them into Mission Control; the session tap is
         // the fallback if macOS won't allow the earlier one.
         guard let tap = CGEvent.tapCreate(tap: .cghidEventTap, place: .headInsertEventTap, options: .defaultTap,
@@ -89,7 +112,34 @@ final class MissionControlKeys {
             if let tap = me.tap { CGEvent.tapEnable(tap: tap, enable: true) }
             return Unmanaged.passUnretained(event)
         }
-        guard isMissionControl(event) else { return Unmanaged.passUnretained(event) }
+        let code = event.getIntegerValueField(.keyboardEventKeycode)
+        // ⌘ let go ends a ⌘Tab gesture. The modifier change itself always passes through.
+        if type == .flagsChanged {
+            if inGesture, !event.flags.contains(.maskCommand) {
+                inGesture = false
+                DispatchQueue.main.async { me.onCmdReleased() }
+            }
+            return Unmanaged.passUnretained(event)
+        }
+        if tabEnabledOnTap, code == tabKey {
+            let mods = event.flags.intersection([.maskControl, .maskCommand, .maskAlternate])
+            if mods == .maskCommand {
+                if type == .keyDown {
+                    inGesture = true
+                    let back = event.flags.contains(.maskShift)
+                    DispatchQueue.main.async { me.onCmdTab(!back) }
+                }
+                return nil
+            }
+        }
+        if inGesture, code == escapeKey {
+            if type == .keyDown {
+                inGesture = false
+                DispatchQueue.main.async { me.onCancel() }
+            }
+            return nil
+        }
+        guard MissionControlKeys.enabled, isMissionControl(event) else { return Unmanaged.passUnretained(event) }
         if type == .keyDown, event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
             DispatchQueue.main.async { me.onPress() }
         }

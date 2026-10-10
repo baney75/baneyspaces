@@ -12,6 +12,8 @@ final class SetupModel: ObservableObject {
     @Published var desktops = Desktops.count
     @Published var openAtLogin = SMAppService.mainApp.status == .enabled
     @Published var viewerKeys = MissionControlKeys.enabled
+    @Published var cmdTab = MissionControlKeys.cmdTabEnabled
+    var onCmdTabChange: ((Bool) -> Void)?
     @Published var aeroSpaceRunning = SetupModel.isAeroSpaceRunning
     @Published var loginNeedsApproval = SMAppService.mainApp.status == .requiresApproval
     @Published var screenshotsFreed = SystemShortcuts.hasFreed
@@ -149,6 +151,11 @@ final class SetupModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.reloadOptional() }
     }
 
+    func setCmdTab(_ on: Bool) {
+        cmdTab = on
+        onCmdTabChange?(on)
+    }
+
     func setOpenAtLogin(_ on: Bool) {
         UserDefaults.standard.set(true, forKey: "loginItemChosen")
         do {
@@ -161,8 +168,12 @@ final class SetupModel: ObservableObject {
 
     /// Setup's last act: start with the Mac unless the person already decided.
     func finish() {
-        guard !UserDefaults.standard.bool(forKey: "loginItemChosen") else { return }
-        UserDefaults.standard.set(true, forKey: "loginItemChosen")
+        let defaults = UserDefaults.standard
+        // Someone who already decided (here, or in 0.1, which recorded "loginItemOffered") keeps
+        // their choice; so does anyone whose login item macOS already knows about.
+        guard !defaults.bool(forKey: "loginItemChosen"), !defaults.bool(forKey: "loginItemOffered"),
+              SMAppService.mainApp.status == .notRegistered else { return }
+        defaults.set(true, forKey: "loginItemChosen")
         try? SMAppService.mainApp.register()
     }
 }
@@ -263,6 +274,9 @@ struct SetupView: View {
                     Text("Turn this off to give both keys back to Mission Control and to apps that use ⌃↑. The overview stays in the menu bar menu.")
                         .font(.callout).foregroundStyle(.secondary)
                 }
+                Toggle("⌘Tab switches workspaces instead of apps", isOn: Binding(get: { model.cmdTab }, set: { model.setCmdTab($0) }))
+                Text("Hold ⌘ and tap Tab to step through your workspaces, most recent first; let go to go there. ⌘⇧Tab steps back and Esc cancels. Switch apps from the Dock or Spotlight instead.")
+                    .font(.callout).foregroundStyle(.secondary)
             }
 
             if model.desktops > 1 {

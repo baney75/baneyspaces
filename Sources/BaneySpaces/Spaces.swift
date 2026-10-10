@@ -18,19 +18,28 @@ final class Spaces {
     private var clock = SwitchClock()
     /// Work requested mid-switch runs in order once it finishes. Workspace switches collapse to
     /// the last one pressed, so ⌘2 ⌘3 ⌘4 in quick succession lands on 4 without stopping at 2 and 3.
-    private var queued: [() -> Void] = []
-    private var queuedSwitch: (n: Int, focus: Bool, announce: Bool)?
+    private var queued: [Queued] = []
+    private enum Queued {
+        case switchTo(n: Int, focus: Bool, announce: Bool)
+        case action(() -> Void)
+    }
+    /// Bumped by every switch and by `suspend()`. A timer or callback from an earlier switch
+    /// checks it and stands down, so late work never lands on top of newer work.
+    private var generation = 0
     /// An app activation arrived mid-switch that BaneySpaces didn't cause: check once afterwards.
     private var followPending = false
     /// The app our own switch is bringing forward. Its activation is ours, not the person's.
     private var expectedFront: pid_t?
     private var settleUntil = Date.distantPast
     /// Window layer-0 numbers and app pids at the last full Accessibility scan.
-    private var lastScan: (windows: Set<WindowID>, pids: Set<pid_t>)?
+    /// `unsure` holds apps that scan couldn't read; once one is willing to answer again, scan again.
+    private var lastScan: (windows: Set<WindowID>, pids: Set<pid_t>, unsure: Set<pid_t>)?
     /// Windows that ignored every request to leave macOS full screen. Asking again only stalls.
     private var refusedFullScreen = Set<WindowID>()
     private lazy var watcher = FocusWatcher { [weak self] pid in self?.focusMovedWithin(pid) }
     private let hud = SwitchHUD()
+    /// Workspaces from most to least recently visited, for the ⌘Tab switcher.
+    private(set) var recent: [Int] = [1]
     private var screensWork: DispatchWorkItem?
     var onChange: (() -> Void)?
 
@@ -71,8 +80,8 @@ final class Spaces {
         active = false
         switching = false
         queued.removeAll()
-        queuedSwitch = nil
         followPending = false
+        generation += 1
         watcher.removeAll()
         emptyHolder.orderOut(nil)
     }
@@ -90,7 +99,9 @@ final class Spaces {
             return
         }
         clock.scan = lastScan == nil ? "first" : last(lastScan!, snap.appWindows, pids)
-        let list = Windows.all(owners: snap.owners)
+        RunningApps.invalidate()
+        let pidsNow = RunningApps.regular
+        let (list, unsure) = Windows.all(owners: snap.owners)
         // Accessibility lists only the windows on the macOS desktop being shown. A window it
         // missed keeps the handle from an earlier listing; that handle still moves the window.
         var next = windows.filter { snap.alive.contains($0.key) }
@@ -98,7 +109,10 @@ final class Spaces {
         windows = next
         let added = model.sync(seen: list.map(\.id), alive: snap.alive)
         prune(alive: snap.alive)
-        lastScan = (snap.appWindows, pids)
+        // A scan that skipped a busy app can't vouch for that app's windows. It's remembered, and
+        // the next refresh scans again as soon as that app is willing to answer.
+        lastScan = (snap.appWindows, pidsNow, unsure)
+        if !unsure.isEmpty { scheduleRetry() }
         watcher.sync(pids)
         let screens = Windows.screens()
         // An app that autosaves its window position can reopen a window at the hiding spot.
@@ -115,9 +129,27 @@ final class Spaces {
     }
 
     /// Why a full scan ran, for timing.log.
-    private func last(_ l: (windows: Set<WindowID>, pids: Set<pid_t>), _ w: Set<WindowID>, _ p: Set<pid_t>) -> String {
+    private func last(_ l: (windows: Set<WindowID>, pids: Set<pid_t>, unsure: Set<pid_t>), _ w: Set<WindowID>, _ p: Set<pid_t>) -> String {
         if l.pids != p { return "apps" }
         return "windows+\(w.subtracting(l.windows).count)-\(l.windows.subtracting(w).count)"
+    }
+
+    /// Re-reads apps that a scan couldn't, once they're willing to answer again, in the
+    /// background between switches, so the wait never lands on a key press.
+    private var retryPending = false
+    private func scheduleRetry() {
+        guard !retryPending else { return }
+        retryPending = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.5) { [weak self] in
+            guard let self else { return }
+            self.retryPending = false
+            guard self.active, let unsure = self.lastScan?.unsure, unsure.contains(where: Windows.isResponsive) else {
+                if self.lastScan?.unsure.isEmpty == false { self.scheduleRetry() }
+                return
+            }
+            if self.switching { return self.scheduleRetry() }
+            self.refresh(full: true)
+        }
     }
 
     private func prune(alive: Set<WindowID>) {
@@ -132,14 +164,22 @@ final class Spaces {
     /// viewer while it holds the keyboard. `announce` flashes the workspace HUD.
     func switchTo(_ n: Int, takeFocus moveFocus: Bool = true, announce: Bool = true) {
         guard active, Workspaces.range.contains(n) else { return }
-        if switching { queuedSwitch = (n, moveFocus, announce); return }
+        if switching {
+            // Presses keep their order; only back-to-back switches collapse to the last one.
+            if case .switchTo = queued.last { queued.removeLast() }
+            queued.append(.switchTo(n: n, focus: moveFocus, announce: announce))
+            return
+        }
         if announce, moveFocus { hud.show(n) }
+        generation += 1
         clock = SwitchClock(target: n)
         refresh()
         clock.mark(.scanned)
         let focused = Windows.focused(in: Array(windows.values))
         if let f = focused, model.workspace(of: f.id) == model.current { model.noteFocus(f.id) }
         let plan = model.switchTo(n)
+        recent.removeAll { $0 == n }
+        recent.insert(n, at: 0)
         switching = true
         // The menu bar number changes the moment the key is pressed, not when the work is done.
         onChange?()
@@ -149,7 +189,9 @@ final class Spaces {
         guard let f = focused, plan.hide.contains(f.id), !refusedFullScreen.contains(f.id), f.isFullScreen else {
             return apply(plan, moveFocus: moveFocus)
         }
+        let gen = generation
         leaveFullScreen([f]) { [self] refused in
+            guard gen == generation, active else { return }
             // A window that won't leave full screen stays with you rather than strand you on its desktop.
             for w in refused { model.assign(w.id, to: n) }
             // Back on the regular desktop, Accessibility can list windows it couldn't see from the
@@ -165,12 +207,15 @@ final class Spaces {
     /// Runs at launch and whenever macOS changes desktops.
     func flattenFullScreen() {
         guard active else { return }
-        if switching { return queued.append { [weak self] in self?.flattenFullScreen() } }
+        if switching { return enqueue { [weak self] in self?.flattenFullScreen() } }
         refresh(full: true)
         let fullScreen = windows.values.filter { !refusedFullScreen.contains($0.id) && $0.isFullScreen }
         guard !fullScreen.isEmpty else { return }
         switching = true
+        generation += 1
+        let gen = generation
         leaveFullScreen(fullScreen) { [self] _ in
+            guard gen == generation, active else { return }
             refresh(full: true)
             persist()
             finish()
@@ -206,7 +251,7 @@ final class Spaces {
     /// Sends the focused window to workspace `n` and follows it there.
     func moveFocused(to n: Int) {
         guard active, Workspaces.range.contains(n) else { return }
-        if switching { return queued.append { [weak self] in self?.moveFocused(to: n) } }
+        if switching { return enqueue { [weak self] in self?.moveFocused(to: n) } }
         refresh()
         guard let w = Windows.focused(in: Array(windows.values)) else {
             NSLog("BaneySpaces: no window to move (focused app pid %d)", Windows.focusedPid() ?? -1)
@@ -221,6 +266,7 @@ final class Spaces {
     func appActivated(_ app: NSRunningApplication) {
         let pid = app.processIdentifier
         guard active, pid != getpid() else { return }
+        Windows.markResponsive(pid)
         if switching {
             if pid != expectedFront { followPending = true }
             return
@@ -231,7 +277,9 @@ final class Spaces {
 
     private func followFocus() {
         guard let app = NSWorkspace.shared.frontmostApplication, app.processIdentifier != getpid() else { return }
-        refresh()
+        // A newly activated app may have just become a regular app or opened a window: look fully.
+        RunningApps.invalidate()
+        refresh(full: true)
         guard let w = Windows.focused(of: app.processIdentifier, in: Array(windows.values)),
               let n = model.workspace(of: w.id) else { return }
         model.noteFocus(w.id)
@@ -245,7 +293,7 @@ final class Spaces {
     private func focusMovedWithin(_ pid: pid_t) {
         guard active, !switching, Date() > settleUntil,
               NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
-        refresh()
+        refresh(full: true)
         guard let w = Windows.focused(of: pid, in: Array(windows.values)),
               let n = model.workspace(of: w.id), n != model.current || saved.frames[w.id] != nil else { return }
         if let here = model.windows(on: model.current).compactMap({ windows[$0] })
@@ -261,7 +309,7 @@ final class Spaces {
     /// Every window onto workspace 1, all visible. The way out of any tangle.
     func gatherOnOne() {
         guard active else { return }
-        if switching { return queued.append { [weak self] in self?.gatherOnOne() } }
+        if switching { return enqueue { [weak self] in self?.gatherOnOne() } }
         refresh(full: true)
         for id in model.home.keys { model.assign(id, to: 1) }
         switchTo(1)
@@ -288,7 +336,7 @@ final class Spaces {
         screensWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.active else { return }
-            if self.switching { return self.queued.append { [weak self] in self?.screensChanged() } }
+            if self.switching { return self.enqueue { [weak self] in self?.screensChanged() } }
             self.switchTo(self.model.current, takeFocus: false, announce: false)
         }
         screensWork = work
@@ -322,7 +370,7 @@ final class Spaces {
     /// Goes to workspace `n` and lands on one particular window there.
     func focus(_ id: WindowID, on n: Int) {
         guard active else { return }
-        if switching { return queued.append { [weak self] in self?.focus(id, on: n) } }
+        if switching { return enqueue { [weak self] in self?.focus(id, on: n) } }
         // Picking a minimized window in the viewer means wanting it back.
         if let w = windows[id], w.isMinimized { w.unminimize() }
         model.noteFocus(id)
@@ -332,9 +380,20 @@ final class Spaces {
     /// Sends one window to workspace `n` without going there.
     func move(_ id: WindowID, to n: Int) {
         guard active, Workspaces.range.contains(n) else { return }
-        if switching { return queued.append { [weak self] in self?.move(id, to: n) } }
+        if switching { return enqueue { [weak self] in self?.move(id, to: n) } }
         model.assign(id, to: n)
         switchTo(model.current, takeFocus: false, announce: false)
+    }
+
+    /// The ⌘Tab switcher's list: the current workspace, then others with windows, most recent
+    /// first, then any remaining ones in number order.
+    func switcherOrder() -> [Int] {
+        refresh()
+        let withWindows = Set(Workspaces.range.filter { !model.windows(on: $0).isEmpty })
+        var order = [model.current]
+        for n in recent where n != model.current && withWindows.contains(n) { order.append(n) }
+        for n in Workspaces.range where withWindows.contains(n) && !order.contains(n) { order.append(n) }
+        return order
     }
 
     /// App names on workspace `n`, for the menu.
@@ -344,9 +403,13 @@ final class Spaces {
     }
 
     private func apply(_ plan: SwitchPlan, moveFocus: Bool = true) {
+        guard active else { return }
+        let gen = generation
         let screens = Windows.screens()
         let how = Concealment(plan: plan, owner: windows.mapValues(\.pid))
-        let oldFront = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        // macOS reports the new front app a moment late. Right after a switch, the app that
+        // switch brought forward is the one really in front.
+        let oldFront = Date() < settleUntil ? expectedFront : NSWorkspace.shared.frontmostApplication?.processIdentifier
         // 1. Everything on this workspace comes back. That includes an app hidden with ⌘H:
         //    going to its workspace means wanting to see it.
         for pid in how.showApps {
@@ -378,6 +441,7 @@ final class Spaces {
         }
         clock.mark(.shown)
         let done = { [self] in
+            guard gen == generation, active else { return }
             clock.mark(.focused)
             conceal(how, apps: deferred, screens: screens)
             if moveFocus, target == nil, Windows.focusedPid() != getpid() {
@@ -392,19 +456,25 @@ final class Spaces {
             finish()
         }
         // Nothing left that depends on focus: finish now, without waiting a timer tick.
-        if deferred.isEmpty || Windows.focusedPid() == frontPid { return done() }
+        // Nothing left that depends on focus: finish now. An empty workspace still waits for
+        // BaneySpaces to be in front, or the Finder fallback would fire on stale information.
+        let waitForFocus = !deferred.isEmpty || (moveFocus && target == nil)
+        if !waitForFocus || Windows.focusedPid() == frontPid { return done() }
         waitUntil(timeout: 0.5, interval: 0.01, { Windows.focusedPid() == frontPid }, then: done)
     }
 
-    /// Ends a switch and runs what queued up during it: actions in order, then the last
-    /// workspace pressed, then one check of an activation BaneySpaces didn't cause.
+    private func enqueue(_ action: @escaping () -> Void) { queued.append(.action(action)) }
+
+    /// Ends a switch and runs what queued up during it, in order, then one check of an
+    /// activation BaneySpaces didn't cause.
     private func finish() {
         switching = false
         onChange?()
-        while !switching, !queued.isEmpty { queued.removeFirst()() }
-        if !switching, let next = queuedSwitch {
-            queuedSwitch = nil
-            switchTo(next.n, takeFocus: next.focus, announce: next.announce)
+        while !switching, !queued.isEmpty {
+            switch queued.removeFirst() {
+            case let .switchTo(n, focus, announce): switchTo(n, takeFocus: focus, announce: announce)
+            case let .action(run): run()
+            }
         }
         if !switching, followPending {
             followPending = false
@@ -503,6 +573,9 @@ final class Spaces {
             }
         }
     }
+
+    /// Blocks until queued disk writes are done, for quitting.
+    func flushWrites() { Spaces.writer.sync {} }
 
     private func waitUntil(timeout: TimeInterval, interval: TimeInterval, _ done: @escaping () -> Bool, then: @escaping () -> Void) {
         let deadline = Date().addingTimeInterval(timeout)

@@ -69,6 +69,10 @@ enum RunningApps {
     private static var cached: Set<pid_t>?
     private static var observing = false
 
+    /// Forget the cached list; the next read asks macOS again. Apps can turn into regular apps
+    /// after launch (menu bar apps that open a window), which no notification announces.
+    static func invalidate() { cached = nil }
+
     static var regular: Set<pid_t> {
         if !observing {
             observing = true
@@ -91,6 +95,9 @@ enum Windows {
     /// Apps that stopped answering Accessibility, and until when to leave them alone. One hung
     /// app costs a full timeout per call; skipping it keeps every switch quick.
     private static var unresponsiveUntil: [pid_t: Date] = [:]
+    /// How many times in a row each app failed to answer. Each strike waits longer before
+    /// asking again (5 s, 30 s, 2 min, 10 min), so a frozen app costs a timeout rarely.
+    private static var strikes: [pid_t: Int] = [:]
     private static let unresponsiveLock = NSLock()
 
     static func isResponsive(_ pid: pid_t) -> Bool {
@@ -102,16 +109,29 @@ enum Windows {
 
     static func markUnresponsive(_ pid: pid_t) {
         unresponsiveLock.lock(); defer { unresponsiveLock.unlock() }
-        unresponsiveUntil[pid] = Date().addingTimeInterval(5)
+        let backoff: [TimeInterval] = [5, 30, 120, 600]
+        let n = strikes[pid, default: 0]
+        strikes[pid] = n + 1
+        unresponsiveUntil[pid] = Date().addingTimeInterval(backoff[min(n, backoff.count - 1)])
+    }
+
+    /// The app answered, or the person brought it forward: give it a clean slate.
+    static func markResponsive(_ pid: pid_t) {
+        unresponsiveLock.lock(); defer { unresponsiveLock.unlock() }
+        unresponsiveUntil[pid] = nil
+        strikes[pid] = nil
     }
 
     /// Every standard window of every regular app except BaneySpaces itself. Dialogs, panels,
     /// popovers and windows on other macOS desktops are left alone. Apps are asked in parallel:
     /// Accessibility answers each app separately, so a slow app no longer delays the rest.
-    static func all(owners: Set<pid_t>? = nil) -> [Window] {
+    /// `unsure` lists the apps that were skipped or didn't answer in time; their windows may be
+    /// missing from the result.
+    static func all(owners: Set<pid_t>? = nil) -> (windows: [Window], unsure: Set<pid_t>) {
         // Only apps that own a window are asked. A running app with no windows is often frozen by
         // macOS and never answers, which would cost a full timeout on every scan.
         let candidates = owners.map { RunningApps.regular.intersection($0) } ?? RunningApps.regular
+        var unsure = Set(candidates.filter { !isResponsive($0) })
         let apps = candidates.compactMap { pid -> (pid_t, String)? in
             guard isResponsive(pid), let app = NSRunningApplication(processIdentifier: pid) else { return nil }
             return (pid, app.localizedName ?? "App")
@@ -123,14 +143,16 @@ enum Windows {
             let ax = AXUIElementCreateApplication(pid)
             // A hung app must not hang every workspace switch.
             AXUIElementSetMessagingTimeout(ax, 0.25)
-            let elements: [AXUIElement] = ax.value(kAXWindowsAttribute) ?? []
+            let listed: [AXUIElement]? = ax.value(kAXWindowsAttribute)
+            if listed == nil { lock.lock(); unsure.insert(pid); lock.unlock() } else { markResponsive(pid) }
+            let elements = listed ?? []
             let found = elements.compactMap { el -> Window? in
                 guard let id = el.windowID, el.string(kAXSubroleAttribute) == kAXStandardWindowSubrole as String else { return nil }
                 return Window(id: id, element: el, pid: pid, appName: name)
             }
             lock.lock(); results[i] = found; lock.unlock()
         }
-        return results.flatMap { $0 }
+        return (results.flatMap { $0 }, unsure)
     }
 
     static func alive() -> Set<WindowID> { snapshot(apps: RunningApps.regular).alive }
