@@ -167,3 +167,37 @@ final class ConcealmentTests: XCTestCase {
         XCTAssertEqual(c.park, [1])
     }
 }
+
+final class SavedLayoutTests: XCTestCase {
+    func testRestartPutsWindowsBackOnTheirWorkspaces() {
+        // Before the restart: 10 on 1, 11 on 4, 12 on 7; you were on 4 looking at 11.
+        let saved = SavedLayout(current: 4, entries: [
+            .init(window: 10, pid: 100, workspace: 1),
+            .init(window: 11, pid: 100, workspace: 4),
+            .init(window: 12, pid: 200, workspace: 7),
+        ], lastFocused: [4: 11])
+        // After the restart every window starts on workspace 1.
+        var w = Workspaces()
+        w.sync(seen: [10, 11, 12], alive: [10, 11, 12])
+        w.restore(current: saved.current, home: saved.homes(livePids: [10: 100, 11: 100, 12: 200]),
+                  lastFocused: saved.lastFocused)
+        XCTAssertEqual(w.current, 4)
+        XCTAssertEqual(w.workspace(of: 11), 4)
+        XCTAssertEqual(w.workspace(of: 12), 7)
+        XCTAssertEqual(w.switchTo(4).focus, 11)
+    }
+
+    func testAReusedWindowNumberFromAnotherAppIsNotMoved() {
+        let saved = SavedLayout(current: 1, entries: [.init(window: 12, pid: 200, workspace: 7)])
+        // After a logout, window 12 now belongs to a different process.
+        XCTAssertEqual(saved.homes(livePids: [12: 999]), [:])
+    }
+
+    func testRoundTripsThroughDisk() {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("bs-\(UUID().uuidString)/layout.json")
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let saved = SavedLayout(current: 3, entries: [.init(window: 5, pid: 9, workspace: 3)], lastFocused: [3: 5])
+        saved.save(to: url)
+        XCTAssertEqual(SavedLayout.load(from: url), saved)
+    }
+}

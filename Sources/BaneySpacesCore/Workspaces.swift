@@ -56,6 +56,14 @@ public struct Workspaces: Codable, Equatable {
         lastFocused[n] = id
     }
 
+    /// Puts windows back where a saved layout had them, after BaneySpaces restarts. Only windows
+    /// the model already knows are moved; `current` becomes the saved workspace.
+    public mutating func restore(current n: Int, home saved: [WindowID: Int], lastFocused focus: [Int: WindowID]) {
+        for (id, ws) in saved where home[id] != nil && Self.range.contains(ws) { home[id] = ws }
+        if Self.range.contains(n) { current = n }
+        for (ws, id) in focus where home[id] == ws { lastFocused[ws] = id }
+    }
+
     /// Makes `n` current and says which windows to hide and show. Switching to the workspace
     /// you are on still returns a full plan, which repairs anything an app moved on its own.
     public mutating func switchTo(_ n: Int) -> SwitchPlan {

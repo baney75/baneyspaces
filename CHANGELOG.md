@@ -9,6 +9,11 @@ Faster switching, an easier first run, and fixes from an adversarial review.
   the app in front waits for focus to move (checked every 10 ms), the window scan is skipped when
   no window opened or closed, apps are asked in parallel, and apps with no windows aren't asked
   at all. `make bench` fails if the median goes over 40 ms.
+- **Workspaces survive restarts.** Which window lives on which workspace is saved on every
+  change and restored when BaneySpaces starts again (an update, a crash, logging back in), so
+  nothing gets sent back to workspace 1.
+- **⌘Tab can switch workspaces** (optional, in setup): hold ⌘ and tap Tab to step through the
+  workspaces that have windows, most recent first; release to go there.
 - **A small HUD** shows the workspace grid for half a second on every keyboard switch, and the
   menu bar number changes the moment you press the key.
 - **Setup is one button.** Allow BaneySpaces puts it in the Accessibility list and opens the

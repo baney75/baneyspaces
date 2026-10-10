@@ -47,6 +47,7 @@ final class Spaces {
         .appendingPathComponent("BaneySpaces")
     static let framesURL = folder.appendingPathComponent("frames.json")
     static let stateURL = folder.appendingPathComponent("state.json")
+    static let layoutURL = folder.appendingPathComponent("layout.json")
     private static let writer = DispatchQueue(label: "com.baney.baneyspaces.persist", qos: .utility)
 
     init() {
@@ -68,7 +69,14 @@ final class Spaces {
             w.setFrame(Geometry.restoreFrame(saved: saved.frames[w.id], size: f.size, screens: screens))
         }
         saved = SavedFrames()
+        // Put every window back on the workspace it had before this launch (an update, a crash,
+        // a restart), and return to the workspace you were on.
+        if let layout = SavedLayout.load(from: Spaces.layoutURL) {
+            model.restore(current: layout.current, home: layout.homes(livePids: windows.mapValues(\.pid)),
+                          lastFocused: layout.lastFocused)
+        }
         persist()
+        switchTo(model.current, takeFocus: false, announce: false)
         flattenFullScreen()
     }
 
@@ -569,8 +577,12 @@ final class Spaces {
                 (String(n), model.windows(on: n).map { ["id": $0, "app": windows[$0]?.appName ?? ""] as [String: Any] })
             }),
         ]
+        let layout = SavedLayout(current: model.current,
+                                 entries: model.home.compactMap { id, ws in windows[id].map { .init(window: id, pid: $0.pid, workspace: ws) } },
+                                 lastFocused: model.lastFocused)
         Spaces.writer.async {
             frames.save(to: Spaces.framesURL)
+            layout.save(to: Spaces.layoutURL)
             if let data = try? JSONSerialization.data(withJSONObject: state, options: [.prettyPrinted, .sortedKeys]) {
                 try? data.write(to: Spaces.stateURL, options: .atomic)
             }
