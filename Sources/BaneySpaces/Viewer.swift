@@ -46,6 +46,10 @@ final class ViewerModel: ObservableObject {
         hovered = nil
     }
 
+    func hover(_ n: Int, _ inside: Bool) {
+        if inside { hovered = n } else if hovered == n { hovered = nil }
+    }
+
     func endDrag() {
         guard let drag else { return }
         if let to = dropTarget {
@@ -71,43 +75,56 @@ struct ViewerView: View {
     var stillBackdrop = false
     private let accent = Color(red: 0.91, green: 0.26, blue: 0.29)
 
+    // The body is split into small pieces so every Swift compiler type-checks it quickly.
     var body: some View {
         ZStack {
+            backdrop
             // Clicking the backdrop closes the viewer, like clicking the desktop in Mission Control.
-            if stillBackdrop {
-                LinearGradient(colors: [Color(red: 0.05, green: 0.06, blue: 0.11), Color(red: 0.11, green: 0.07, blue: 0.13)],
-                               startPoint: .topLeading, endPoint: .bottomTrailing)
-            } else {
-                Backdrop().ignoresSafeArea()
-            }
             Color.black.opacity(0.35).ignoresSafeArea().onTapGesture { model.onClose() }
-            GeometryReader { g in
-                // Three rows share the screen's height, so a tile grows with the display.
-                let tileHeight = max(160, (g.size.height - 2 * 48 - 40 - 2 * 20) / 3)
-                VStack(spacing: 18) {
-                    VStack(spacing: 20) {
-                        ForEach(0..<3, id: \.self) { row in
-                            HStack(spacing: 20) {
-                                ForEach(1...3, id: \.self) { col in tile(row * 3 + col, height: tileHeight) }
-                            }
-                        }
-                    }
-                    footer
-                }
-                .padding(48)
-                .frame(maxWidth: 1600)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            // The lifted card follows the cursor.
-            if let drag = model.drag {
-                card(drag.entry, lifted: true)
-                    .frame(width: 300)
-                    .position(drag.location)
-                    .allowsHitTesting(false)
-            }
+            GeometryReader { g in grid(in: g.size) }
+            liftedCard
         }
         .coordinateSpace(name: "viewer")
         .onPreferenceChange(TileFrames.self) { model.tileFrames = $0 }
+    }
+
+    @ViewBuilder private var backdrop: some View {
+        if stillBackdrop {
+            LinearGradient(colors: [Color(red: 0.05, green: 0.06, blue: 0.11), Color(red: 0.11, green: 0.07, blue: 0.13)],
+                           startPoint: .topLeading, endPoint: .bottomTrailing)
+        } else {
+            Backdrop().ignoresSafeArea()
+        }
+    }
+
+    /// Three rows share the screen's height, so a tile grows with the display.
+    private func grid(in size: CGSize) -> some View {
+        let tileHeight: CGFloat = max(160, (size.height - 2 * 48 - 40 - 2 * 20) / 3)
+        return VStack(spacing: 18) {
+            VStack(spacing: 20) {
+                ForEach(0..<3, id: \.self) { row in gridRow(row, tileHeight: tileHeight) }
+            }
+            footer
+        }
+        .padding(48)
+        .frame(maxWidth: 1600)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func gridRow(_ row: Int, tileHeight: CGFloat) -> some View {
+        HStack(spacing: 20) {
+            ForEach(1...3, id: \.self) { col in tile(row * 3 + col, height: tileHeight) }
+        }
+    }
+
+    /// The lifted card follows the cursor.
+    @ViewBuilder private var liftedCard: some View {
+        if let drag = model.drag {
+            card(drag.entry, lifted: true)
+                .frame(width: 300)
+                .position(drag.location)
+                .allowsHitTesting(false)
+        }
     }
 
     private var footer: some View {
@@ -124,61 +141,85 @@ struct ViewerView: View {
         let isCurrent = n == model.current
         let isTarget = model.dropTarget == n
         let isHovered = model.drag == nil && model.hovered == n
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("\(n)").font(.system(size: 22, weight: .bold, design: .rounded))
-                if !entries.isEmpty {
-                    Text(entries.count == 1 ? "1 window" : "\(entries.count) windows")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                if isCurrent { Text("You're here").font(.caption.weight(.semibold)).foregroundStyle(accent) }
+        let content = VStack(alignment: .leading, spacing: 8) {
+            tileHeader(n, count: entries.count, isCurrent: isCurrent)
+            tileBody(n, entries: entries, isTarget: isTarget)
+        }
+        return content
+            .padding(14)
+            .frame(maxWidth: .infinity, minHeight: height, maxHeight: height, alignment: .topLeading)
+            .background(tileShape(isCurrent: isCurrent, isTarget: isTarget, isHovered: isHovered))
+            .scaleEffect(isTarget ? 1.02 : 1)
+            .animation(.easeOut(duration: 0.12), value: isTarget)
+            .background(GeometryReader { g in
+                Color.clear.preference(key: TileFrames.self, value: [n: g.frame(in: .named("viewer"))])
+            })
+            .contentShape(RoundedRectangle(cornerRadius: 16))
+            .onTapGesture { model.onPick(n) }
+            .onHover { inside in model.hover(n, inside) }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(tileLabel(n, entries: entries, isCurrent: isCurrent))
+            .accessibilityAddTraits(.isButton)
+    }
+
+    private func tileHeader(_ n: Int, count: Int, isCurrent: Bool) -> some View {
+        HStack {
+            Text("\(n)").font(.system(size: 22, weight: .bold, design: .rounded))
+            if count > 0 {
+                Text(count == 1 ? "1 window" : "\(count) windows").font(.caption).foregroundStyle(.secondary)
             }
-            if entries.isEmpty {
-                Spacer()
-                Text(isTarget ? "Move here" : "Empty").font(.callout)
-                    .foregroundStyle(isTarget ? AnyShapeStyle(accent) : AnyShapeStyle(.tertiary))
-                    .frame(maxWidth: .infinity)
-                Spacer()
-            } else {
-                // Every window is listed; a full tile scrolls instead of hiding any. Rendered images
-                // can't draw a scroll view, so they get the plain list.
-                if stillBackdrop {
-                    VStack(spacing: 6) { ForEach(entries) { e in draggableCard(e, from: n) } }
-                } else {
-                    ScrollView(.vertical) {
-                        VStack(spacing: 6) {
-                            ForEach(entries) { e in draggableCard(e, from: n) }
-                        }
-                    }
-                    .scrollIndicators(.automatic)
-                }
-                if isTarget {
-                    Text("Move here").font(.caption.weight(.semibold)).foregroundStyle(accent)
-                }
+            Spacer()
+            if isCurrent { Text("You're here").font(.caption.weight(.semibold)).foregroundStyle(accent) }
+        }
+    }
+
+    @ViewBuilder private func tileBody(_ n: Int, entries: [Spaces.Entry], isTarget: Bool) -> some View {
+        if entries.isEmpty {
+            Spacer()
+            emptyLabel(isTarget: isTarget)
+            Spacer()
+        } else {
+            windowList(n, entries: entries)
+            if isTarget {
+                Text("Move here").font(.caption.weight(.semibold)).foregroundStyle(accent)
             }
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, minHeight: height, maxHeight: height, alignment: .topLeading)
-        .background(RoundedRectangle(cornerRadius: 16).fill(isTarget ? Color(white: 0.19) : Color(white: 0.13)))
-        .overlay(
-            RoundedRectangle(cornerRadius: 16)
-                .strokeBorder(isTarget ? accent : isCurrent ? accent.opacity(0.85)
-                              : isHovered ? Color.white.opacity(0.6) : Color.white.opacity(0.08),
-                              style: StrokeStyle(lineWidth: isTarget || isCurrent || isHovered ? 3 : 1,
-                                                 dash: isTarget ? [8, 5] : []))
-        )
-        .scaleEffect(isTarget ? 1.02 : 1)
-        .animation(.easeOut(duration: 0.12), value: isTarget)
-        .background(GeometryReader { g in
-            Color.clear.preference(key: TileFrames.self, value: [n: g.frame(in: .named("viewer"))])
-        })
-        .contentShape(RoundedRectangle(cornerRadius: 16))
-        .onTapGesture { model.onPick(n) }
-        .onHover { inside in model.hovered = inside ? n : (model.hovered == n ? nil : model.hovered) }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Workspace \(n)\(isCurrent ? ", current" : ""), \(entries.isEmpty ? "empty" : entries.map(\.app).joined(separator: ", "))")
-        .accessibilityAddTraits(.isButton)
+    }
+
+    @ViewBuilder private func emptyLabel(isTarget: Bool) -> some View {
+        if isTarget {
+            Text("Move here").font(.callout).foregroundStyle(accent).frame(maxWidth: .infinity)
+        } else {
+            Text("Empty").font(.callout).foregroundStyle(.tertiary).frame(maxWidth: .infinity)
+        }
+    }
+
+    /// Every window is listed; a full tile scrolls instead of hiding any. Rendered images can't
+    /// draw a scroll view, so they get the plain list.
+    @ViewBuilder private func windowList(_ n: Int, entries: [Spaces.Entry]) -> some View {
+        let list = VStack(spacing: 6) { ForEach(entries) { e in draggableCard(e, from: n) } }
+        if stillBackdrop {
+            list
+        } else {
+            ScrollView(.vertical) { list }.scrollIndicators(.automatic)
+        }
+    }
+
+    private func tileShape(isCurrent: Bool, isTarget: Bool, isHovered: Bool) -> some View {
+        let border: Color
+        if isTarget { border = accent } else if isCurrent { border = accent.opacity(0.85) }
+        else if isHovered { border = Color.white.opacity(0.6) } else { border = Color.white.opacity(0.08) }
+        let width: CGFloat = isTarget || isCurrent || isHovered ? 3 : 1
+        let dash: [CGFloat] = isTarget ? [8, 5] : []
+        let fill = isTarget ? Color(white: 0.19) : Color(white: 0.13)
+        return RoundedRectangle(cornerRadius: 16)
+            .fill(fill)
+            .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(border, style: StrokeStyle(lineWidth: width, dash: dash)))
+    }
+
+    private func tileLabel(_ n: Int, entries: [Spaces.Entry], isCurrent: Bool) -> String {
+        let apps = entries.isEmpty ? "empty" : entries.map(\.app).joined(separator: ", ")
+        return "Workspace \(n)\(isCurrent ? ", current" : ""), \(apps)"
     }
 
     /// A window card in a tile. Click it to go to that window; drag it to another workspace.
