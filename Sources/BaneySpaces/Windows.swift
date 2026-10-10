@@ -79,8 +79,24 @@ enum Windows {
 
     /// The window that has keyboard focus, if it is one we manage.
     static func focused(in windows: [Window]) -> Window? {
-        guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
-        return focused(of: app.processIdentifier, in: windows)
+        guard let pid = focusedPid() else { return nil }
+        return focused(of: pid, in: windows)
+    }
+
+    /// The app that receives keystrokes, as Accessibility sees it; NSWorkspace can lag behind.
+    static func focusedPid() -> pid_t? {
+        if let app: AXUIElement = AXUIElementCreateSystemWide().value(kAXFocusedApplicationAttribute) {
+            var pid: pid_t = 0
+            if AXUIElementGetPid(app, &pid) == .success, pid > 0 { return pid }
+        }
+        return NSWorkspace.shared.frontmostApplication?.processIdentifier
+    }
+
+    /// Brings an app to the front through Accessibility, which works even when macOS would
+    /// refuse a plain activation request from a background app.
+    static func makeFrontmost(_ pid: pid_t) {
+        AXUIElementSetAttributeValue(AXUIElementCreateApplication(pid), kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+        NSRunningApplication(processIdentifier: pid)?.activate()
     }
 
     static func focused(of pid: pid_t, in windows: [Window]) -> Window? {

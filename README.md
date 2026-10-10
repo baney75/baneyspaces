@@ -32,8 +32,9 @@ size you made them. You just get nine places to put them and a key for each.
 - **New windows open where you are.** Open something on workspace 4 and it lives on workspace 4.
 - **The Dock and ⌘Tab still work.** Click an app whose window is on workspace 6 and you go to
   workspace 6.
-- **Full screen plays along.** A full-screen window that you leave behind exits full screen and
-  fills the screen instead, so it stays on its workspace rather than on a macOS desktop of its own.
+- **Full screen means fill the screen.** macOS full screen moves a window to a desktop of its own,
+  and Mission Control fills up with extra desktops that ⌘1–⌘9 can't reach. BaneySpaces brings the
+  window straight back out and fills the screen with it, so every window stays on a workspace.
 - **Empty means empty.** Go to a workspace with nothing on it and you get a clean desktop.
   Typing goes nowhere until you open something.
 
@@ -96,8 +97,8 @@ the apps on each one.
 - **Shortcuts stop while Secure Input is on.** When a password field or a terminal's secure
   keyboard entry holds Secure Input, macOS lets no other app see keystrokes. That applies to
   every global shortcut, not just these.
-- **Windows on other macOS desktops are left alone.** BaneySpaces manages the desktop you're on.
-  One macOS desktop and nine BaneySpaces workspaces is the intended setup.
+- **Windows on other macOS desktops are left alone.** Keep one macOS desktop in Mission Control
+  and let the nine workspaces do the rest.
 - **Switching between two windows of the same app with ⌘\`** doesn't follow a window onto
   another workspace yet. The Dock and ⌘Tab do.
 

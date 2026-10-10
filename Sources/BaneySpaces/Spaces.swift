@@ -43,6 +43,7 @@ final class Spaces {
         }
         saved = SavedFrames()
         persist()
+        flattenFullScreen()
     }
 
     func refresh() {
@@ -74,31 +75,61 @@ final class Spaces {
         switching = true
         generation += 1
 
-        // A window in macOS full screen lives on its own desktop, where nothing can move it.
-        // Leaving its workspace brings it out of full screen and fills the screen with it instead.
+        // Full screen is normally flattened as soon as it happens (see flattenFullScreen). This
+        // catches a window that went full screen in the moment before a switch.
         let fullScreen = plan.hide.compactMap { windows[$0] }.filter(\.isFullScreen)
         guard !fullScreen.isEmpty else { return apply(plan) }
+        leaveFullScreen(fullScreen) { [self] refused in
+            // A window that won't leave full screen stays with you rather than strand you on its desktop.
+            for w in refused { model.assign(w.id, to: n) }
+            // Back on the regular desktop, Accessibility can list windows it couldn't see from the
+            // full-screen one. Plan again with all of them.
+            refresh()
+            apply(model.switchTo(n))
+        }
+    }
+
+    /// macOS full screen moves a window to a desktop of its own, where BaneySpaces can't hide or
+    /// show it, and Mission Control fills up with extra desktops. So in BaneySpaces, full screen
+    /// means filling the screen: a window that goes full screen comes back out and fills it.
+    /// Runs at launch and whenever macOS changes desktops.
+    func flattenFullScreen() {
+        if switching { return queued.append { [weak self] in self?.flattenFullScreen() } }
+        refresh()
+        let fullScreen = windows.values.filter(\.isFullScreen)
+        guard !fullScreen.isEmpty else { return }
+        switching = true
+        generation += 1
+        leaveFullScreen(fullScreen) { [self] _ in
+            refresh()
+            persist()
+            switching = false
+            onChange?()
+            while !switching, !queued.isEmpty { queued.removeFirst()() }
+        }
+    }
+
+    /// Takes windows out of full screen and fills the screen with each. Calls back with the
+    /// windows that refused.
+    private func leaveFullScreen(_ fullScreen: [Window], then: @escaping ([Window]) -> Void) {
         fullScreen.forEach { $0.exitFullScreen() }
         // Some apps (Chromium browsers among them) ignore the request. Their green button doesn't.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
             fullScreen.filter(\.isFullScreen).forEach { $0.pressFullScreenButton() }
         }
-        waitUntil(timeout: 4, { fullScreen.allSatisfy { !$0.isFullScreen } }) { [self] in
+        waitUntil(timeout: 4, { fullScreen.allSatisfy { !$0.isFullScreen } }) {
             // The exit animation keeps resizing the window for a moment after the flag flips.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                var refused: [Window] = []
                 for w in fullScreen {
                     if w.isFullScreen {
-                        // The app refused. Keep the window with you rather than strand you on its desktop.
-                        model.assign(w.id, to: n)
+                        refused.append(w)
                         NSSound.beep()
                     } else if let f = w.frame {
                         w.setFrame(Windows.visibleArea(near: f))
                     }
                 }
-                // Now on the regular desktop, Accessibility can list windows it couldn't see from
-                // the full-screen one. Plan again with all of them.
-                refresh()
-                apply(model.switchTo(n))
+                then(refused)
             }
         }
     }
@@ -108,7 +139,10 @@ final class Spaces {
         guard Workspaces.range.contains(n) else { return }
         if switching { return queued.append { [weak self] in self?.moveFocused(to: n) } }
         refresh()
-        guard let w = Windows.focused(in: Array(windows.values)) else { return NSSound.beep() }
+        guard let w = Windows.focused(in: Array(windows.values)) else {
+            NSLog("BaneySpaces: no window to move (focused app pid %d)", Windows.focusedPid() ?? -1)
+            return NSSound.beep()
+        }
         model.assign(w.id, to: n)
         switchTo(n)
     }
@@ -129,7 +163,7 @@ final class Spaces {
         guard let w = Windows.focused(of: app.processIdentifier, in: Array(windows.values)),
               let n = model.workspace(of: w.id) else { return }
         model.noteFocus(w.id)
-        if n != model.current { switchTo(n) }
+        if n != model.current { switchTo(n) } else { persist() }
     }
 
     /// Every window onto workspace 1, all visible. The way out of any tangle.
@@ -204,8 +238,7 @@ final class Spaces {
             .compactMap { windows[$0] }.filter { !$0.isMinimized && saved.frames[$0.id] == nil }
         guard let target = candidates.first else {
             expectedPid = nil
-            NSApp.activate(ignoringOtherApps: true)
-            return
+            return takeFocus()
         }
         let gen = generation
         expectedPid = target.pid
@@ -220,12 +253,28 @@ final class Spaces {
                 guard gen == generation,
                       let f = Windows.focused(in: Array(windows.values)), saved.frames[f.id] != nil else { return }
                 expectedPid = nil
-                NSApp.activate(ignoringOtherApps: true)
+                takeFocus()
             }
         }
         // If the app was already in front, no activation comes to clear this.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [self] in
             if gen == generation { expectedPid = nil }
+        }
+    }
+
+    /// Nothing on this workspace can take focus, so BaneySpaces takes it and typing goes nowhere.
+    /// If macOS won't give it to us, Finder gets it, as on an empty Mac desktop.
+    private func takeFocus() {
+        let gen = generation
+        Windows.makeFrontmost(getpid())
+        NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [self] in
+            guard gen == generation, Windows.focusedPid() != getpid() else { return }
+            guard let f = Windows.focused(in: Array(windows.values)), saved.frames[f.id] != nil else { return }
+            NSLog("BaneySpaces: focus stayed on a hidden window; handing it to Finder")
+            if let finder = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.finder").first {
+                Windows.makeFrontmost(finder.processIdentifier)
+            }
         }
     }
 
