@@ -11,9 +11,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var started = false
     private var trustTimer: Timer?
     private var signalSources: [DispatchSourceSignal] = []
+    private lazy var viewer = ViewerController(spaces: spaces)
+    private lazy var missionControlKeys = MissionControlKeys { [weak self] in self?.viewer.toggle() }
     private lazy var setup: SetupWindowController = {
         let c = SetupWindowController()
         c.model.onModifierChange = { [weak self] _ in self?.registerShortcuts() }
+        c.model.onViewerKeysChange = { [weak self] on in
+            MissionControlKeys.enabled = on
+            guard let self, self.started else { return }
+            on ? self.missionControlKeys.start() : self.missionControlKeys.stop()
+        }
         return c
     }()
 
@@ -40,6 +47,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 guard let self, self.started else { return }
                 self.spaces.flattenFullScreen()
             }
+        }
+        // Once another app is in front, the viewer and the empty-workspace holder step aside.
+        NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification,
+                                               object: nil, queue: .main) { [weak self] _ in
+            guard let self, self.started else { return }
+            self.viewer.close()
+            self.spaces.dropEmptyHolder()
+        }
+        // A BaneySpaces window of its own (setup, About) taking the keyboard ends the holder's job too.
+        NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification,
+                                               object: nil, queue: .main) { [weak self] note in
+            guard let self, self.started, let w = note.object as? NSWindow, !(w is KeyablePanel) else { return }
+            self.spaces.dropEmptyHolder()
         }
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
                                                object: nil, queue: .main) { [weak self] _ in
@@ -100,6 +120,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 0.25)
         started = true
         registerShortcuts()
+        missionControlKeys.start()
         spaces.start()
         updateIcon()
     }
@@ -159,6 +180,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
         menu.addItem(withTitle: "Add ⇧ to send the front window there", action: nil, keyEquivalent: "")
         menu.addItem(.separator())
+        menu.addItem(item("Show All Workspaces", #selector(showViewer)))
         menu.addItem(item("Bring Every Window Back", #selector(bringBack)))
         menu.addItem(item("Set Up BaneySpaces…", #selector(showSetup), key: ","))
         menu.addItem(.separator())
@@ -175,6 +197,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func pick(_ sender: NSMenuItem) { spaces.switchTo(sender.tag) }
 
     @objc private func bringBack() { spaces.gatherOnOne() }
+
+    @objc private func showViewer() { viewer.open() }
 
     @objc private func about() {
         NSApp.activate(ignoringOtherApps: true)
@@ -203,6 +227,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case "switch": run { $0.switchTo(n) }
         case "move": run { $0.moveFocused(to: n) }
         case "restore": run { _ in bringBack() }
+        case "viewer": run { _ in viewer.toggle() }
         default: NSLog("BaneySpaces: unknown command %@", text)
         }
     }

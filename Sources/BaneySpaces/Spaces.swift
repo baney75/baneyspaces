@@ -66,9 +66,11 @@ final class Spaces {
         }
     }
 
-    func switchTo(_ n: Int) {
+    /// `takeFocus: false` rearranges windows without touching focus, for moves made from the
+    /// viewer while it holds the keyboard.
+    func switchTo(_ n: Int, takeFocus moveFocus: Bool = true) {
         guard Workspaces.range.contains(n) else { return }
-        if switching { return queued.append { [weak self] in self?.switchTo(n) } }
+        if switching { return queued.append { [weak self] in self?.switchTo(n, takeFocus: moveFocus) } }
         refresh()
         if let f = Windows.focused(in: Array(windows.values)), model.workspace(of: f.id) == model.current {
             model.noteFocus(f.id)
@@ -80,14 +82,14 @@ final class Spaces {
         // Full screen is normally flattened as soon as it happens (see flattenFullScreen). This
         // catches a window that went full screen in the moment before a switch.
         let fullScreen = plan.hide.compactMap { windows[$0] }.filter(\.isFullScreen)
-        guard !fullScreen.isEmpty else { return apply(plan) }
+        guard !fullScreen.isEmpty else { return apply(plan, moveFocus: moveFocus) }
         leaveFullScreen(fullScreen) { [self] refused in
             // A window that won't leave full screen stays with you rather than strand you on its desktop.
             for w in refused { model.assign(w.id, to: n) }
             // Back on the regular desktop, Accessibility can list windows it couldn't see from the
             // full-screen one. Plan again with all of them.
             refresh()
-            apply(model.switchTo(n))
+            apply(model.switchTo(n), moveFocus: moveFocus)
         }
     }
 
@@ -194,13 +196,54 @@ final class Spaces {
         switchTo(model.current)
     }
 
+    /// One window as the viewer shows it.
+    struct Entry: Identifiable {
+        let id: WindowID
+        let pid: pid_t
+        let app: String
+        let title: String
+    }
+
+    /// The windows on workspace `n`, for the viewer.
+    func entries(on n: Int) -> [Entry] {
+        model.windows(on: n).compactMap { id in
+            windows[id].map { Entry(id: id, pid: $0.pid, app: $0.appName, title: $0.title) }
+        }
+    }
+
+    /// Records the window in front, so closing the viewer (or any switch back here) returns to it.
+    func rememberFocus() {
+        refresh()
+        if let f = Windows.focused(in: Array(windows.values)), model.workspace(of: f.id) == model.current {
+            model.noteFocus(f.id)
+        }
+        persist()
+    }
+
+    /// Goes to workspace `n` and lands on one particular window there.
+    func focus(_ id: WindowID, on n: Int) {
+        if switching { return queued.append { [weak self] in self?.focus(id, on: n) } }
+        // Picking a minimized window in the viewer means wanting it back.
+        if let w = windows[id], w.isMinimized { w.unminimize() }
+        model.noteFocus(id)
+        switchTo(n)
+    }
+
+    /// Sends one window to workspace `n` without going there.
+    func move(_ id: WindowID, to n: Int) {
+        guard Workspaces.range.contains(n) else { return }
+        if switching { return queued.append { [weak self] in self?.move(id, to: n) } }
+        model.assign(id, to: n)
+        switchTo(model.current, takeFocus: false)
+    }
+
     /// App names on workspace `n`, for the menu.
     func apps(on n: Int) -> [String] {
         var seen = Set<String>()
         return model.windows(on: n).compactMap { windows[$0]?.appName }.filter { seen.insert($0).inserted }
     }
 
-    private func apply(_ plan: SwitchPlan) {
+    private func apply(_ plan: SwitchPlan, moveFocus: Bool = true) {
         let screens = Windows.screens()
         let how = Concealment(plan: plan, owner: windows.mapValues(\.pid))
         // 1. Everything on this workspace comes back. That includes an app hidden with ⌘H:
@@ -219,11 +262,22 @@ final class Spaces {
         let target = ([plan.focus].compactMap { $0 } + plan.show)
             .compactMap { windows[$0] }.first { !$0.isMinimized && saved.frames[$0.id] == nil }
         let frontPid = target?.pid ?? getpid()
-        if let target { target.focus() } else { takeFocus() }
-        waitUntil(timeout: 0.6, { Windows.focusedPid() == frontPid || (target == nil && Windows.focusedPid() == Self.finderPid) }) { [self] in
+        if moveFocus {
+            if let target {
+                emptyHolder.orderOut(nil)
+                target.focus()
+            } else {
+                takeFocus()
+            }
+        }
+        waitUntil(timeout: moveFocus ? 0.6 : 0, { Windows.focusedPid() == frontPid }) { [self] in
             // 3. Everything else goes out of sight.
             conceal(how, screens: screens)
-            if target == nil, Windows.focusedPid() != getpid() { takeFocus(finderFallback: true) }
+            if moveFocus, target == nil, Windows.focusedPid() != getpid() {
+                // Finder is the last resort, unless it was just hidden: activating a hidden app
+                // brings back its windows from other workspaces.
+                takeFocus(finderFallback: !how.hideApps.contains(Self.finderPid ?? -1))
+            }
             persist()
             settleUntil = Date().addingTimeInterval(0.3)
             switching = false
@@ -268,6 +322,21 @@ final class Spaces {
         return !Geometry.isStranded(now, screens: screens)
     }
 
+    /// Called when BaneySpaces stops being the active app: the holder's job is over.
+    func dropEmptyHolder() { emptyHolder.orderOut(nil) }
+
+    private lazy var emptyHolder: NSPanel = {
+        let p = KeyablePanel(contentRect: NSRect(x: 0, y: 0, width: 1, height: 1),
+                             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        p.isOpaque = false
+        p.backgroundColor = .clear
+        p.alphaValue = 0.01
+        p.ignoresMouseEvents = true
+        p.hasShadow = false
+        p.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        return p
+    }()
+
     private static var finderPid: pid_t? {
         NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.finder").first?.processIdentifier
     }
@@ -277,6 +346,10 @@ final class Spaces {
     private func takeFocus(finderFallback: Bool = false) {
         Windows.makeFrontmost(getpid())
         NSApp.activate(ignoringOtherApps: true)
+        // An app with no window loses focus to whatever macOS picks next, which would pull the
+        // person off the empty workspace. A clear, click-through window keeps focus here.
+        emptyHolder.orderFrontRegardless()
+        emptyHolder.makeKey()
         guard finderFallback, Windows.focusedPid() != getpid(), let finder = Self.finderPid else { return }
         Windows.makeFrontmost(finder)
     }
@@ -288,6 +361,7 @@ final class Spaces {
             "current": model.current,
             "parked": saved.frames.keys.sorted(),
             "hiddenApps": saved.hiddenApps.sorted(),
+            "lastFocused": Dictionary(uniqueKeysWithValues: model.lastFocused.map { (String($0.key), $0.value) }),
             "workspaces": Dictionary(uniqueKeysWithValues: Workspaces.range.map { n in
                 (String(n), model.windows(on: n).map { ["id": $0, "app": windows[$0]?.appName ?? ""] as [String: Any] })
             }),
@@ -305,4 +379,8 @@ final class Spaces {
             then()
         }
     }
+}
+
+final class KeyablePanel: NSPanel {
+    override var canBecomeKey: Bool { true }
 }

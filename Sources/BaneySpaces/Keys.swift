@@ -70,6 +70,18 @@ enum SystemShortcuts {
         return on
     }
 
+    /// True while macOS opens Mission Control with ⌃↑ (shortcut 32, on by default). Someone who
+    /// turned it off or moved it keeps ⌃↑ for their apps.
+    static var missionControlOnControlUp: Bool {
+        CFPreferencesAppSynchronize(domain)
+        let all = CFPreferencesCopyAppValue("AppleSymbolicHotKeys" as CFString, domain) as? [String: Any]
+        guard let entry = all?["32"] as? [String: Any] else { return true }
+        if (entry["enabled"] as? Bool) == false { return false }
+        let params = (entry["value"] as? [String: Any])?["parameters"] as? [Int] ?? []
+        // Stored as [character, key code, modifiers]; ↑ is key code 126 and ⌃ is 262144.
+        return params.count < 3 || (params[1] == 126 && params[2] & 262144 != 0)
+    }
+
     /// Conflicts for a modifier, as one sentence each, or empty.
     static func conflicts(for m: Modifier) -> [String] {
         switch m {
@@ -84,24 +96,25 @@ enum SystemShortcuts {
         }
     }
 
-    /// Turns off the shortcuts that conflict with `m`. ⌃⌘⇧3 and ⌃⌘⇧4 still take screenshots.
+    /// Turns off the shortcuts that conflict with `m`. Only the on/off switch changes, so a
+    /// shortcut someone rebound keeps its keys. ⌃⌘⇧3 and ⌃⌘⇧4 still take screenshots.
     static func free(for m: Modifier) {
-        var writes: [(Int, String)] = []
+        var targets: [(id: Int, key: Int, code: Int, mods: Int)] = []
         switch m {
-        case .command:
-            for s in screenshots {
-                writes.append((s.id, "<dict><key>enabled</key><false/><key>value</key><dict><key>parameters</key><array><integer>\(s.key)</integer><integer>\(s.code)</integer><integer>1179648</integer></array><key>type</key><string>standard</string></dict></dict>"))
-            }
-        case .control:
-            for (i, id) in desktopSwitch.enumerated() {
-                let key = 65535, code = Hotkeys.digitKeyCodes[i]
-                writes.append((id, "<dict><key>enabled</key><false/><key>value</key><dict><key>parameters</key><array><integer>\(key)</integer><integer>\(code)</integer><integer>262144</integer></array><key>type</key><string>standard</string></dict></dict>"))
-            }
-        case .option, .controlOption:
-            return
+        case .command: targets = screenshots.map { ($0.id, $0.key, $0.code, 1179648) }
+        case .control: targets = desktopSwitch.enumerated().map { ($0.element, 65535, Hotkeys.digitKeyCodes[$0.offset], 262144) }
+        case .option, .controlOption: return
         }
-        for (id, value) in writes {
-            run("/usr/bin/defaults", ["write", "com.apple.symbolichotkeys", "AppleSymbolicHotKeys", "-dict-add", String(id), value])
+        CFPreferencesAppSynchronize(domain)
+        let all = CFPreferencesCopyAppValue("AppleSymbolicHotKeys" as CFString, domain) as? [String: Any] ?? [:]
+        for t in targets {
+            // Keep whatever keys macOS has stored; fall back to Apple's defaults if none.
+            let value = (all[String(t.id)] as? [String: Any])?["value"] as? [String: Any]
+            let params = (value?["parameters"] as? [Int]) ?? [t.key, t.code, t.mods]
+            let type = (value?["type"] as? String) ?? "standard"
+            let ints = params.map { "<integer>\($0)</integer>" }.joined()
+            run("/usr/bin/defaults", ["write", "com.apple.symbolichotkeys", "AppleSymbolicHotKeys", "-dict-add", String(t.id),
+                "<dict><key>enabled</key><false/><key>value</key><dict><key>parameters</key><array>\(ints)</array><key>type</key><string>\(type)</string></dict></dict>"])
         }
         // Applies the change without logging out.
         run("/System/Library/PrivateFrameworks/SystemAdministration.framework/Resources/activateSettings", ["-u"])

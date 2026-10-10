@@ -25,6 +25,9 @@ size you made them. You just get nine places to put them and a key for each.
 | --- | --- |
 | ⌘1 – ⌘9 | Go to that workspace. |
 | ⌘⇧1 – ⌘⇧9 | Send the front window to that workspace and follow it. |
+| Mission Control key, or ⌃↑ | See all nine workspaces at once. |
+
+Prefer to keep ⌘1 for your browser's first tab? Pick ⌃, ⌥ or ⌃⌥ in setup instead.
 
 - **It's instant.** No animation and no slide. The workspace is on screen when your finger
   leaves the key.
@@ -38,17 +41,29 @@ size you made them. You just get nine places to put them and a key for each.
 - **Empty means empty.** Go to a workspace with nothing on it and you get a clean desktop.
   Typing goes nowhere until you open something.
 
-The menu bar shows the workspace you're on. Open the menu to see which apps sit on each workspace,
-or to jump to one with the mouse.
+## See everything at once
+
+Press the Mission Control key (F3 on Apple keyboards) or ⌃↑, and BaneySpaces shows all nine
+workspaces in the same 3×3 grid as the number keys, with every window's app and title.
+
+- **Click a workspace,** or press its number, to go there.
+- **Click a window** to go straight to it.
+- **Drag a window** onto another workspace to move it. The card follows your cursor and the
+  workspace it will land on lights up.
+- **Esc,** or the same key again, puts you back where you were.
+
+The menu bar icon shows the number of the workspace you're on, and its menu has the same view.
 
 ## Your windows are safe
 
-A hidden window isn't minimized or closed. BaneySpaces parks it just past the bottom-right corner
-of your screen and remembers where it stood. Every app keeps running, keeps playing audio, and
-keeps its place.
+A window on another workspace isn't minimized, closed or moved. BaneySpaces hides its app, the
+same as ⌘H, so it drops out of sight and out of Mission Control while it keeps running and
+playing audio. When one app has windows on two workspaces, the window that doesn't belong here
+steps just off screen and comes back to the exact spot it left.
 
 - **Quit BaneySpaces** and every window comes back to where it was.
-- **If BaneySpaces crashes,** the next launch finds anything left in the corner and puts it back.
+- **If BaneySpaces crashes,** the next launch shows every app it hid and puts back any window it
+  moved.
 - **Bring Every Window Back** in the menu gathers every window onto workspace 1, all visible.
   It gets you out of any tangle.
 
@@ -60,23 +75,25 @@ cd baneyspaces
 make install
 ```
 
-That builds the app, copies it to `~/Applications`, and starts it. The first time it runs:
+That builds the app, copies it to `~/Applications`, and starts it. A setup window walks you
+through four checks, each of which turns green on its own as soon as it's done:
 
-1. macOS asks you to give BaneySpaces **Accessibility** access. Moving another app's windows
-   requires it. Turn it on in System Settings › Privacy & Security › Accessibility.
-2. BaneySpaces adds itself to **Open at Login**. Switch that off in the menu if you'd rather not.
+1. **Let BaneySpaces arrange windows.** macOS asks before any app can show and hide other apps'
+   windows. One button opens the right page in System Settings.
+2. **Pick your keys.** ⌘, ⌃, ⌥ or ⌃⌥, with what each one gives up. If macOS already uses the keys,
+   one click frees them.
+3. **Keep one macOS desktop,** so no window ends up out of reach.
+4. **Start with your Mac.**
 
-Until access is granted, the menu bar shows a warning triangle, and the shortcuts open the
-settings page for you.
+Open setup again any time from the menu bar icon, or by opening BaneySpaces from Finder or
+Spotlight.
 
 If you used AeroSpace for the same shortcuts, `make install` quits it and removes it from your
 login items, so the two don't fight over the keys. AeroSpace itself stays installed.
 
-### Free up ⌘⇧3, ⌘⇧4 and ⌘⇧5
-
-macOS uses those three for screenshots, and it claims them before any other app sees them. To send
-windows to workspaces 3, 4 and 5, turn those off in System Settings › Keyboard › Keyboard
-Shortcuts › Screenshots. ⌃⌘⇧3 and ⌃⌘⇧4 still capture to the clipboard.
+macOS uses ⌘⇧3, ⌘⇧4 and ⌘⇧5 for screenshots and claims them before any other app. Setup's
+**Free Them** button turns those off so they can move windows; ⌃⌘⇧3 and ⌃⌘⇧4 still capture
+to the clipboard.
 
 ## Scripting
 
@@ -86,6 +103,7 @@ The same actions are open to scripts and other tools:
 open baneyspaces://switch/2     # go to workspace 2
 open baneyspaces://move/5       # send the front window to workspace 5
 open baneyspaces://restore      # bring every window back onto workspace 1
+open baneyspaces://viewer       # show or hide the overview
 ```
 
 `~/Library/Application Support/BaneySpaces/state.json` always holds the current workspace and

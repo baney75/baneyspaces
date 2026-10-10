@@ -21,6 +21,7 @@ struct Window {
     }
 
     var isMinimized: Bool { element.bool(kAXMinimizedAttribute) }
+    var title: String { element.string(kAXTitleAttribute) ?? "" }
     var isFullScreen: Bool { element.bool("AXFullScreen") }
 
     func setOrigin(_ p: CGPoint) { element.set(kAXPositionAttribute, p, .cgPoint) }
@@ -30,6 +31,10 @@ struct Window {
         setSize(r.size)
         setOrigin(r.origin)
         setSize(r.size)
+    }
+
+    func unminimize() {
+        AXUIElementSetAttributeValue(element, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
     }
 
     func exitFullScreen() {
@@ -83,13 +88,13 @@ enum Windows {
         return focused(of: pid, in: windows)
     }
 
-    /// The app that receives keystrokes, as Accessibility sees it; NSWorkspace can lag behind.
+    /// The app that receives keystrokes. Accessibility's system-wide answer often fails or goes
+    /// stale, so it is only the fallback.
     static func focusedPid() -> pid_t? {
-        if let app: AXUIElement = AXUIElementCreateSystemWide().value(kAXFocusedApplicationAttribute) {
-            var pid: pid_t = 0
-            if AXUIElementGetPid(app, &pid) == .success, pid > 0 { return pid }
-        }
-        return NSWorkspace.shared.frontmostApplication?.processIdentifier
+        if let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier { return pid }
+        guard let app: AXUIElement = AXUIElementCreateSystemWide().value(kAXFocusedApplicationAttribute) else { return nil }
+        var pid: pid_t = 0
+        return AXUIElementGetPid(app, &pid) == .success && pid > 0 ? pid : nil
     }
 
     /// Brings an app to the front through Accessibility, which works even when macOS would

@@ -10,7 +10,9 @@ final class SetupModel: ObservableObject {
     @Published var conflicts: [String] = SystemShortcuts.conflicts(for: Modifier.current)
     @Published var desktops = Desktops.count
     @Published var openAtLogin = SMAppService.mainApp.status == .enabled
+    @Published var viewerKeys = MissionControlKeys.enabled
     var onModifierChange: ((Modifier) -> Void)?
+    var onViewerKeysChange: ((Bool) -> Void)?
     private var timer: Timer?
 
     func startWatching() {
@@ -36,6 +38,11 @@ final class SetupModel: ObservableObject {
     func freeShortcuts() {
         SystemShortcuts.free(for: modifier)
         reload()
+    }
+
+    func setViewerKeys(_ on: Bool) {
+        viewerKeys = on
+        onViewerKeysChange?(on)
     }
 
     func setOpenAtLogin(_ on: Bool) {
@@ -89,6 +96,12 @@ struct SetupView: View {
                         Button("Free Them") { model.freeShortcuts() }
                     }
                 }
+            }
+
+            step(done: true, title: "See every workspace at once") {
+                Toggle("The Mission Control key and ⌃↑ open BaneySpaces' overview", isOn: Binding(get: { model.viewerKeys }, set: { model.setViewerKeys($0) }))
+                Text("Turn this off to give both keys back to Mission Control and to apps that use ⌃↑. The overview stays in the menu bar menu.")
+                    .font(.callout).foregroundStyle(.secondary)
             }
 
             step(done: model.desktops <= 1, title: "Keep one macOS desktop") {
