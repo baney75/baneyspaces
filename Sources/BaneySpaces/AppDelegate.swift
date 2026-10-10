@@ -10,12 +10,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private var started = false
     private var trustTimer: Timer?
+    /// While running, checks every 2 s that macOS still trusts BaneySpaces.
+    private var watchdog: Timer?
     private var signalSources: [DispatchSourceSignal] = []
     private lazy var viewer = ViewerController(spaces: spaces)
     private lazy var missionControlKeys = MissionControlKeys { [weak self] in self?.viewer.toggle() }
     private lazy var setup: SetupWindowController = {
         let c = SetupWindowController()
         c.model.onModifierChange = { [weak self] _ in self?.registerShortcuts() }
+        c.model.viewerKeysActive = { [weak self] in self?.missionControlKeys.isActive ?? false }
         c.model.onViewerKeysChange = { [weak self] on in
             MissionControlKeys.enabled = on
             guard let self, self.started else { return }
@@ -25,6 +28,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }()
 
     func applicationDidFinishLaunching(_ n: Notification) {
+        // `BaneySpaces --restore-shortcuts`: the uninstaller's way to turn macOS's screenshot
+        // shortcuts back on before the app's settings are deleted.
+        if CommandLine.arguments.contains("--restore-shortcuts") {
+            SystemShortcuts.restore()
+            exit(0)
+        }
         NSAppleEventManager.shared().setEventHandler(self, andSelector: #selector(handleURL(_:reply:)),
                                                      forEventClass: AEEventClass(kInternetEventClass),
                                                      andEventID: AEEventID(kAEGetURL))
@@ -74,10 +83,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             source.resume()
             signalSources.append(source)
         }
-        openAtLoginOnFirstRun()
         startWhenTrusted()
-        // The first launch walks through setup; after that it's one click away in the menu.
-        if !UserDefaults.standard.bool(forKey: "setupShown") || CommandLine.arguments.contains("--setup") {
+        // The first launch walks through setup, and so does any launch without permission (an
+        // update that macOS no longer trusts). Otherwise it's one click away in the menu.
+        if !UserDefaults.standard.bool(forKey: "setupShown") || !AXIsProcessTrusted()
+            || CommandLine.arguments.contains("--setup") {
             UserDefaults.standard.set(true, forKey: "setupShown")
             showSetup()
         }
@@ -102,7 +112,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func startWhenTrusted() {
         if canStart { return start() }
         updateIcon()
-        trustTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] timer in
+        trustTimer?.invalidate()
+        trustTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] timer in
             guard let self, self.canStart else { return }
             timer.invalidate()
             self.start()
@@ -123,6 +134,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         missionControlKeys.start()
         spaces.start()
         updateIcon()
+        watchdog?.invalidate()
+        watchdog = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            guard self.stillTrusted() else { return }
+            // A key watcher macOS refused earlier gets another chance.
+            if MissionControlKeys.enabled && !self.missionControlKeys.isActive { self.missionControlKeys.start() }
+        }
+    }
+
+    /// True while macOS trusts BaneySpaces. The moment it doesn't (switched off in System
+    /// Settings, or an update with a new signature), every shortcut goes back to the other apps,
+    /// every hidden window comes back, and setup opens to put it right.
+    @discardableResult
+    private func stillTrusted() -> Bool {
+        guard started else { return false }
+        if AXIsProcessTrusted() { return true }
+        watchdog?.invalidate()
+        hotkeys.removeAll()
+        missionControlKeys.stop()
+        viewer.close()
+        spaces.suspend()
+        started = false
+        updateIcon()
+        showSetup()
+        startWhenTrusted()
+        return false
     }
 
     /// The shortcuts are taken only once they work, so the keys keep their usual meaning in other
@@ -133,13 +170,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let mods = Modifier.current.carbon
         for (i, code) in Hotkeys.digitKeyCodes.enumerated() {
             let n = i + 1
-            hotkeys.register(keyCode: code, modifiers: mods) { [weak self] in self?.spaces.switchTo(n) }
-            hotkeys.register(keyCode: code, modifiers: mods | shiftKey) { [weak self] in self?.spaces.moveFocused(to: n) }
+            hotkeys.register(keyCode: code, modifiers: mods) { [weak self] in
+                guard let self, self.stillTrusted() else { return }
+                self.spaces.switchTo(n)
+            }
+            hotkeys.register(keyCode: code, modifiers: mods | shiftKey) { [weak self] in
+                guard let self, self.stillTrusted() else { return }
+                self.spaces.moveFocused(to: n)
+            }
         }
     }
 
     private func run(_ action: (Spaces) -> Void) {
-        guard started else { return NSSound.beep() }
+        guard stillTrusted() else { return NSSound.beep() }
         action(spaces)
     }
 
@@ -161,8 +204,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             if !AXIsProcessTrusted() {
                 menu.addItem(withTitle: "BaneySpaces needs permission to arrange windows", action: nil, keyEquivalent: "")
+                menu.addItem(item("Allow BaneySpaces…", #selector(showSetup)))
+            } else {
+                menu.addItem(item("Set Up BaneySpaces…", #selector(showSetup)))
             }
-            menu.addItem(item("Set Up BaneySpaces…", #selector(showSetup)))
             menu.addItem(.separator())
             menu.addItem(item("Quit BaneySpaces", #selector(quit), key: "q"))
             return
@@ -209,12 +254,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func quit() { NSApp.terminate(nil) }
 
-    private func openAtLoginOnFirstRun() {
-        guard !UserDefaults.standard.bool(forKey: "loginItemOffered") else { return }
-        UserDefaults.standard.set(true, forKey: "loginItemOffered")
-        try? SMAppService.mainApp.register()
-    }
-
     // MARK: URL commands
 
     /// `open baneyspaces://switch/2`, `baneyspaces://move/3`, `baneyspaces://restore`.
@@ -231,4 +270,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         default: NSLog("BaneySpaces: unknown command %@", text)
         }
     }
+}
+
+// TODO: parent adds Spaces.suspend() — delete this stand-in at merge.
+// parent adds Spaces.suspend()
+extension Spaces {
+    func suspend() {}
 }

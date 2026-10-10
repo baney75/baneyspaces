@@ -14,10 +14,13 @@ fail() { printf 'BaneySpaces install failed: %s\n' "$*" >&2; exit 1; }
 [ "$(uname -s)" = Darwin ] || fail "BaneySpaces is a Mac app (this is $(uname -s))."
 MAJOR=$(sw_vers -productVersion | cut -d. -f1)
 [ "$MAJOR" -ge 13 ] || fail "BaneySpaces needs macOS 13 Ventura or later (this Mac has $(sw_vers -productVersion))."
-if ! xcode-select -p >/dev/null 2>&1; then
-  step "Installing Apple's command line tools (a system dialog will open)"
+# The build needs Apple's free command line tools (Swift and git). Check before anything else.
+if ! xcode-select -p >/dev/null 2>&1 || ! xcrun --find swift >/dev/null 2>&1; then
+  step "BaneySpaces needs Apple's free command line tools first"
   xcode-select --install >/dev/null 2>&1 || true
-  echo "When that install finishes, run this command again."
+  echo "  A macOS window just opened. Click Install and agree to the license."
+  echo "  It downloads about 1 GB and usually takes 5 to 15 minutes."
+  echo "  When it says the software was installed, paste the same command again."
   exit 1
 fi
 
@@ -30,9 +33,15 @@ trap 'rm -rf "$WORK"' EXIT
 step "Downloading BaneySpaces ($REF)"
 git clone --quiet --depth 1 --branch "$REF" "$REPO_URL" "$WORK/baneyspaces"
 step "Building (about a minute the first time)"
-"$WORK/baneyspaces/scripts/bundle.sh" --install 2>&1 | sed "s/^/${dim}    /;s/\$/${reset}/" | tail -4
+# The whole build log is kept, so a failure shows its real cause instead of the last few lines.
+LOG="${TMPDIR:-/tmp}/baneyspaces-install.log"
+if ! "$WORK/baneyspaces/scripts/bundle.sh" --install >"$LOG" 2>&1; then
+  echo
+  grep -E "error:|Error|failed|still running" "$LOG" | head -20 || tail -20 "$LOG"
+  fail "the build stopped. The full log is at $LOG"
+fi
+grep -E "^(built|installed) " "$LOG" | sed "s/^/${dim}    /;s/\$/${reset}/"
 echo
 printf '%sBaneySpaces is installed.%s It is in your menu bar now.\n' "$bold" "$reset"
-echo "The setup window walks you through the rest:"
-echo "  1. Turn on BaneySpaces in System Settings > Privacy & Security > Accessibility."
-echo "  2. Pick your keys. Then press ⌘1 to ⌘9 to switch workspaces, add ⇧ to move a window."
+echo "A setup window is open. Click Allow BaneySpaces, turn on the switch macOS shows you,"
+echo "and come back. Then press ⌘1 to ⌘9 to switch workspaces; add ⇧ to move a window."
