@@ -15,17 +15,26 @@ struct Window {
     let appName: String
 
     var frame: CGRect? {
-        guard let p: CGPoint = element.value(kAXPositionAttribute, .cgPoint),
+        guard Windows.isResponsive(pid), let p: CGPoint = element.value(kAXPositionAttribute, .cgPoint),
               let s: CGSize = element.value(kAXSizeAttribute, .cgSize) else { return nil }
         return CGRect(origin: p, size: s)
     }
 
-    var isMinimized: Bool { element.bool(kAXMinimizedAttribute) }
-    var title: String { element.string(kAXTitleAttribute) ?? "" }
-    var isFullScreen: Bool { element.bool("AXFullScreen") }
+    var isMinimized: Bool { Windows.isResponsive(pid) && element.bool(kAXMinimizedAttribute) }
+    var title: String { Windows.isResponsive(pid) ? element.string(kAXTitleAttribute) ?? "" : "" }
+    var isFullScreen: Bool { Windows.isResponsive(pid) && element.bool("AXFullScreen") }
 
-    func setOrigin(_ p: CGPoint) { element.set(kAXPositionAttribute, p, .cgPoint) }
+    func setOrigin(_ p: CGPoint) {
+        guard Windows.isResponsive(pid) else { return }
+        element.set(kAXPositionAttribute, p, .cgPoint)
+    }
     func setSize(_ s: CGSize) { element.set(kAXSizeAttribute, s, .cgSize) }
+    /// Moves a window back to `r`. A parked window kept its size, so usually one move is all it
+    /// takes; resizing makes apps lay out again, which is slow and can flicker.
+    func place(_ r: CGRect, currentSize: CGSize) {
+        if currentSize == r.size { setOrigin(r.origin) } else { setFrame(r) }
+    }
+
     func setFrame(_ r: CGRect) {
         // Size, move, size again: a window that would cross a screen edge gets clamped otherwise.
         setSize(r.size)
@@ -55,13 +64,28 @@ struct Window {
 }
 
 enum Windows {
+    /// Apps that stopped answering Accessibility, and until when to leave them alone. One hung
+    /// app costs a full timeout per call; skipping it keeps every switch quick.
+    private static var unresponsiveUntil: [pid_t: Date] = [:]
+
+    static func isResponsive(_ pid: pid_t) -> Bool {
+        guard let until = unresponsiveUntil[pid] else { return true }
+        if until < Date() { unresponsiveUntil[pid] = nil; return true }
+        return false
+    }
+
+    static func markUnresponsive(_ pid: pid_t) {
+        unresponsiveUntil[pid] = Date().addingTimeInterval(5)
+    }
+
     /// Every standard window of every regular app except BaneySpaces itself. Dialogs, panels,
     /// popovers and windows on other macOS desktops are left alone.
     static func all() -> [Window] {
         let me = ProcessInfo.processInfo.processIdentifier
         var out: [Window] = []
         for app in NSWorkspace.shared.runningApplications
-        where app.activationPolicy == .regular && app.processIdentifier != me && !app.isTerminated {
+        where app.activationPolicy == .regular && app.processIdentifier != me && !app.isTerminated
+            && isResponsive(app.processIdentifier) {
             let ax = AXUIElementCreateApplication(app.processIdentifier)
             // A hung app must not hang every workspace switch.
             AXUIElementSetMessagingTimeout(ax, 0.25)
@@ -77,9 +101,20 @@ enum Windows {
 
     /// Every window the WindowServer has, on every macOS desktop. Accessibility can miss a window
     /// (a busy app, another desktop); this list can't, so it decides whether a window still exists.
-    static func alive() -> Set<WindowID> {
+    static func alive() -> Set<WindowID> { snapshot().alive }
+
+    /// Every window number, plus the ordinary app windows (layer 0) among them. When the layer-0
+    /// set hasn't changed since the last look, no window was opened or closed, and the full
+    /// Accessibility scan can be skipped.
+    static func snapshot() -> (alive: Set<WindowID>, appWindows: Set<WindowID>) {
         let info = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
-        return Set(info.compactMap { ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value })
+        var alive = Set<WindowID>(), appWindows = Set<WindowID>()
+        for w in info {
+            guard let id = (w[kCGWindowNumber as String] as? NSNumber)?.uint32Value else { continue }
+            alive.insert(id)
+            if (w[kCGWindowLayer as String] as? Int) == 0 { appWindows.insert(id) }
+        }
+        return (alive, appWindows)
     }
 
     /// The window that has keyboard focus, if it is one we manage.
@@ -138,7 +173,15 @@ extension AXUIElement {
 
     func value<T>(_ attribute: String) -> T? {
         var raw: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(self, attribute as CFString, &raw) == .success else { return nil }
+        let result = AXUIElementCopyAttributeValue(self, attribute as CFString, &raw)
+        guard result == .success else {
+            // A timeout means the app is busy or hung: stop asking it for a few seconds.
+            if result == .cannotComplete {
+                var pid: pid_t = 0
+                if AXUIElementGetPid(self, &pid) == .success, pid > 0 { Windows.markUnresponsive(pid) }
+            }
+            return nil
+        }
         return raw as? T
     }
 
