@@ -10,7 +10,19 @@ DATA="$HOME/Library/Application Support/BaneySpaces"
 
 step "Quitting BaneySpaces (it puts every window back first)"
 osascript -e 'tell application id "com.baney.baneyspaces" to quit' >/dev/null 2>&1 || true
-for _ in $(seq 1 50); do pgrep -f "BaneySpaces.app/Contents/MacOS/BaneySpaces" >/dev/null || break; sleep 0.2; done
+for _ in $(seq 1 75); do pgrep -f "BaneySpaces.app/Contents/MacOS/BaneySpaces" >/dev/null || break; sleep 0.2; done
+# Its saved window positions are deleted below, so it must be gone first or a hidden window
+# could lose its place.
+if pgrep -f "BaneySpaces.app/Contents/MacOS/BaneySpaces" >/dev/null; then
+  echo "BaneySpaces is still running. Quit it from its menu bar icon, then run this again." >&2
+  exit 1
+fi
+
+# Screenshot shortcuts that setup's Free Them switched off go back on.
+if [ -x "$APP/Contents/MacOS/BaneySpaces" ]; then
+  step "Turning macOS's screenshot shortcuts back on (if setup turned them off)"
+  "$APP/Contents/MacOS/BaneySpaces" --restore-shortcuts >/dev/null 2>&1 || true
+fi
 
 step "Removing the app"
 # Open at Login belongs to the app itself, so it goes away with it.
@@ -23,8 +35,10 @@ fi
 rm -rf "$DATA"
 defaults delete com.baney.baneyspaces >/dev/null 2>&1 || true
 
+step "Removing its Accessibility permission"
+# A fresh install gets a new signature; an old entry left here would show "on" but not work.
+tccutil reset Accessibility com.baney.baneyspaces >/dev/null 2>&1 || true
+
 echo
 printf '%sBaneySpaces is removed.%s\n' "$bold" "$reset"
-echo "You can also remove it from System Settings > Privacy & Security > Accessibility."
-echo "If you freed ⌘⇧3, ⌘⇧4 or ⌘⇧5 in setup, turn the screenshot shortcuts back on in"
-echo "System Settings > Keyboard > Keyboard Shortcuts > Screenshots."
+echo "Its permission, settings and login item are gone too."

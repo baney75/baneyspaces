@@ -95,9 +95,10 @@ curl -fsSL https://raw.githubusercontent.com/baney75/baneyspaces/main/install.sh
 ```
 
 The installer builds BaneySpaces from source with Apple's free command line tools and copies it
-to `~/Applications`. If the tools are missing, macOS opens a dialog to install them; run the
-command again when it finishes. Because the app is built on your Mac, there is no "unidentified
-developer" warning.
+to `~/Applications`. If the tools are missing, it opens Apple's installer for them first (about
+1 GB, usually 5 to 15 minutes); paste the command again when that finishes. Because the app is
+built on your Mac, there is no "unidentified developer" warning. If the build fails, the
+installer shows the error and where the full log is.
 
 Prefer to read the source first? Build it yourself:
 
@@ -108,30 +109,46 @@ make install
 ```
 
 <p align="center">
-  <img src="docs/shots/setup.jpg" alt="The BaneySpaces setup window with five green checks" width="420">
+  <img src="docs/shots/setup.jpg" alt="The BaneySpaces setup window" width="420">
 </p>
 
-A setup window then walks you through five checks, each of which turns green on its own as
-soon as it's done:
+Then a setup window opens. There is one thing you have to do:
 
-1. **Let BaneySpaces arrange windows.** macOS asks before any app can show and hide other apps'
-   windows. One button opens the right page in System Settings.
-2. **Pick your keys.** ⌘, ⌃, ⌥ or ⌃⌥, with what each one gives up. If macOS already uses the keys,
-   one click frees them.
-3. **See every workspace at once.** The Mission Control key and ⌃↑ open the overview, or switch
-   that off to keep them for Mission Control.
-4. **Keep one macOS desktop,** so no window ends up out of reach.
-5. **Start with your Mac.**
+1. **Click Allow BaneySpaces.** macOS shows its own prompt and opens Privacy & Security ›
+   Accessibility with BaneySpaces already in the list. Turn on its switch and come back.
+   Accessibility lets BaneySpaces show, hide and move other apps' windows; it can't read what
+   you type.
+
+Setup notices the switch within a moment, says **BaneySpaces is on. Try ⌘2.**, and closes itself.
+Everything else is optional and already set sensibly:
+
+- **Your keys.** ⌘ by default, or ⌃, ⌥ or ⌃⌥ with what each one gives up. macOS uses ⌘⇧3, ⌘⇧4
+  and ⌘⇧5 for screenshots and claims them first; **Free Them** turns those off so they can move
+  windows (⌃⌘⇧3 and ⌃⌘⇧4 still capture to the clipboard), and **Turn Them Back On** undoes it.
+- **See every workspace at once.** The Mission Control key and ⌃↑ open the overview, or switch
+  that off to keep them for Mission Control.
+- **Start with your Mac.** On unless you turn it off. If macOS wants you to approve it, setup
+  shows a button that opens Login Items.
+
+If AeroSpace is running, setup shows a **Quit AeroSpace** step, since both want the same keys.
+The installer also quits it and turns off its open-at-login setting. AeroSpace stays installed.
 
 Open setup again any time from the menu bar icon, or by opening BaneySpaces from Finder or
 Spotlight.
 
-If you used AeroSpace for the same shortcuts, the installer quits it and removes it from your
-login items, so the two don't fight over the keys. AeroSpace itself stays installed.
+### If the permission won't take
 
-macOS uses ⌘⇧3, ⌘⇧4 and ⌘⇧5 for screenshots and claims them before any other app. Setup's
-**Free Them** button turns those off so they can move windows; ⌃⌘⇧3 and ⌃⌘⇧4 still capture
-to the clipboard.
+macOS ties the Accessibility switch to the app's signature. If you reinstalled, or the local
+signing key had to be replaced, the switch can show on while macOS still says no. Setup spots
+this a few seconds after you click Allow and offers **Fix Permission**, which clears the old
+entry and asks again. By hand it is:
+
+```sh
+tccutil reset Accessibility com.baney.baneyspaces
+```
+
+If you turn the permission off while BaneySpaces is running, it brings every hidden window back,
+hands the shortcuts back to your other apps and reopens setup.
 
 ## Scripting
 
@@ -168,7 +185,8 @@ make install   # build, install to ~/Applications, start
 
 The app is signed with a local certificate that `scripts/signing-identity.sh` creates on first
 build and keeps in its own keychain. Because the signature stays the same, macOS keeps the
-Accessibility grant across rebuilds.
+Accessibility grant across rebuilds. The key is only replaced when it is truly unusable, and the
+build says so, since a new key means allowing BaneySpaces again (setup's Fix Permission).
 
 ## Uninstall
 
@@ -176,9 +194,10 @@ Accessibility grant across rebuilds.
 curl -fsSL https://raw.githubusercontent.com/baney75/baneyspaces/main/uninstall.sh | bash
 ```
 
-BaneySpaces quits first, which brings every hidden window and app back. Then the app, its
-settings and its local signing key are removed. If you freed the screenshot shortcuts in setup,
-turn them back on in System Settings › Keyboard › Keyboard Shortcuts › Screenshots.
+BaneySpaces quits first, which brings every hidden window and app back; if it won't quit, the
+uninstaller stops without deleting anything. Then it turns the screenshot shortcuts back on if
+setup turned them off, and removes the app, its settings, its local signing key and its
+Accessibility entry.
 
 ## License
 

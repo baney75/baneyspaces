@@ -3,7 +3,8 @@ import ApplicationServices
 import ServiceManagement
 import SwiftUI
 
-/// Live state for the setup window, re-read every second while it's open.
+/// Live state for the setup window. While the window is open it re-reads permission four times a
+/// second, so flipping the switch in System Settings shows up here almost at once.
 final class SetupModel: ObservableObject {
     @Published var trusted = AXIsProcessTrusted()
     @Published var modifier = Modifier.current
@@ -11,43 +12,158 @@ final class SetupModel: ObservableObject {
     @Published var desktops = Desktops.count
     @Published var openAtLogin = SMAppService.mainApp.status == .enabled
     @Published var viewerKeys = MissionControlKeys.enabled
+    @Published var aeroSpaceRunning = SetupModel.isAeroSpaceRunning
+    @Published var loginNeedsApproval = SMAppService.mainApp.status == .requiresApproval
+    @Published var screenshotsFreed = SystemShortcuts.hasFreed
+    /// The Mission Control key is switched on but macOS refused the key watcher.
+    @Published var viewerKeysFailed = false
+    /// The person asked for access a while ago and macOS still says no: most likely an old
+    /// permission from an earlier copy of the app, which only a reset clears.
+    @Published var staleGrant = false
+    @Published var fixing = false
+    @Published var freeing = false
+    /// Shown once, the moment everything required turns green.
+    @Published var justEnabled = false
+
     var onModifierChange: ((Modifier) -> Void)?
     var onViewerKeysChange: ((Bool) -> Void)?
+    /// Asked by the window controller; true while the Mission Control key watcher is running.
+    var viewerKeysActive: () -> Bool = { true }
+    /// Called when every required step turns green while the window is open.
+    var onReady: (() -> Void)?
+
     private var timer: Timer?
+    private var ticks = 0
+    private var askedAt: Date?
+
+    /// Required to work at all. Desktops, login and keys are optional notices.
+    var ready: Bool { trusted && !aeroSpaceRunning }
+
+    static var isAeroSpaceRunning: Bool {
+        !NSRunningApplication.runningApplications(withBundleIdentifier: "bobko.aerospace").isEmpty
+    }
 
     func startWatching() {
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.reload() }
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in self?.tick() }
     }
 
     func stopWatching() { timer?.invalidate() }
 
+    private func tick() {
+        ticks += 1
+        let wasReady = ready
+        trusted = AXIsProcessTrusted()
+        aeroSpaceRunning = SetupModel.isAeroSpaceRunning
+        if let askedAt, !trusted, Date().timeIntervalSince(askedAt) > 8 { staleGrant = true }
+        if trusted { staleGrant = false }
+        if !wasReady && ready { becameReady() }
+        // The slower checks once a second.
+        if ticks % 4 == 0 { reloadOptional() }
+    }
+
     func reload() {
         trusted = AXIsProcessTrusted()
+        aeroSpaceRunning = SetupModel.isAeroSpaceRunning
+        reloadOptional()
+    }
+
+    private func reloadOptional() {
         conflicts = SystemShortcuts.conflicts(for: modifier)
+        screenshotsFreed = SystemShortcuts.hasFreed
         desktops = Desktops.count
-        openAtLogin = SMAppService.mainApp.status == .enabled
+        let status = SMAppService.mainApp.status
+        openAtLogin = status == .enabled
+        loginNeedsApproval = status == .requiresApproval
+        viewerKeysFailed = trusted && viewerKeys && !viewerKeysActive()
+    }
+
+    private func becameReady() {
+        justEnabled = true
+        askedAt = nil
+        onReady?()
+    }
+
+    /// Adds BaneySpaces to the Accessibility list with macOS's own prompt, then opens the list so
+    /// the only thing left is one switch.
+    func allow() {
+        askedAt = Date()
+        staleGrant = false
+        let prompt = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+        _ = AXIsProcessTrustedWithOptions([prompt: true] as CFDictionary)
+        SetupModel.openAccessibilitySettings()
+    }
+
+    /// Clears the old permission macOS kept for an earlier copy of BaneySpaces, then asks again.
+    func fixPermission() {
+        fixing = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+            p.arguments = ["reset", "Accessibility", "com.baney.baneyspaces"]
+            try? p.run()
+            p.waitUntilExit()
+            DispatchQueue.main.async {
+                self?.fixing = false
+                self?.allow()
+            }
+        }
+    }
+
+    static func openAccessibilitySettings() {
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+    }
+
+    func quitAeroSpace() {
+        NSRunningApplication.runningApplications(withBundleIdentifier: "bobko.aerospace").forEach { $0.terminate() }
     }
 
     func pick(_ m: Modifier) {
         modifier = m
         Modifier.current = m
         onModifierChange?(m)
-        reload()
+        reloadOptional()
     }
 
+    /// `defaults` and `activateSettings` can take seconds, so they run off the main thread.
     func freeShortcuts() {
-        SystemShortcuts.free(for: modifier)
-        reload()
+        freeing = true
+        let m = modifier
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            SystemShortcuts.free(for: m)
+            DispatchQueue.main.async { self?.freeing = false; self?.reloadOptional() }
+        }
+    }
+
+    func restoreShortcuts() {
+        freeing = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            SystemShortcuts.restore()
+            DispatchQueue.main.async { self?.freeing = false; self?.reloadOptional() }
+        }
     }
 
     func setViewerKeys(_ on: Bool) {
         viewerKeys = on
         onViewerKeysChange?(on)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.reloadOptional() }
     }
 
     func setOpenAtLogin(_ on: Bool) {
-        try? on ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister()
-        reload()
+        UserDefaults.standard.set(true, forKey: "loginItemChosen")
+        do {
+            try on ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister()
+        } catch {
+            NSLog("BaneySpaces: open at login failed: %@", error.localizedDescription)
+        }
+        reloadOptional()
+    }
+
+    /// Setup's last act: start with the Mac unless the person already decided.
+    func finish() {
+        guard !UserDefaults.standard.bool(forKey: "loginItemChosen") else { return }
+        UserDefaults.standard.set(true, forKey: "loginItemChosen")
+        try? SMAppService.mainApp.register()
     }
 }
 
@@ -65,19 +181,52 @@ struct SetupView: View {
                 }
             }
 
+            if model.justEnabled && model.ready {
+                HStack(spacing: 10) {
+                    Image(systemName: "checkmark.seal.fill").font(.title2).foregroundStyle(.green)
+                    Text("BaneySpaces is on. Try \(model.modifier.symbol)2.").font(.title3.bold())
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Color.green.opacity(0.12)))
+            }
+
             step(done: model.trusted, title: "Let BaneySpaces arrange windows") {
                 if model.trusted {
                     Text("Allowed.").foregroundStyle(.secondary)
                 } else {
-                    Text("macOS asks before any app can show and hide other apps' windows. Turn on BaneySpaces in the list, and this updates on its own.")
+                    Text("Accessibility lets BaneySpaces show, hide and move other apps' windows. It can't read what you type.")
                         .foregroundStyle(.secondary)
-                    Button("Open Accessibility Settings") {
-                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+                    Button(action: model.allow) {
+                        Text("Allow BaneySpaces").frame(minWidth: 160)
+                    }
+                    .controlSize(.large)
+                    .buttonStyle(.borderedProminent)
+                    Text("macOS opens its settings. Turn on BaneySpaces in the list and come back; this window updates by itself.")
+                        .font(.callout).foregroundStyle(.secondary)
+                    if model.staleGrant {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Already switched on and still not working?").font(.callout.bold())
+                            Text("macOS kept an old permission from an earlier copy of BaneySpaces. Fixing it removes the old entry and asks again.")
+                                .font(.callout).foregroundStyle(.secondary)
+                            Button(model.fixing ? "Fixing…" : "Fix Permission", action: model.fixPermission)
+                                .disabled(model.fixing)
+                        }
+                        .padding(10)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.12)))
                     }
                 }
             }
 
-            step(done: model.conflicts.isEmpty, title: "Pick your keys") {
+            if model.aeroSpaceRunning {
+                step(done: false, title: "Quit AeroSpace") {
+                    Text("AeroSpace is running and uses the same keys. BaneySpaces starts as soon as it quits.")
+                        .foregroundStyle(.secondary)
+                    Button("Quit AeroSpace", action: model.quitAeroSpace)
+                }
+            }
+
+            step(done: true, title: "Your keys") {
                 Picker("", selection: Binding(get: { model.modifier }, set: { model.pick($0) })) {
                     ForEach(Modifier.allCases) { Text($0.symbol).tag($0) }
                 }
@@ -91,24 +240,34 @@ struct SetupView: View {
                 Text(model.modifier.tradeoff).font(.callout).foregroundStyle(.secondary)
                 ForEach(model.conflicts, id: \.self) { c in
                     HStack {
-                        Text(c).font(.callout)
+                        Text(c).font(.callout).foregroundStyle(.secondary)
                         Spacer()
-                        Button("Free Them") { model.freeShortcuts() }
+                        Button(model.freeing ? "Working…" : "Free Them", action: model.freeShortcuts).disabled(model.freeing)
+                    }
+                }
+                if model.screenshotsFreed && model.conflicts.isEmpty {
+                    HStack {
+                        Text("macOS's own shortcuts for these keys are off.").font(.callout).foregroundStyle(.secondary)
+                        Spacer()
+                        Button(model.freeing ? "Working…" : "Turn Them Back On", action: model.restoreShortcuts).disabled(model.freeing)
                     }
                 }
             }
 
-            step(done: true, title: "See every workspace at once") {
+            step(done: !model.viewerKeysFailed, title: "See every workspace at once") {
                 Toggle("The Mission Control key and ⌃↑ open BaneySpaces' overview", isOn: Binding(get: { model.viewerKeys }, set: { model.setViewerKeys($0) }))
-                Text("Turn this off to give both keys back to Mission Control and to apps that use ⌃↑. The overview stays in the menu bar menu.")
-                    .font(.callout).foregroundStyle(.secondary)
+                if model.viewerKeysFailed {
+                    Text("macOS didn't let BaneySpaces watch those keys, so they still open Mission Control. Turn the switch off and on to try again. The overview is always in the menu bar menu.")
+                        .font(.callout).foregroundStyle(.orange)
+                } else {
+                    Text("Turn this off to give both keys back to Mission Control and to apps that use ⌃↑. The overview stays in the menu bar menu.")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
             }
 
-            step(done: model.desktops <= 1, title: "Keep one macOS desktop") {
-                if model.desktops <= 1 {
-                    Text("Every window stays within reach of the nine workspaces.").foregroundStyle(.secondary)
-                } else {
-                    Text("You have \(model.desktops) desktops in Mission Control. Windows on the others are out of reach. Open Mission Control, hover each extra desktop at the top, and click its ✕.")
+            if model.desktops > 1 {
+                step(done: false, title: "Optional: keep one macOS desktop") {
+                    Text("You have \(model.desktops) desktops in Mission Control. Windows on the others are out of reach. Open Mission Control, hover each extra desktop at the top, and click its close button.")
                         .foregroundStyle(.secondary)
                     Button("Open Mission Control") {
                         NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Mission Control.app"))
@@ -118,6 +277,13 @@ struct SetupView: View {
 
             step(done: model.openAtLogin, title: "Start with your Mac") {
                 Toggle("Open BaneySpaces at login", isOn: Binding(get: { model.openAtLogin }, set: { model.setOpenAtLogin($0) }))
+                if model.loginNeedsApproval {
+                    HStack {
+                        Text("macOS needs you to approve it in Login Items.").font(.callout).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Approve in Login Items") { SMAppService.openSystemSettingsLoginItems() }
+                    }
+                }
             }
 
             Divider()
@@ -147,23 +313,48 @@ struct SetupView: View {
 
 final class SetupWindowController: NSWindowController, NSWindowDelegate {
     let model = SetupModel()
+    private var activeObserver: NSObjectProtocol?
 
     convenience init() {
         let window = NSWindow(contentRect: .zero, styleMask: [.titled, .closable], backing: .buffered, defer: false)
         self.init(window: window)
         window.title = "Set Up BaneySpaces"
         window.delegate = self
-        window.contentView = NSHostingView(rootView: SetupView(model: model) { [weak window] in window?.close() })
-        window.setContentSize(window.contentView!.fittingSize)
+        let host = NSHostingView(rootView: SetupView(model: model) { [weak window] in window?.close() })
+        // The window grows and shrinks with the steps shown.
+        host.sizingOptions = [.preferredContentSize]
+        window.contentView = host
+        window.setContentSize(host.fittingSize)
         window.center()
+        // On grant: come forward, celebrate, then get out of the way.
+        model.onReady = { [weak self] in
+            NSApp.activate(ignoringOtherApps: true)
+            self?.window?.makeKeyAndOrderFront(nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                guard let self, self.model.ready, self.window?.isVisible == true else { return }
+                self.window?.close()
+            }
+        }
+        // Coming back from System Settings re-checks at once instead of waiting for the next tick.
+        activeObserver = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification,
+                                                                object: nil, queue: .main) { [weak self] _ in
+            guard self?.window?.isVisible == true else { return }
+            self?.model.reload()
+        }
     }
 
+    var isVisible: Bool { window?.isVisible == true }
+
     func show() {
+        model.justEnabled = false
         model.reload()
         model.startWatching()
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
     }
 
-    func windowWillClose(_ n: Notification) { model.stopWatching() }
+    func windowWillClose(_ n: Notification) {
+        model.stopWatching()
+        model.finish()
+    }
 }

@@ -96,8 +96,17 @@ enum SystemShortcuts {
         }
     }
 
+    /// Shortcut ids BaneySpaces switched off, so they can be switched back on later (from setup,
+    /// or by the uninstaller through `BaneySpaces --restore-shortcuts`).
+    private static let freedKey = "freedShortcuts"
+
+    static var hasFreed: Bool {
+        !(UserDefaults.standard.array(forKey: freedKey) as? [Int] ?? []).isEmpty
+    }
+
     /// Turns off the shortcuts that conflict with `m`. Only the on/off switch changes, so a
-    /// shortcut someone rebound keeps its keys. ⌃⌘⇧3 and ⌃⌘⇧4 still take screenshots.
+    /// shortcut someone rebound keeps its keys. ⌃⌘⇧3 and ⌃⌘⇧4 still take screenshots. Slow (it runs
+    /// `defaults` and `activateSettings`), so call it off the main thread.
     static func free(for m: Modifier) {
         var targets: [(id: Int, key: Int, code: Int, mods: Int)] = []
         switch m {
@@ -105,6 +114,27 @@ enum SystemShortcuts {
         case .control: targets = desktopSwitch.enumerated().map { ($0.element, 65535, Hotkeys.digitKeyCodes[$0.offset], 262144) }
         case .option, .controlOption: return
         }
+        // Only the ones that are on now get recorded, so restoring never turns on something the
+        // person had already turned off.
+        let wereOn = targets.map(\.id).filter(enabled)
+        var freed = Set(UserDefaults.standard.array(forKey: freedKey) as? [Int] ?? [])
+        freed.formUnion(wereOn)
+        UserDefaults.standard.set(Array(freed).sorted(), forKey: freedKey)
+        write(targets.filter { wereOn.contains($0.id) }, enabled: false)
+    }
+
+    /// Switches back on every shortcut `free(for:)` switched off.
+    static func restore() {
+        let ids = UserDefaults.standard.array(forKey: freedKey) as? [Int] ?? []
+        guard !ids.isEmpty else { return }
+        let defaults = screenshots.map { ($0.id, $0.key, $0.code, 1179648) }
+            + desktopSwitch.enumerated().map { ($0.element, 65535, Hotkeys.digitKeyCodes[$0.offset], 262144) }
+        write(defaults.filter { ids.contains($0.0) }.map { (id: $0.0, key: $0.1, code: $0.2, mods: $0.3) }, enabled: true)
+        UserDefaults.standard.removeObject(forKey: freedKey)
+    }
+
+    private static func write(_ targets: [(id: Int, key: Int, code: Int, mods: Int)], enabled on: Bool) {
+        guard !targets.isEmpty else { return }
         CFPreferencesAppSynchronize(domain)
         let all = CFPreferencesCopyAppValue("AppleSymbolicHotKeys" as CFString, domain) as? [String: Any] ?? [:]
         for t in targets {
@@ -114,7 +144,7 @@ enum SystemShortcuts {
             let type = (value?["type"] as? String) ?? "standard"
             let ints = params.map { "<integer>\($0)</integer>" }.joined()
             run("/usr/bin/defaults", ["write", "com.apple.symbolichotkeys", "AppleSymbolicHotKeys", "-dict-add", String(t.id),
-                "<dict><key>enabled</key><false/><key>value</key><dict><key>parameters</key><array>\(ints)</array><key>type</key><string>\(type)</string></dict></dict>"])
+                "<dict><key>enabled</key><\(on)/><key>value</key><dict><key>parameters</key><array>\(ints)</array><key>type</key><string>\(type)</string></dict></dict>"])
         }
         // Applies the change without logging out.
         run("/System/Library/PrivateFrameworks/SystemAdministration.framework/Resources/activateSettings", ["-u"])

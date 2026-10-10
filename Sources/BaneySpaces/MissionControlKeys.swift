@@ -30,6 +30,10 @@ final class MissionControlKeys {
     /// ⌃↑ is only taken while macOS still uses it for Mission Control.
     fileprivate static var takeControlUp = true
 
+    /// True while the key watcher is installed. False when it is switched off or when macOS
+    /// refused it (no Accessibility yet); `start()` can simply be called again to retry.
+    var isActive: Bool { tap != nil }
+
     func start() {
         guard tap == nil, MissionControlKeys.enabled else { return }
         MissionControlKeys.shared = self

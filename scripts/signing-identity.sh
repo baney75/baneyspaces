@@ -21,7 +21,19 @@ healthy() {
     && security find-identity -p codesigning "$KC" 2>/dev/null | grep -q "$NAME"
 }
 
+# A new certificate means macOS no longer recognizes the app and its Accessibility switch stops
+# working, so an existing identity is only replaced when it is really gone. A failed unlock gets a
+# second try first: `security` can fail once right after login or while the keychain is busy.
+if ! healthy && [ -f "$KC" ] && [ -s "$PASS_FILE" ]; then
+  sleep 1
+  healthy || true
+fi
+
 if ! healthy; then
+  if [ -f "$KC" ] || [ -s "$PASS_FILE" ]; then
+    echo "note: the BaneySpaces signing key was unusable and has been replaced. macOS will treat the" >&2
+    echo "      new build as a different app: open setup and click Fix Permission to allow it again." >&2
+  fi
   # Missing, half-made, or the password no longer matches: start over.
   security delete-keychain "$KC" 2>/dev/null || rm -f "$KC"
   mkdir -p "$DIR" && chmod 700 "$DIR"
