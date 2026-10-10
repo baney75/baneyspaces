@@ -12,6 +12,8 @@ final class Spaces {
     private var saved: SavedFrames
     private var windows: [WindowID: Window] = [:]
     private var switching = false
+    /// Timing of the switch in progress, for timing.log: start, after the window scan, at the wait.
+    private var clock = SwitchClock()
     /// Shortcuts pressed mid-switch run, in order, once it finishes.
     private var queued: [() -> Void] = []
     /// Until then, app activations come from BaneySpaces' own switch, not the person.
@@ -71,7 +73,9 @@ final class Spaces {
     func switchTo(_ n: Int, takeFocus moveFocus: Bool = true) {
         guard Workspaces.range.contains(n) else { return }
         if switching { return queued.append { [weak self] in self?.switchTo(n, takeFocus: moveFocus) } }
+        clock = SwitchClock(target: n)
         refresh()
+        clock.mark(.scanned)
         if let f = Windows.focused(in: Array(windows.values)), model.workspace(of: f.id) == model.current {
             model.noteFocus(f.id)
         }
@@ -270,7 +274,9 @@ final class Spaces {
                 takeFocus()
             }
         }
+        clock.mark(.shown)
         waitUntil(timeout: moveFocus ? 0.6 : 0, { Windows.focusedPid() == frontPid }) { [self] in
+            clock.mark(.focused)
             // 3. Everything else goes out of sight.
             conceal(how, screens: screens)
             if moveFocus, target == nil, Windows.focusedPid() != getpid() {
@@ -278,6 +284,8 @@ final class Spaces {
                 // brings back its windows from other workspaces.
                 takeFocus(finderFallback: !how.hideApps.contains(Self.finderPid ?? -1))
             }
+            clock.mark(.done)
+            clock.log(to: Spaces.folder.appendingPathComponent("timing.log"))
             persist()
             settleUntil = Date().addingTimeInterval(0.3)
             switching = false
@@ -384,3 +392,25 @@ final class Spaces {
 final class KeyablePanel: NSPanel {
     override var canBecomeKey: Bool { true }
 }
+
+/// How long one switch takes, phase by phase. Appended to timing.log so speed changes are
+/// measured on real use, not guessed.
+struct SwitchClock {
+    enum Phase: String { case scanned, shown, focused, done }
+    var target = 0
+    private let start = CFAbsoluteTimeGetCurrent()
+    private var marks: [(Phase, Double)] = []
+
+    init(target: Int = 0) { self.target = target }
+
+    mutating func mark(_ p: Phase) { marks.append((p, (CFAbsoluteTimeGetCurrent() - start) * 1000)) }
+
+    func log(to url: URL) {
+        let parts = marks.map { "\($0.0.rawValue)=\(Int($0.1.rounded()))" }.joined(separator: " ")
+        let line = "\(Int(Date().timeIntervalSince1970)) ws=\(target) \(parts)\n"
+        var lines = ((try? String(contentsOf: url, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init)
+        lines.append(String(line.dropLast()))
+        try? (lines.suffix(500).joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
+    }
+}
+
