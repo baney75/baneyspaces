@@ -271,9 +271,3 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 }
-
-// TODO: parent adds Spaces.suspend() — delete this stand-in at merge.
-// parent adds Spaces.suspend()
-extension Spaces {
-    func suspend() {}
-}
