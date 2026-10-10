@@ -36,6 +36,11 @@ struct Window {
         AXUIElementSetAttributeValue(element, "AXFullScreen" as CFString, kCFBooleanFalse)
     }
 
+    func pressFullScreenButton() {
+        guard let button: AXUIElement = element.value(kAXFullScreenButtonAttribute) else { return }
+        AXUIElementPerformAction(button, kAXPressAction as CFString)
+    }
+
     func focus() {
         AXUIElementSetAttributeValue(element, kAXMainAttribute as CFString, kCFBooleanTrue)
         AXUIElementPerformAction(element, kAXRaiseAction as CFString)

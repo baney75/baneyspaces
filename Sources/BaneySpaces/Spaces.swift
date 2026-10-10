@@ -48,7 +48,11 @@ final class Spaces {
     func refresh() {
         let list = Windows.all()
         let alive = Windows.alive()
-        windows = Dictionary(list.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        // Accessibility lists only the windows on the macOS desktop being shown. A window it
+        // missed keeps the handle from an earlier listing; that handle still moves the window.
+        var next = windows.filter { alive.contains($0.key) }
+        for w in list { next[w.id] = w }
+        windows = next
         let added = model.sync(seen: list.map(\.id), alive: alive)
         saved.frames = saved.frames.filter { alive.contains($0.key) }
         // An app that autosaves its window position can reopen a window at the hiding spot.
@@ -75,7 +79,11 @@ final class Spaces {
         let fullScreen = plan.hide.compactMap { windows[$0] }.filter(\.isFullScreen)
         guard !fullScreen.isEmpty else { return apply(plan) }
         fullScreen.forEach { $0.exitFullScreen() }
-        waitUntil(timeout: 3, { fullScreen.allSatisfy { !$0.isFullScreen } }) { [self] in
+        // Some apps (Chromium browsers among them) ignore the request. Their green button doesn't.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            fullScreen.filter(\.isFullScreen).forEach { $0.pressFullScreenButton() }
+        }
+        waitUntil(timeout: 4, { fullScreen.allSatisfy { !$0.isFullScreen } }) { [self] in
             // The exit animation keeps resizing the window for a moment after the flag flips.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [self] in
                 for w in fullScreen {
