@@ -8,7 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let spaces = Spaces()
     private let hotkeys = Hotkeys()
     private var statusItem: NSStatusItem!
-    private var started = false
+    private var started = false { didSet { MissionControlKeys.appStarted = started } }
     private var trustTimer: Timer?
     /// While running, checks every 2 s that macOS still trusts BaneySpaces.
     private var watchdog: Timer?
@@ -18,7 +18,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private lazy var missionControlKeys: MissionControlKeys = {
         let keys = MissionControlKeys { [weak self] in self?.viewer.toggle() }
         keys.onCmdTab = { [weak self] forward in
-            guard let self, self.started, !self.viewer.isOpen else { return }
+            guard let self, self.started, !self.viewer.isOpen else {
+                MissionControlKeys.inGesture = false
+                return
+            }
             self.switcher.step(forward: forward)
         }
         keys.onCmdReleased = { [weak self] in self?.switcher.commit() }

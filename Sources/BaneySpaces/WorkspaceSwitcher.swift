@@ -51,6 +51,8 @@ final class WorkspaceSwitcher {
         let p = panel ?? makePanel()
         panel = p
         let host = p.contentView as! NSHostingView<SwitcherView>
+        // Lay out the new tiles first; otherwise fittingSize still reports the last gesture's size.
+        host.layoutSubtreeIfNeeded()
         let size = host.fittingSize
         if let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main {
             p.setFrame(NSRect(x: screen.frame.midX - size.width / 2, y: screen.frame.midY - size.height / 2,

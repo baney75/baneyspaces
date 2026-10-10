@@ -277,9 +277,10 @@ final class Spaces {
 
     private func followFocus() {
         guard let app = NSWorkspace.shared.frontmostApplication, app.processIdentifier != getpid() else { return }
-        // A newly activated app may have just become a regular app or opened a window: look fully.
+        // A newly activated app may have just become a regular app: re-read the app list, which
+        // forces a full scan only if it changed.
         RunningApps.invalidate()
-        refresh(full: true)
+        refresh()
         guard let w = Windows.focused(of: app.processIdentifier, in: Array(windows.values)),
               let n = model.workspace(of: w.id) else { return }
         model.noteFocus(w.id)
@@ -293,7 +294,7 @@ final class Spaces {
     private func focusMovedWithin(_ pid: pid_t) {
         guard active, !switching, Date() > settleUntil,
               NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
-        refresh(full: true)
+        refresh()
         guard let w = Windows.focused(of: pid, in: Array(windows.values)),
               let n = model.workspace(of: w.id), n != model.current || saved.frames[w.id] != nil else { return }
         if let here = model.windows(on: model.current).compactMap({ windows[$0] })
@@ -430,7 +431,7 @@ final class Spaces {
         let target = ([plan.focus].compactMap { $0 } + plan.show)
             .compactMap { windows[$0] }.first { !$0.isMinimized && saved.frames[$0.id] == nil }
         let frontPid = target?.pid ?? getpid()
-        expectedFront = frontPid
+        if moveFocus { expectedFront = frontPid }
         if moveFocus {
             if let target {
                 emptyHolder.orderOut(nil)
@@ -452,7 +453,9 @@ final class Spaces {
             clock.mark(.done)
             clock.log(to: Spaces.folder.appendingPathComponent("timing.log"))
             persist()
-            settleUntil = Date().addingTimeInterval(0.3)
+            // Only a switch that really brought an app forward vouches for the next one's idea of
+            // which app is in front.
+            if moveFocus, Windows.focusedPid() == frontPid { settleUntil = Date().addingTimeInterval(0.3) }
             finish()
         }
         // Nothing left that depends on focus: finish now, without waiting a timer tick.

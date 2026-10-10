@@ -144,7 +144,9 @@ enum Windows {
             // A hung app must not hang every workspace switch.
             AXUIElementSetMessagingTimeout(ax, 0.25)
             let listed: [AXUIElement]? = ax.value(kAXWindowsAttribute)
-            if listed == nil { lock.lock(); unsure.insert(pid); lock.unlock() } else { markResponsive(pid) }
+            // Any failure, not just a timeout, counts: otherwise an app that answers with an error
+            // would be retried at full speed forever instead of backing off.
+            if listed == nil { lock.lock(); unsure.insert(pid); lock.unlock(); markUnresponsive(pid) } else { markResponsive(pid) }
             let elements = listed ?? []
             let found = elements.compactMap { el -> Window? in
                 guard let id = el.windowID, el.string(kAXSubroleAttribute) == kAXStandardWindowSubrole as String else { return nil }

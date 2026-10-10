@@ -289,7 +289,7 @@ final class ViewerController {
     private var keyMonitor: Any?
     /// Open from the moment `open()` runs until `close()` starts, not until the fade ends, so a
     /// quick second press always does the right thing.
-    private(set) var isOpen = false
+    private(set) var isOpen = false { didSet { MissionControlKeys.viewerOpen = isOpen } }
     /// Bumped on every open, so a fade-out that finishes late can't hide a viewer reopened since.
     private var openCount = 0
 

@@ -36,6 +36,21 @@ final class MissionControlKeys {
         set { gestureLock.lock(); _inGesture = newValue; gestureLock.unlock() }
     }
     private static var tabEnabledOnTap = false
+    /// Whether the switcher can act right now (set on the main thread). When it can't, ⌘Tab
+    /// passes through to the normal app switcher instead of vanishing.
+    private static var _started = false, _viewerOpen = false
+    static var switcherReady: Bool {
+        gestureLock.lock(); defer { gestureLock.unlock() }
+        return _started && !_viewerOpen
+    }
+    static var appStarted: Bool {
+        get { gestureLock.lock(); defer { gestureLock.unlock() }; return _started }
+        set { gestureLock.lock(); _started = newValue; gestureLock.unlock() }
+    }
+    static var viewerOpen: Bool {
+        get { gestureLock.lock(); defer { gestureLock.unlock() }; return _viewerOpen }
+        set { gestureLock.lock(); _viewerOpen = newValue; gestureLock.unlock() }
+    }
 
     static var enabled: Bool {
         get { UserDefaults.standard.object(forKey: "viewerReplacesMissionControl") as? Bool ?? true }
@@ -58,6 +73,7 @@ final class MissionControlKeys {
     func start() {
         guard tap == nil, MissionControlKeys.enabled || MissionControlKeys.cmdTabEnabled else { return }
         MissionControlKeys.tabEnabledOnTap = MissionControlKeys.cmdTabEnabled
+        MissionControlKeys.inGesture = false
         MissionControlKeys.shared = self
         MissionControlKeys.takeControlUp = SystemShortcuts.missionControlOnControlUp
         let mask = CGEventMask(1 << CGEventType.keyDown.rawValue) | CGEventMask(1 << CGEventType.keyUp.rawValue)
@@ -89,6 +105,7 @@ final class MissionControlKeys {
     }
 
     func stop() {
+        MissionControlKeys.inGesture = false
         lock.lock()
         defer { lock.unlock() }
         if let tap { CGEvent.tapEnable(tap: tap, enable: false); CFMachPortInvalidate(tap) }
@@ -121,7 +138,7 @@ final class MissionControlKeys {
             }
             return Unmanaged.passUnretained(event)
         }
-        if tabEnabledOnTap, code == tabKey {
+        if tabEnabledOnTap, code == tabKey, switcherReady || inGesture {
             let mods = event.flags.intersection([.maskControl, .maskCommand, .maskAlternate])
             if mods == .maskCommand {
                 if type == .keyDown {
