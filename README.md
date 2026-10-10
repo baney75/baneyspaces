@@ -5,10 +5,25 @@
 <h1 align="center">BaneySpaces</h1>
 
 <p align="center">
+  <a href="https://github.com/baney75/baneyspaces/actions/workflows/ci.yml"><img src="https://github.com/baney75/baneyspaces/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/baney75/baneyspaces/releases/latest"><img src="https://img.shields.io/github/v/release/baney75/baneyspaces?color=e8434a" alt="Latest release"></a>
+  <img src="https://img.shields.io/badge/macOS-13%2B-1f2937" alt="macOS 13 or later">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-3b82f6" alt="MIT license"></a>
+</p>
+
+<p align="center">
   <b>Nine workspaces. One row of keys. Nothing to configure.</b><br>
   ⌘1 through ⌘9 takes you there. Add ⇧ and the window comes with you.<br>
-  <sub>Made by <a href="https://dbaney.com">Donovan Baney</a> · <a href="https://x.com/baney75">@baney75</a> · macOS 13 or later</sub>
+  <sub><a href="https://dbaney.com/baneyspaces/">dbaney.com/baneyspaces</a> · Made by <a href="https://dbaney.com">Donovan Baney</a> · <a href="https://x.com/baney75">@baney75</a> · macOS 13 or later</sub>
 </p>
+
+<p align="center">
+  <img src="docs/shots/overview.jpg" alt="The BaneySpaces overview: nine workspace tiles in a 3×3 grid, each listing its windows by app and title" width="860">
+</p>
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/baney75/baneyspaces/main/install.sh | bash
+```
 
 ---
 
@@ -52,6 +67,10 @@ workspaces in the same 3×3 grid as the number keys, with every window's app and
   workspace it will land on lights up.
 - **Esc,** or the same key again, puts you back where you were.
 
+<p align="center">
+  <img src="docs/shots/overview-drag.jpg" alt="Dragging a Mail window card onto workspace 6 in the overview; the target tile is outlined" width="760">
+</p>
+
 The menu bar icon shows the number of the workspace you're on, and its menu has the same view.
 
 ## Your windows are safe
@@ -69,26 +88,45 @@ steps just off screen and comes back to the exact spot it left.
 
 ## Install
 
+Requires macOS 13 Ventura or later, on Apple silicon or Intel. In Terminal:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/baney75/baneyspaces/main/install.sh | bash
+```
+
+The installer builds BaneySpaces from source with Apple's free command line tools and copies it
+to `~/Applications`. If the tools are missing, macOS opens a dialog to install them; run the
+command again when it finishes. Because the app is built on your Mac, there is no "unidentified
+developer" warning.
+
+Prefer to read the source first? Build it yourself:
+
 ```sh
 git clone https://github.com/baney75/baneyspaces.git
 cd baneyspaces
 make install
 ```
 
-That builds the app, copies it to `~/Applications`, and starts it. A setup window walks you
-through four checks, each of which turns green on its own as soon as it's done:
+<p align="center">
+  <img src="docs/shots/setup.jpg" alt="The BaneySpaces setup window with five green checks" width="420">
+</p>
+
+A setup window then walks you through five checks, each of which turns green on its own as
+soon as it's done:
 
 1. **Let BaneySpaces arrange windows.** macOS asks before any app can show and hide other apps'
    windows. One button opens the right page in System Settings.
 2. **Pick your keys.** ⌘, ⌃, ⌥ or ⌃⌥, with what each one gives up. If macOS already uses the keys,
    one click frees them.
-3. **Keep one macOS desktop,** so no window ends up out of reach.
-4. **Start with your Mac.**
+3. **See every workspace at once.** The Mission Control key and ⌃↑ open the overview, or switch
+   that off to keep them for Mission Control.
+4. **Keep one macOS desktop,** so no window ends up out of reach.
+5. **Start with your Mac.**
 
 Open setup again any time from the menu bar icon, or by opening BaneySpaces from Finder or
 Spotlight.
 
-If you used AeroSpace for the same shortcuts, `make install` quits it and removes it from your
+If you used AeroSpace for the same shortcuts, the installer quits it and removes it from your
 login items, so the two don't fight over the keys. AeroSpace itself stays installed.
 
 macOS uses ⌘⇧3, ⌘⇧4 and ⌘⇧5 for screenshots and claims them before any other app. Setup's
@@ -131,6 +169,16 @@ make install   # build, install to ~/Applications, start
 The app is signed with a local certificate that `scripts/signing-identity.sh` creates on first
 build and keeps in its own keychain. Because the signature stays the same, macOS keeps the
 Accessibility grant across rebuilds.
+
+## Uninstall
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/baney75/baneyspaces/main/uninstall.sh | bash
+```
+
+BaneySpaces quits first, which brings every hidden window and app back. Then the app, its
+settings and its local signing key are removed. If you freed the screenshot shortcuts in setup,
+turn them back on in System Settings › Keyboard › Keyboard Shortcuts › Screenshots.
 
 ## License
 

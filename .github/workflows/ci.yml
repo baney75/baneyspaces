@@ -1,0 +1,18 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the install scripts
+        run: bash -n install.sh && bash -n uninstall.sh && bash -n scripts/bundle.sh
+      - name: Build
+        run: swift build
+      - name: Test
+        run: swift test
+      - name: Bundle the app
+        run: BANEYSPACES_ADHOC=1 BANEYSPACES_ARM64_ONLY=1 scripts/bundle.sh
