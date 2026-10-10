@@ -63,58 +63,93 @@ struct Window {
     }
 }
 
+/// The regular apps that are running, kept current by launch and quit notifications instead of
+/// asking macOS about every app on every switch (about 12 ms each time).
+enum RunningApps {
+    private static var cached: Set<pid_t>?
+    private static var observing = false
+
+    static var regular: Set<pid_t> {
+        if !observing {
+            observing = true
+            let center = NSWorkspace.shared.notificationCenter
+            for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
+                center.addObserver(forName: name, object: nil, queue: .main) { _ in cached = nil }
+            }
+        }
+        if let cached { return cached }
+        let me = getpid()
+        let set = Set(NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular && !$0.isTerminated && $0.processIdentifier != me }
+            .map(\.processIdentifier))
+        cached = set
+        return set
+    }
+}
+
 enum Windows {
     /// Apps that stopped answering Accessibility, and until when to leave them alone. One hung
     /// app costs a full timeout per call; skipping it keeps every switch quick.
     private static var unresponsiveUntil: [pid_t: Date] = [:]
+    private static let unresponsiveLock = NSLock()
 
     static func isResponsive(_ pid: pid_t) -> Bool {
+        unresponsiveLock.lock(); defer { unresponsiveLock.unlock() }
         guard let until = unresponsiveUntil[pid] else { return true }
         if until < Date() { unresponsiveUntil[pid] = nil; return true }
         return false
     }
 
     static func markUnresponsive(_ pid: pid_t) {
+        unresponsiveLock.lock(); defer { unresponsiveLock.unlock() }
         unresponsiveUntil[pid] = Date().addingTimeInterval(5)
     }
 
     /// Every standard window of every regular app except BaneySpaces itself. Dialogs, panels,
-    /// popovers and windows on other macOS desktops are left alone.
-    static func all() -> [Window] {
-        let me = ProcessInfo.processInfo.processIdentifier
-        var out: [Window] = []
-        for app in NSWorkspace.shared.runningApplications
-        where app.activationPolicy == .regular && app.processIdentifier != me && !app.isTerminated
-            && isResponsive(app.processIdentifier) {
-            let ax = AXUIElementCreateApplication(app.processIdentifier)
+    /// popovers and windows on other macOS desktops are left alone. Apps are asked in parallel:
+    /// Accessibility answers each app separately, so a slow app no longer delays the rest.
+    static func all(owners: Set<pid_t>? = nil) -> [Window] {
+        // Only apps that own a window are asked. A running app with no windows is often frozen by
+        // macOS and never answers, which would cost a full timeout on every scan.
+        let candidates = owners.map { RunningApps.regular.intersection($0) } ?? RunningApps.regular
+        let apps = candidates.compactMap { pid -> (pid_t, String)? in
+            guard isResponsive(pid), let app = NSRunningApplication(processIdentifier: pid) else { return nil }
+            return (pid, app.localizedName ?? "App")
+        }
+        var results = [[Window]](repeating: [], count: apps.count)
+        let lock = NSLock()
+        DispatchQueue.concurrentPerform(iterations: apps.count) { i in
+            let (pid, name) = apps[i]
+            let ax = AXUIElementCreateApplication(pid)
             // A hung app must not hang every workspace switch.
             AXUIElementSetMessagingTimeout(ax, 0.25)
             let elements: [AXUIElement] = ax.value(kAXWindowsAttribute) ?? []
-            for el in elements {
-                guard let id = el.windowID,
-                      el.string(kAXSubroleAttribute) == kAXStandardWindowSubrole as String else { continue }
-                out.append(Window(id: id, element: el, pid: app.processIdentifier, appName: app.localizedName ?? "App"))
+            let found = elements.compactMap { el -> Window? in
+                guard let id = el.windowID, el.string(kAXSubroleAttribute) == kAXStandardWindowSubrole as String else { return nil }
+                return Window(id: id, element: el, pid: pid, appName: name)
             }
+            lock.lock(); results[i] = found; lock.unlock()
         }
-        return out
+        return results.flatMap { $0 }
     }
 
-    /// Every window the WindowServer has, on every macOS desktop. Accessibility can miss a window
-    /// (a busy app, another desktop); this list can't, so it decides whether a window still exists.
-    static func alive() -> Set<WindowID> { snapshot().alive }
+    static func alive() -> Set<WindowID> { snapshot(apps: RunningApps.regular).alive }
 
     /// Every window number, plus the ordinary app windows (layer 0) among them. When the layer-0
     /// set hasn't changed since the last look, no window was opened or closed, and the full
     /// Accessibility scan can be skipped.
-    static func snapshot() -> (alive: Set<WindowID>, appWindows: Set<WindowID>) {
+    static func snapshot(apps: Set<pid_t>) -> (alive: Set<WindowID>, appWindows: Set<WindowID>, owners: Set<pid_t>) {
         let info = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
-        var alive = Set<WindowID>(), appWindows = Set<WindowID>()
+        var alive = Set<WindowID>(), appWindows = Set<WindowID>(), owners = Set<pid_t>()
         for w in info {
             guard let id = (w[kCGWindowNumber as String] as? NSNumber)?.uint32Value else { continue }
             alive.insert(id)
-            if (w[kCGWindowLayer as String] as? Int) == 0 { appWindows.insert(id) }
+            guard (w[kCGWindowLayer as String] as? Int) == 0,
+                  let pid = (w[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value, apps.contains(pid) else { continue }
+            appWindows.insert(id)
+            owners.insert(pid)
         }
-        return (alive, appWindows)
+        return (alive, appWindows, owners)
     }
 
     /// The window that has keyboard focus, if it is one we manage.

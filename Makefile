@@ -1,4 +1,4 @@
-.PHONY: build test app install clean
+.PHONY: build test app install clean bench
 build:
 	swift build
 test:
@@ -9,3 +9,5 @@ install:
 	scripts/bundle.sh --install
 clean:
 	rm -rf .build build
+bench:
+	scripts/bench.sh

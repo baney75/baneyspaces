@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.2.0 (2026-10-10)
+
+Faster switching, an easier first run, and fixes from an adversarial review.
+
+- **Switching is about six times faster.** A switch that changes nothing on screen dropped from a
+  91 ms median to about 15 ms; a real switch takes 20–50 ms. Background apps hide at once, only
+  the app in front waits for focus to move (checked every 10 ms), the window scan is skipped when
+  no window opened or closed, apps are asked in parallel, and apps with no windows aren't asked
+  at all. `make bench` fails if the median goes over 40 ms.
+- **A small HUD** shows the workspace grid for half a second on every keyboard switch, and the
+  menu bar number changes the moment you press the key.
+- **Setup is one button.** Allow BaneySpaces puts it in the Accessibility list and opens the
+  right page; setup notices the switch within a quarter second, confirms, and closes itself.
+  Fix Permission repairs a permission macOS kept from an older copy.
+- **Losing permission is safe.** BaneySpaces gives your keys back, shows every window and app,
+  and starts again when permission returns.
+- Typing can no longer land in a hidden window after ⌘W or ⌘` moves focus inside an app.
+- Rapid presses land on the last workspace pressed instead of replaying each one.
+- A hung app is skipped for 5 seconds instead of stalling every switch; a window that refuses to
+  leave full screen is no longer asked again on every desktop change.
+- Display changes keep focus where it is. Restores move a window without resizing it.
+- AeroSpace, Login Items approval and freed screenshot shortcuts are handled in setup, and the
+  uninstaller turns the shortcuts back on and clears the permission.
+
 ## 0.1.0 · 2026-10-10
 
 The first release.

@@ -81,14 +81,16 @@ final class Spaces {
     /// per app, the slowest part of a switch) is skipped when no app window opened or closed
     /// and no app launched or quit since the last scan.
     func refresh(full: Bool = false) {
-        let snap = Windows.snapshot()
-        let pids = Set(NSWorkspace.shared.runningApplications
-            .filter { $0.activationPolicy == .regular && !$0.isTerminated }.map(\.processIdentifier))
+        let pids = RunningApps.regular
+        let snap = Windows.snapshot(apps: pids)
+        clock.mark(.snap)
         if !full, let last = lastScan, last.windows == snap.appWindows, last.pids == pids {
             prune(alive: snap.alive)
+            clock.scan = "skip"
             return
         }
-        let list = Windows.all()
+        clock.scan = lastScan == nil ? "first" : last(lastScan!, snap.appWindows, pids)
+        let list = Windows.all(owners: snap.owners)
         // Accessibility lists only the windows on the macOS desktop being shown. A window it
         // missed keeps the handle from an earlier listing; that handle still moves the window.
         var next = windows.filter { snap.alive.contains($0.key) }
@@ -97,7 +99,7 @@ final class Spaces {
         let added = model.sync(seen: list.map(\.id), alive: snap.alive)
         prune(alive: snap.alive)
         lastScan = (snap.appWindows, pids)
-        watcher.sync(pids.subtracting([getpid()]))
+        watcher.sync(pids)
         let screens = Windows.screens()
         // An app that autosaves its window position can reopen a window at the hiding spot.
         for id in added {
@@ -110,6 +112,12 @@ final class Spaces {
         for id in saved.frames.keys where model.workspace(of: id) == model.current {
             if let f = windows[id]?.frame, !Geometry.isStranded(f, screens: screens) { saved.frames[id] = nil }
         }
+    }
+
+    /// Why a full scan ran, for timing.log.
+    private func last(_ l: (windows: Set<WindowID>, pids: Set<pid_t>), _ w: Set<WindowID>, _ p: Set<pid_t>) -> String {
+        if l.pids != p { return "apps" }
+        return "windows+\(w.subtracting(l.windows).count)-\(l.windows.subtracting(w).count)"
     }
 
     private func prune(alive: Set<WindowID>) {
@@ -513,8 +521,9 @@ final class KeyablePanel: NSPanel {
 /// How long one switch takes, phase by phase. Appended to timing.log so speed changes are
 /// measured on real use, not guessed.
 struct SwitchClock {
-    enum Phase: String { case scanned, shown, focused, done }
+    enum Phase: String { case snap, scanned, shown, focused, done }
     var target = 0
+    var scan = "full"
     private let start = CFAbsoluteTimeGetCurrent()
     private var marks: [(Phase, Double)] = []
 
@@ -524,7 +533,7 @@ struct SwitchClock {
 
     func log(to url: URL) {
         let parts = marks.map { "\($0.0.rawValue)=\(Int($0.1.rounded()))" }.joined(separator: " ")
-        let line = "\(Int(Date().timeIntervalSince1970)) ws=\(target) \(parts)\n"
+        let line = "\(Int(Date().timeIntervalSince1970)) ws=\(target) scan=\(scan) \(parts)\n"
         var lines = ((try? String(contentsOf: url, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init)
         lines.append(String(line.dropLast()))
         try? (lines.suffix(500).joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)

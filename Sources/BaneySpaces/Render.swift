@@ -78,6 +78,16 @@ enum Render {
         setup.viewerKeys = true
         guard save(SetupView(model: setup, close: {}).background(Color(nsColor: .windowBackgroundColor)),
                    "setup.png", CGSize(width: 520, height: 0)) else { return 1 }
+        // The first thing a new person sees: permission not granted yet.
+        let fresh = SetupModel()
+        fresh.trusted = false
+        fresh.modifier = .command
+        fresh.conflicts = []
+        fresh.desktops = 1
+        fresh.openAtLogin = false
+        fresh.viewerKeys = true
+        guard save(SetupView(model: fresh, close: {}).background(Color(nsColor: .windowBackgroundColor)),
+                   "setup-first-run.png", CGSize(width: 520, height: 0)) else { return 1 }
         return 0
     }
 }
