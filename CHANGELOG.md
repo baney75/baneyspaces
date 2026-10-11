@@ -1,20 +1,24 @@
 # Changelog
 
-## Unreleased
+## 0.2.1 (2026-10-11)
+
+Full screen that stays put, and fixes from a second adversarial review, focused on apps that
+are slow to answer.
 
 - **Full screen stays full screen.** YouTube, slideshows and anything else you put in full screen
   stay there; BaneySpaces used to pull every window back out within a second. Switching
   workspaces still takes the window out of full screen first, and macOS puts it back where it was.
-
-Fixes from a second adversarial review, focused on apps that are slow to answer.
-
+- **Two windows of one app on different workspaces work.** Clicking the app in the Dock or ⌘Tab
+  keeps you on the workspace you're on when it has a window there; picking its other window
+  yourself (Window menu, ⌘`) takes you to that window's workspace.
+- **A window that's slow to answer keeps its workspace** across a restart instead of being
+  forgotten; its app comes back when you go to its workspace.
 - **A busy app no longer stalls a switch.** Raising a window waits at most 0.1 s per call and
   stops at the first timeout, instead of up to 0.75 s; a missed raise is retried a moment later.
 - **Closing or minimizing a window keeps you where you are,** even when the app's next window
   lives on another workspace, and even when the app only hid the window it "closed".
 - **⌘Q and ⌘W can't reach the app in front while the ⌘Tab switcher is open.**
-- **Two windows of one app on different workspaces:** opening the app's other workspace no longer
-  bounces you back when the app comes forward late.
+- An app that comes forward late after a switch no longer bounces you to its other workspace.
 - **No window is left parked off screen** after a permission hiccup; Bring Every Window Back also
   rescues windows another tool stranded.
 - Saved windows only come back to the app that owned them, a late window doesn't steal a
