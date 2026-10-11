@@ -242,6 +242,18 @@ enum Windows {
         return windows.first { $0.id == id }
     }
 
+    /// The frames a full-screen window can have, in Accessibility coordinates: the whole screen,
+    /// and on a display with a camera notch, the screen below it (where macOS puts full screen
+    /// by default).
+    static func fullScreenFrames() -> [CGRect] {
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        return NSScreen.screens.flatMap { screen -> [CGRect] in
+            let f = Geometry.toAX(screen.frame, primaryHeight: primaryHeight)
+            let top = screen.safeAreaInsets.top
+            return top > 0 ? [f, CGRect(x: f.minX, y: f.minY + top, width: f.width, height: f.height - top)] : [f]
+        }
+    }
+
     /// Screen frames in Accessibility coordinates.
     static func screens() -> [CGRect] {
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 0

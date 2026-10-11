@@ -220,6 +220,7 @@ final class Spaces {
         clock.mark(.scanned)
         let focused = Windows.focused(in: Array(windows.values))
         if let f = focused, model.workspace(of: f.id) == model.current { model.noteFocus(f.id) }
+        let leaving = model.current
         let plan = model.switchTo(n)
         recent.removeAll { $0 == n }
         recent.insert(n, at: 0)
@@ -227,22 +228,51 @@ final class Spaces {
         // The menu bar number changes the moment the key is pressed, not when the work is done.
         onChange?()
 
-        // Full screen lives on a macOS desktop of its own, which BaneySpaces can't hide. Switching
-        // away from a full-screen window (a video, a presentation) takes it out of full screen first.
-        guard let f = focused, plan.hide.contains(f.id), !refusedFullScreen.contains(f.id), f.isFullScreen else {
-            return apply(plan, moveFocus: moveFocus)
+        // Full screen lives on a macOS desktop of its own, which BaneySpaces can't hide. Any window
+        // left behind in full screen (a video, a presentation), focused or not, leaves full screen
+        // first. One that refused before comes along instead of staying stranded on its desktop.
+        let full = fullScreen(among: plan.hide)
+        // Rearranging the workspace you're on (a move from the overview) is on purpose: no carrying.
+        let carried = n == leaving ? [] : full.filter { refusedFullScreen.contains($0.id) }
+        for w in carried { model.assign(w.id, to: n) }
+        let asking = full.filter { !refusedFullScreen.contains($0.id) }
+        guard !asking.isEmpty else {
+            return apply(carried.isEmpty ? plan : model.switchTo(n), moveFocus: moveFocus)
         }
         let gen = generation
-        // macOS puts the window back where it was before full screen.
-        leaveFullScreen([f], fill: false) { [self] refused in
+        let known = Set(model.home.keys).union(pendingLayout.keys)
+        // macOS puts each window back where it was before full screen.
+        leaveFullScreen(asking, fill: false) { [self] refused in
             guard gen == generation, active else { return }
-            // A window that won't leave full screen stays with you rather than strand you on its desktop.
             for w in refused { model.assign(w.id, to: n) }
             // Back on the regular desktop, Accessibility can list windows it couldn't see from the
-            // full-screen one. Plan again with all of them.
+            // full-screen one. Those opened while you were on the workspace you just left.
             refresh(full: true)
+            for id in Set(model.home.keys).subtracting(known) { model.assign(id, to: leaving, focus: false) }
             apply(model.switchTo(n), moveFocus: moveFocus)
         }
+    }
+
+    /// The windows among `ids` in macOS full screen. Only windows exactly the size of a screen are
+    /// asked, so a switch with no full screen costs one window-server read. A window seen out
+    /// of full screen is asked again next time, even if it once refused to leave.
+    private func fullScreen(among ids: [WindowID]) -> [Window] {
+        let sizes = Windows.fullScreenFrames()
+        let server = Windows.serverWindows()
+        func screenSized(_ b: CGRect) -> Bool {
+            sizes.contains { abs($0.minX - b.minX) < 1 && abs($0.minY - b.minY) < 1 && abs($0.width - b.width) < 1 && abs($0.height - b.height) < 1 }
+        }
+        var found: [Window] = []
+        for id in ids {
+            // A hidden app's windows aren't on screen, and a hidden app can be slow to answer.
+            guard let w = windows[id], NSRunningApplication(processIdentifier: w.pid)?.isHidden != true else { continue }
+            guard let b = server[id]?.bounds, screenSized(b), w.isFullScreen else {
+                if server[id]?.bounds.map(screenSized) == false { refusedFullScreen.remove(id) }
+                continue
+            }
+            found.append(w)
+        }
+        return found
     }
 
     /// macOS full screen moves a window to a desktop of its own, where BaneySpaces can't hide or

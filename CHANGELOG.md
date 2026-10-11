@@ -7,7 +7,8 @@ are slow to answer.
 
 - **Full screen stays full screen.** YouTube, slideshows and anything else you put in full screen
   stay there; BaneySpaces used to pull every window back out within a second. Switching
-  workspaces still takes the window out of full screen first, and macOS puts it back where it was.
+  workspaces takes it out of full screen first, however you switch (keys, ⌘Tab, the Dock, the
+  overview), and macOS puts it back where it was. Works with the full screen below a camera notch.
 - **Two windows of one app on different workspaces work.** Clicking the app in the Dock or ⌘Tab
   keeps you on the workspace you're on when it has a window there; picking its other window
   yourself (Window menu, ⌘`) takes you to that window's workspace.
