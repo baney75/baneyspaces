@@ -38,6 +38,10 @@ final class Spaces {
     private var refusedFullScreen = Set<WindowID>()
     private lazy var watcher = FocusWatcher { [weak self] pid in self?.focusMovedWithin(pid) }
     private let hud = SwitchHUD()
+    /// Saved workspaces for windows not seen yet this launch. A hidden or busy app may not answer
+    /// at startup; when its window shows up later it goes back where it was, and until then its
+    /// entry stays in the saved layout instead of being forgotten.
+    private var pendingLayout: [WindowID: SavedLayout.Entry] = [:]
     /// Workspaces from most to least recently visited, for the ⌘Tab switcher.
     private(set) var recent: [Int] = [1]
     private var screensWork: DispatchWorkItem?
@@ -74,6 +78,9 @@ final class Spaces {
         if let layout = SavedLayout.load(from: Spaces.layoutURL) {
             model.restore(current: layout.current, home: layout.homes(livePids: windows.mapValues(\.pid)),
                           lastFocused: layout.lastFocused)
+            let alive = Windows.alive()
+            pendingLayout = Dictionary(uniqueKeysWithValues: layout.entries
+                .filter { model.workspace(of: $0.window) == nil && alive.contains($0.window) }.map { ($0.window, $0) })
         }
         persist()
         switchTo(model.current, takeFocus: false, announce: false)
@@ -123,6 +130,19 @@ final class Spaces {
         if !unsure.isEmpty { scheduleRetry() }
         watcher.sync(pids)
         let screens = Windows.screens()
+        // A window from the saved layout that only now answered goes back to its workspace.
+        var returned = false
+        for id in added {
+            guard let entry = pendingLayout.removeValue(forKey: id), windows[id]?.pid == entry.pid else { continue }
+            model.assign(id, to: entry.workspace)
+            returned = returned || entry.workspace != model.current
+        }
+        if returned, !switching {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.active, !self.switching else { return }
+                self.switchTo(self.model.current, takeFocus: false, announce: false)
+            }
+        }
         // An app that autosaves its window position can reopen a window at the hiding spot.
         for id in added {
             guard let w = windows[id], !w.isMinimized, let f = w.frame, Geometry.isStranded(f, screens: screens) else { continue }
@@ -166,6 +186,7 @@ final class Spaces {
         saved.frames = saved.frames.filter { alive.contains($0.key) }
         saved.hiddenApps = saved.hiddenApps.filter { NSRunningApplication(processIdentifier: $0).map { !$0.isTerminated } ?? false }
         refusedFullScreen.formIntersection(alive)
+        pendingLayout = pendingLayout.filter { alive.contains($0.key) }
     }
 
     /// `takeFocus: false` rearranges windows without touching focus, for moves made from the
@@ -283,33 +304,70 @@ final class Spaces {
         followFocus()
     }
 
+    /// The window each app last had in focus, to tell a window closing (⌘W) from the person
+    /// picking another window of the same app.
+    private var lastKey: [pid_t: WindowID] = [:]
+
+    /// The app's window on this workspace that should take focus, if it has one: the one used
+    /// last here, or any visible one.
+    private func windowHere(of pid: pid_t) -> Window? {
+        let here = model.windows(on: model.current).compactMap { windows[$0] }
+            .filter { $0.pid == pid && !$0.isMinimized && saved.frames[$0.id] == nil }
+        if let last = model.lastFocused[model.current], let w = here.first(where: { $0.id == last }) { return w }
+        return here.first
+    }
+
+    /// Focuses a window on this workspace, marking the activation as BaneySpaces' own.
+    private func stay(on w: Window) {
+        expectedFront = w.pid
+        settleUntil = Date().addingTimeInterval(0.3)
+        lastKey[w.pid] = w.id
+        model.noteFocus(w.id)
+        w.focus()
+    }
+
+    /// An app came to the front (Dock click, ⌘Tab, a link opening it). If it has a window on this
+    /// workspace, stay here and use that one: macOS tends to focus the app's most recent window,
+    /// which may belong to another workspace. Only an app with nothing here takes you to its
+    /// workspace.
     private func followFocus() {
         guard let app = NSWorkspace.shared.frontmostApplication, app.processIdentifier != getpid() else { return }
         // A newly activated app may have just become a regular app: re-read the app list, which
         // forces a full scan only if it changed.
         RunningApps.invalidate()
         refresh()
-        guard let w = Windows.focused(of: app.processIdentifier, in: Array(windows.values)),
+        let pid = app.processIdentifier
+        guard let w = Windows.focused(of: pid, in: Array(windows.values)),
               let n = model.workspace(of: w.id) else { return }
+        if n == model.current && saved.frames[w.id] == nil {
+            lastKey[pid] = w.id
+            model.noteFocus(w.id)
+            return persist()
+        }
+        if let here = windowHere(of: pid) { return stay(on: here) }
+        lastKey[pid] = w.id
         model.noteFocus(w.id)
-        if n != model.current { switchTo(n, announce: true) } else { persist() }
+        switchTo(n, announce: true)
     }
 
-    /// The front app moved focus to another of its windows without an app switch, as after ⌘W
-    /// or ⌘`. If that window belongs to another workspace, typing would land in a window you
-    /// can't see. Stay on this workspace: focus the app's window here, or hide the app if it
-    /// has none.
+    /// The front app moved focus to another of its windows without an app switch. Two cases:
+    /// the window you were in closed (⌘W), and the app picked its next window on its own; or you
+    /// chose a window yourself (the Window menu, ⌘`). A closed window keeps you on this workspace,
+    /// so typing never lands in a hidden window. A window you chose takes you to its workspace.
     private func focusMovedWithin(_ pid: pid_t) {
         guard active, !switching, Date() > settleUntil,
               NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
         refresh()
-        guard let w = Windows.focused(of: pid, in: Array(windows.values)),
-              let n = model.workspace(of: w.id), n != model.current || saved.frames[w.id] != nil else { return }
-        if let here = model.windows(on: model.current).compactMap({ windows[$0] })
-            .first(where: { $0.pid == pid && !$0.isMinimized && saved.frames[$0.id] == nil }) {
-            expectedFront = pid
-            settleUntil = Date().addingTimeInterval(0.3)
-            here.focus()
+        guard let w = Windows.focused(of: pid, in: Array(windows.values)), let n = model.workspace(of: w.id) else { return }
+        let previous = lastKey[pid]
+        lastKey[pid] = w.id
+        guard n != model.current || saved.frames[w.id] != nil else { return model.noteFocus(w.id) }
+        let chosen = previous.map { windows[$0] != nil && $0 != w.id } ?? false
+        if chosen {
+            model.noteFocus(w.id)
+            switchTo(n, announce: true)
+        } else if let here = windowHere(of: pid) {
+            stay(on: here)
         } else {
             switchTo(model.current, announce: false)
         }
@@ -421,7 +479,10 @@ final class Spaces {
         let oldFront = Date() < settleUntil ? expectedFront : NSWorkspace.shared.frontmostApplication?.processIdentifier
         // 1. Everything on this workspace comes back. That includes an app hidden with ⌘H:
         //    going to its workspace means wanting to see it.
-        for pid in how.showApps {
+        // A hidden app may not answer until it's shown, so a saved window that hasn't been seen yet
+        // still brings its app back when you go to its workspace.
+        let waiting = Set(pendingLayout.values.filter { $0.workspace == model.current }.map(\.pid))
+        for pid in how.showApps.union(waiting) {
             if let app = NSRunningApplication(processIdentifier: pid), app.isHidden { app.unhide() }
             saved.hiddenApps.remove(pid)
         }
@@ -577,8 +638,9 @@ final class Spaces {
                 (String(n), model.windows(on: n).map { ["id": $0, "app": windows[$0]?.appName ?? ""] as [String: Any] })
             }),
         ]
+        let known = model.home.compactMap { id, ws in windows[id].map { SavedLayout.Entry(window: id, pid: $0.pid, workspace: ws) } }
         let layout = SavedLayout(current: model.current,
-                                 entries: model.home.compactMap { id, ws in windows[id].map { .init(window: id, pid: $0.pid, workspace: ws) } },
+                                 entries: known + pendingLayout.values.filter { model.workspace(of: $0.window) == nil },
                                  lastFocused: model.lastFocused)
         Spaces.writer.async {
             frames.save(to: Spaces.framesURL)
