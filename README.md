@@ -50,9 +50,9 @@ Prefer to keep ⌘1 for your browser's first tab? Pick ⌃, ⌥ or ⌃⌥ in set
 - **New windows open where you are.** Open something on workspace 4 and it lives on workspace 4.
 - **The Dock and ⌘Tab still work.** Click an app whose window is on workspace 6 and you go to
   workspace 6.
-- **Full screen means fill the screen.** macOS full screen moves a window to a desktop of its own,
-  and Mission Control fills up with extra desktops that ⌘1–⌘9 can't reach. BaneySpaces brings the
-  window straight back out and fills the screen with it, so every window stays on a workspace.
+- **Full screen works, and ⌘1–⌘9 still work from it.** Put a video or a slideshow in full screen
+  as usual. Press ⌘2 and the window leaves full screen before you switch, so it stays on its
+  workspace instead of stranding you on a macOS desktop that ⌘1–⌘9 can't reach.
 - **Empty means empty.** Go to a workspace with nothing on it and you get a clean desktop.
   Typing goes nowhere until you open something.
 

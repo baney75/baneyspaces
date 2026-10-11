@@ -73,14 +73,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                   let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
             self.spaces.appActivated(app)
         }
-        // Entering full screen switches macOS desktops. Wait out the animation, then flatten it.
-        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification,
-                                                          object: nil, queue: .main) { [weak self] _ in
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                guard let self, self.started else { return }
-                self.spaces.flattenFullScreen()
-            }
-        }
         // Once another app is in front, the viewer and the empty-workspace holder step aside.
         NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification,
                                                object: nil, queue: .main) { [weak self] _ in

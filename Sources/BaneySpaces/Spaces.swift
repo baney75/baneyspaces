@@ -227,13 +227,14 @@ final class Spaces {
         // The menu bar number changes the moment the key is pressed, not when the work is done.
         onChange?()
 
-        // Full screen is flattened as soon as it happens (see flattenFullScreen). This catches the
-        // window in front having gone full screen in the moment before a switch.
+        // Full screen lives on a macOS desktop of its own, which BaneySpaces can't hide. Switching
+        // away from a full-screen window (a video, a presentation) takes it out of full screen first.
         guard let f = focused, plan.hide.contains(f.id), !refusedFullScreen.contains(f.id), f.isFullScreen else {
             return apply(plan, moveFocus: moveFocus)
         }
         let gen = generation
-        leaveFullScreen([f]) { [self] refused in
+        // macOS puts the window back where it was before full screen.
+        leaveFullScreen([f], fill: false) { [self] refused in
             guard gen == generation, active else { return }
             // A window that won't leave full screen stays with you rather than strand you on its desktop.
             for w in refused { model.assign(w.id, to: n) }
@@ -245,9 +246,9 @@ final class Spaces {
     }
 
     /// macOS full screen moves a window to a desktop of its own, where BaneySpaces can't hide or
-    /// show it, and Mission Control fills up with extra desktops. So in BaneySpaces, full screen
-    /// means filling the screen: a window that goes full screen comes back out and fills it.
-    /// Runs at launch and whenever macOS changes desktops.
+    /// show it. Full screen you choose (a video, a presentation) stays until you switch
+    /// workspaces; a window left in full screen from before BaneySpaces started comes back out
+    /// at launch and fills the screen.
     func flattenFullScreen() {
         guard active else { return }
         if switching { return enqueue { [weak self] in self?.flattenFullScreen() } }
@@ -257,7 +258,7 @@ final class Spaces {
         switching = true
         generation += 1
         let gen = generation
-        leaveFullScreen(fullScreen) { [self] _ in
+        leaveFullScreen(fullScreen, fill: true) { [self] _ in
             guard gen == generation, active else { return }
             refresh(full: true)
             persist()
@@ -265,9 +266,9 @@ final class Spaces {
         }
     }
 
-    /// Takes windows out of full screen and fills the screen with each. Calls back with the
-    /// windows that refused, which are remembered so they aren't asked again.
-    private func leaveFullScreen(_ fullScreen: [Window], then: @escaping ([Window]) -> Void) {
+    /// Takes windows out of full screen, and with `fill` fills the screen with each. Calls back
+    /// with the windows that refused, which are remembered so they aren't asked again.
+    private func leaveFullScreen(_ fullScreen: [Window], fill: Bool, then: @escaping ([Window]) -> Void) {
         fullScreen.forEach { $0.exitFullScreen() }
         // Some apps (Chromium browsers among them) ignore the request. Their green button doesn't.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
@@ -282,7 +283,7 @@ final class Spaces {
                         refused.append(w)
                         refusedFullScreen.insert(w.id)
                         NSSound.beep()
-                    } else if let f = w.frame {
+                    } else if fill, let f = w.frame {
                         w.setFrame(Windows.visibleArea(near: f))
                     }
                 }

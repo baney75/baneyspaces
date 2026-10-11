@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Full screen stays full screen.** YouTube, slideshows and anything else you put in full screen
+  stay there; BaneySpaces used to pull every window back out within a second. Switching
+  workspaces still takes the window out of full screen first, and macOS puts it back where it was.
+
 Fixes from a second adversarial review, focused on apps that are slow to answer.
 
 - **A busy app no longer stalls a switch.** Raising a window waits at most 0.1 s per call and
