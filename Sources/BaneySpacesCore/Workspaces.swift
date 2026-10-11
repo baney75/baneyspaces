@@ -88,10 +88,12 @@ public struct Concealment: Equatable {
 
     /// `alsoShown` are apps coming back for a window not listed yet (one from the saved layout
     /// whose app hasn't answered): they stay shown, and their other windows are parked.
-    public init(plan: SwitchPlan, owner: [WindowID: Int32], alsoShown: Set<Int32> = []) {
+    /// `neverHidden` are apps that are never hidden whole: their windows elsewhere are parked.
+    public init(plan: SwitchPlan, owner: [WindowID: Int32], alsoShown: Set<Int32> = [], neverHidden: Set<Int32> = []) {
         let shown = Set(plan.show.compactMap { owner[$0] }).union(alsoShown)
+        let kept = shown.union(neverHidden)
         showApps = shown
-        hideApps = Set(plan.hide.compactMap { owner[$0] }).subtracting(shown)
-        park = plan.hide.filter { owner[$0].map(shown.contains) ?? false }
+        hideApps = Set(plan.hide.compactMap { owner[$0] }).subtracting(kept)
+        park = plan.hide.filter { owner[$0].map(kept.contains) ?? false }
     }
 }

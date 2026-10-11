@@ -164,6 +164,15 @@ open baneyspaces://viewer       # show or hide the overview
 `~/Library/Application Support/BaneySpaces/state.json` always holds the current workspace and
 the apps on each one.
 
+### Agents and automation
+
+BaneySpaces hides an app whose windows all sit on other workspaces, the way ⌘H does. macOS
+refuses background clicks and keystrokes to a hidden app, so tools that drive apps from behind,
+such as [Cua](https://github.com/trycua/cua), can't use it until you switch back. Put the app
+under **Keep Usable by Automation** in the menu bar menu and its windows are parked just out of
+view instead, where those tools can still click and type. Cua Spaces is on the list from the
+start, so its picture-in-picture window stays put.
+
 ## Limits
 
 - **One set of workspaces covers every display.** ⌘3 changes what every screen shows.
@@ -172,8 +181,8 @@ the apps on each one.
   every global shortcut, not just these.
 - **Windows on other macOS desktops are left alone.** Keep one macOS desktop in Mission Control
   and let the nine workspaces do the rest.
-- **Switching between two windows of the same app with ⌘\`** doesn't follow a window onto
-  another workspace yet. The Dock and ⌘Tab do.
+- **An agent pressing ⌘1–⌘9 in the foreground switches workspaces,** the same as you would.
+  Background key delivery to one app (as Cua does by default) doesn't.
 
 ## Build from source
 

@@ -138,6 +138,11 @@ final class MissionControlKeys {
             }
             return Unmanaged.passUnretained(event)
         }
+        if tabEnabledOnTap, code == tabKey, type == .keyDown, !(switcherReady || inGesture),
+           event.flags.intersection([.maskControl, .maskCommand, .maskAlternate]) == .maskCommand {
+            let started = appStarted, viewer = viewerOpen
+            DispatchQueue.main.async { Trace.log("cmdTab passed to macOS started=\(started) viewerOpen=\(viewer)") }
+        }
         if tabEnabledOnTap, code == tabKey, switcherReady || inGesture {
             let mods = event.flags.intersection([.maskControl, .maskCommand, .maskAlternate])
             if mods == .maskCommand {

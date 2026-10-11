@@ -18,6 +18,7 @@ final class WorkspaceSwitcher {
     func step(forward: Bool) {
         if !isShowing {
             let order = spaces.switcherOrder()
+            Trace.log("cmdTab show order=\(order) current=\(spaces.model.current)")
             model.tiles = order.map { n in
                 SwitcherModel.Tile(n: n, icons: icons(on: n), count: spaces.entries(on: n).count)
             }
@@ -34,10 +35,14 @@ final class WorkspaceSwitcher {
         guard isShowing else { return }
         let target = model.tiles.indices.contains(model.selected) ? model.tiles[model.selected].n : nil
         hide()
+        Trace.log("cmdTab commit target=\(target.map(String.init) ?? "none") current=\(spaces.model.current)")
         if let target, target != spaces.model.current { spaces.switchTo(target, announce: false) }
     }
 
-    func cancel() { hide() }
+    func cancel() {
+        Trace.log("cmdTab cancel")
+        hide()
+    }
 
     private func icons(on n: Int) -> [NSImage] {
         var seen = Set<pid_t>()
@@ -131,5 +136,24 @@ struct SwitcherView: View {
         .background(RoundedRectangle(cornerRadius: 24).fill(Color.black.opacity(0.72)))
         .overlay(RoundedRectangle(cornerRadius: 24).strokeBorder(Color.white.opacity(0.1)))
         .environment(\.colorScheme, .dark)
+    }
+}
+
+/// A short record of ⌘Tab gestures in trace.log, to diagnose a switcher that misbehaves. It
+/// notes only the gesture (Tab, ⌘ let go, Esc) and workspace numbers, never other keys.
+enum Trace {
+    static func log(_ line: String) {
+        let url = Spaces.folder.appendingPathComponent("trace.log")
+        let text = "\(Date().timeIntervalSince1970) \(line)\n"
+        if let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int, size > 200_000 {
+            try? FileManager.default.removeItem(at: url)
+        }
+        if let h = try? FileHandle(forWritingTo: url) {
+            h.seekToEndOfFile()
+            h.write(Data(text.utf8))
+            try? h.close()
+        } else {
+            try? Data(text.utf8).write(to: url)
+        }
     }
 }

@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **Keep Usable by Automation** (menu bar menu): apps on this list are never hidden whole.
+  Their windows on other workspaces are parked out of view instead, because macOS refuses
+  background clicks and keys to a hidden app, which cut off tools like Cua. Cua Spaces is on the
+  list by default, so its picture-in-picture window no longer disappears on a switch. A window
+  automation opens in a parked app joins that app's workspace instead of yours.
+- A full-screen window that refuses to leave full screen no longer takes focus on every switch.
+- `trace.log` records each ⌘Tab gesture (shown, committed, cancelled, passed to macOS) to help
+  diagnose the switcher. It never records other keys.
+
 ## 0.2.1 (2026-10-11)
 
 Full screen that stays put, and fixes from a second adversarial review, focused on apps that

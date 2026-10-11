@@ -177,6 +177,30 @@ final class ConcealmentTests: XCTestCase {
         XCTAssertEqual(c.park, [1])
     }
 
+    func testAnAppThatIsNeverHiddenHasItsWindowsParkedInstead() {
+        // App 100 is driven by automation, which macOS cuts off from a hidden app.
+        let plan = SwitchPlan(hide: [1, 2], show: [3], focus: 3)
+        let c = Concealment(plan: plan, owner: [1: 100, 2: 200, 3: 300], neverHidden: [100])
+        XCTAssertEqual(c.hideApps, [200])
+        XCTAssertEqual(c.showApps, [300])
+        XCTAssertEqual(c.park, [1])
+    }
+
+    func testAnAppThatIsNeverHiddenButHasAWindowHereIsShownAndParksTheRest() {
+        let plan = SwitchPlan(hide: [1], show: [2], focus: 2)
+        let c = Concealment(plan: plan, owner: [1: 100, 2: 100], neverHidden: [100])
+        XCTAssertEqual(c.showApps, [100])
+        XCTAssertEqual(c.hideApps, [])
+        XCTAssertEqual(c.park, [1])
+    }
+
+    func testNeverHiddenAloneDoesNotShowAnApp() {
+        let plan = SwitchPlan(hide: [1], show: [], focus: nil)
+        let c = Concealment(plan: plan, owner: [1: 100], neverHidden: [100])
+        XCTAssertEqual(c.showApps, [])
+        XCTAssertEqual(c.park, [1])
+    }
+
     func testAnAppComingBackForAWaitingWindowStaysShownAndParksTheRest() {
         // App 100's window for this workspace hasn't answered yet; its window 1 belongs elsewhere.
         let plan = SwitchPlan(hide: [1, 2], show: [], focus: nil)

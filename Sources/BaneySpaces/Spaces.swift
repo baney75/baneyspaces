@@ -124,7 +124,8 @@ final class Spaces {
             clock.scan = "skip"
             return
         }
-        clock.scan = lastScan == nil ? "first" : last(lastScan!, snap.appWindows, pids)
+        let firstScan = lastScan == nil
+        clock.scan = firstScan ? "first" : last(lastScan!, snap.appWindows, pids)
         RunningApps.invalidate()
         let pidsNow = RunningApps.regular
         let (list, unsure) = Windows.all(owners: snap.owners)
@@ -143,11 +144,15 @@ final class Spaces {
         let screens = Windows.screens()
         // A window from the saved layout that only now answered goes back to its workspace.
         var returned = false
+        var fromLayout = Set<WindowID>()
         for id in added {
             guard let entry = pendingLayout.removeValue(forKey: id), windows[id]?.pid == entry.pid else { continue }
             model.assign(id, to: entry.workspace, focus: false)
+            fromLayout.insert(id)
             returned = returned || entry.workspace != model.current
         }
+        // At launch every window is new; the saved layout decides where they go.
+        if !firstScan { adoptBackgroundWindows(added.filter { !fromLayout.contains($0) }) }
         if returned, !switching {
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.active, !self.switching else { return }
@@ -164,6 +169,33 @@ final class Spaces {
         // send it back to a stale spot later.
         for id in saved.frames.keys where model.workspace(of: id) == model.current {
             if let f = windows[id]?.frame, !Geometry.isStranded(f, screens: screens) { saved.frames[id] = nil }
+        }
+    }
+
+    /// A window that opens in a parked app (see `ParkedApps`) while that app stays in the
+    /// background was opened by automation, not by you: it joins the app's other windows instead
+    /// of landing on the workspace you're looking at. Decided a moment later, so a link you
+    /// click (which brings the app forward) still opens the window where you are.
+    private func adoptBackgroundWindows(_ added: [WindowID]) {
+        let ids = ParkedApps.bundleIDs
+        let candidates = added.filter { id in
+            guard let w = windows[id] else { return false }
+            return NSRunningApplication(processIdentifier: w.pid)?.bundleIdentifier.map(ids.contains) == true
+        }
+        guard !candidates.isEmpty else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self, self.active else { return }
+            let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            var moved = false
+            for id in candidates {
+                guard let w = self.windows[id], w.pid != front, self.model.workspace(of: id) == self.model.current else { continue }
+                let others = self.windows.values.filter { $0.pid == w.pid && $0.id != id }.compactMap { self.model.workspace(of: $0.id) }
+                guard !others.contains(self.model.current),
+                      let home = self.recent.first(where: others.contains) ?? others.min() else { continue }
+                self.model.assign(id, to: home, focus: false)
+                moved = true
+            }
+            if moved { self.reapply() }
         }
     }
 
@@ -195,6 +227,10 @@ final class Spaces {
     }
 
     private func prune(alive: Set<WindowID>) {
+        // The app in front closing its window here (⌘W) hands focus to another app.
+        if windows.contains(where: { !alive.contains($0.key) && $0.value.pid == frontPid && model.workspace(of: $0.key) == model.current }) {
+            leftAt = Date()
+        }
         windows = windows.filter { alive.contains($0.key) }
         model.sync(seen: [], alive: alive)
         saved.frames = saved.frames.filter { alive.contains($0.key) }
@@ -234,7 +270,7 @@ final class Spaces {
         let full = fullScreen(among: plan.hide)
         // Rearranging the workspace you're on (a move from the overview) is on purpose: no carrying.
         let carried = n == leaving ? [] : full.filter { refusedFullScreen.contains($0.id) }
-        for w in carried { model.assign(w.id, to: n) }
+        for w in carried { model.assign(w.id, to: n, focus: false) }
         let asking = full.filter { !refusedFullScreen.contains($0.id) }
         guard !asking.isEmpty else {
             return apply(carried.isEmpty ? plan : model.switchTo(n), moveFocus: moveFocus)
@@ -244,7 +280,7 @@ final class Spaces {
         // macOS puts each window back where it was before full screen.
         leaveFullScreen(asking, fill: false) { [self] refused in
             guard gen == generation, active else { return }
-            for w in refused { model.assign(w.id, to: n) }
+            for w in refused { model.assign(w.id, to: n, focus: false) }
             // Back on the regular desktop, Accessibility can list windows it couldn't see from the
             // full-screen one. Those opened while you were on the workspace you just left.
             refresh(full: true)
@@ -340,6 +376,7 @@ final class Spaces {
     func appActivated(_ app: NSRunningApplication) {
         let pid = app.processIdentifier
         guard active, pid != getpid() else { return }
+        defer { frontPid = pid }
         Windows.markResponsive(pid)
         if switching {
             if pid != expectedFront { followPending = true }
@@ -393,9 +430,33 @@ final class Spaces {
             return persist()
         }
         if let here = windowHere(of: pid) { return stay(on: here) }
+        // When the app in front closes its last window here, quits or hides, macOS hands focus to
+        // the next app. An app kept unhidden for automation is often next in line, and that isn't
+        // you picking it: stay here.
+        if saved.frames[w.id] != nil, ParkedApps.contains(pid), Date().timeIntervalSince(leftAt) < 0.5 {
+            if let id = model.lastFocused[model.current], let t = windows[id], saved.frames[id] == nil, t.pid != pid {
+                return stay(on: t)
+            }
+            return takeFocus()
+        }
         lastKey[pid] = w.id
         model.noteFocus(w.id)
         switchTo(n, announce: true)
+    }
+
+    /// When the app in front last closed a window here, quit or hid. An activation right after
+    /// that is macOS picking the next app, not you.
+    private var leftAt = Date.distantPast
+    /// The app in front, as of the last activation.
+    private var frontPid: pid_t?
+    /// Apps BaneySpaces itself just hid; their hide notifications arrive late.
+    private var ownHides: Set<pid_t> = []
+    private var ownHidesUntil = Date.distantPast
+
+    /// An app quit or hid (⌘Q, ⌘H). Only the app in front counts, and not BaneySpaces' own hiding.
+    func appLeft(_ pid: pid_t) {
+        guard pid == frontPid, !(ownHides.contains(pid) && Date() < ownHidesUntil) else { return }
+        leftAt = Date()
     }
 
     /// The front app moved focus to another of its windows without an app switch. Two cases:
@@ -426,6 +487,30 @@ final class Spaces {
             switchTo(model.current, announce: false)
         }
     }
+
+    /// The running apps on the parked list (see `ParkedApps`) that answer Accessibility. A busy
+    /// app is hidden as before: parking needs it to answer, hiding doesn't.
+    private func parkedPids() -> Set<pid_t> {
+        let ids = ParkedApps.bundleIDs
+        guard !ids.isEmpty else { return [] }
+        let unsure = lastScan?.unsure ?? []
+        return Set(windows.values.map(\.pid)).filter { pid in
+            Windows.isResponsive(pid) && !unsure.contains(pid)
+                && NSRunningApplication(processIdentifier: pid)?.bundleIdentifier.map(ids.contains) == true
+        }
+    }
+
+    /// Each app with a window, by name and bundle identifier, for the parked-apps menu.
+    func appsWithWindows() -> [(name: String, bundleID: String)] {
+        var seen = Set<String>()
+        return windows.values.sorted { $0.appName.localizedCompare($1.appName) == .orderedAscending }.compactMap { w in
+            guard let id = NSRunningApplication(processIdentifier: w.pid)?.bundleIdentifier, seen.insert(id).inserted else { return nil }
+            return (w.appName, id)
+        }
+    }
+
+    /// Re-applies the workspace you're on, after the parked-apps list changed.
+    func reapply() { switchTo(model.current, takeFocus: false, announce: false) }
 
     /// Every window onto workspace 1, all visible. The way out of any tangle.
     func gatherOnOne() {
@@ -543,8 +628,11 @@ final class Spaces {
         // windows couldn't be parked. The retry scan brings the waiting window home instead.
         let elsewhere = Set(windows.values.filter { model.workspace(of: $0.id) != model.current }.map(\.pid))
         let waiting = Set(pendingLayout.values.filter { $0.workspace == model.current }.map(\.pid)).subtracting(elsewhere)
-        let how = Concealment(plan: plan, owner: windows.mapValues(\.pid), alsoShown: waiting)
-        for pid in how.showApps {
+        let parkedApps = parkedPids()
+        let how = Concealment(plan: plan, owner: windows.mapValues(\.pid), alsoShown: waiting, neverHidden: parkedApps)
+        // An app put on the parked list after BaneySpaces hid it comes back; its windows from
+        // other workspaces are parked a moment later in this same switch.
+        for pid in how.showApps.union(parkedApps.intersection(saved.hiddenApps)) {
             if let app = NSRunningApplication(processIdentifier: pid), app.isHidden { app.unhide() }
             saved.hiddenApps.remove(pid)
         }
@@ -555,6 +643,10 @@ final class Spaces {
         // 2. Everything else leaves at once, except the app in front. Hiding a background app
         //    changes nothing about focus, so there's no reason to wait for it.
         let deferred: Set<pid_t> = moveFocus ? Set([oldFront].compactMap { $0 }).intersection(how.hideApps) : []
+        // Our own hides are announced a moment later; they aren't an app you closed.
+        ownHides = how.hideApps
+        ownHidesUntil = Date().addingTimeInterval(1)
+        let leavingParked: pid_t? = moveFocus ? oldFront.flatMap { parkedApps.contains($0) && !how.showApps.contains($0) ? $0 : nil } : nil
         conceal(how, apps: how.hideApps.subtracting(deferred), screens: screens)
         // 3. Focus moves to this workspace. Only then does the old front app hide: hiding the app
         //    in front makes macOS activate another app on its own, which would look like the
@@ -591,6 +683,11 @@ final class Spaces {
                 }
             }
             conceal(how, apps: deferred, screens: screens)
+            // A parked app isn't hidden, so nothing forces it out of the front. If it's still
+            // there, its key window is out of sight: typing must not go into it.
+            if let p = leavingParked, Windows.focusedPid() == p {
+                if let target, target.focus() { lastKey[target.pid] = target.id } else { takeFocus() }
+            }
             if moveFocus, target == nil, Windows.focusedPid() != getpid() {
                 // Finder is the last resort, unless it was just hidden: activating a hidden app
                 // brings back its windows from other workspaces.
@@ -607,7 +704,7 @@ final class Spaces {
         // Nothing left that depends on focus: finish now, without waiting a timer tick.
         // Nothing left that depends on focus: finish now. An empty workspace still waits for
         // BaneySpaces to be in front, or the Finder fallback would fire on stale information.
-        let waitForFocus = !deferred.isEmpty || (moveFocus && target == nil)
+        let waitForFocus = !deferred.isEmpty || (moveFocus && target == nil) || leavingParked != nil
         if !waitForFocus || Windows.focusedPid() == frontPid { return done() }
         waitUntil(timeout: 0.5, interval: 0.01, { Windows.focusedPid() == frontPid }, then: done)
     }
@@ -656,6 +753,21 @@ final class Spaces {
                 saved.frames[id] = f
             }
             w.setOrigin(spot)
+            // An app kept unhidden for automation can ignore the move; read it back.
+            if !how.showApps.contains(w.pid), let now = w.frame, !Geometry.isStranded(now, screens: screens) {
+                saved.frames[id] = nil
+            }
+        }
+        // An app kept unhidden for automation whose window couldn't be parked (it stopped
+        // answering, or ignored the move) is hidden after all, rather than left in sight on the
+        // wrong workspace.
+        let unparked = Set(how.park.compactMap { id -> pid_t? in
+            guard let w = windows[id], !how.showApps.contains(w.pid), saved.frames[id] == nil, !w.isMinimized else { return nil }
+            return w.pid
+        })
+        for pid in unparked {
+            NSRunningApplication(processIdentifier: pid)?.hide()
+            saved.hiddenApps.insert(pid)
         }
     }
 

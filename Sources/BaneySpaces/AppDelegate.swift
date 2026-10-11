@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let keys = MissionControlKeys { [weak self] in self?.viewer.toggle() }
         keys.onCmdTab = { [weak self] forward in
             guard let self, self.started, !self.viewer.isOpen else {
+                Trace.log("cmdTab ignored started=\(self?.started ?? false) viewerOpen=\(self?.viewer.isOpen ?? false)")
                 MissionControlKeys.inGesture = false
                 return
             }
@@ -67,6 +68,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.menu = menu
 
         spaces.onChange = { [weak self] in self?.updateIcon() }
+        for name in [NSWorkspace.didTerminateApplicationNotification, NSWorkspace.didHideApplicationNotification] {
+            NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+                self?.spaces.appLeft(app.processIdentifier)
+            }
+        }
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification,
                                                           object: nil, queue: .main) { [weak self] note in
             guard let self, self.started,
@@ -244,6 +251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
         menu.addItem(item("Show All Workspaces", #selector(showViewer)))
         menu.addItem(item("Bring Every Window Back", #selector(bringBack)))
+        menu.addItem(parkedAppsItem())
         menu.addItem(item("Set Up BaneySpaces…", #selector(showSetup), key: ","))
         menu.addItem(.separator())
         menu.addItem(item("About BaneySpaces", #selector(about)))
@@ -257,6 +265,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func pick(_ sender: NSMenuItem) { spaces.switchTo(sender.tag) }
+
+    /// Apps whose windows are parked instead of hidden, so automation can still use them.
+    private func parkedAppsItem() -> NSMenuItem {
+        let parent = NSMenuItem(title: "Keep Usable by Automation", action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        let note = NSMenuItem(title: "Checked apps aren't hidden on other workspaces, so tools like Cua can still click and type in them.", action: nil, keyEquivalent: "")
+        note.isEnabled = false
+        sub.addItem(note)
+        sub.addItem(.separator())
+        let on = ParkedApps.bundleIDs
+        // Apps with windows, plus every app already on the list, so any of them can be unchecked.
+        var apps = spaces.appsWithWindows()
+        for id in on where !apps.contains(where: { $0.bundleID == id }) {
+            let name = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id)
+                .map { FileManager.default.displayName(atPath: $0.path).replacingOccurrences(of: ".app", with: "") } ?? id
+            apps.append((name, id))
+        }
+        for app in apps {
+            let it = item(app.name, #selector(toggleParked(_:)))
+            it.representedObject = app.bundleID
+            it.state = on.contains(app.bundleID) ? .on : .off
+            sub.addItem(it)
+        }
+        parent.submenu = sub
+        return parent
+    }
+
+    @objc private func toggleParked(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        ParkedApps.toggle(id)
+        spaces.reapply()
+    }
 
     @objc private func bringBack() { spaces.gatherOnOne() }
 
