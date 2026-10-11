@@ -202,3 +202,9 @@ Accessibility entry.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Sponsors
+
+<!-- sponsors:start -->
+No sponsors yet. [Sponsor on GitHub](https://github.com/sponsors/baney75) and your name appears here automatically.
+<!-- sponsors:end -->
