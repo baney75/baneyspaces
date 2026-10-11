@@ -28,7 +28,10 @@ struct Window {
         guard Windows.isResponsive(pid) else { return }
         element.set(kAXPositionAttribute, p, .cgPoint)
     }
-    func setSize(_ s: CGSize) { element.set(kAXSizeAttribute, s, .cgSize) }
+    func setSize(_ s: CGSize) {
+        guard Windows.isResponsive(pid) else { return }
+        element.set(kAXSizeAttribute, s, .cgSize)
+    }
     /// Moves a window back to `r`. A parked window kept its size, so usually one move is all it
     /// takes; resizing makes apps lay out again, which is slow and can flicker.
     func place(_ r: CGRect, currentSize: CGSize) {
@@ -55,11 +58,22 @@ struct Window {
         AXUIElementPerformAction(button, kAXPressAction as CFString)
     }
 
-    func focus() {
-        AXUIElementSetAttributeValue(element, kAXMainAttribute as CFString, kCFBooleanTrue)
-        AXUIElementPerformAction(element, kAXRaiseAction as CFString)
-        AXUIElementSetAttributeValue(AXUIElementCreateApplication(pid), kAXFrontmostAttribute as CFString, kCFBooleanTrue)
-        NSRunningApplication(processIdentifier: pid)?.activate()
+    /// Raises the window and brings its app forward; whether the raise took. An app busy coming
+    /// back from hiding can stall each call, so the calls wait briefly and stop at the first
+    /// timeout. Other errors (a window that can't be made main) don't stop the raise.
+    @discardableResult
+    func focus() -> Bool {
+        defer { NSRunningApplication(processIdentifier: pid)?.activate() }
+        AXUIElementSetMessagingTimeout(element, 0.1)
+        defer { AXUIElementSetMessagingTimeout(element, 0) }
+        let main = AXUIElementSetAttributeValue(element, kAXMainAttribute as CFString, kCFBooleanTrue)
+        guard main != .cannotComplete else { element.checked(main); return false }
+        let raise = AXUIElementPerformAction(element, kAXRaiseAction as CFString)
+        guard raise != .cannotComplete else { element.checked(raise); return false }
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.1)
+        app.checked(AXUIElementSetAttributeValue(app, kAXFrontmostAttribute as CFString, kCFBooleanTrue))
+        return raise == .success
     }
 }
 
@@ -198,6 +212,29 @@ enum Windows {
         NSRunningApplication(processIdentifier: pid)?.activate()
     }
 
+    /// Whether the app still lists this window among its open ones. Some apps hide a window on
+    /// ⌘W instead of closing it, so the window server alone can't tell.
+    static func lists(_ id: WindowID, pid: pid_t) -> Bool {
+        let ax = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(ax, 0.25)
+        let listed: [AXUIElement] = ax.value(kAXWindowsAttribute) ?? []
+        return listed.contains { $0.windowID == id }
+    }
+
+    /// Each window's owner and frame from the window server, which answers even when the app
+    /// doesn't. Frames are in Accessibility coordinates (top-left origin).
+    static func serverWindows() -> [WindowID: (pid: pid_t, bounds: CGRect?)] {
+        let info = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
+        var result: [WindowID: (pid: pid_t, bounds: CGRect?)] = [:]
+        for w in info {
+            guard let id = (w[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
+                  let pid = (w[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value else { continue }
+            let bounds = (w[kCGWindowBounds as String] as? NSDictionary).flatMap { CGRect(dictionaryRepresentation: $0) }
+            result[id] = (pid, bounds)
+        }
+        return result
+    }
+
     static func focused(of pid: pid_t, in windows: [Window]) -> Window? {
         let ax = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(ax, 0.25)
@@ -232,21 +269,24 @@ extension AXUIElement {
 
     func value<T>(_ attribute: String) -> T? {
         var raw: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(self, attribute as CFString, &raw)
-        guard result == .success else {
-            // A timeout means the app is busy or hung: stop asking it for a few seconds.
-            if result == .cannotComplete {
-                var pid: pid_t = 0
-                if AXUIElementGetPid(self, &pid) == .success, pid > 0 { Windows.markUnresponsive(pid) }
-            }
-            return nil
-        }
+        guard checked(AXUIElementCopyAttributeValue(self, attribute as CFString, &raw)) else { return nil }
         return raw as? T
+    }
+
+    /// Whether a call succeeded. A timeout means the app is busy or hung: stop asking it for a
+    /// few seconds, so one stuck app costs one timeout instead of one per call.
+    @discardableResult
+    func checked(_ result: AXError) -> Bool {
+        if result == .cannotComplete {
+            var pid: pid_t = 0
+            if AXUIElementGetPid(self, &pid) == .success, pid > 0 { Windows.markUnresponsive(pid) }
+        }
+        return result == .success
     }
 
     func value<T>(_ attribute: String, _ type: AXValueType) -> T? {
         var raw: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(self, attribute as CFString, &raw) == .success,
+        guard checked(AXUIElementCopyAttributeValue(self, attribute as CFString, &raw)),
               let raw, CFGetTypeID(raw) == AXValueGetTypeID() else { return nil }
         let pointer = UnsafeMutablePointer<T>.allocate(capacity: 1)
         defer { pointer.deallocate() }
@@ -259,12 +299,12 @@ extension AXUIElement {
     func set(_ attribute: String, _ value: CGPoint, _ type: AXValueType) {
         var v = value
         guard let ax = AXValueCreate(type, &v) else { return }
-        AXUIElementSetAttributeValue(self, attribute as CFString, ax)
+        checked(AXUIElementSetAttributeValue(self, attribute as CFString, ax))
     }
 
     func set(_ attribute: String, _ value: CGSize, _ type: AXValueType) {
         var v = value
         guard let ax = AXValueCreate(type, &v) else { return }
-        AXUIElementSetAttributeValue(self, attribute as CFString, ax)
+        checked(AXUIElementSetAttributeValue(self, attribute as CFString, ax))
     }
 }

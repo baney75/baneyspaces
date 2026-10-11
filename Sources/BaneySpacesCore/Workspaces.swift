@@ -49,11 +49,13 @@ public struct Workspaces: Codable, Equatable {
         lastFocused[n] = id
     }
 
-    public mutating func assign(_ id: WindowID, to n: Int) {
+    /// Moves a window to workspace `n`. With `focus`, it becomes the window that workspace
+    /// focuses next; without, it only takes that role when the workspace has none.
+    public mutating func assign(_ id: WindowID, to n: Int, focus: Bool = true) {
         guard Self.range.contains(n), home[id] != nil else { return }
         if let old = home[id], lastFocused[old] == id { lastFocused[old] = nil }
         home[id] = n
-        lastFocused[n] = id
+        if focus || lastFocused[n] == nil { lastFocused[n] = id }
     }
 
     /// Puts windows back where a saved layout had them, after BaneySpaces restarts. Only windows
@@ -84,8 +86,10 @@ public struct Concealment: Equatable {
     public var showApps: Set<Int32>
     public var park: [WindowID]
 
-    public init(plan: SwitchPlan, owner: [WindowID: Int32]) {
-        let shown = Set(plan.show.compactMap { owner[$0] })
+    /// `alsoShown` are apps coming back for a window not listed yet (one from the saved layout
+    /// whose app hasn't answered): they stay shown, and their other windows are parked.
+    public init(plan: SwitchPlan, owner: [WindowID: Int32], alsoShown: Set<Int32> = []) {
+        let shown = Set(plan.show.compactMap { owner[$0] }).union(alsoShown)
         showApps = shown
         hideApps = Set(plan.hide.compactMap { owner[$0] }).subtracting(shown)
         park = plan.hide.filter { owner[$0].map(shown.contains) ?? false }

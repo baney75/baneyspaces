@@ -29,6 +29,16 @@ final class WorkspacesTests: XCTestCase {
         XCTAssertEqual(w.switchTo(3), SwitchPlan(hide: [10], show: [11], focus: 11))
     }
 
+    func testALateWindowDoesNotTakeOverTheRememberedFocus() {
+        var w = Workspaces()
+        w.sync(seen: [10, 11, 12], alive: [10, 11, 12])
+        w.assign(11, to: 3)
+        w.assign(12, to: 3, focus: false)
+        XCTAssertEqual(w.switchTo(3).focus, 11)
+        w.assign(10, to: 5, focus: false)
+        XCTAssertEqual(w.switchTo(5).focus, 10)
+    }
+
     func testComingBackFocusesTheLastWindowYouUsedThere() {
         var w = Workspaces()
         w.sync(seen: [10, 11, 12], alive: [10, 11, 12])
@@ -163,6 +173,14 @@ final class ConcealmentTests: XCTestCase {
         // Two Helium windows: one stays here, one belongs elsewhere.
         let plan = SwitchPlan(hide: [1, 2], show: [3], focus: 3)
         let c = Concealment(plan: plan, owner: [1: 100, 2: 200, 3: 100])
+        XCTAssertEqual(c.hideApps, [200])
+        XCTAssertEqual(c.park, [1])
+    }
+
+    func testAnAppComingBackForAWaitingWindowStaysShownAndParksTheRest() {
+        // App 100's window for this workspace hasn't answered yet; its window 1 belongs elsewhere.
+        let plan = SwitchPlan(hide: [1, 2], show: [], focus: nil)
+        let c = Concealment(plan: plan, owner: [1: 100, 2: 200], alsoShown: [100])
         XCTAssertEqual(c.hideApps, [200])
         XCTAssertEqual(c.park, [1])
     }

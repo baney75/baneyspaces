@@ -156,6 +156,9 @@ final class MissionControlKeys {
             }
             return nil
         }
+        // Any other key while the switcher is up is swallowed, as the system switcher does:
+        // ⌘Q or ⌘W would otherwise quit or close whatever app is in front.
+        if inGesture, type == .keyDown || type == .keyUp { return nil }
         guard MissionControlKeys.enabled, isMissionControl(event) else { return Unmanaged.passUnretained(event) }
         if type == .keyDown, event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
             DispatchQueue.main.async { me.onPress() }

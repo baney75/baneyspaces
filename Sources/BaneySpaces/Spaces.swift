@@ -66,21 +66,32 @@ final class Spaces {
         for pid in saved.hiddenApps { NSRunningApplication(processIdentifier: pid)?.unhide() }
         refresh(full: true)
         let screens = Windows.screens()
+        var unreached: [WindowID: CGRect] = [:]
+        let server = Windows.serverWindows()
         for w in windows.values {
             // Only stranded windows move. Window numbers are reused after a logout, so a saved
             // frame must never move a window that is already in plain sight.
-            guard !w.isMinimized, let f = w.frame, Geometry.isStranded(f, screens: screens) else { continue }
+            guard let f = w.frame else {
+                // A busy app keeps its parked window's record, so a later switch brings it back.
+                // Only a window really sitting at the hiding spot: numbers are reused after a restart.
+                if let s = saved.frames[w.id], let b = server[w.id]?.bounds, Geometry.isStranded(b, screens: screens) { unreached[w.id] = s }
+                continue
+            }
+            guard !w.isMinimized, Geometry.isStranded(f, screens: screens) else { continue }
             w.setFrame(Geometry.restoreFrame(saved: saved.frames[w.id], size: f.size, screens: screens))
         }
         saved = SavedFrames()
+        saved.frames = unreached
         // Put every window back on the workspace it had before this launch (an update, a crash,
         // a restart), and return to the workspace you were on.
         if let layout = SavedLayout.load(from: Spaces.layoutURL) {
             model.restore(current: layout.current, home: layout.homes(livePids: windows.mapValues(\.pid)),
                           lastFocused: layout.lastFocused)
-            let alive = Windows.alive()
+            // Window numbers are reused after a restart, so a waiting window must still belong
+            // to the same app; otherwise its entry would unhide a stranger.
+            let server = Windows.serverWindows()
             pendingLayout = Dictionary(uniqueKeysWithValues: layout.entries
-                .filter { model.workspace(of: $0.window) == nil && alive.contains($0.window) }.map { ($0.window, $0) })
+                .filter { model.workspace(of: $0.window) == nil && server[$0.window]?.pid == $0.pid }.map { ($0.window, $0) })
         }
         persist()
         switchTo(model.current, takeFocus: false, announce: false)
@@ -127,14 +138,14 @@ final class Spaces {
         // A scan that skipped a busy app can't vouch for that app's windows. It's remembered, and
         // the next refresh scans again as soon as that app is willing to answer.
         lastScan = (snap.appWindows, pidsNow, unsure)
-        if !unsure.isEmpty { scheduleRetry() }
-        watcher.sync(pids)
+        watcher.sync(snap.owners)
+        if !unsure.isEmpty || watcher.missing { scheduleRetry() }
         let screens = Windows.screens()
         // A window from the saved layout that only now answered goes back to its workspace.
         var returned = false
         for id in added {
             guard let entry = pendingLayout.removeValue(forKey: id), windows[id]?.pid == entry.pid else { continue }
-            model.assign(id, to: entry.workspace)
+            model.assign(id, to: entry.workspace, focus: false)
             returned = returned || entry.workspace != model.current
         }
         if returned, !switching {
@@ -171,12 +182,15 @@ final class Spaces {
         DispatchQueue.main.asyncAfter(deadline: .now() + 5.5) { [weak self] in
             guard let self else { return }
             self.retryPending = false
-            guard self.active, let unsure = self.lastScan?.unsure, unsure.contains(where: Windows.isResponsive) else {
-                if self.lastScan?.unsure.isEmpty == false { self.scheduleRetry() }
+            guard self.active else { return }
+            self.watcher.retry()
+            guard let unsure = self.lastScan?.unsure, unsure.contains(where: Windows.isResponsive) else {
+                if self.lastScan?.unsure.isEmpty == false || self.watcher.missing { self.scheduleRetry() }
                 return
             }
             if self.switching { return self.scheduleRetry() }
             self.refresh(full: true)
+            self.persist()
         }
     }
 
@@ -307,6 +321,9 @@ final class Spaces {
     /// The window each app last had in focus, to tell a window closing (⌘W) from the person
     /// picking another window of the same app.
     private var lastKey: [pid_t: WindowID] = [:]
+    /// A window a switch tried and failed to raise, until when. Focus moving elsewhere in that
+    /// app meanwhile is the app catching up, not a choice.
+    private var intended: [pid_t: (id: WindowID, until: Date)] = [:]
 
     /// The app's window on this workspace that should take focus, if it has one: the one used
     /// last here, or any visible one.
@@ -321,9 +338,9 @@ final class Spaces {
     private func stay(on w: Window) {
         expectedFront = w.pid
         settleUntil = Date().addingTimeInterval(0.3)
-        lastKey[w.pid] = w.id
         model.noteFocus(w.id)
-        w.focus()
+        // Only a raise that landed makes this the window you were in.
+        if w.focus() { lastKey[w.pid] = w.id }
     }
 
     /// An app came to the front (Dock click, ⌘Tab, a link opening it). If it has a window on this
@@ -359,10 +376,16 @@ final class Spaces {
               NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
         refresh()
         guard let w = Windows.focused(of: pid, in: Array(windows.values)), let n = model.workspace(of: w.id) else { return }
+        if let i = intended[pid], Date() < i.until, i.id != w.id, model.workspace(of: i.id) == model.current,
+           n != model.current || saved.frames[w.id] != nil, let target = windows[i.id] {
+            return stay(on: target)
+        }
+        intended[pid] = nil
         let previous = lastKey[pid]
         lastKey[pid] = w.id
         guard n != model.current || saved.frames[w.id] != nil else { return model.noteFocus(w.id) }
-        let chosen = previous.map { windows[$0] != nil && $0 != w.id } ?? false
+        // A window minimized or closed (even one an app only hid) is one you left, not chose from.
+        let chosen = previous.map { $0 != w.id && windows[$0].map { !$0.isMinimized } == true && Windows.lists($0, pid: pid) } ?? false
         if chosen {
             model.noteFocus(w.id)
             switchTo(n, announce: true)
@@ -378,6 +401,11 @@ final class Spaces {
         guard active else { return }
         if switching { return enqueue { [weak self] in self?.gatherOnOne() } }
         refresh(full: true)
+        let screens = Windows.screens()
+        for w in windows.values where saved.frames[w.id] == nil && !w.isMinimized {
+            guard let f = w.frame, Geometry.isStranded(f, screens: screens) else { continue }
+            w.setFrame(Geometry.restoreFrame(saved: nil, size: f.size, screens: screens))
+        }
         for id in model.home.keys { model.assign(id, to: 1) }
         switchTo(1)
     }
@@ -473,7 +501,6 @@ final class Spaces {
         guard active else { return }
         let gen = generation
         let screens = Windows.screens()
-        let how = Concealment(plan: plan, owner: windows.mapValues(\.pid))
         // macOS reports the new front app a moment late. Right after a switch, the app that
         // switch brought forward is the one really in front.
         let oldFront = Date() < settleUntil ? expectedFront : NSWorkspace.shared.frontmostApplication?.processIdentifier
@@ -481,8 +508,12 @@ final class Spaces {
         //    going to its workspace means wanting to see it.
         // A hidden app may not answer until it's shown, so a saved window that hasn't been seen yet
         // still brings its app back when you go to its workspace.
-        let waiting = Set(pendingLayout.values.filter { $0.workspace == model.current }.map(\.pid))
-        for pid in how.showApps.union(waiting) {
+        // An app that also has known windows elsewhere stays hidden: it isn't answering, so those
+        // windows couldn't be parked. The retry scan brings the waiting window home instead.
+        let elsewhere = Set(windows.values.filter { model.workspace(of: $0.id) != model.current }.map(\.pid))
+        let waiting = Set(pendingLayout.values.filter { $0.workspace == model.current }.map(\.pid)).subtracting(elsewhere)
+        let how = Concealment(plan: plan, owner: windows.mapValues(\.pid), alsoShown: waiting)
+        for pid in how.showApps {
             if let app = NSRunningApplication(processIdentifier: pid), app.isHidden { app.unhide() }
             saved.hiddenApps.remove(pid)
         }
@@ -501,10 +532,16 @@ final class Spaces {
             .compactMap { windows[$0] }.first { !$0.isMinimized && saved.frames[$0.id] == nil }
         let frontPid = target?.pid ?? getpid()
         if moveFocus { expectedFront = frontPid }
+        var raised = false
         if moveFocus {
             if let target {
                 emptyHolder.orderOut(nil)
-                target.focus()
+                raised = target.focus()
+                if raised { lastKey[target.pid] = target.id; intended[target.pid] = nil } else {
+                    // The app may come forward on its own a moment later, focusing whatever window
+                    // it used last. Until the raise lands, that isn't the person choosing it.
+                    intended[target.pid] = (target.id, Date().addingTimeInterval(2))
+                }
             } else {
                 takeFocus()
             }
@@ -513,6 +550,15 @@ final class Spaces {
         let done = { [self] in
             guard gen == generation, active else { return }
             clock.mark(.focused)
+            // An app busy coming back from hiding can miss the raise. Try again once it has had
+            // a moment, unless another switch came first.
+            if moveFocus, !raised, let target {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [self] in
+                    guard gen == generation, active, target.focus() else { return }
+                    lastKey[target.pid] = target.id
+                    intended[target.pid] = nil
+                }
+            }
             conceal(how, apps: deferred, screens: screens)
             if moveFocus, target == nil, Windows.focusedPid() != getpid() {
                 // Finder is the last resort, unless it was just hidden: activating a hidden app
@@ -633,6 +679,10 @@ final class Spaces {
             "current": model.current,
             "parked": saved.frames.keys.sorted(),
             "hiddenApps": saved.hiddenApps.sorted(),
+            // Apps the last scan couldn't read, and windows from the saved layout still waiting
+            // for theirs: why a window might be missing.
+            "unsure": (lastScan?.unsure ?? []).sorted().map { ["pid": $0, "answering": Windows.isResponsive($0)] as [String: Any] },
+            "waiting": pendingLayout.keys.sorted(),
             "lastFocused": Dictionary(uniqueKeysWithValues: model.lastFocused.map { (String($0.key), $0.value) }),
             "workspaces": Dictionary(uniqueKeysWithValues: Workspaces.range.map { n in
                 (String(n), model.windows(on: n).map { ["id": $0, "app": windows[$0]?.appName ?? ""] as [String: Any] })

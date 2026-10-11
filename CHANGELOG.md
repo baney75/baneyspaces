@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+Fixes from a second adversarial review, focused on apps that are slow to answer.
+
+- **A busy app no longer stalls a switch.** Raising a window waits at most 0.1 s per call and
+  stops at the first timeout, instead of up to 0.75 s; a missed raise is retried a moment later.
+- **Closing or minimizing a window keeps you where you are,** even when the app's next window
+  lives on another workspace, and even when the app only hid the window it "closed".
+- **⌘Q and ⌘W can't reach the app in front while the ⌘Tab switcher is open.**
+- **Two windows of one app on different workspaces:** opening the app's other workspace no longer
+  bounces you back when the app comes forward late.
+- **No window is left parked off screen** after a permission hiccup; Bring Every Window Back also
+  rescues windows another tool stranded.
+- Saved windows only come back to the app that owned them, a late window doesn't steal a
+  workspace's remembered focus, and frozen apps aren't asked again on every scan.
+- `state.json` lists apps that aren't answering (`unsure`) and saved windows still waiting for
+  theirs (`waiting`).
+
 ## 0.2.0 (2026-10-10)
 
 Faster switching, an easier first run, and fixes from an adversarial review.
