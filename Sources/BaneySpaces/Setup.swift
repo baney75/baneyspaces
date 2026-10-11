@@ -302,7 +302,7 @@ struct SetupView: View {
 
             Divider()
             HStack {
-                Text("Full screen fills the screen here, so every window stays on a workspace. Change anything later from the menu bar icon.")
+                Text("Full screen works as usual; switching workspaces takes a window out of it first. Change anything later from the menu bar icon.")
                     .font(.footnote).foregroundStyle(.secondary)
                 Spacer()
                 Button("Done", action: close).keyboardShortcut(.defaultAction)
