@@ -7,6 +7,7 @@ import ServiceManagement
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let spaces = Spaces()
     private let hotkeys = Hotkeys()
+    private let updater = Updater()
     private var statusItem: NSStatusItem!
     private var started = false { didSet { MissionControlKeys.appStarted = started } }
     private var trustTimer: Timer?
@@ -107,6 +108,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             signalSources.append(source)
         }
         startWhenTrusted()
+        updater.onChange = { [weak self] in self?.updateIcon() }
+        updater.start()
         // The first launch walks through setup, and so does any launch without permission (an
         // update that macOS no longer trusts). Otherwise it's one click away in the menu.
         if !UserDefaults.standard.bool(forKey: "setupShown") || !AXIsProcessTrusted()
@@ -254,6 +257,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(parkedAppsItem())
         menu.addItem(item("Set Up BaneySpaces…", #selector(showSetup), key: ","))
         menu.addItem(.separator())
+        menu.addItem(updateItem())
+        menu.addItem(channelItem())
         menu.addItem(item("About BaneySpaces", #selector(about)))
         menu.addItem(item("Quit BaneySpaces", #selector(quit), key: "q"))
     }
@@ -293,6 +298,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         parent.submenu = sub
         return parent
+    }
+
+    // MARK: Updates
+
+    /// "Update to …" when a newer build is waiting, "Updating to …" while it installs,
+    /// otherwise a manual check.
+    private func updateItem() -> NSMenuItem {
+        if let r = updater.installing {
+            let it = NSMenuItem(title: "Updating to \(r.isNightly ? "the nightly build" : r.name)…", action: nil, keyEquivalent: "")
+            it.isEnabled = false
+            return it
+        }
+        guard let r = updater.available else { return item("Check for Updates…", #selector(checkForUpdates)) }
+        let it = item("Update to \(r.isNightly ? "the Nightly Build" : r.name)…", #selector(offerUpdate))
+        it.attributedTitle = NSAttributedString(string: it.title, attributes: [.font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)])
+        return it
+    }
+
+    /// Stable or Nightly, and whether to look for updates by itself. Nothing installs without
+    /// pressing Update Now.
+    private func channelItem() -> NSMenuItem {
+        let parent = NSMenuItem(title: "Updates", action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        let current = NSMenuItem(title: "You have \(Updater.buildDescription)", action: nil, keyEquivalent: "")
+        current.isEnabled = false
+        sub.addItem(current)
+        sub.addItem(.separator())
+        for (channel, title) in [(UpdateChannel.stable, "Stable: tested releases"), (.nightly, "Nightly: newest changes, every night")] {
+            let it = item(title, #selector(pickChannel(_:)))
+            it.representedObject = channel.rawValue
+            it.state = updater.channel == channel ? .on : .off
+            sub.addItem(it)
+        }
+        sub.addItem(.separator())
+        let auto = item("Check for Updates Daily", #selector(toggleAutoCheck))
+        auto.state = updater.checksAutomatically ? .on : .off
+        sub.addItem(auto)
+        sub.addItem(item("Check Now", #selector(checkForUpdates)))
+        parent.submenu = sub
+        return parent
+    }
+
+    @objc private func checkForUpdates() { updater.check(manual: true) }
+    @objc private func offerUpdate() { if let r = updater.available { updater.offer(r) } }
+    @objc private func toggleAutoCheck() { updater.checksAutomatically.toggle() }
+    @objc private func pickChannel(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let channel = UpdateChannel(rawValue: raw) else { return }
+        updater.channel = channel
     }
 
     @objc private func toggleParked(_ sender: NSMenuItem) {

@@ -1,0 +1,47 @@
+name: Nightly
+# Each night main changed, the tests pass and the nightly tag moves to it. The "nightly" release
+# is a prerelease, so the installer and the Stable channel never pick it; people who chose the
+# Nightly channel in the menu bar are offered it.
+on:
+  schedule:
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: nightly
+jobs:
+  nightly:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Skip if main hasn't changed
+        id: changed
+        run: |
+          if [ "$(git rev-parse -q --verify 'refs/tags/nightly^{commit}' || true)" = "$(git rev-parse HEAD)" ]; then
+            echo "Nightly is already at $(git rev-parse --short HEAD)."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Test
+        if: steps.changed.outputs.skip != 'true'
+        run: swift test
+      - name: Bundle the app
+        if: steps.changed.outputs.skip != 'true'
+        run: BANEYSPACES_ADHOC=1 BANEYSPACES_ARM64_ONLY=1 scripts/bundle.sh
+      - name: Publish
+        if: steps.changed.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          scripts/release-notes.sh nightly > notes.md
+          git tag -f nightly HEAD
+          git push -f origin refs/tags/nightly
+          TITLE="Nightly $(TZ=UTC date +%Y-%m-%d) ($(git rev-parse --short HEAD))"
+          if gh release view nightly >/dev/null 2>&1; then
+            gh release edit nightly --title "$TITLE" --notes-file notes.md --prerelease --latest=false
+          else
+            gh release create nightly --title "$TITLE" --notes-file notes.md --prerelease --latest=false --verify-tag
+          fi
