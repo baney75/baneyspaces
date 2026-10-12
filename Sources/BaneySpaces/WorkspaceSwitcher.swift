@@ -19,6 +19,7 @@ final class WorkspaceSwitcher {
     private var hold = TabHold()
     /// Tab presses in this gesture, not counting repeats.
     private var presses = 0
+    private var selectedBeforePress = 0
 
     init(spaces: Spaces) {
         self.spaces = spaces
@@ -35,18 +36,22 @@ final class WorkspaceSwitcher {
         if appOrder.count > 64 { appOrder.removeLast() }
     }
 
-    func step(forward: Bool, isRepeat: Bool = false) {
+    func step(forward: Bool, isRepeat: Bool = false, at time: Double = CFAbsoluteTimeGetCurrent()) {
         // A held Tab opens or closes the window bar once; its other repeats do nothing, so
         // holding never races through the list.
         if isRepeat {
-            guard isShowing, model.mode == .apps, hold.repeated(at: CFAbsoluteTimeGetCurrent()) else { return }
-            // Held from the very first press: the windows of the app you're already in, like ⌘`
-            // with a picker. Its first press moved the selection on; that move is taken back.
-            if presses == 1, model.windowBar == nil, windowCount(of: 0) > 1 { model.selected = 0 }
+            guard isShowing, model.mode == .apps, hold.repeated(at: time) else { return }
+            if model.windowBar != nil { return toggleWindowBar() }
+            // The press that began this hold moved the selection on; the hold is about the app
+            // that was selected before it. Held from the very first press, that's the app you're in.
+            let target = presses == 1 ? 0 : selectedBeforePress
+            guard windowCount(of: target) > 1 else { return }
+            model.selected = target
             return toggleWindowBar()
         }
-        hold.press(at: CFAbsoluteTimeGetCurrent())
+        hold.press(at: time)
         presses = isShowing ? presses + 1 : 1
+        selectedBeforePress = model.selected
         if isShowing, model.windowBar != nil {
             let c = model.windowBar!.windows.count
             model.windowBar!.selected = (model.windowBar!.selected + (forward ? 1 : c - 1)) % c
@@ -86,9 +91,12 @@ final class WorkspaceSwitcher {
         case .apps:
             if let bar = model.windowBar, bar.windows.indices.contains(bar.selected) {
                 let w = bar.windows[bar.selected]
-                Trace.log("cmdTab commit window on=\(w.workspace) current=\(spaces.model.current)")
+                // Where it is now: it may have moved, or closed, since the bar opened.
+                spaces.refresh()
+                guard let n = spaces.model.workspace(of: w.id) else { return Trace.log("cmdTab commit window gone") }
+                Trace.log("cmdTab commit window on=\(n) current=\(spaces.model.current)")
                 noteActivated(bar.pid)
-                return spaces.focus(w.id, on: w.workspace)
+                return spaces.focus(w.id, on: n)
             }
             guard model.apps.indices.contains(model.selected) else { return }
             let app = model.apps[model.selected]

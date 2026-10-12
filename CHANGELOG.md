@@ -8,6 +8,8 @@
   to that window; hold Tab again to go back to the apps.
 - The switch HUD is redrawn: solid glass, the workspace you went to filled in its color with its
   number, workspaces with windows lit, and its apps underneath.
+- The Workspace Dock appears only when the pointer rests on the bottom edge under it, and a
+  pointer parked on the edge beside it no longer makes it pop up and down.
 - In the Workspace Dock, rest the pointer on an app with more than one window and a strip of its
   windows opens over it, each labeled with its title. Click one to go to it.
 

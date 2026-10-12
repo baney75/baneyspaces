@@ -50,7 +50,10 @@ final class MissionControlKeys {
 
     /// Called on the main thread while ⌘ is held: Tab (forward) or ⇧Tab (back), and whether the
     /// press is a repeat of a held Tab; ⌘ released; Esc.
-    var onCmdTab: (_ forward: Bool, _ isRepeat: Bool) -> Void = { _, _ in }
+    var onCmdTab: (_ forward: Bool, _ isRepeat: Bool, _ time: Double) -> Void = { _, _, _ in }
+    /// Read and written on the tap thread only: a gesture ended while Tab may still be held, so
+    /// its repeats and its release are swallowed instead of typing into the app just picked.
+    private static var swallowTab = false
     var onCmdReleased: () -> Void = {}
     var onCancel: () -> Void = {}
     /// Read on the tap thread; set when a ⌘Tab gesture starts, cleared when it ends.
@@ -159,9 +162,18 @@ final class MissionControlKeys {
         if type == .flagsChanged {
             if inGesture, !event.flags.contains(.maskCommand) {
                 inGesture = false
+                swallowTab = true
                 DispatchQueue.main.async { me.onCmdReleased() }
             }
             return Unmanaged.passUnretained(event)
+        }
+        let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+        if code == tabKey, swallowTab, !inGesture {
+            // A fresh press means Tab was let go already; it's a new keystroke and passes.
+            if type == .keyDown && !isRepeat { swallowTab = false } else {
+                if type == .keyUp { swallowTab = false }
+                return nil
+            }
         }
         if tabEnabledOnTap, code == tabKey, type == .keyDown, !(switcherReady || inGesture),
            event.flags.intersection([.maskControl, .maskCommand, .maskAlternate]) == .maskCommand {
@@ -171,11 +183,14 @@ final class MissionControlKeys {
         if tabEnabledOnTap, code == tabKey, switcherReady || inGesture {
             let mods = event.flags.intersection([.maskControl, .maskCommand, .maskAlternate])
             if mods == .maskCommand {
+                // A held Tab that wasn't part of a gesture (⌘ pressed after Tab) starts nothing.
+                if isRepeat && !inGesture { return Unmanaged.passUnretained(event) }
                 if type == .keyDown {
                     inGesture = true
                     let back = event.flags.contains(.maskShift)
-                    let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
-                    DispatchQueue.main.async { me.onCmdTab(!back, isRepeat) }
+                    // When the key was pressed, not when the main thread gets to it.
+                    let time = Double(event.timestamp) / 1_000_000_000
+                    DispatchQueue.main.async { me.onCmdTab(!back, isRepeat, time) }
                 }
                 return nil
             }

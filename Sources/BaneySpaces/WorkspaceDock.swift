@@ -87,6 +87,9 @@ final class WorkspaceDock {
     private(set) var isShown = false
     /// Shown by a script or a test, not the pointer: it stays until hidden the same way.
     private var pinned = false
+    /// Hidden because the pointer moved away while still on the bottom edge: it comes back only
+    /// after the pointer leaves the edge, so a pointer parked there can't make it bob up and down.
+    private var needsRearm = false
 
     init(spaces: Spaces) {
         self.spaces = spaces
@@ -149,7 +152,10 @@ final class WorkspaceDock {
             let keep = p.frame.insetBy(dx: -24, dy: -24).contains(mouse) || model.menuOpen
             if keep { awaySince = nil; return }
             if awaySince == nil { awaySince = Date() }
-            if Date().timeIntervalSince(awaySince!) > 0.4 { hide() }
+            if Date().timeIntervalSince(awaySince!) > 0.4 {
+                hide()
+                needsRearm = true
+            }
             return
         }
         // Resting on the bottom edge, buttons up (not dragging a window or a selection).
@@ -158,7 +164,11 @@ final class WorkspaceDock {
             mouse.x >= s.frame.minX && mouse.x < s.frame.maxX && mouse.y >= s.frame.minY - 1 && mouse.y < s.frame.minY + 2
                 && !NSScreen.screens.contains { $0 != s && $0.frame.contains(NSPoint(x: mouse.x, y: s.frame.minY - 1)) }
         }
-        guard let screen, NSEvent.pressedMouseButtons == 0 else { edgeSince = nil; return }
+        guard let screen, NSEvent.pressedMouseButtons == 0 else { edgeSince = nil; needsRearm = false; return }
+        if needsRearm { edgeSince = nil; return }
+        // Only under the dock, as the macOS Dock does; the corners and the rest of the edge stay free.
+        let width = panel?.frame.width ?? 560
+        guard abs(mouse.x - screen.frame.midX) <= width / 2 + 24 else { edgeSince = nil; return }
         if edgeSince == nil { edgeSince = Date() }
         if Date().timeIntervalSince(edgeSince!) > 0.12 { show(on: screen) }
     }
@@ -173,6 +183,8 @@ final class WorkspaceDock {
     private func show(on screen: NSScreen) {
         edgeSince = nil
         awaySince = nil
+        model.reset()
+        model.shown = true
         model.load(from: spaces)
         let p = panel ?? makePanel()
         panel = p
@@ -272,7 +284,15 @@ final class DockModel: ObservableObject {
     @Published var tiles: [Tile] = []
     @Published var hover: Hover? { didSet { hoverChanged() } }
     /// The window strip: an app's windows on one workspace, opened by resting on its icon.
-    @Published var strip: (workspace: Int, app: String)? { didSet { if (strip == nil) != (oldValue == nil) || strip?.app != oldValue?.app { onLayoutChange() } } }
+    @Published var strip: (workspace: Int, app: String)? {
+        didSet {
+            // Removed from under the pointer, it never hears the pointer leave.
+            if strip == nil { onStrip = false }
+            if (strip == nil) != (oldValue == nil) || strip?.app != oldValue?.app { onLayoutChange() }
+        }
+    }
+    /// Up on screen; a dwell that ends after the dock hid opens nothing.
+    var shown = false
     /// The pointer is on the strip itself, which keeps it open.
     var onStrip = false
     private var dwell: DispatchWorkItem?
@@ -327,10 +347,12 @@ final class DockModel: ObservableObject {
         switch hover {
         case .app(let n, let id):
             if let s = strip, s.workspace == n, s.app == id { return }
-            if strip != nil && !onStrip { strip = nil }
+            // Crossing another icon in the same tile on the way up to the strip keeps it; resting
+            // there opens that app's strip instead. Another tile's app closes it.
+            if let s = strip, s.workspace != n, !onStrip { strip = nil }
             guard let app = tiles.first(where: { $0.id == n })?.apps.first(where: { $0.id == id }), app.list.count > 1 else { return }
             let work = DispatchWorkItem { [weak self] in
-                guard let self, self.hover == .app(n, id) else { return }
+                guard let self, self.shown, self.hover == .app(n, id) else { return }
                 self.strip = (n, id)
             }
             dwell = work
@@ -346,6 +368,7 @@ final class DockModel: ObservableObject {
 
     /// The dock went away.
     func reset() {
+        shown = false
         dwell?.cancel()
         hover = nil
         onStrip = false
@@ -369,6 +392,7 @@ struct DockView: View {
     @State private var centers: [String: CGFloat] = [:]
     @State private var stripWidth: CGFloat = 0
     @State private var dockWidth: CGFloat = 0
+    @State private var stackWidth: CGFloat = 0
 
     var body: some View {
         VStack(spacing: 8) {
@@ -393,6 +417,7 @@ struct DockView: View {
             .background(Chrome.panel(cornerRadius: 24))
             .background(GeometryReader { g in Color.clear.onAppear { dockWidth = g.size.width }.onChange(of: g.size.width) { dockWidth = $0 } })
         }
+        .background(GeometryReader { g in Color.clear.onAppear { stackWidth = g.size.width }.onChange(of: g.size.width) { stackWidth = $0 } })
         .coordinateSpace(name: "dock")
         .onPreferenceChange(AppCenters.self) { centers = $0 }
         .padding(.horizontal, 16)
@@ -445,9 +470,15 @@ struct DockView: View {
                 WorkspaceBadge(n: n, size: 17)
             }
             .padding(.horizontal, 8).padding(.bottom, 4)
-            ForEach(app.list.prefix(10)) { w in
-                StripRow(window: w, icon: app.icon, tint: Chrome.workspace(n)) { model.onFocusWindow(w.id, n) }
+            // Every window is reachable: past ten, the list scrolls.
+            ScrollView(.vertical, showsIndicators: app.list.count > 10) {
+                VStack(spacing: 2) {
+                    ForEach(app.list) { w in
+                        StripRow(window: w, icon: app.icon, tint: Chrome.workspace(n)) { model.onFocusWindow(w.id, n) }
+                    }
+                }
             }
+            .frame(height: CGFloat(min(app.list.count, 10)) * 30)
         }
         .padding(6).padding(.top, 4)
         .frame(width: 320)
@@ -457,9 +488,9 @@ struct DockView: View {
 
     /// Over the app, but never past either end of the dock.
     private func stripOffset(_ n: Int, _ id: String) -> CGFloat {
-        guard let x = centers["\(n):\(id)"], dockWidth > 0, stripWidth > 0 else { return 0 }
-        // Centers are measured in the dock's space, which is 16 points in from the panel edge.
-        let fromMiddle = x - (dockWidth / 2 + 16)
+        guard let x = centers["\(n):\(id)"], dockWidth > 0, stripWidth > 0, stackWidth > 0 else { return 0 }
+        // Centers are measured across the whole stack the strip is centered in.
+        let fromMiddle = x - stackWidth / 2
         let room = max(0, (dockWidth - stripWidth) / 2)
         return min(max(fromMiddle, -room), room)
     }
