@@ -97,3 +97,20 @@ final class AppSwitchListTests: XCTestCase {
         XCTAssertNil(WindowCycle.next([Int](), after: nil))
     }
 }
+
+final class TabHoldTests: XCTestCase {
+    func testFiresOnceAfterTheThreshold() {
+        var h = TabHold()
+        h.press(at: 10)
+        XCTAssertFalse(h.repeated(at: 10.05)) // a very short repeat delay isn't a hold yet
+        XCTAssertTrue(h.repeated(at: 10.4))
+        XCTAssertFalse(h.repeated(at: 10.5)) // still the same press
+        h.press(at: 11)
+        XCTAssertTrue(h.repeated(at: 11.36))
+    }
+
+    func testRepeatWithoutAPressNeverFires() {
+        var h = TabHold()
+        XCTAssertFalse(h.repeated(at: 5))
+    }
+}

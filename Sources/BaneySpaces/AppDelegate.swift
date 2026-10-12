@@ -50,13 +50,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }()
     private lazy var missionControlKeys: MissionControlKeys = {
         let keys = MissionControlKeys { [weak self] in self?.viewer.toggle() }
-        keys.onCmdTab = { [weak self] forward in
+        keys.onCmdTab = { [weak self] forward, isRepeat in
             guard let self, self.started, !self.viewer.isOpen else {
                 Trace.log("cmdTab ignored started=\(self?.started ?? false) viewerOpen=\(self?.viewer.isOpen ?? false)")
                 MissionControlKeys.inGesture = false
                 return
             }
-            self.switcher.step(forward: forward)
+            self.switcher.step(forward: forward, isRepeat: isRepeat)
         }
         keys.onCmdReleased = { [weak self] in self?.switcher.commit() }
         keys.onCancel = { [weak self] in self?.switcher.cancel() }

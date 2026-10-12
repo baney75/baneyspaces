@@ -93,6 +93,9 @@ final class WorkspaceDock {
         model.onPick = { [weak self] n in self?.spaces.switchTo(n, announce: false) }
         model.onSendHere = { [weak self] n in self?.spaces.moveFocused(to: n) }
         model.onFocusApp = { [weak self] pid, n in self?.spaces.focusApp(pid, on: n, cycle: true) }
+        model.onFocusWindow = { [weak self] id, n in self?.spaces.focus(id, on: n) }
+        // After SwiftUI has laid out the strip, so the new size is the real one.
+        model.onLayoutChange = { [weak self] in DispatchQueue.main.async { self?.resize() } }
         model.onShowOverview = { [weak self] in self?.hide(); self?.onShowOverview() }
         model.onShowLauncher = { [weak self] in self?.hide(); self?.onShowLauncher() }
         model.onTurnOff = { [weak self] in self?.onTurnOff() }
@@ -190,7 +193,7 @@ final class WorkspaceDock {
     func hide(animated: Bool = true) {
         guard isShown, let p = panel else { return }
         isShown = false
-        model.hover = nil
+        model.reset()
         let down = p.frame.offsetBy(dx: 0, dy: -18)
         guard animated else { p.orderOut(nil); return }
         NSAnimationContext.runAnimationGroup({ ctx in
@@ -243,6 +246,13 @@ final class DockModel: ObservableObject {
         let name: String
         let icon: NSImage
         let windows: Int
+        /// This app's windows on the tile's workspace, with their titles (a browser's front tab,
+        /// a player's video), for the window strip.
+        var list: [Window] = []
+    }
+    struct Window: Identifiable {
+        let id: WindowID
+        let title: String
     }
     struct Tile: Identifiable {
         let id: Int
@@ -258,7 +268,14 @@ final class DockModel: ObservableObject {
     }
 
     @Published var tiles: [Tile] = []
-    @Published var hover: Hover?
+    @Published var hover: Hover? { didSet { hoverChanged() } }
+    /// The window strip: an app's windows on one workspace, opened by resting on its icon.
+    @Published var strip: (workspace: Int, app: String)? { didSet { if (strip == nil) != (oldValue == nil) || strip?.app != oldValue?.app { onLayoutChange() } } }
+    /// The pointer is on the strip itself, which keeps it open.
+    var onStrip = false
+    private var dwell: DispatchWorkItem?
+    var onFocusWindow: (WindowID, Int) -> Void = { _, _ in }
+    var onLayoutChange: () -> Void = {}
     var menuOpen = false
     var onPick: (Int) -> Void = { _ in }
     var onFocusApp: (pid_t, Int) -> Void = { _, _ in }
@@ -280,13 +297,54 @@ final class DockModel: ObservableObject {
             windows[n] = entries.map { "\($0.pid)" }
         }
         tiles = DockTiles.make(current: spaces.model.current, windows: windows).map { t in
-            Tile(id: t.workspace, apps: t.apps.map { a in
+            let entries = spaces.entries(on: t.workspace)
+            return Tile(id: t.workspace, apps: t.apps.map { a in
                 let pid = pid_t(a.key) ?? 0
                 return App(id: a.key, pid: pid, name: byPid[a.key]?.app ?? "App",
                            icon: NSRunningApplication(processIdentifier: pid)?.icon ?? NSWorkspace.shared.icon(for: .application),
-                           windows: a.windows)
+                           windows: a.windows,
+                           list: entries.filter { "\($0.pid)" == a.key }.map { Window(id: $0.id, title: $0.title) })
             }, isCurrent: t.isCurrent)
         }
+        // A strip for an app that's gone or down to one window closes.
+        if let s = strip, (stripApp?.list.count ?? 0) < 2 || !tiles.contains(where: { $0.id == s.workspace }) { strip = nil }
+    }
+
+    var stripApp: App? {
+        guard let s = strip else { return nil }
+        return tiles.first { $0.id == s.workspace }?.apps.first { $0.id == s.app }
+    }
+
+    /// Resting on an app with more than one window here opens its strip after a moment. Moving
+    /// to another app or button closes it; drifting up to the strip, or across its own tile, doesn't.
+    private func hoverChanged() {
+        dwell?.cancel()
+        switch hover {
+        case .app(let n, let id):
+            if let s = strip, s.workspace == n, s.app == id { return }
+            if strip != nil && !onStrip { strip = nil }
+            guard let app = tiles.first(where: { $0.id == n })?.apps.first(where: { $0.id == id }), app.list.count > 1 else { return }
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, self.hover == .app(n, id) else { return }
+                self.strip = (n, id)
+            }
+            dwell = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: work)
+        case .newWorkspace, .launcher, .overview:
+            if !onStrip { strip = nil }
+        case .tile(let n):
+            if let s = strip, s.workspace != n, !onStrip { strip = nil }
+        case nil:
+            break
+        }
+    }
+
+    /// The dock went away.
+    func reset() {
+        dwell?.cancel()
+        hover = nil
+        onStrip = false
+        strip = nil
     }
 
     func setHover(_ h: Hover, _ inside: Bool) {
@@ -294,14 +352,29 @@ final class DockModel: ObservableObject {
     }
 }
 
+private struct AppCenters: PreferenceKey {
+    static var defaultValue: [String: CGFloat] = [:]
+    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) { value.merge(nextValue()) { $1 } }
+}
+
 struct DockView: View {
     @ObservedObject var model: DockModel
     private let tileSize: CGFloat = 64
+    /// Where each app icon's center sits across the dock, so the strip opens over its app.
+    @State private var centers: [String: CGFloat] = [:]
+    @State private var stripWidth: CGFloat = 0
+    @State private var dockWidth: CGFloat = 0
 
     var body: some View {
         VStack(spacing: 8) {
-            // Room above the tiles for what the pointer is on; clicks pass through it.
-            label.frame(height: 24)
+            // Room above the tiles for what the pointer is on, or the window strip.
+            if let app = model.stripApp, let n = model.strip?.workspace {
+                windowStrip(app, workspace: n)
+                    .background(GeometryReader { g in Color.clear.onAppear { stripWidth = g.size.width }.onChange(of: g.size.width) { stripWidth = $0 } })
+                    .offset(x: stripOffset(n, app.id))
+            } else {
+                label.frame(height: 24)
+            }
             HStack(alignment: .bottom, spacing: 8) {
                 ForEach(model.tiles) { tile in tileView(tile) }
                 if let n = model.firstEmpty, !model.tiles.contains(where: { $0.id == n }) { newWorkspaceButton(n) }
@@ -313,7 +386,10 @@ struct DockView: View {
             .padding(.top, 10)
             .padding(.bottom, 4)
             .background(Chrome.panel(cornerRadius: 24))
+            .background(GeometryReader { g in Color.clear.onAppear { dockWidth = g.size.width }.onChange(of: g.size.width) { dockWidth = $0 } })
         }
+        .coordinateSpace(name: "dock")
+        .onPreferenceChange(AppCenters.self) { centers = $0 }
         .padding(.horizontal, 16)
         .padding(.bottom, 4)
         // Wide enough for a long label above a short dock.
@@ -350,6 +426,36 @@ struct DockView: View {
         case .overview: return "Show All Workspaces"
         case nil: return nil
         }
+    }
+
+    /// An app's windows on one workspace, each labeled with its title. Click one to go to it.
+    private func windowStrip(_ app: DockModel.App, workspace n: Int) -> some View {
+        let tint = Chrome.workspace(n)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(nsImage: app.icon).resizable().frame(width: 16, height: 16)
+                Text("\(app.name) · \(app.list.count) windows").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.white)
+                WorkspaceBadge(n: n, size: 16)
+            }
+            HStack(spacing: 6) {
+                ForEach(Array(app.list.prefix(8).enumerated()), id: \.element.id) { i, w in
+                    StripCard(title: w.title, index: i + 1, tint: tint) { model.onFocusWindow(w.id, n) }
+                }
+            }
+        }
+        .padding(10)
+        .background(Chrome.panel(cornerRadius: 16))
+        .onHover { inside in model.onStrip = inside }
+        .transition(.opacity.combined(with: .move(edge: .bottom)))
+    }
+
+    /// Over the app, but never past either end of the dock.
+    private func stripOffset(_ n: Int, _ id: String) -> CGFloat {
+        guard let x = centers["\(n):\(id)"], dockWidth > 0, stripWidth > 0 else { return 0 }
+        // Centers are measured in the dock's space, which is 16 points in from the panel edge.
+        let fromMiddle = x - (dockWidth / 2 + 16)
+        let room = max(0, (dockWidth - stripWidth) / 2)
+        return min(max(fromMiddle, -room), room)
     }
 
     private func title(_ tile: DockModel.Tile) -> String {
@@ -455,6 +561,9 @@ struct DockView: View {
                     .offset(y: 5)
                 }
             }
+            .background(GeometryReader { g in
+                Color.clear.preference(key: AppCenters.self, value: ["\(tile.id):\(app.id)": g.frame(in: .named("dock")).midX])
+            })
             .scaleEffect(hovered ? 1.18 : 1)
             .animation(.spring(response: 0.22, dampingFraction: 0.65), value: hovered)
             .contentShape(Rectangle())
@@ -501,6 +610,37 @@ struct DockView: View {
         .onTapGesture(perform: action)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(name)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { action() }
+    }
+}
+
+/// One window in the dock's window strip: its title, two lines at most, numbered in order.
+private struct StripCard: View {
+    let title: String
+    let index: Int
+    let tint: Color
+    let action: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 7) {
+            Text("\(index)").font(.system(size: 10, weight: .bold, design: .rounded)).foregroundStyle(.white)
+                .frame(width: 16, height: 16).background(Circle().fill(tint.opacity(hovered ? 1 : 0.7)))
+            Text(title.isEmpty ? "Untitled window" : title)
+                .font(.system(size: 11.5, weight: .medium)).foregroundStyle(.white.opacity(hovered ? 1 : 0.8))
+                .lineLimit(2).multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .padding(8)
+        .frame(width: 168, height: 50, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(hovered ? tint.opacity(0.3) : Color.white.opacity(0.07)))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(hovered ? tint : Color.white.opacity(0.08)))
+        .contentShape(Rectangle())
+        .onHover { hovered = $0 }
+        .onTapGesture(perform: action)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title.isEmpty ? "Untitled window" : title)
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { action() }
     }

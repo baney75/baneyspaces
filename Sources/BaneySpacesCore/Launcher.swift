@@ -155,3 +155,28 @@ public enum WindowCycle {
         return windows[(i + 1) % windows.count]
     }
 }
+
+/// Holding Tab in the ⌘Tab switcher (instead of tapping it) opens or closes the window bar.
+/// macOS sends repeats while a key is held, after the person's own repeat delay, which can be
+/// very short; a hold counts only once the key has been down `threshold` seconds, and only
+/// once per press.
+public struct TabHold: Sendable {
+    public static let threshold: Double = 0.35
+    private var pressedAt: Double?
+    private var fired = false
+
+    public init() {}
+
+    /// A fresh Tab press (not a repeat).
+    public mutating func press(at t: Double) {
+        pressedAt = t
+        fired = false
+    }
+
+    /// A repeat of the held Tab. True exactly once per press, when it has been held long enough.
+    public mutating func repeated(at t: Double) -> Bool {
+        guard let pressedAt, !fired, t - pressedAt >= Self.threshold else { return false }
+        fired = true
+        return true
+    }
+}

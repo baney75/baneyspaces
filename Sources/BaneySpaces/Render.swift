@@ -118,6 +118,25 @@ enum Render {
         dock.hover = .app(1, "1Terminal")
         guard save(DockView(model: dock).padding(.vertical, 20).background(Color(white: 0.35)), "dock.png", CGSize(width: 820, height: 0)) else { return 1 }
 
+        // The same dock with Terminal's window strip open over workspace 4.
+        dock.tiles[3] = .init(id: 4, apps: dock.tiles[3].apps.map { a in
+            var a = a
+            if a.name == "Terminal" { a.list = [.init(id: 1, title: "~/Projects/baneyspaces — swift build"), .init(id: 2, title: "ssh chapel1 — htop")] }
+            return a
+        }, isCurrent: true)
+        dock.hover = .app(4, "4Terminal")
+        dock.strip = (4, "4Terminal")
+        guard save(DockView(model: dock).padding(.vertical, 20).background(Color(white: 0.35)), "dock-strip.png", CGSize(width: 820, height: 0)) else { return 1 }
+
+        // The ⌘Tab window bar: Tab held on Helium.
+        let bar = SwitcherModel()
+        bar.mode = .apps
+        bar.windowBar = .init(pid: 1, name: "Helium", icon: icon("/Applications/Safari.app"),
+                              windows: [.init(id: 1, title: "YouTube — I finally ported TypeScript to Go", workspace: 4),
+                                        .init(id: 2, title: "GitHub — baney75/baneyspaces pull request 3", workspace: 4),
+                                        .init(id: 3, title: "Gmail — Inbox", workspace: 1)], selected: 1)
+        guard save(SwitcherView(model: bar).padding(30), "switcher-windows.png", CGSize(width: 820, height: 0)) else { return 1 }
+
         // The launcher: the opening menu, then a search.
         let launcher = LauncherModel(actions: LauncherActions())
         launcher.prepare(scope: .root)

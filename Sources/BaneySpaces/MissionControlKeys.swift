@@ -48,8 +48,9 @@ final class MissionControlKeys {
 
     static var cmdTabEnabled: Bool { cmdTabMode != .off }
 
-    /// Called on the main thread while ⌘ is held: Tab (forward) or ⇧Tab (back), ⌘ released, Esc.
-    var onCmdTab: (Bool) -> Void = { _ in }
+    /// Called on the main thread while ⌘ is held: Tab (forward) or ⇧Tab (back), and whether the
+    /// press is a repeat of a held Tab; ⌘ released; Esc.
+    var onCmdTab: (_ forward: Bool, _ isRepeat: Bool) -> Void = { _, _ in }
     var onCmdReleased: () -> Void = {}
     var onCancel: () -> Void = {}
     /// Read on the tap thread; set when a ⌘Tab gesture starts, cleared when it ends.
@@ -173,7 +174,8 @@ final class MissionControlKeys {
                 if type == .keyDown {
                     inGesture = true
                     let back = event.flags.contains(.maskShift)
-                    DispatchQueue.main.async { me.onCmdTab(!back) }
+                    let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+                    DispatchQueue.main.async { me.onCmdTab(!back, isRepeat) }
                 }
                 return nil
             }

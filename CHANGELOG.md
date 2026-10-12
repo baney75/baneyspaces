@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Pick a window, not just an app.** In ⌘Tab, hold Tab on an app with more than one window to
+  open its window bar: every window of that app, on any workspace, labeled with its title (a
+  browser's tab, a player's video) and its workspace color. Tab through it and let go of ⌘ to go
+  to that window; hold Tab again to go back to the apps.
+- In the Workspace Dock, rest the pointer on an app with more than one window and a strip of its
+  windows opens over it, each labeled with its title. Click one to go to it.
+
 - **Launcher** (menu bar menu, the Workspace Dock, or ⌘Space if you choose): one box to open,
   find, install, update and remove apps. Type to search apps, commands and workspaces at once,
   or Tab into a menu: Apps, Install, Remove, Update, System, Workspaces. Install searches
