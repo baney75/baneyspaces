@@ -7,6 +7,9 @@
   background clicks and keys to a hidden app, which cut off tools like Cua. Cua Spaces is on the
   list by default, so its picture-in-picture window no longer disappears on a switch. A window
   automation opens in a parked app joins that app's workspace instead of yours.
+- Switching workspaces no longer jumps to a parked app's workspace. Hiding the app you left made
+  macOS bring the parked app forward, its window sliding out of the corner, and BaneySpaces took
+  that as you picking it.
 - A full-screen window that refuses to leave full screen no longer takes focus on every switch.
 - `trace.log` records each ⌘Tab gesture (shown, committed, cancelled, passed to macOS) to help
   diagnose the switcher. It never records other keys.

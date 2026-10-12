@@ -434,11 +434,13 @@ final class Spaces {
         // the next app. An app kept unhidden for automation is often next in line, and that isn't
         // you picking it: stay here.
         if saved.frames[w.id] != nil, ParkedApps.contains(pid), Date().timeIntervalSince(leftAt) < 0.5 {
+            Trace.log("followFocus stayed: \(w.appName) came forward after the front app left")
             if let id = model.lastFocused[model.current], let t = windows[id], saved.frames[id] == nil, t.pid != pid {
                 return stay(on: t)
             }
             return takeFocus()
         }
+        Trace.log("followFocus \(w.appName) to \(n)")
         lastKey[pid] = w.id
         model.noteFocus(w.id)
         switchTo(n, announce: true)
@@ -683,6 +685,9 @@ final class Spaces {
                 }
             }
             conceal(how, apps: deferred, screens: screens)
+            // Hiding the app in front makes macOS activate the next one in line, often a parked
+            // app whose window sits in the corner. That's this switch, not you picking it.
+            if !deferred.isEmpty { leftAt = Date() }
             // A parked app isn't hidden, so nothing forces it out of the front. If it's still
             // there, its key window is out of sight: typing must not go into it.
             if let p = leavingParked, Windows.focusedPid() == p {
