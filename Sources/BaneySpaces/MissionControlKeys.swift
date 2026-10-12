@@ -193,6 +193,11 @@ final class MissionControlKeys {
             let started = appStarted, viewer = viewerOpen
             DispatchQueue.main.async { Trace.log("cmdTab passed to macOS started=\(started) viewerOpen=\(viewer)") }
         }
+        // Tab let go mid-gesture, whatever else is held: a tap's step is waiting on it.
+        if tabEnabledOnTap, code == tabKey, inGesture, type == .keyUp, event.flags.contains(.maskCommand) {
+            DispatchQueue.main.async { me.onTabUp() }
+            return nil
+        }
         if tabEnabledOnTap, code == tabKey, switcherReady || inGesture {
             let mods = event.flags.intersection([.maskControl, .maskCommand, .maskAlternate])
             if mods == .maskCommand {
@@ -205,8 +210,6 @@ final class MissionControlKeys {
                     // never waits on the main one, so the reading is close to the press.
                     let time = ProcessInfo.processInfo.systemUptime
                     DispatchQueue.main.async { me.onCmdTab(!back, isRepeat, time) }
-                } else if type == .keyUp, inGesture {
-                    DispatchQueue.main.async { me.onTabUp() }
                 }
                 return nil
             }
