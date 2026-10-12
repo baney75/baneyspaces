@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **The Workspace Dock can sit on any side:** bottom, left, right or top, from setup, the menu
+  bar menu, or a tile's right-click menu. It opens when the pointer rests on that edge under it,
+  the label and window strip open on its inner side, and a dock too long for the screen shrinks
+  to fit. At the top it sits under the menu bar and waits half a second, and never opens from
+  the corners, so reaching for a menu doesn't bring it up.
+- Holding Tab in ⌘Tab now takes 0.6 s; a slow tap in the window bar no longer drops back to
+  the apps.
+
 - **Bangs, web search and agents in the launcher.** `!yt cats`, `!i sunsets`, `cats !yt`, and
   about 35 more built in; any other bang goes to DuckDuckGo. Plain words offer your search
   engine, images and your agent; `?` asks your agent (Claude, ChatGPT, Perplexity, Grok,

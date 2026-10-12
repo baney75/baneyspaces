@@ -138,6 +138,28 @@ enum Render {
         dock.strip = (4, "4Terminal")
         guard save(DockView(model: dock).padding(.vertical, 20).background(Color(white: 0.35)), "dock-strip.png", CGSize(width: 820, height: 0)) else { return 1 }
 
+        // The dock on the other edges: a side dock with a hover label, the top dock with the strip.
+        dock.strip = nil
+        dock.edge = .left
+        dock.hover = .tile(2)
+        guard save(DockView(model: dock).padding(20).background(Color(white: 0.35)), "dock-left.png", CGSize(width: 520, height: 0)) else { return 1 }
+        dock.edge = .right
+        dock.hover = .app(4, "4Terminal")
+        dock.strip = (4, "4Terminal")
+        guard save(DockView(model: dock).padding(20).background(Color(white: 0.35)), "dock-right.png", CGSize(width: 520, height: 0)) else { return 1 }
+        // A short screen: the side dock shrinks to fit.
+        dock.strip = nil
+        dock.hover = nil
+        dock.edge = .left
+        dock.maxLength = 560
+        guard save(DockView(model: dock).padding(20).background(Color(white: 0.35)), "dock-left-fit.png", CGSize(width: 520, height: 0)) else { return 1 }
+        dock.maxLength = .infinity
+        dock.hover = .app(4, "4Terminal")
+        dock.strip = (4, "4Terminal")
+        dock.edge = .top
+        guard save(DockView(model: dock).padding(.vertical, 20).background(Color(white: 0.35)), "dock-top.png", CGSize(width: 820, height: 0)) else { return 1 }
+        dock.edge = .bottom
+
         // The ⌘Tab window bar: Tab held on Helium.
         let bar = SwitcherModel()
         bar.mode = .apps

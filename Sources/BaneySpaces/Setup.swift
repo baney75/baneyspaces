@@ -17,6 +17,8 @@ final class SetupModel: ObservableObject {
     var onCmdTabChange: ((MissionControlKeys.CmdTabMode) -> Void)?
     @Published var workspaceDock = WorkspaceDock.enabled
     var onWorkspaceDockChange: ((Bool) -> Void)?
+    @Published var dockEdge = WorkspaceDock.edge
+    var onDockEdgeChange: ((DockEdge) -> Void)?
     @Published var launcherOnCmdSpace = Launcher.onCmdSpace
     @Published var searchEngine = Launcher.searchEngine { didSet { Launcher.searchEngine = searchEngine } }
     @Published var agent = Launcher.agent { didSet { Launcher.agent = agent } }
@@ -321,8 +323,15 @@ struct SetupView: View {
                     .fixedSize()
                 }
                 Text(cmdTabNote).font(.callout).foregroundStyle(.secondary)
-                Toggle("Workspace Dock in place of the macOS Dock", isOn: Binding(get: { model.workspaceDock }, set: { model.setWorkspaceDock($0) }))
-                Text("Rest the pointer on the bottom edge of the screen to see your workspaces, each with its apps; click one to go there. The macOS Dock stays out of sight while this is on and comes back as it was when you turn it off or quit BaneySpaces.")
+                HStack {
+                    Toggle("Workspace Dock in place of the macOS Dock", isOn: Binding(get: { model.workspaceDock }, set: { model.setWorkspaceDock($0) }))
+                    Spacer()
+                    Picker("", selection: Binding(get: { model.dockEdge }, set: { model.dockEdge = $0; model.onDockEdgeChange?($0) })) {
+                        ForEach(DockEdge.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }
+                    .labelsHidden().fixedSize().disabled(!model.workspaceDock)
+                }
+                Text("Rest the pointer on the dock's edge of the screen to see your workspaces, each with its apps; click one to go there. At the top it waits a moment longer, so reaching for the menu bar doesn't bring it up. The macOS Dock stays out of sight while this is on and comes back as it was when you turn it off or quit BaneySpaces.")
                     .font(.callout).foregroundStyle(.secondary)
             }
 

@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let d = WorkspaceDock(spaces: spaces)
         d.onShowOverview = { [weak self] in self?.viewer.open() }
         d.onShowLauncher = { [weak self] in self?.launcher.show() }
+        d.onSetEdge = { [weak self] e in self?.setDockEdge(e) }
         d.onTurnOff = { [weak self] in self?.setWorkspaceDock(false) }
         return d
     }()
@@ -72,6 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.restartKeyWatcher()
         }
         c.model.onWorkspaceDockChange = { [weak self] on in self?.setWorkspaceDock(on) }
+        c.model.onDockEdgeChange = { [weak self] e in self?.setDockEdge(e) }
         c.model.onLauncherChange = { [weak self] on in self?.setLauncherOnCmdSpace(on) }
         c.model.onCmdTabChange = { [weak self] mode in
             MissionControlKeys.cmdTabMode = mode
@@ -322,6 +324,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dockItem.state = WorkspaceDock.enabled ? .on : .off
         dockItem.toolTip = "A dock of your workspaces in place of the macOS Dock. Rest the pointer on the bottom edge of the screen to show it."
         menu.addItem(dockItem)
+        if WorkspaceDock.enabled {
+            let pos = NSMenuItem(title: "Workspace Dock Position", action: nil, keyEquivalent: "")
+            let sub = NSMenu()
+            for e in DockEdge.allCases {
+                let it = item(e.title, #selector(pickDockEdge(_:)))
+                it.representedObject = e.rawValue
+                it.state = WorkspaceDock.edge == e ? .on : .off
+                sub.addItem(it)
+            }
+            pos.submenu = sub
+            menu.addItem(pos)
+        }
         let spaceItem = item("Launcher on ⌘Space", #selector(toggleLauncherKey))
         spaceItem.state = Launcher.onCmdSpace ? .on : .off
         spaceItem.toolTip = "⌘Space opens the BaneySpaces launcher instead of Spotlight. Turning it off gives ⌘Space back to Spotlight."
@@ -374,6 +388,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: Workspace Dock
 
     @objc private func toggleWorkspaceDock() { setWorkspaceDock(!WorkspaceDock.enabled) }
+
+    @objc private func pickDockEdge(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let e = DockEdge(rawValue: raw) else { return }
+        setDockEdge(e)
+    }
+
+    /// Moves the Workspace Dock to another side of the screen; setup and the menu follow.
+    func setDockEdge(_ e: DockEdge) {
+        dock.setEdge(e)
+        if setup.model.dockEdge != e { setup.model.dockEdge = e }
+    }
 
     /// Turns the Workspace Dock on or off; off brings the macOS Dock back as it was.
     func setWorkspaceDock(_ on: Bool) {

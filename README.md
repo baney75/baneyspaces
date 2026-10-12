@@ -85,6 +85,11 @@ hover to see what's there; right-click to send the front window there. The dashe
 the first empty workspace, the search button opens the launcher, and the last button opens the
 overview of all nine.
 
+It can sit on any side of the screen: choose **Bottom**, **Left**, **Right** or **Top** in setup,
+in the menu bar menu under **Workspace Dock Position**, or from a tile's right-click menu. At the
+top it sits under the menu bar and waits half a second before opening, so reaching for a menu
+doesn't bring it up. A dock with more tiles than the screen has room for shrinks to fit.
+
 While it's on, the macOS Dock stays out of sight. BaneySpaces saves the Dock's own hiding
 settings first and puts them back exactly when you turn the Workspace Dock off or quit. If
 BaneySpaces ever crashed with it on, open BaneySpaces again (or run the uninstaller) and the
