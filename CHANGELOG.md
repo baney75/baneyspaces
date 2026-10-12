@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Workspace Dock** (optional, in setup and the menu bar menu): a dock of your workspaces in
+  place of the macOS Dock. It slides up when the pointer rests on the bottom edge, shows each
+  workspace in use with its apps, and switches with a click; right-click sends the front window
+  there. The macOS Dock's own settings are saved and restored exactly when it's turned off or
+  BaneySpaces quits, and after a crash by the next launch or the uninstaller.
+
 ## 0.2.2 (2026-10-11)
 
 - **Updates from the menu bar, Stable or Nightly.** BaneySpaces checks once a day (or on

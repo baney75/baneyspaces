@@ -15,6 +15,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var watchdog: Timer?
     private var signalSources: [DispatchSourceSignal] = []
     private lazy var viewer = ViewerController(spaces: spaces)
+    private lazy var dock: WorkspaceDock = {
+        let d = WorkspaceDock(spaces: spaces)
+        d.onShowOverview = { [weak self] in self?.viewer.open() }
+        d.onTurnOff = { [weak self] in self?.setWorkspaceDock(false) }
+        return d
+    }()
     private lazy var switcher = WorkspaceSwitcher(spaces: spaces)
     private lazy var missionControlKeys: MissionControlKeys = {
         let keys = MissionControlKeys { [weak self] in self?.viewer.toggle() }
@@ -39,6 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self, self.started else { return }
             self.restartKeyWatcher()
         }
+        c.model.onWorkspaceDockChange = { [weak self] on in self?.setWorkspaceDock(on) }
         c.model.onCmdTabChange = { [weak self] on in
             MissionControlKeys.cmdTabEnabled = on
             guard let self, self.started else { return }
@@ -60,6 +67,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             SystemShortcuts.restore()
             exit(0)
         }
+        // `BaneySpaces --restore-dock`: the uninstaller's way to put the macOS Dock back if the
+        // Workspace Dock had it out of sight.
+        if CommandLine.arguments.contains("--restore-dock") {
+            SystemDock.restore()
+            exit(0)
+        }
         NSAppleEventManager.shared().setEventHandler(self, andSelector: #selector(handleURL(_:reply:)),
                                                      forEventClass: AEEventClass(kInternetEventClass),
                                                      andEventID: AEEventID(kAEGetURL))
@@ -68,7 +81,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         statusItem.menu = menu
 
-        spaces.onChange = { [weak self] in self?.updateIcon() }
+        spaces.onChange = { [weak self] in
+            self?.updateIcon()
+            self?.dock.reload()
+        }
         for name in [NSWorkspace.didTerminateApplicationNotification, NSWorkspace.didHideApplicationNotification] {
             NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
                 guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
@@ -129,6 +145,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func showSetup() { setup.show() }
 
     func applicationWillTerminate(_ n: Notification) {
+        // The macOS Dock comes back with everything else; the next launch tucks it away again.
+        dock.stop(restoreSystemDock: true)
         if started { spaces.restoreAll() }
         spaces.flushWrites()
     }
@@ -161,6 +179,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         registerShortcuts()
         missionControlKeys.start()
         spaces.start()
+        if WorkspaceDock.enabled { dock.start() }
         updateIcon()
         watchdog?.invalidate()
         watchdog = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
@@ -182,6 +201,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hotkeys.removeAll()
         missionControlKeys.stop()
         viewer.close()
+        dock.stop(restoreSystemDock: true)
         spaces.suspend()
         started = false
         updateIcon()
@@ -256,6 +276,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(item("Show All Workspaces", #selector(showViewer)))
         menu.addItem(item("Bring Every Window Back", #selector(bringBack)))
         menu.addItem(parkedAppsItem())
+        let dockItem = item("Workspace Dock", #selector(toggleWorkspaceDock))
+        dockItem.state = WorkspaceDock.enabled ? .on : .off
+        dockItem.toolTip = "A dock of your workspaces in place of the macOS Dock. Rest the pointer on the bottom edge of the screen to show it."
+        menu.addItem(dockItem)
         menu.addItem(item("Set Up BaneySpaces…", #selector(showSetup), key: ","))
         menu.addItem(.separator())
         menu.addItem(updateItem())
@@ -299,6 +323,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         parent.submenu = sub
         return parent
+    }
+
+    // MARK: Workspace Dock
+
+    @objc private func toggleWorkspaceDock() { setWorkspaceDock(!WorkspaceDock.enabled) }
+
+    /// Turns the Workspace Dock on or off; off brings the macOS Dock back as it was.
+    func setWorkspaceDock(_ on: Bool) {
+        WorkspaceDock.enabled = on
+        if setup.model.workspaceDock != on { setup.model.workspaceDock = on }
+        if on, started { dock.start() } else if !on { dock.stop(restoreSystemDock: true) }
     }
 
     // MARK: Updates
@@ -383,6 +418,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case "move": run { $0.moveFocused(to: n) }
         case "restore": run { _ in bringBack() }
         case "viewer": run { _ in viewer.toggle() }
+        case "dock":
+            switch url.lastPathComponent {
+            case "show": run { _ in dock.pin(true) }
+            case "hide": run { _ in dock.pin(false) }
+            case "on": run { _ in setWorkspaceDock(true) }
+            case "off": run { _ in setWorkspaceDock(false) }
+            default: NSLog("BaneySpaces: unknown command %@", text)
+            }
         default: NSLog("BaneySpaces: unknown command %@", text)
         }
     }
