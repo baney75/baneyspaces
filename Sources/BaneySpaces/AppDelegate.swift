@@ -18,10 +18,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private lazy var dock: WorkspaceDock = {
         let d = WorkspaceDock(spaces: spaces)
         d.onShowOverview = { [weak self] in self?.viewer.open() }
+        d.onShowLauncher = { [weak self] in self?.launcher.show() }
         d.onTurnOff = { [weak self] in self?.setWorkspaceDock(false) }
         return d
     }()
     private lazy var switcher = WorkspaceSwitcher(spaces: spaces)
+    private lazy var launcher: LauncherController = {
+        var a = LauncherActions()
+        a.focusApp = { [weak self] pid, n in self?.spaces.focusApp(pid, on: n) }
+        a.switchTo = { [weak self] n in self?.run { $0.switchTo(n) } }
+        a.appsOn = { [weak self] n in self?.spaces.apps(on: n) ?? [] }
+        a.workspacesByApp = { [weak self] in
+            guard let self, self.started else { return [:] }
+            self.spaces.refresh()
+            var out: [String: [Int]] = [:]
+            for n in Workspaces.range {
+                for e in self.spaces.entries(on: n) {
+                    guard let path = NSRunningApplication(processIdentifier: e.pid)?.bundleURL?.path else { continue }
+                    if out[path]?.contains(n) != true { out[path, default: []].append(n) }
+                }
+            }
+            return out
+        }
+        a.showOverview = { [weak self] in self?.viewer.open() }
+        a.bringBack = { [weak self] in self?.bringBack() }
+        a.toggleDock = { [weak self] in self?.toggleWorkspaceDock() }
+        a.dockOn = { WorkspaceDock.enabled }
+        a.checkForUpdates = { [weak self] in self?.checkForUpdates() }
+        a.showSetup = { [weak self] in self?.showSetup() }
+        return LauncherController(actions: a)
+    }()
     private lazy var missionControlKeys: MissionControlKeys = {
         let keys = MissionControlKeys { [weak self] in self?.viewer.toggle() }
         keys.onCmdTab = { [weak self] forward in
@@ -46,8 +72,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.restartKeyWatcher()
         }
         c.model.onWorkspaceDockChange = { [weak self] on in self?.setWorkspaceDock(on) }
-        c.model.onCmdTabChange = { [weak self] on in
-            MissionControlKeys.cmdTabEnabled = on
+        c.model.onLauncherChange = { [weak self] on in self?.setLauncherOnCmdSpace(on) }
+        c.model.onCmdTabChange = { [weak self] mode in
+            MissionControlKeys.cmdTabMode = mode
             guard let self, self.started else { return }
             self.restartKeyWatcher()
         }
@@ -65,6 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // shortcuts back on before the app's settings are deleted.
         if CommandLine.arguments.contains("--restore-shortcuts") {
             SystemShortcuts.restore()
+            SystemShortcuts.spotlightQueue.sync { SystemShortcuts.restoreSpotlight() }
             exit(0)
         }
         // `BaneySpaces --restore-dock`: the uninstaller's way to put the macOS Dock back if the
@@ -93,8 +121,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification,
                                                           object: nil, queue: .main) { [weak self] note in
-            guard let self, self.started,
-                  let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+            guard let self, let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+            self.switcher.noteActivated(app.processIdentifier)
+            guard self.started else { return }
             self.spaces.appActivated(app)
         }
         // Once another app is in front, the viewer and the empty-workspace holder step aside.
@@ -124,6 +153,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             signalSources.append(source)
         }
         startWhenTrusted()
+        // ⌘Space works with or without Accessibility; Spotlight hands it over first.
+        if Launcher.onCmdSpace { setLauncherOnCmdSpace(true) } else { registerShortcuts() }
         updater.onChange = { [weak self] in self?.updateIcon() }
         updater.isBusy = { [weak self] in self?.spaces.switching ?? false }
         updater.start()
@@ -148,6 +179,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // The macOS Dock comes back with everything else; the next launch tucks it away again.
         dock.stop(restoreSystemDock: true)
         if started { spaces.restoreAll() }
+        // ⌘Space goes back to Spotlight while BaneySpaces isn't running; the next launch takes it again.
+        SystemShortcuts.spotlightQueue.sync { SystemShortcuts.restoreSpotlight() }
         spaces.flushWrites()
     }
 
@@ -201,12 +234,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard started else { return false }
         if AXIsProcessTrusted() { return true }
         watchdog?.invalidate()
-        hotkeys.removeAll()
         missionControlKeys.stop()
         viewer.close()
         dock.stop(restoreSystemDock: true)
         spaces.suspend()
         started = false
+        registerShortcuts()
         updateIcon()
         showSetup()
         startWhenTrusted()
@@ -216,8 +249,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The shortcuts are taken only once they work, so the keys keep their usual meaning in other
     /// apps until then. Picking a different modifier in setup re-registers them.
     private func registerShortcuts() {
-        guard started else { return }
         hotkeys.removeAll()
+        if Launcher.onCmdSpace, !SystemShortcuts.spotlightOwnsCmdSpace {
+            hotkeys.register(keyCode: kVK_Space, modifiers: cmdKey) { [weak self] in self?.launcher.toggle() }
+        }
+        guard started else { return }
         let mods = Modifier.current.carbon
         for (i, code) in Hotkeys.digitKeyCodes.enumerated() {
             let n = i + 1
@@ -276,6 +312,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
         menu.addItem(withTitle: "Add ⇧ to send the front window there", action: nil, keyEquivalent: "")
         menu.addItem(.separator())
+        let find = item("Find or Install an App…", #selector(showLauncher))
+        if Launcher.onCmdSpace { find.keyEquivalent = " "; find.keyEquivalentModifierMask = [.command] }
+        menu.addItem(find)
         menu.addItem(item("Show All Workspaces", #selector(showViewer)))
         menu.addItem(item("Bring Every Window Back", #selector(bringBack)))
         menu.addItem(parkedAppsItem())
@@ -283,6 +322,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dockItem.state = WorkspaceDock.enabled ? .on : .off
         dockItem.toolTip = "A dock of your workspaces in place of the macOS Dock. Rest the pointer on the bottom edge of the screen to show it."
         menu.addItem(dockItem)
+        let spaceItem = item("Launcher on ⌘Space", #selector(toggleLauncherKey))
+        spaceItem.state = Launcher.onCmdSpace ? .on : .off
+        spaceItem.toolTip = "⌘Space opens the BaneySpaces launcher instead of Spotlight. Turning it off gives ⌘Space back to Spotlight."
+        menu.addItem(spaceItem)
         menu.addItem(item("Set Up BaneySpaces…", #selector(showSetup), key: ","))
         menu.addItem(.separator())
         menu.addItem(updateItem())
@@ -337,6 +380,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         WorkspaceDock.enabled = on
         if setup.model.workspaceDock != on { setup.model.workspaceDock = on }
         if on, started { dock.start() } else if !on { dock.stop(restoreSystemDock: true) }
+    }
+
+    // MARK: Launcher
+
+    @objc private func showLauncher() { launcher.show() }
+    @objc private func toggleLauncherKey() { setLauncherOnCmdSpace(!Launcher.onCmdSpace) }
+
+    /// Takes ⌘Space from Spotlight for the launcher, or gives it back. Changing macOS's shortcut
+    /// takes a moment, so it happens off the main thread.
+    func setLauncherOnCmdSpace(_ on: Bool) {
+        Launcher.onCmdSpace = on
+        if setup.model.launcherOnCmdSpace != on { setup.model.launcherOnCmdSpace = on }
+        SystemShortcuts.spotlightQueue.async { [weak self] in
+            if on { SystemShortcuts.freeSpotlight() } else { SystemShortcuts.restoreSpotlight() }
+            DispatchQueue.main.async { self?.registerShortcuts() }
+        }
     }
 
     // MARK: Updates
@@ -421,6 +480,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case "move": run { $0.moveFocused(to: n) }
         case "restore": run { _ in bringBack() }
         case "viewer": run { _ in viewer.toggle() }
+        // Opening it changes nothing on its own, so a web page may: every action inside needs a key press.
+        case "launcher": launcher.show(scope: LauncherModel.Scope(rawValue: url.lastPathComponent) ?? .root, takeKeys: false)
         case "dock":
             // Turning it off is always allowed. Showing it or turning it on (which hides the
             // macOS Dock) is for checks, only when `defaults write com.baney.baneyspaces

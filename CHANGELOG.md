@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- **Launcher** (menu bar menu, the Workspace Dock, or ⌘Space if you choose): one box to open,
+  find, install, update and remove apps. Type to search apps, commands and workspaces at once,
+  or Tab into a menu: Apps, Install, Remove, Update, System, Workspaces. Install searches
+  Homebrew's full app list and the Mac App Store, installs a Homebrew app in the background and
+  says when it's done; an installer that wants your password finishes in Terminal. Picking an app
+  that's already open goes to the workspace it's on. Setup's **⌘Space opens the BaneySpaces
+  launcher** switch takes ⌘Space from Spotlight and gives it back when turned off, when
+  BaneySpaces quits, and in the uninstaller.
+- **⌘Tab across workspaces.** Setup's ⌘Tab choice is now macOS, Apps on every workspace, or
+  Workspaces. Apps steps through every app with a window, most recently used first, each marked
+  with its workspace number; let go and you land on that app's window wherever it is.
+- **Apps open on more than one workspace.** Every workspace has its own color, used the same in
+  the dock, ⌘Tab and the launcher. An app with windows on two workspaces shows once for each in
+  ⌘Tab, tinted in that workspace's color; hovering it in the dock rings its copy on the other
+  workspace and says where else it is; the launcher lists a row for each workspace. Clicking an
+  app with several windows in a dock tile steps through them, one dot per window.
+- Picking an app on the workspace you're on (dock, ⌘Tab, launcher) brings it forward. Before,
+  focus went back to the app you were in.
+- Installing from the launcher asks first, the same as removing. A launcher opened by a link
+  doesn't take the keyboard until clicked.
+- **Workspace Dock, redrawn.** Click any app icon in a tile to go straight to that app; click
+  the tile around it to go to the workspace. Numbers sit under the tiles, the current one lit,
+  and a dashed tile goes to the first empty workspace. A search button opens the launcher.
+
 - **Workspace Dock** (optional, in setup and the menu bar menu): a dock of your workspaces in
   place of the macOS Dock. It slides up when the pointer rests on the bottom edge, shows each
   workspace in use with its apps, and switches with a click; right-click sends the front window

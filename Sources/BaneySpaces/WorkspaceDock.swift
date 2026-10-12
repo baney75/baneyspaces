@@ -76,8 +76,9 @@ final class WorkspaceDock {
 
     private let spaces: Spaces
     var onShowOverview: () -> Void = {}
+    var onShowLauncher: () -> Void = {}
     var onTurnOff: () -> Void = {}
-    private let model = DockModel()
+    let model = DockModel()
     private var panel: DockPanel?
     private var timer: Timer?
     private var edgeSince: Date?
@@ -91,7 +92,9 @@ final class WorkspaceDock {
         self.spaces = spaces
         model.onPick = { [weak self] n in self?.spaces.switchTo(n, announce: false) }
         model.onSendHere = { [weak self] n in self?.spaces.moveFocused(to: n) }
+        model.onFocusApp = { [weak self] pid, n in self?.spaces.focusApp(pid, on: n, cycle: true) }
         model.onShowOverview = { [weak self] in self?.hide(); self?.onShowOverview() }
+        model.onShowLauncher = { [weak self] in self?.hide(); self?.onShowLauncher() }
         model.onTurnOff = { [weak self] in self?.onTurnOff() }
         // A tile's right-click menu keeps the dock up while it's open.
         NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { [weak self] _ in
@@ -187,7 +190,7 @@ final class WorkspaceDock {
     func hide(animated: Bool = true) {
         guard isShown, let p = panel else { return }
         isShown = false
-        model.hovered = nil
+        model.hover = nil
         let down = p.frame.offsetBy(dx: 0, dy: -18)
         guard animated else { p.orderOut(nil); return }
         NSAnimationContext.runAnimationGroup({ ctx in
@@ -236,6 +239,7 @@ private final class FirstClickHostingView<Content: View>: NSHostingView<Content>
 final class DockModel: ObservableObject {
     struct App: Identifiable {
         let id: String
+        let pid: pid_t
         let name: String
         let icon: NSImage
         let windows: Int
@@ -246,14 +250,25 @@ final class DockModel: ObservableObject {
         let isCurrent: Bool
         var windowCount: Int { apps.reduce(0) { $0 + $1.windows } }
     }
+    /// What the pointer rests on: a whole tile, one app in a tile, or a button.
+    enum Hover: Equatable {
+        case tile(Int)
+        case app(Int, String)
+        case newWorkspace, launcher, overview
+    }
 
     @Published var tiles: [Tile] = []
-    @Published var hovered: Int?
+    @Published var hover: Hover?
     var menuOpen = false
     var onPick: (Int) -> Void = { _ in }
+    var onFocusApp: (pid_t, Int) -> Void = { _, _ in }
     var onSendHere: (Int) -> Void = { _ in }
     var onShowOverview: () -> Void = {}
+    var onShowLauncher: () -> Void = {}
     var onTurnOff: () -> Void = {}
+
+    /// The first workspace with nothing on it, for the "new workspace" button.
+    var firstEmpty: Int? { Workspaces.range.first { n in !tiles.contains { $0.id == n && !$0.apps.isEmpty } } }
 
     func load(from spaces: Spaces) {
         spaces.refresh()
@@ -267,61 +282,73 @@ final class DockModel: ObservableObject {
         tiles = DockTiles.make(current: spaces.model.current, windows: windows).map { t in
             Tile(id: t.workspace, apps: t.apps.map { a in
                 let pid = pid_t(a.key) ?? 0
-                return App(id: a.key, name: byPid[a.key]?.app ?? "App",
+                return App(id: a.key, pid: pid, name: byPid[a.key]?.app ?? "App",
                            icon: NSRunningApplication(processIdentifier: pid)?.icon ?? NSWorkspace.shared.icon(for: .application),
                            windows: a.windows)
             }, isCurrent: t.isCurrent)
         }
     }
+
+    func setHover(_ h: Hover, _ inside: Bool) {
+        if inside { hover = h } else if hover == h { hover = nil }
+    }
 }
 
-private struct DockView: View {
+struct DockView: View {
     @ObservedObject var model: DockModel
-    private let accent = Color(red: 0.91, green: 0.26, blue: 0.29)
+    private let tileSize: CGFloat = 64
 
     var body: some View {
-        VStack(spacing: 6) {
-            // Room above the tiles for the hovered tile's name; clicks pass through it.
-            label.frame(height: 26)
-            HStack(alignment: .bottom, spacing: 10) {
-                ForEach(model.tiles) { tile in tileButton(tile) }
-                Rectangle().fill(Color.white.opacity(0.18)).frame(width: 1, height: 40).padding(.horizontal, 2)
-                overviewButton
+        VStack(spacing: 8) {
+            // Room above the tiles for what the pointer is on; clicks pass through it.
+            label.frame(height: 24)
+            HStack(alignment: .bottom, spacing: 8) {
+                ForEach(model.tiles) { tile in tileView(tile) }
+                if let n = model.firstEmpty, !model.tiles.contains(where: { $0.id == n }) { newWorkspaceButton(n) }
+                Capsule().fill(Color.white.opacity(0.14)).frame(width: 1, height: 44).padding(.horizontal, 4).padding(.bottom, 14)
+                squareButton(.launcher, "magnifyingglass", "Find or Install an App") { model.onShowLauncher() }
+                squareButton(.overview, "square.grid.3x3", "Show All Workspaces") { model.onShowOverview() }
             }
-            .padding(.horizontal, 12)
+            .padding(.horizontal, 10)
             .padding(.top, 10)
-            .padding(.bottom, 12)
-            .background(
-                // Material for depth, a dark wash so busy windows behind don't show through.
-                RoundedRectangle(cornerRadius: 22, style: .continuous).fill(.regularMaterial)
-                    .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(Color.black.opacity(0.45)))
-                    .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(Color.white.opacity(0.14), lineWidth: 1))
-                    .shadow(color: .black.opacity(0.35), radius: 18, y: 8)
-            )
+            .padding(.bottom, 4)
+            .background(Chrome.panel(cornerRadius: 24))
         }
         .padding(.horizontal, 16)
-        .padding(.bottom, 2)
-        // Wide enough for a long workspace name above a short dock.
+        .padding(.bottom, 4)
+        // Wide enough for a long label above a short dock.
         .frame(minWidth: 480)
         .fixedSize()
     }
 
     @ViewBuilder private var label: some View {
-        if let n = model.hovered, let tile = model.tiles.first(where: { $0.id == n }) {
-            Text(title(tile))
+        if let text = labelText {
+            Text(text)
                 .font(.system(size: 12, weight: .semibold))
                 .padding(.horizontal, 10).padding(.vertical, 4)
-                .background(Capsule().fill(Color.black.opacity(0.75)))
+                .background(Capsule().fill(Color.black.opacity(0.78)))
+                .overlay(Capsule().strokeBorder(Color.white.opacity(0.12)))
                 .foregroundStyle(.white)
                 .transition(.opacity)
-        } else if model.hovered == 0 {
-            Text("Show All Workspaces")
-                .font(.system(size: 12, weight: .semibold))
-                .padding(.horizontal, 10).padding(.vertical, 4)
-                .background(Capsule().fill(Color.black.opacity(0.75)))
-                .foregroundStyle(.white)
         } else {
             Color.clear.frame(width: 1)
+        }
+    }
+
+    private var labelText: String? {
+        switch model.hover {
+        case .tile(let n): return model.tiles.first { $0.id == n }.map(title)
+        case .app(let n, let id):
+            guard let app = model.tiles.first(where: { $0.id == n })?.apps.first(where: { $0.id == id }) else { return nil }
+            let elsewhere = model.tiles.filter { $0.id != n && $0.apps.contains { $0.pid == app.pid } }.map { String($0.id) }
+            var parts = ["\(app.name) · Workspace \(n)"]
+            if app.windows > 1 { parts.append("\(app.windows) windows, click again for the next") }
+            if !elsewhere.isEmpty { parts.append("also on \(elsewhere.joined(separator: ", "))") }
+            return parts.joined(separator: " · ")
+        case .newWorkspace: return model.firstEmpty.map { "Go to Empty Workspace \($0)" }
+        case .launcher: return "Find or Install an App"
+        case .overview: return "Show All Workspaces"
+        case nil: return nil
         }
     }
 
@@ -331,83 +358,150 @@ private struct DockView: View {
         return "Workspace \(tile.id) · \(apps.joined(separator: ", "))"
     }
 
-    private func tileButton(_ tile: DockModel.Tile) -> some View {
-        let hovered = model.hovered == tile.id
+    private func isHovered(_ tile: DockModel.Tile) -> Bool {
+        switch model.hover {
+        case .tile(let n), .app(let n, _): return n == tile.id
+        default: return false
+        }
+    }
+
+    private func tileView(_ tile: DockModel.Tile) -> some View {
+        let hovered = isHovered(tile)
+        let tint = Chrome.workspace(tile.id)
+        let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
         return VStack(spacing: 5) {
-            ZStack(alignment: .bottomLeading) {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color.white.opacity(hovered ? 0.16 : 0.08))
-                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .strokeBorder(tile.isCurrent ? accent : Color.white.opacity(0.1), lineWidth: tile.isCurrent ? 2 : 1))
-                icons(tile).frame(width: 56, height: 56)
-                Text("\(tile.id)")
-                    .font(.system(size: 11, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
-                    .frame(minWidth: 17, minHeight: 17)
-                    .background(Circle().fill(tile.isCurrent ? accent : Color.black.opacity(0.7)))
-                    .offset(x: -4, y: 4)
+            ZStack(alignment: .topLeading) {
+                shape.fill(tile.isCurrent ? tint.opacity(hovered ? 0.34 : 0.26) : Color.white.opacity(hovered ? 0.13 : 0.06))
+                    .overlay(shape.strokeBorder(tile.isCurrent ? tint : Color.white.opacity(hovered ? 0.18 : 0.08),
+                                                lineWidth: tile.isCurrent ? 1.5 : 1))
+                    .onHover { model.setHover(.tile(tile.id), $0) }
+                    .onTapGesture { model.onPick(tile.id) }
+                icons(tile).frame(width: tileSize, height: tileSize)
             }
-            .frame(width: 56, height: 56)
-            Circle().fill(tile.isCurrent ? accent : Color.clear).frame(width: 4, height: 4)
+            .frame(width: tileSize, height: tileSize)
+            // The number under the tile, lit for the workspace you're on, like the key that gets there.
+            Text("\(tile.id)")
+                .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                .foregroundStyle(tile.isCurrent ? Color.white : tint.opacity(hovered ? 1 : 0.85))
+                .frame(minWidth: 18, minHeight: 15)
+                .background(Capsule().fill(tile.isCurrent ? tint : Color.clear))
+                .allowsHitTesting(false)
         }
-        .scaleEffect(hovered ? 1.12 : 1, anchor: .bottom)
-        .animation(.spring(response: 0.22, dampingFraction: 0.7), value: hovered)
-        .contentShape(Rectangle())
-        .onHover { inside in
-            if inside { model.hovered = tile.id } else if model.hovered == tile.id { model.hovered = nil }
-        }
-        .onTapGesture { model.onPick(tile.id) }
+        .scaleEffect(hovered ? 1.06 : 1, anchor: .bottom)
+        .animation(.spring(response: 0.25, dampingFraction: 0.72), value: hovered)
         .contextMenu {
             Button("Go to Workspace \(tile.id)") { model.onPick(tile.id) }
             Button("Send Front Window to Workspace \(tile.id)") { model.onSendHere(tile.id) }
             Divider()
+            Button("Find or Install an App") { model.onShowLauncher() }
             Button("Show All Workspaces") { model.onShowOverview() }
             Button("Turn Off Workspace Dock") { model.onTurnOff() }
         }
-        .accessibilityElement(children: .ignore)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel(title(tile) + (tile.isCurrent ? ", current" : ""))
-        .accessibilityAddTraits(.isButton)
         .accessibilityAction { model.onPick(tile.id) }
     }
 
-    /// One app fills the tile; up to four share it; more show three and a count.
+    /// One app fills the tile; two sit side by side; up to four share a grid; more show three
+    /// and a count. Each icon is its own button that goes straight to that app.
     @ViewBuilder private func icons(_ tile: DockModel.Tile) -> some View {
         let apps = tile.apps
         if apps.isEmpty {
-            Image(systemName: "plus").font(.system(size: 16, weight: .medium)).foregroundStyle(.white.opacity(0.35))
+            Image(systemName: "plus").font(.system(size: 15, weight: .medium)).foregroundStyle(.white.opacity(0.3))
+                .allowsHitTesting(false)
         } else if apps.count == 1 {
-            Image(nsImage: apps[0].icon).resizable().frame(width: 40, height: 40)
+            appIcon(apps[0], in: tile, size: 42)
+        } else if apps.count == 2 {
+            HStack(spacing: 2) { ForEach(apps) { appIcon($0, in: tile, size: 28) } }
         } else {
             let shown = apps.count > 4 ? Array(apps.prefix(3)) : apps
-            LazyVGrid(columns: [GridItem(.fixed(22), spacing: 3), GridItem(.fixed(22), spacing: 3)], spacing: 3) {
-                ForEach(shown) { app in Image(nsImage: app.icon).resizable().frame(width: 22, height: 22) }
+            LazyVGrid(columns: [GridItem(.fixed(24), spacing: 3), GridItem(.fixed(24), spacing: 3)], spacing: 3) {
+                ForEach(shown) { appIcon($0, in: tile, size: 24) }
                 if apps.count > 4 {
-                    Text("+\(apps.count - 3)").font(.system(size: 10, weight: .bold)).foregroundStyle(.white.opacity(0.8)).frame(width: 22, height: 22)
+                    Text("+\(apps.count - 3)")
+                        .font(.system(size: 10, weight: .bold, design: .rounded)).foregroundStyle(.white.opacity(0.85))
+                        .frame(width: 24, height: 24)
+                        .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.white.opacity(0.12)))
+                        .onHover { model.setHover(.tile(tile.id), $0) }
+                        .onTapGesture { model.onPick(tile.id) }
                 }
             }
-            .frame(width: 47)
+            .frame(width: 51)
         }
     }
 
-    private var overviewButton: some View {
-        let hovered = model.hovered == 0
+    /// The app hovered anywhere in the dock, so its copies on other workspaces light up too.
+    private var hoveredPid: pid_t? {
+        guard case .app(let n, let id) = model.hover else { return nil }
+        return model.tiles.first { $0.id == n }?.apps.first { $0.id == id }?.pid
+    }
+
+    private func appIcon(_ app: DockModel.App, in tile: DockModel.Tile, size: CGFloat) -> some View {
+        let hovered = model.hover == .app(tile.id, app.id)
+        let twin = !hovered && hoveredPid == app.pid
+        return Image(nsImage: app.icon).resizable().interpolation(.high).frame(width: size, height: size)
+            .shadow(color: .black.opacity(hovered ? 0.4 : 0.2), radius: hovered ? 4 : 2, y: 1)
+            // The same app on another workspace: ringed in this tile's color while its twin is hovered.
+            .overlay(RoundedRectangle(cornerRadius: size * 0.26, style: .continuous)
+                .strokeBorder(Chrome.workspace(tile.id), lineWidth: twin ? 2 : 0).padding(-2))
+            // One dot per window when there's more than one; clicking again steps through them.
+            .overlay(alignment: .bottom) {
+                if app.windows > 1 {
+                    HStack(spacing: 2) {
+                        ForEach(0..<min(app.windows, 3), id: \.self) { _ in Circle().fill(Color.white).frame(width: 3, height: 3) }
+                    }
+                    .padding(.horizontal, 3).padding(.vertical, 2)
+                    .background(Capsule().fill(Color.black.opacity(0.6)))
+                    .offset(y: 5)
+                }
+            }
+            .scaleEffect(hovered ? 1.18 : 1)
+            .animation(.spring(response: 0.22, dampingFraction: 0.65), value: hovered)
+            .contentShape(Rectangle())
+            .onHover { model.setHover(.app(tile.id, app.id), $0) }
+            .onTapGesture { model.onFocusApp(app.pid, tile.id) }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(app.name), workspace \(tile.id)")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { model.onFocusApp(app.pid, tile.id) }
+    }
+
+    private func newWorkspaceButton(_ n: Int) -> some View {
+        let hovered = model.hover == .newWorkspace
+        let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
         return VStack(spacing: 5) {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.white.opacity(hovered ? 0.16 : 0.06))
-                .overlay(Image(systemName: "square.grid.3x3.fill").font(.system(size: 20)).foregroundStyle(.white.opacity(0.8)))
-                .frame(width: 56, height: 56)
-            Color.clear.frame(width: 4, height: 4)
+            shape.strokeBorder(Color.white.opacity(hovered ? 0.35 : 0.16), style: StrokeStyle(lineWidth: 1.2, dash: [4, 4]))
+                .background(shape.fill(Color.white.opacity(hovered ? 0.08 : 0.0)))
+                .overlay(Image(systemName: "plus").font(.system(size: 16, weight: .semibold)).foregroundStyle(.white.opacity(hovered ? 0.9 : 0.45)))
+                .frame(width: tileSize * 0.75, height: tileSize)
+            Color.clear.frame(width: 18, height: 15)
         }
-        .scaleEffect(hovered ? 1.12 : 1, anchor: .bottom)
-        .animation(.spring(response: 0.22, dampingFraction: 0.7), value: hovered)
         .contentShape(Rectangle())
-        .onHover { inside in
-            if inside { model.hovered = 0 } else if model.hovered == 0 { model.hovered = nil }
-        }
-        .onTapGesture { model.onShowOverview() }
+        .onHover { model.setHover(.newWorkspace, $0) }
+        .onTapGesture { model.onPick(n) }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Show All Workspaces")
+        .accessibilityLabel("Go to empty workspace \(n)")
         .accessibilityAddTraits(.isButton)
-        .accessibilityAction { model.onShowOverview() }
+        .accessibilityAction { model.onPick(n) }
+    }
+
+    private func squareButton(_ which: DockModel.Hover, _ symbol: String, _ name: String, _ action: @escaping () -> Void) -> some View {
+        let hovered = model.hover == which
+        return VStack(spacing: 5) {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color.white.opacity(hovered ? 0.14 : 0.05))
+                .overlay(Image(systemName: symbol).font(.system(size: 19, weight: .medium)).foregroundStyle(.white.opacity(hovered ? 0.95 : 0.7)))
+                .frame(width: tileSize, height: tileSize)
+            Color.clear.frame(width: 18, height: 15)
+        }
+        .scaleEffect(hovered ? 1.06 : 1, anchor: .bottom)
+        .animation(.spring(response: 0.25, dampingFraction: 0.72), value: hovered)
+        .contentShape(Rectangle())
+        .onHover { model.setHover(which, $0) }
+        .onTapGesture(perform: action)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(name)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { action() }
     }
 }

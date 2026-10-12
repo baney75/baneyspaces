@@ -12,10 +12,12 @@ final class SetupModel: ObservableObject {
     @Published var desktops = Desktops.count
     @Published var openAtLogin = SMAppService.mainApp.status == .enabled
     @Published var viewerKeys = MissionControlKeys.enabled
-    @Published var cmdTab = MissionControlKeys.cmdTabEnabled
-    var onCmdTabChange: ((Bool) -> Void)?
+    @Published var cmdTab = MissionControlKeys.cmdTabMode
+    var onCmdTabChange: ((MissionControlKeys.CmdTabMode) -> Void)?
     @Published var workspaceDock = WorkspaceDock.enabled
     var onWorkspaceDockChange: ((Bool) -> Void)?
+    @Published var launcherOnCmdSpace = Launcher.onCmdSpace
+    var onLauncherChange: ((Bool) -> Void)?
     @Published var aeroSpaceRunning = SetupModel.isAeroSpaceRunning
     @Published var loginNeedsApproval = SMAppService.mainApp.status == .requiresApproval
     @Published var screenshotsFreed = SystemShortcuts.hasFreed
@@ -153,14 +155,19 @@ final class SetupModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.reloadOptional() }
     }
 
-    func setCmdTab(_ on: Bool) {
-        cmdTab = on
-        onCmdTabChange?(on)
+    func setCmdTab(_ mode: MissionControlKeys.CmdTabMode) {
+        cmdTab = mode
+        onCmdTabChange?(mode)
     }
 
     func setWorkspaceDock(_ on: Bool) {
         workspaceDock = on
         onWorkspaceDockChange?(on)
+    }
+
+    func setLauncher(_ on: Bool) {
+        launcherOnCmdSpace = on
+        onLauncherChange?(on)
     }
 
     func setOpenAtLogin(_ on: Bool) {
@@ -281,11 +288,23 @@ struct SetupView: View {
                     Text("Turn this off to give both keys back to Mission Control and to apps that use ⌃↑. The overview stays in the menu bar menu.")
                         .font(.callout).foregroundStyle(.secondary)
                 }
-                Toggle("⌘Tab switches workspaces instead of apps", isOn: Binding(get: { model.cmdTab }, set: { model.setCmdTab($0) }))
-                Text("Hold ⌘ and tap Tab to step through your workspaces, most recent first; let go to go there. ⌘⇧Tab steps back and Esc cancels. Switch apps from the Dock or Spotlight instead.")
-                    .font(.callout).foregroundStyle(.secondary)
+                HStack {
+                    Text("⌘Tab switches")
+                    Picker("", selection: Binding(get: { model.cmdTab }, set: { model.setCmdTab($0) })) {
+                        ForEach(MissionControlKeys.CmdTabMode.allCases) { Text($0.title).tag($0) }
+                    }
+                    .labelsHidden()
+                    .fixedSize()
+                }
+                Text(cmdTabNote).font(.callout).foregroundStyle(.secondary)
                 Toggle("Workspace Dock in place of the macOS Dock", isOn: Binding(get: { model.workspaceDock }, set: { model.setWorkspaceDock($0) }))
                 Text("Rest the pointer on the bottom edge of the screen to see your workspaces, each with its apps; click one to go there. The macOS Dock stays out of sight while this is on and comes back as it was when you turn it off or quit BaneySpaces.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+
+            step(done: true, title: "Find and install apps") {
+                Toggle("⌘Space opens the BaneySpaces launcher instead of Spotlight", isOn: Binding(get: { model.launcherOnCmdSpace }, set: { model.setLauncher($0) }))
+                Text("Search your apps and go straight to the workspace one is open on. Install apps from Homebrew and the App Store, remove them, update everything, and lock, sleep or restart, from one box. Turn this off to give ⌘Space back to Spotlight; the launcher stays in the menu bar menu and the Workspace Dock.")
                     .font(.callout).foregroundStyle(.secondary)
             }
 
@@ -320,6 +339,14 @@ struct SetupView: View {
         }
         .padding(24)
         .frame(width: 520)
+    }
+
+    private var cmdTabNote: String {
+        switch model.cmdTab {
+        case .off: "macOS's own app switcher. It only reaches apps on the workspace you're on."
+        case .apps: "Hold ⌘ and tap Tab to step through every app with a window, on any workspace, most recent first; let go to go straight to it. ⌘⇧Tab steps back and Esc cancels."
+        case .workspaces: "Hold ⌘ and tap Tab to step through your workspaces, most recent first; let go to go there. ⌘⇧Tab steps back and Esc cancels."
+        }
     }
 
     private func step<Content: View>(done: Bool, title: String, @ViewBuilder content: () -> Content) -> some View {

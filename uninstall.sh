@@ -20,7 +20,7 @@ fi
 
 # Screenshot shortcuts that setup's Free Them switched off go back on.
 if [ -x "$APP/Contents/MacOS/BaneySpaces" ]; then
-  step "Turning macOS's screenshot shortcuts back on (if setup turned them off)"
+  step "Turning macOS's screenshot and Spotlight shortcuts back on (if BaneySpaces turned them off)"
   "$APP/Contents/MacOS/BaneySpaces" --restore-shortcuts >/dev/null 2>&1 || true
   # Quitting already brings the macOS Dock back; this covers a crash that didn't.
   "$APP/Contents/MacOS/BaneySpaces" --restore-dock >/dev/null 2>&1 || true

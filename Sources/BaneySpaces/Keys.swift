@@ -133,6 +133,46 @@ enum SystemShortcuts {
         UserDefaults.standard.removeObject(forKey: freedKey)
     }
 
+    // MARK: Spotlight
+
+    /// "Show Spotlight search" on ⌘Space, as macOS stores it: space, key code 49, ⌘.
+    private static let spotlight = (id: 64, key: 32, code: 49, mods: 1048576)
+    private static let spotlightFreedKey = "freedSpotlight"
+
+    /// True while BaneySpaces holds ⌘Space for its launcher, Spotlight's shortcut switched off.
+    static var spotlightFreed: Bool { UserDefaults.standard.bool(forKey: spotlightFreedKey) }
+
+    /// Taking and giving back run one at a time, in order, so a quick on-off can't leave
+    /// Spotlight switched off with nothing recorded to turn it back on.
+    static let spotlightQueue = DispatchQueue(label: "com.baney.baneyspaces.spotlight")
+
+    /// True while macOS opens Spotlight on ⌘Space. Someone who moved Spotlight to other keys or
+    /// turned it off already left ⌘Space free.
+    static var spotlightOwnsCmdSpace: Bool {
+        guard enabled(spotlight.id) else { return false }
+        let all = CFPreferencesCopyAppValue("AppleSymbolicHotKeys" as CFString, domain) as? [String: Any]
+        let params = ((all?[String(spotlight.id)] as? [String: Any])?["value"] as? [String: Any])?["parameters"] as? [Int]
+        guard let params, params.count >= 3 else { return true }
+        return params[1] == spotlight.code && params[2] == spotlight.mods
+    }
+
+    /// Hands ⌘Space to the launcher. Only Spotlight on ⌘Space is switched off, and only that is
+    /// recorded, so giving it back never turns on a shortcut the person had turned off or moved.
+    /// Slow; run it on `spotlightQueue`.
+    static func freeSpotlight() {
+        guard !spotlightFreed, spotlightOwnsCmdSpace else { return }
+        // Recorded first: a crash mid-write still leaves a note to turn Spotlight back on.
+        UserDefaults.standard.set(true, forKey: spotlightFreedKey)
+        write([spotlight], enabled: false)
+    }
+
+    /// Gives ⌘Space back to Spotlight, if `freeSpotlight()` took it. Run it on `spotlightQueue`.
+    static func restoreSpotlight() {
+        guard spotlightFreed else { return }
+        write([spotlight], enabled: true)
+        UserDefaults.standard.removeObject(forKey: spotlightFreedKey)
+    }
+
     private static func write(_ targets: [(id: Int, key: Int, code: Int, mods: Int)], enabled on: Bool) {
         guard !targets.isEmpty else { return }
         CFPreferencesAppSynchronize(domain)
