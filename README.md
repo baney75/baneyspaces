@@ -102,7 +102,7 @@ macOS's ⌘Tab only reaches apps on the workspace you're on. In setup, set **⌘
 first, each marked with the workspace it's on. Let go of ⌘ and you're on that app's window,
 wherever it is. **Workspaces** steps through workspaces instead. ⌘⇧Tab steps back; Esc cancels.
 
-On an app with more than one window, **hold Tab** to open its window bar: each window by title
+On an app with more than one window, **hold Tab** to open its window bar (the highlight stays put; a tap steps when you let go): each window by title
 (a browser's tab, a player's video) and workspace. Tab through it and let go to land on that
 window; hold Tab again to go back to the apps.
 

@@ -59,6 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             self.switcher.step(forward: forward, isRepeat: isRepeat, at: time)
         }
+        keys.onTabUp = { [weak self] in self?.switcher.tabReleased() }
         keys.onCmdReleased = { [weak self] in self?.switcher.commit() }
         keys.onCancel = { [weak self] in self?.switcher.cancel() }
         return keys

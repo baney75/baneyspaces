@@ -17,9 +17,6 @@ final class WorkspaceSwitcher {
     /// Apps in the order they were last brought forward, most recent first.
     private var appOrder: [pid_t] = []
     private var hold = TabHold()
-    /// Tab presses in this gesture, not counting repeats.
-    private var presses = 0
-    private var selectedBeforePress = 0
 
     init(spaces: Spaces) {
         self.spaces = spaces
@@ -38,44 +35,57 @@ final class WorkspaceSwitcher {
 
     /// `time` is the system uptime when the key arrived, read on the tap's thread.
     func step(forward: Bool, isRepeat: Bool, at time: Double) {
-        // A held Tab opens or closes the window bar once; its other repeats do nothing, so
-        // holding never races through the list.
+        // A held Tab opens or closes the window bar once, on the app that's highlighted; its
+        // other repeats do nothing, so holding never races through the list.
         if isRepeat {
             guard isShowing, model.mode == .apps, hold.repeated(at: time) else { return }
             if model.windowBar != nil { return toggleWindowBar() }
-            let before = presses == 1 ? 0 : selectedBeforePress
-            guard let target = TabHold.target(before: before, landed: model.selected, windows: windowCount(of:)) else {
-                Trace.log("cmdTab hold: no app with more than one window")
+            guard windowCount(of: model.selected) > 1 else {
+                Trace.log("cmdTab hold: highlighted app has one window")
                 return
             }
-            model.selected = target
             return toggleWindowBar()
         }
-        hold.press(at: time)
-        presses = isShowing ? presses + 1 : 1
-        selectedBeforePress = model.selected
-        if isShowing, model.windowBar != nil {
-            let c = model.windowBar!.windows.count
-            model.windowBar!.selected = (model.windowBar!.selected + (forward ? 1 : c - 1)) % c
+        guard !isShowing else {
+            // Wait to see whether this press is a tap (step when it's let go) or a hold (stay).
+            // Workspaces have no window bar, so a press there steps at once.
+            if model.mode == .apps {
+                hold.press(at: time, forward: forward, deferStep: true)
+            } else {
+                advance(forward)
+            }
             return
         }
-        if !isShowing {
-            model.windowBar = nil
-            model.mode = MissionControlKeys.cmdTabMode == .workspaces ? .workspaces : .apps
-            if model.mode == .workspaces {
-                let order = spaces.switcherOrder()
-                Trace.log("cmdTab show order=\(order) current=\(spaces.model.current)")
-                model.tiles = order.map { n in
-                    SwitcherModel.Tile(n: n, icons: icons(on: n), count: spaces.entries(on: n).count)
-                }
-            } else {
-                model.apps = appTiles()
-                Trace.log("cmdTab show apps=\(model.apps.count) current=\(spaces.model.current)")
+        hold.press(at: time)
+        model.windowBar = nil
+        model.mode = MissionControlKeys.cmdTabMode == .workspaces ? .workspaces : .apps
+        if model.mode == .workspaces {
+            let order = spaces.switcherOrder()
+            Trace.log("cmdTab show order=\(order) current=\(spaces.model.current)")
+            model.tiles = order.map { n in
+                SwitcherModel.Tile(n: n, icons: icons(on: n), count: spaces.entries(on: n).count)
             }
-            // The first tap lands on the previous one, like the app switcher.
-            let c = model.count
-            model.selected = c > 1 ? (forward ? 1 : c - 1) : 0
-            show()
+        } else {
+            model.apps = appTiles()
+            Trace.log("cmdTab show apps=\(model.apps.count) current=\(spaces.model.current)")
+        }
+        // The first tap lands on the previous one, like the app switcher.
+        let c = model.count
+        model.selected = c > 1 ? (forward ? 1 : c - 1) : 0
+        show()
+    }
+
+    /// Tab let go: a tap takes its step now.
+    func tabReleased() {
+        guard isShowing, let forward = hold.release() else { return }
+        advance(forward)
+    }
+
+    /// One step through the window bar if it's open, otherwise through the list.
+    private func advance(_ forward: Bool) {
+        if let bar = model.windowBar {
+            let c = bar.windows.count
+            model.windowBar!.selected = (bar.selected + (forward ? 1 : c - 1)) % c
         } else if model.count > 0 {
             let c = model.count
             model.selected = (model.selected + (forward ? 1 : c - 1)) % c
@@ -84,6 +94,8 @@ final class WorkspaceSwitcher {
 
     func commit() {
         guard isShowing else { return }
+        // ⌘ came up before Tab: the tap still counts.
+        if let forward = hold.release() { advance(forward) }
         hide()
         switch model.mode {
         case .workspaces:
@@ -114,6 +126,7 @@ final class WorkspaceSwitcher {
 
     func cancel() {
         Trace.log("cmdTab cancel")
+        _ = hold.release()
         hide()
     }
 

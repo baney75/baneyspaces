@@ -160,35 +160,41 @@ public enum WindowCycle {
 /// macOS sends repeats while a key is held, after the person's own repeat delay, which can be
 /// very short; a hold counts only once the key has been down `threshold` seconds, and only
 /// once per press.
+///
+/// A press doesn't move the selection when it goes down: it can't tell yet whether it's a tap or
+/// a hold, and a hold has to stay on the app that's highlighted. The step waits, and `release()`
+/// hands it over when Tab (or ⌘) comes up without the press having turned into a hold.
 public struct TabHold: Sendable {
     /// Well past macOS's default repeat delay (about 0.375 s), so a slow, deliberate tap is still
     /// a tap: a lower value turned careful taps in the window bar into "go back".
     public static let threshold: Double = 0.6
     private var pressedAt: Double?
     private var fired = false
+    /// The direction of a press whose step hasn't been taken yet (true is forward).
+    private var pending: Bool?
 
     public init() {}
 
-    /// A fresh Tab press (not a repeat).
-    public mutating func press(at t: Double) {
+    /// A fresh Tab press (not a repeat). `deferStep` holds its step back until it's let go.
+    public mutating func press(at t: Double, forward: Bool = true, deferStep: Bool = false) {
         pressedAt = t
         fired = false
+        pending = deferStep ? forward : nil
     }
 
-    /// A repeat of the held Tab. True exactly once per press, when it has been held long enough.
+    /// A repeat of the held Tab. True exactly once per press, when it has been held long enough;
+    /// a hold drops the step it was holding back.
     public mutating func repeated(at t: Double) -> Bool {
         guard let pressedAt, !fired, t - pressedAt >= Self.threshold else { return false }
         fired = true
+        pending = nil
         return true
     }
 
-    /// Which app a hold opens. The press that began the hold already moved the selection on, so
-    /// the hold means the app selected before it (on the very first press, the app you're in).
-    /// When that app has one window there is nothing to pick, so it opens the app the press
-    /// landed on, the one highlighted. Nil when neither has more than one window.
-    public static func target(before: Int, landed: Int, windows: (Int) -> Int) -> Int? {
-        for i in [before, landed] where windows(i) > 1 { return i }
-        return nil
+    /// Tab or ⌘ came up: the step a tap still owes, if any (true is forward), given once.
+    public mutating func release() -> Bool? {
+        defer { pending = nil }
+        return pending
     }
 }
 

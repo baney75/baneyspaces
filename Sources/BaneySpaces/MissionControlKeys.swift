@@ -65,6 +65,8 @@ final class MissionControlKeys {
         inGesture = false
         swallowTab = true
     }
+    /// Tab let go during a gesture, ⌘ still held.
+    var onTabUp: () -> Void = {}
     var onCmdReleased: () -> Void = {}
     var onCancel: () -> Void = {}
     /// Read on the tap thread; set when a ⌘Tab gesture starts, cleared when it ends.
@@ -190,6 +192,11 @@ final class MissionControlKeys {
            event.flags.intersection([.maskControl, .maskCommand, .maskAlternate]) == .maskCommand {
             let started = appStarted, viewer = viewerOpen
             DispatchQueue.main.async { Trace.log("cmdTab passed to macOS started=\(started) viewerOpen=\(viewer)") }
+        }
+        // Tab let go mid-gesture, whatever else is held: a tap's step is waiting on it.
+        if tabEnabledOnTap, code == tabKey, inGesture, type == .keyUp, event.flags.contains(.maskCommand) {
+            DispatchQueue.main.async { me.onTabUp() }
+            return nil
         }
         if tabEnabledOnTap, code == tabKey, switcherReady || inGesture {
             let mods = event.flags.intersection([.maskControl, .maskCommand, .maskAlternate])

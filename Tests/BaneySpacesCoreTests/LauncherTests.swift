@@ -110,14 +110,27 @@ final class TabHoldTests: XCTestCase {
         XCTAssertTrue(h.repeated(at: 11.61))
     }
 
-    func testTargetPrefersTheAppBeforeThePress() {
-        let windows = [0: 1, 1: 2, 2: 3]
-        let count = { windows[$0] ?? 0 }
-        XCTAssertEqual(TabHold.target(before: 2, landed: 1, windows: count), 2)
-        // Held from the first press in a one-window app: the highlighted app opens instead.
-        XCTAssertEqual(TabHold.target(before: 0, landed: 1, windows: count), 1)
-        XCTAssertNil(TabHold.target(before: 0, landed: 0, windows: count))
-        XCTAssertNil(TabHold.target(before: 0, landed: 5, windows: count))
+    func testATapStepsOnlyWhenLetGo() {
+        var h = TabHold()
+        h.press(at: 10, forward: true, deferStep: true)
+        XCTAssertFalse(h.repeated(at: 10.4))   // early repeats don't use up the step
+        XCTAssertEqual(h.release(), true)
+        XCTAssertNil(h.release())              // given once
+        h.press(at: 11, forward: false, deferStep: true)
+        XCTAssertEqual(h.release(), false)
+    }
+
+    func testAHoldNeverSteps() {
+        var h = TabHold()
+        h.press(at: 10, forward: true, deferStep: true)
+        XCTAssertTrue(h.repeated(at: 10.7))
+        XCTAssertNil(h.release())              // the highlight stays where it was
+    }
+
+    func testTheFirstPressHasNoStepToGive() {
+        var h = TabHold()
+        h.press(at: 10)
+        XCTAssertNil(h.release())
     }
 
     func testRepeatWithoutAPressNeverFires() {
