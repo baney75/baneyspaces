@@ -157,6 +157,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// AeroSpace to quit, since two managers moving the same windows would fight.
     private func startWhenTrusted() {
         if canStart { return start() }
+        // Left out of sight by a crash, the macOS Dock comes back while BaneySpaces waits; the
+        // Workspace Dock takes over again once it starts.
+        SystemDock.restore()
         updateIcon()
         trustTimer?.invalidate()
         trustTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] timer in
@@ -419,12 +422,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case "restore": run { _ in bringBack() }
         case "viewer": run { _ in viewer.toggle() }
         case "dock":
+            // Turning it off is always allowed. Showing it or turning it on (which hides the
+            // macOS Dock) is for checks, only when `defaults write com.baney.baneyspaces
+            // dockURLCommands -bool true` says so, so a web page can't do either.
+            let checks = UserDefaults.standard.bool(forKey: "dockURLCommands")
             switch url.lastPathComponent {
-            case "show": run { _ in dock.pin(true) }
-            case "hide": run { _ in dock.pin(false) }
-            case "on": run { _ in setWorkspaceDock(true) }
             case "off": run { _ in setWorkspaceDock(false) }
-            default: NSLog("BaneySpaces: unknown command %@", text)
+            case "show" where checks: run { _ in dock.pin(true) }
+            case "hide" where checks: run { _ in dock.pin(false) }
+            case "on" where checks: run { _ in setWorkspaceDock(true) }
+            default: NSLog("BaneySpaces: dock command refused or unknown %@", text)
             }
         default: NSLog("BaneySpaces: unknown command %@", text)
         }

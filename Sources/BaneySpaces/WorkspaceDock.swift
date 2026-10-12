@@ -18,6 +18,10 @@ enum SystemDock {
             // A setting that wasn't there is saved as absent, so restoring removes it again.
             var saved: [String: Any] = [:]
             for key in ["autohide", "autohide-delay"] { if let v = read(key) { saved[key] = v } }
+            // Already at BaneySpaces' own values (its saved copy was lost: a crash, wiped
+            // settings, another copy of the app): those aren't the person's. Save them as
+            // absent, which restores the macOS defaults.
+            if (saved["autohide-delay"] as? NSNumber)?.doubleValue == hiddenDelay { saved = [:] }
             UserDefaults.standard.set(saved, forKey: savedKey)
         }
         // Both writes run; either one changing means the Dock must restart to notice.
@@ -30,7 +34,12 @@ enum SystemDock {
     static func restore() {
         guard let saved = UserDefaults.standard.dictionary(forKey: savedKey) else { return }
         var changed = false
-        for key in ["autohide", "autohide-delay"] { changed = write(key, saved[key] as? NSNumber) || changed }
+        // Only a setting still at the value BaneySpaces wrote goes back; one the person changed
+        // since (⌥⌘D, System Settings) is their newer choice and stays.
+        let ours: [String: NSNumber] = ["autohide": true as NSNumber, "autohide-delay": hiddenDelay as NSNumber]
+        for key in ["autohide", "autohide-delay"] where read(key) == ours[key] {
+            changed = write(key, saved[key] as? NSNumber) || changed
+        }
         UserDefaults.standard.removeObject(forKey: savedKey)
         if changed { restartDock() }
     }
@@ -138,8 +147,12 @@ final class WorkspaceDock {
             return
         }
         // Resting on the bottom edge, buttons up (not dragging a window or a selection).
-        let screen = NSScreen.screens.first { NSPointInRect(mouse, $0.frame.insetBy(dx: 0, dy: -1)) }
-        guard let screen, mouse.y - screen.frame.minY < 2, NSEvent.pressedMouseButtons == 0 else { edgeSince = nil; return }
+        // The bottom edge of a screen with no other screen below it, as the macOS Dock uses.
+        let screen = NSScreen.screens.first { s in
+            mouse.x >= s.frame.minX && mouse.x < s.frame.maxX && mouse.y >= s.frame.minY - 1 && mouse.y < s.frame.minY + 2
+                && !NSScreen.screens.contains { $0 != s && $0.frame.contains(NSPoint(x: mouse.x, y: s.frame.minY - 1)) }
+        }
+        guard let screen, NSEvent.pressedMouseButtons == 0 else { edgeSince = nil; return }
         if edgeSince == nil { edgeSince = Date() }
         if Date().timeIntervalSince(edgeSince!) > 0.12 { show(on: screen) }
     }
@@ -202,7 +215,8 @@ final class WorkspaceDock {
         p.isOpaque = false
         p.backgroundColor = .clear
         p.hasShadow = false
-        p.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
+        // Not over full-screen apps: a video's controls or a game sit along that edge.
+        p.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
         p.contentView = FirstClickHostingView(rootView: DockView(model: model).environment(\.colorScheme, .dark))
         return p
     }
