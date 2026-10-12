@@ -43,10 +43,11 @@ final class WorkspaceSwitcher {
         if isRepeat {
             guard isShowing, model.mode == .apps, hold.repeated(at: time) else { return }
             if model.windowBar != nil { return toggleWindowBar() }
-            // The press that began this hold moved the selection on; the hold is about the app
-            // that was selected before it. Held from the very first press, that's the app you're in.
-            let target = presses == 1 ? 0 : selectedBeforePress
-            guard windowCount(of: target) > 1 else { return }
+            let before = presses == 1 ? 0 : selectedBeforePress
+            guard let target = TabHold.target(before: before, landed: model.selected, windows: windowCount(of:)) else {
+                Trace.log("cmdTab hold: no app with more than one window")
+                return
+            }
             model.selected = target
             return toggleWindowBar()
         }
