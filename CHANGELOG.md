@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.2 (2026-10-11)
+
 - **Updates from the menu bar, Stable or Nightly.** BaneySpaces checks once a day (or on
   request) and offers a newer build with its release notes; it installs only when you press
   Update Now, keeps running if the build fails, and shows what changed after it restarts.

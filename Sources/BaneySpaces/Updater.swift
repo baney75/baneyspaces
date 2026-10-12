@@ -16,9 +16,15 @@ final class Updater: NSObject {
     /// Called on the main thread whenever `available` or `installing` changes.
     var onChange: () -> Void = {}
 
+    /// True while BaneySpaces is in the middle of something an alert mustn't interrupt (a
+    /// workspace switch): alerts wait for it to end.
+    var isBusy: () -> Bool = { false }
+
     private var timer: Timer?
     private var checking = false
     private var watch: Timer?
+    /// Alerts on screen, kept alive until a button closes them.
+    private var shown: [NSAlert] = []
 
     static let build: BuildInfo = {
         let info = Bundle.main.infoDictionary ?? [:]
@@ -82,14 +88,37 @@ final class Updater: NSObject {
                     return
                 }
                 self.lastCheck = Date()
-                self.available = Updates.offer(from: Release.list(fromGitHubJSON: data), channel: self.channel, build: Self.build)
-                self.onChange()
-                guard manual else { return }
-                if let release = self.available {
-                    self.offer(release)
-                } else {
-                    self.tell("BaneySpaces is up to date", "You have \(Self.buildDescription), the newest \(self.channel == .stable ? "stable release" : "build on the Nightly channel").")
+                let candidates = Updates.candidates(from: Release.list(fromGitHubJSON: data), channel: self.channel, build: Self.build)
+                self.firstContainingBuild(candidates) { release in
+                    self.available = release
+                    self.onChange()
+                    guard manual else { return }
+                    if let release {
+                        self.offer(release)
+                    } else {
+                        self.tell("BaneySpaces is up to date", "You have \(Self.buildDescription), the newest \(self.channel == .stable ? "stable release" : "build on the Nightly channel").")
+                    }
                 }
+            }
+        }.resume()
+    }
+
+    /// The first candidate GitHub confirms is ahead of this build: it contains every change this
+    /// build has, plus more. Dates alone can't tell a hotfix branch from main. Without an answer
+    /// (offline, rate limited), the date comparison stands.
+    private func firstContainingBuild(_ candidates: [Release], then: @escaping (Release?) -> Void) {
+        guard let release = candidates.first else { return then(nil) }
+        guard let mine = Self.build.commit, let theirs = release.commit,
+              let url = URL(string: "https://api.github.com/repos/baney75/baneyspaces/compare/\(mine)...\(theirs)") else { return then(release) }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("BaneySpaces/\(Self.build.version)", forHTTPHeaderField: "User-Agent")
+        URLSession.shared.dataTask(with: request) { data, response, _ in
+            let status = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["status"] as? String
+            DispatchQueue.main.async {
+                guard (response as? HTTPURLResponse)?.statusCode == 200, let status else { return then(release) }
+                if status == "ahead" { return then(release) }
+                self.firstContainingBuild(Array(candidates.dropFirst()), then: then)
             }
         }.resume()
     }
@@ -104,8 +133,34 @@ final class Updater: NSObject {
         alert.accessoryView = Self.notesView(release.notes)
         alert.addButton(withTitle: "Update Now")
         alert.addButton(withTitle: "Later")
+        present(alert) { [weak self] button in if button == 0 { self?.install(release) } }
+    }
+
+    /// Shows an alert as an ordinary window, not a modal one: a modal alert stops the timers a
+    /// workspace switch runs on. It waits for a switch in progress to end, so focus doesn't
+    /// jump to BaneySpaces halfway through one.
+    private func present(_ alert: NSAlert, then: @escaping (Int) -> Void = { _ in }) {
+        guard !isBusy() else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.present(alert, then: then) }
+            return
+        }
+        shown.append(alert)
+        for (i, button) in alert.buttons.enumerated() {
+            let target = ButtonAction { [weak self, weak alert] in
+                guard let alert else { return }
+                alert.window.orderOut(nil)
+                self?.shown.removeAll { $0 === alert }
+                then(i)
+            }
+            button.target = target
+            button.action = #selector(ButtonAction.run(_:))
+            objc_setAssociatedObject(button, &ButtonAction.key, target, .OBJC_ASSOCIATION_RETAIN)
+        }
+        alert.layout()
+        alert.window.level = .floating
+        alert.window.center()
         NSApp.activate(ignoringOtherApps: true)
-        if alert.runModal() == .alertFirstButtonReturn { install(release) }
+        alert.window.makeKeyAndOrderFront(nil)
     }
 
     /// Release notes in a scrolling view, Markdown rendered.
@@ -130,26 +185,44 @@ final class Updater: NSObject {
     }
     private static var logURL: URL { supportFolder.appendingPathComponent("update.log") }
 
+    private static var statusURL: URL { supportFolder.appendingPathComponent("update.status") }
+    private static var pidURL: URL { supportFolder.appendingPathComponent("update.pid") }
+
+    /// Whether an installer started earlier (by this launch or one before it) is still running.
+    private static var installerRunning: Bool {
+        guard let text = try? String(contentsOf: pidURL, encoding: .utf8),
+              let pid = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)), pid > 0 else { return false }
+        return kill(pid, 0) == 0
+    }
+
     /// Runs the installer for `release` in the background. It builds first and only then quits
-    /// and replaces this app, so a failed build leaves BaneySpaces running as it was.
+    /// and replaces this app, so a failed build leaves BaneySpaces running as it was. The
+    /// exact commit whose notes were shown is installed, or nothing is.
     func install(_ release: Release) {
         guard installing == nil, release.isInstallable else { return }
+        guard !Self.installerRunning else {
+            return tell("An update is already installing", "It builds in the background and restarts BaneySpaces when it's done.")
+        }
         let folder = Self.supportFolder
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        // The tag only ever reaches the shell as an environment variable, and only a tag
-        // BaneySpaces publishes (vX.Y.Z or nightly) gets this far.
+        // The tag and commit only ever reach the shell as environment variables, and only a tag
+        // BaneySpaces publishes (vX.Y.Z or nightly) and a hex commit get this far. The script
+        // writes its exit status last, whatever stopped it.
         let script = """
-        set -euo pipefail
-        echo "== $(date) updating to $BANEYSPACES_REF"
+        set -uo pipefail
+        echo $$ > "$BANEYSPACES_PID_FILE"
         TMP=$(mktemp -d)
-        trap 'rm -rf "$TMP"' EXIT
-        curl -fsSL "https://raw.githubusercontent.com/baney75/baneyspaces/$BANEYSPACES_REF/install.sh" -o "$TMP/install.sh"
-        bash "$TMP/install.sh" || { echo "BaneySpaces update failed"; exit 1; }
+        trap 'code=$?; rm -rf "$TMP"; [ $code = 0 ] || echo "BaneySpaces update failed ($code)"; echo $code > "$BANEYSPACES_STATUS_FILE"; rm -f "$BANEYSPACES_PID_FILE"' EXIT
+        set -e
+        echo "== $(date) updating to $BANEYSPACES_REF ${BANEYSPACES_COMMIT:-}"
+        curl -fsSL "https://raw.githubusercontent.com/baney75/baneyspaces/${BANEYSPACES_COMMIT:-$BANEYSPACES_REF}/install.sh" -o "$TMP/install.sh"
+        bash "$TMP/install.sh"
         """
         let scriptURL = folder.appendingPathComponent("update.sh")
         do { try script.write(to: scriptURL, atomically: true, encoding: .utf8) } catch {
             return tell("Couldn't start the update", error.localizedDescription)
         }
+        try? FileManager.default.removeItem(at: Self.statusURL)
         try? Data().write(to: Self.logURL)
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/bin/bash")
@@ -157,6 +230,9 @@ final class Updater: NSObject {
         task.arguments = ["-c", "nohup /bin/bash \"$0\" >>\"$1\" 2>&1 &", scriptURL.path, Self.logURL.path]
         var env = ProcessInfo.processInfo.environment
         env["BANEYSPACES_REF"] = release.tag
+        if let commit = release.commit { env["BANEYSPACES_COMMIT"] = commit }
+        env["BANEYSPACES_STATUS_FILE"] = Self.statusURL.path
+        env["BANEYSPACES_PID_FILE"] = Self.pidURL.path
         task.environment = env
         do { try task.run() } catch {
             return tell("Couldn't start the update", error.localizedDescription)
@@ -168,29 +244,31 @@ final class Updater: NSObject {
         watchForFailure()
     }
 
-    /// The installer quits BaneySpaces when it succeeds. If BaneySpaces is still here and the
-    /// log says it failed, say so instead of leaving "Updating…" in the menu forever.
+    /// The installer quits BaneySpaces when it succeeds. If BaneySpaces is still here when the
+    /// installer has finished with a failure, say so instead of leaving "Updating…" in the menu.
     private func watchForFailure() {
-        let started = Date()
         watch?.invalidate()
-        watch = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] timer in
+        watch = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] timer in
             guard let self else { return timer.invalidate() }
-            let log = (try? String(contentsOf: Self.logURL, encoding: .utf8)) ?? ""
-            let failed = log.contains("update failed") || log.contains("install failed")
-            guard failed || Date().timeIntervalSince(started) > 20 * 60 else { return }
+            guard let text = try? String(contentsOf: Self.statusURL, encoding: .utf8),
+                  let code = Int(text.trimmingCharacters(in: .whitespacesAndNewlines)) else { return }
             timer.invalidate()
             self.installing = nil
             UserDefaults.standard.removeObject(forKey: "updatingTo")
             self.onChange()
+            // Success means this app is about to be replaced; nothing to say.
+            guard code != 0 else { return }
+            let log = (try? String(contentsOf: Self.logURL, encoding: .utf8)) ?? ""
             let alert = NSAlert()
             alert.messageText = "The update didn't install"
-            alert.informativeText = failed ? "BaneySpaces is still on \(Self.buildDescription) and works as before. The log says what went wrong."
-                : "It has been running for 20 minutes without finishing. BaneySpaces is still on \(Self.buildDescription)."
+            alert.informativeText = log.contains("moved to a newer build")
+                ? "A newer build was published while you were reading the notes. Check for updates again to see it."
+                : "BaneySpaces is still on \(Self.buildDescription) and works as before. The log says what went wrong."
             alert.addButton(withTitle: "Show Log")
             alert.addButton(withTitle: "OK")
-            NSApp.activate(ignoringOtherApps: true)
-            if alert.runModal() == .alertFirstButtonReturn { NSWorkspace.shared.open(Self.logURL) }
+            self.present(alert) { if $0 == 0 { NSWorkspace.shared.open(Self.logURL) } }
         }
+        RunLoop.main.add(watch!, forMode: .common)
     }
 
     /// The first launch after an update says what changed.
@@ -201,14 +279,14 @@ final class Updater: NSObject {
         let arrived = wanted.isEmpty ? info["from"] != Self.buildDescription
             : Self.build.commit.map { $0.hasPrefix(wanted) || wanted.hasPrefix($0) } == true
         guard arrived else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+        // After setup has had its chance to open: it comes first when permission needs fixing.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [self] in
             let alert = NSAlert()
             alert.messageText = "BaneySpaces is updated"
             alert.informativeText = "You're on \(Self.buildDescription) now (from \(info["from"] ?? "an older build")). Here's what changed."
             alert.accessoryView = Self.notesView(info["notes"] ?? "")
             alert.addButton(withTitle: "OK")
-            NSApp.activate(ignoringOtherApps: true)
-            alert.runModal()
+            present(alert)
         }
     }
 
@@ -216,9 +294,17 @@ final class Updater: NSObject {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = detail
-        NSApp.activate(ignoringOtherApps: true)
-        alert.runModal()
+        alert.addButton(withTitle: "OK")
+        present(alert)
     }
+}
+
+/// A button's action as a closure.
+private final class ButtonAction: NSObject {
+    static var key = 0
+    let action: () -> Void
+    init(_ action: @escaping () -> Void) { self.action = action }
+    @objc func run(_ sender: Any?) { action() }
 }
 
 /// Just enough Markdown for release notes: headings, bullets (with wrapped lines), paragraphs,

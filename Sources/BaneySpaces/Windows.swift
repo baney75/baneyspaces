@@ -256,13 +256,15 @@ enum Windows {
 
     /// Whether the windows in front of `id` hide every usable part of the screens within `path`
     /// (the box from where a window is to where it goes), so it can move there unseen. Windows
-    /// in `moving` don't count: they're on their way out too.
-    static func isCovered(_ id: WindowID, ignoring moving: Set<WindowID>, path: CGRect) -> Bool {
+    /// in `moving`, and those of apps in `leaving` (being hidden), don't count: they're on their
+    /// way out too.
+    static func isCovered(_ id: WindowID, ignoring moving: Set<WindowID>, apps leaving: Set<pid_t>, path: CGRect) -> Bool {
         let above = CGWindowListCopyWindowInfo([.optionOnScreenAboveWindow], id) as? [[String: Any]] ?? []
         let rects = above.compactMap { w -> CGRect? in
             guard (w[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
                   ((w[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1) >= 1,
-                  let n = (w[kCGWindowNumber as String] as? NSNumber)?.uint32Value, !moving.contains(n) else { return nil }
+                  let n = (w[kCGWindowNumber as String] as? NSNumber)?.uint32Value, !moving.contains(n),
+                  !leaving.contains((w[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value ?? -1) else { return nil }
             return (w[kCGWindowBounds as String] as? NSDictionary).flatMap { CGRect(dictionaryRepresentation: $0) }
         }
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 0

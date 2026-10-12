@@ -19,8 +19,10 @@ budget, start = int(sys.argv[1]), int(sys.argv[2])
 # timing.log keeps its last 500 lines, so pick the lines from this run by timestamp, not position.
 lines = [l for l in open(sys.argv[3]) if l.split()[:1] and l.split()[0].isdigit() and int(l.split()[0]) >= start]
 done = [int(m.group(1)) for line in lines if (m := re.search(r"done=(\d+)", line))]
+parked = [int(m.group(1)) for line in lines if (m := re.search(r"parked=(\d+)", line))]
 if len(done) < 8: sys.exit(f"only {len(done)} switches were logged")
 median = statistics.median(done)
 print(f"median {median:.0f} ms, slowest {max(done)} ms over {len(done)} switches (budget {budget} ms)")
+if parked: print(f"with parking: median {statistics.median(parked):.0f} ms, slowest {max(parked)} ms")
 sys.exit(0 if median <= budget else 1)
 ' "$BUDGET_MS" "$start" "$LOG"

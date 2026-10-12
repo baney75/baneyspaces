@@ -11,7 +11,7 @@ final class Spaces {
     private(set) var model = Workspaces()
     private var saved: SavedFrames
     private var windows: [WindowID: Window] = [:]
-    private var switching = false
+    private(set) var switching = false
     /// False after `suspend()`: nothing moves until `start()` runs again.
     private var active = false
     /// Timing of the switch in progress, for timing.log.
@@ -638,6 +638,9 @@ final class Spaces {
         }
         // Parked windows go home first, unseen; only then do their apps show.
         bringHome(home, screens: screens, gen: gen) { [self] in
+        // An app with a window here parks its other windows now, before it shows (a hidden one
+        // parks them unseen), so they never linger among this workspace's windows.
+        parkAlongside(how, screens: screens)
         // An app on the parked list that BaneySpaces hid comes back once its windows from other
         // workspaces are parked, later in this switch (see `park`).
         for pid in how.showApps {
@@ -645,8 +648,8 @@ final class Spaces {
             saved.hiddenApps.remove(pid)
         }
         // A hidden app that didn't answer couldn't move its windows home; now shown, it may.
-        // An app that animates its moves isn't parked any more, so this can't show it sliding.
-        for (w, frame) in home where saved.frames[w.id] != nil && !SlowMovers.contains(w.pid) {
+        // Even one that animates its moves: a slide beats a window missing from its workspace.
+        for (w, frame) in home where saved.frames[w.id] != nil {
             if restore(w, to: frame, screens: screens) { saved.frames[w.id] = nil }
         }
         // 2. Everything else leaves at once, except the app in front. Hiding a background app
@@ -710,7 +713,7 @@ final class Spaces {
             // which app is in front.
             if moveFocus, Windows.focusedPid() == frontPid { settleUntil = Date().addingTimeInterval(0.3) }
             // Windows from other workspaces leave last, behind the ones now in front.
-            park(how, screens: screens, gen: gen) { [self] in
+            park(how, parkedApps: parkedApps, screens: screens, gen: gen) { [self] in
                 clock.mark(.parked)
                 clock.log(to: Spaces.folder.appendingPathComponent("timing.log"))
                 persist()
@@ -768,27 +771,30 @@ final class Spaces {
     /// move, so a window slides away only behind windows that hide its whole path. An app with
     /// nothing here hides for the moment its windows move instead; one with a window here moves
     /// in place.
-    private func park(_ how: Concealment, screens: [CGRect], gen: Int, then: @escaping () -> Void) {
+    private func park(_ how: Concealment, parkedApps: Set<pid_t>, screens: [CGRect], gen: Int, then: @escaping () -> Void) {
         let spot = Geometry.hidingSpot(screens: screens)
-        let todo = how.park.compactMap { windows[$0] }.filter { w in
+        // Apps with a window here parked theirs already (`parkAlongside`).
+        let todo = how.park.compactMap { windows[$0] }.filter { !how.showApps.contains($0.pid) }.filter { w in
             !w.isMinimized && (saved.frames[w.id] == nil || w.frame.map { !Geometry.isStranded($0, screens: screens) } == true)
         }.filter { w in
             // Visible until now: remember where it stood. No readable frame, no parking.
             if saved.frames[w.id] == nil { saved.frames[w.id] = w.frame }
             return saved.frames[w.id] != nil
         }
-        guard !todo.isEmpty else { return then() }
+        // A parked-list app BaneySpaces hid earlier (it was busy, or a park failed) parks while
+        // still hidden, and shows once that worked, even with nothing left to park.
+        let hiddenByUs = parkedApps.filter { pid in
+            !how.showApps.contains(pid) && saved.hiddenApps.contains(pid) && NSRunningApplication(processIdentifier: pid)?.isHidden == true
+        }
+        guard !todo.isEmpty || !hiddenByUs.isEmpty else { return then() }
         let moving = Set(todo.map(\.id))
         let server = Windows.serverWindows()
         func path(_ w: Window) -> CGRect {
             (server[w.id]?.bounds ?? saved.frames[w.id] ?? .null).union(CGRect(origin: spot, size: CGSize(width: 1, height: 1)))
         }
-        // An app BaneySpaces hid earlier parks while still hidden, and shows once that worked.
-        let hiddenByUs = Set(todo.map(\.pid)).filter { pid in
-            !how.showApps.contains(pid) && saved.hiddenApps.contains(pid) && NSRunningApplication(processIdentifier: pid)?.isHidden == true
-        }
+        // Windows of apps hiding right now still read as on screen for a moment; they don't cover.
         let exposed = todo.filter { w in
-            !how.showApps.contains(w.pid) && (hiddenByUs.contains(w.pid) || !Windows.isCovered(w.id, ignoring: moving, path: path(w)))
+            hiddenByUs.contains(w.pid) || !Windows.isCovered(w.id, ignoring: moving, apps: how.hideApps, path: path(w))
         }
         let exposedIDs = Set(exposed.map(\.id))
         for w in todo where !exposedIDs.contains(w.id) { w.setOrigin(spot) }
@@ -802,7 +808,7 @@ final class Spaces {
                 // left in sight on the wrong workspace.
                 let bounds = Windows.serverWindows()
                 var unparked = Set<pid_t>()
-                for w in todo where !how.showApps.contains(w.pid) {
+                for w in todo {
                     guard let b = bounds[w.id]?.bounds, !Geometry.isStranded(b, screens: screens) else { continue }
                     unparked.insert(w.pid)
                     // A window that never left stays home with no record. One that moved part
@@ -822,6 +828,22 @@ final class Spaces {
         }
     }
 
+    /// Parks, in place and at once, the other windows of apps that have a window here. Hiding
+    /// such an app would hide the window you came for, so these move where they are.
+    private func parkAlongside(_ how: Concealment, screens: [CGRect]) {
+        let spot = Geometry.hidingSpot(screens: screens)
+        for id in how.park {
+            guard let w = windows[id], how.showApps.contains(w.pid), !w.isMinimized,
+                  saved.frames[id] == nil || w.frame.map({ !Geometry.isStranded($0, screens: screens) }) == true else { continue }
+            if saved.frames[id] == nil {
+                // Visible until now: remember where it stood. No readable frame, no parking.
+                guard let f = w.frame else { continue }
+                saved.frames[id] = f
+            }
+            w.setOrigin(spot)
+        }
+    }
+
     /// Brings parked windows back to where they stood, unseen. A window whose whole path is
     /// behind other windows moves in place, and so does one whose app has windows in sight
     /// (hiding it would make those blink). Any other moves while its app is hidden for a
@@ -837,7 +859,7 @@ final class Spaces {
         let inSight = Windows.pidsInSight(screens: screens)
         let exposed = targets.filter { w, to in
             if NSRunningApplication(processIdentifier: w.pid)?.isHidden == true { return true }
-            return !inSight.contains(w.pid) && !Windows.isCovered(w.id, ignoring: moving, path: (server[w.id]?.bounds ?? .null).union(to))
+            return !inSight.contains(w.pid) && !Windows.isCovered(w.id, ignoring: moving, apps: [], path: (server[w.id]?.bounds ?? .null).union(to))
         }
         let exposedIDs = Set(exposed.map(\.0.id))
         func place(_ list: [(Window, CGRect)]) {
@@ -896,7 +918,8 @@ final class Spaces {
         waitUntil(timeout: 0.4, interval: 0.01, {
             let now = Windows.serverWindows().compactMapValues(\.bounds).filter { ids.contains($0.key) }
             let t = Date()
-            for (id, b) in now where last[id] != b {
+            // Only position counts: an app snapping its size to a grid isn't animating a move.
+            for (id, b) in now where last[id]?.origin != b.origin {
                 // A position between two others, late: the app is animating.
                 if last[id] != nil, t.timeIntervalSince(start) > 0.12 { slow.insert(id) }
                 stillSince[id] = t

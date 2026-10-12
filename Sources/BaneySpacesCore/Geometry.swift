@@ -42,14 +42,22 @@ public enum Geometry {
         return CGRect(x: s.midX - w / 2, y: s.midY - h / 2, width: w, height: h).integral
     }
 
-    /// Whether `rects` together leave no part of `area` showing, checked on a grid of points
-    /// `step` apart plus the far edges. A window moving under them can't be seen.
-    public static func covers(_ rects: [CGRect], area: CGRect, step: CGFloat = 8) -> Bool {
-        guard !area.isEmpty else { return true }
-        var xs = Array(stride(from: area.minX + 0.5, to: area.maxX, by: step)); xs.append(area.maxX - 0.5)
-        var ys = Array(stride(from: area.minY + 0.5, to: area.maxY, by: step)); ys.append(area.maxY - 0.5)
-        for y in ys {
-            for x in xs where !rects.contains(where: { $0.contains(CGPoint(x: x, y: y)) }) { return false }
+    /// Whether `rects` together leave no part of `area` showing. Exact: the rects' edges cut
+    /// the area into cells, and the middle of every cell must be inside some rect, so even a
+    /// one-point gap between two windows counts as showing.
+    public static func covers(_ rects: [CGRect], area: CGRect) -> Bool {
+        guard !area.isNull, !area.isEmpty else { return true }
+        let clipped = rects.map { $0.intersection(area) }.filter { !$0.isNull && !$0.isEmpty }
+        func cuts(_ edges: [CGFloat], _ lo: CGFloat, _ hi: CGFloat) -> [CGFloat] {
+            Array(Set(edges.filter { $0 > lo && $0 < hi } + [lo, hi])).sorted()
+        }
+        let xs = cuts(clipped.flatMap { [$0.minX, $0.maxX] }, area.minX, area.maxX)
+        let ys = cuts(clipped.flatMap { [$0.minY, $0.maxY] }, area.minY, area.maxY)
+        for (y0, y1) in zip(ys, ys.dropFirst()) {
+            for (x0, x1) in zip(xs, xs.dropFirst()) {
+                let mid = CGPoint(x: (x0 + x1) / 2, y: (y0 + y1) / 2)
+                if !clipped.contains(where: { $0.contains(mid) }) { return false }
+            }
         }
         return true
     }

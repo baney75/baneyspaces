@@ -7,11 +7,13 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 TARGET="${1:?usage: release-notes.sh vX.Y.Z | nightly}"
+# The commit the release is of: the tag's for a version, the checkout's for nightly.
+if [ "$TARGET" = nightly ]; then REV=HEAD; else REV=$(git rev-list -n1 "$TARGET"); fi
 
 # The lines under "## <heading>" up to the next "## ".
 section() {
   awk -v want="$1" '
-    /^## / { if (found) exit; if (index($0, "## " want) == 1) { found = 1; next } }
+    /^## / { if (found) exit; if ($0 == "## " want || index($0, "## " want " ") == 1) { found = 1; next } }
     found { print }
   ' CHANGELOG.md | sed -e '/./,$!d' | sed -e ':a' -e '/^\n*$/{$d;N;ba' -e '}'
 }
@@ -28,11 +30,8 @@ if [ "$TARGET" = nightly ]; then
   echo
 else
   VERSION="${TARGET#v}"
-  NOTES=$(section "$VERSION ")
-  if [ -z "$NOTES" ]; then
-    NOTES=$(section "$VERSION")
-  fi
+  NOTES=$(section "$VERSION")
   [ -n "$NOTES" ] || { echo "CHANGELOG.md has no section for $VERSION" >&2; exit 1; }
   printf '%s\n' "$NOTES"
 fi
-printf '\n<!-- baneyspaces commit=%s date=%s -->\n' "$(git rev-parse HEAD)" "$(TZ=UTC git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ)"
+printf '\n<!-- baneyspaces commit=%s date=%s -->\n' "$(git rev-parse "$REV")" "$(TZ=UTC git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ "$REV")"

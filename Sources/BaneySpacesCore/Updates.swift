@@ -79,7 +79,8 @@ public struct Version: Comparable, Sendable {
 
     public init?(_ text: String) {
         let bare = text.hasPrefix("v") ? String(text.dropFirst()) : text
-        let parts = bare.split(separator: ".", omittingEmptySubsequences: false).map { Int($0) }
+        let parts = bare.split(separator: ".", omittingEmptySubsequences: false)
+            .map { $0.isEmpty || !$0.allSatisfy({ $0.isASCII && $0.isNumber }) ? nil : Int($0) }
         guard (2...4).contains(parts.count), parts.allSatisfy({ $0 != nil }) else { return nil }
         self.parts = parts.compactMap { $0 }
     }
@@ -106,14 +107,19 @@ public enum Updates {
 
     /// The release to offer on `channel`, if any is newer than `build`.
     public static func offer(from releases: [Release], channel: UpdateChannel, build: BuildInfo) -> Release? {
+        candidates(from: releases, channel: channel, build: build).first
+    }
+
+    /// Every release on `channel` that looks newer than `build`, newest first. The app confirms
+    /// each with GitHub (does it really contain this build?) before offering it.
+    public static func candidates(from releases: [Release], channel: UpdateChannel, build: BuildInfo) -> [Release] {
         let stable = releases.filter { !$0.prerelease && Version($0.tag) != nil }
             .max { Version($0.tag)! < Version($1.tag)! }
         var candidates = [stable].compactMap { $0 }
         if channel == .nightly, let nightly = releases.first(where: \.isNightly) { candidates.append(nightly) }
-        // Of the candidates newer than this build, the newest one.
-        return candidates.filter { $0.isInstallable && isNewer($0, than: build) }.max { a, b in
-            if let x = a.commitDate, let y = b.commitDate { return x < y }
-            return !a.isNightly && b.isNightly
+        return candidates.filter { $0.isInstallable && isNewer($0, than: build) }.sorted { a, b in
+            if let x = a.commitDate, let y = b.commitDate { return x > y }
+            return a.isNightly && !b.isNightly
         }
     }
 }

@@ -31,7 +31,11 @@ REF="${REF:-main}"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 step "Downloading BaneySpaces ($REF)"
-git clone --quiet --depth 1 --branch "$REF" "$REPO_URL" "$WORK/baneyspaces"
+git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$REF" "$REPO_URL" "$WORK/baneyspaces"
+# An update pins the exact commit whose notes were shown; a tag that moved since is refused.
+if [ -n "${BANEYSPACES_COMMIT:-}" ] && [ "$(git -C "$WORK/baneyspaces" rev-parse HEAD)" != "$BANEYSPACES_COMMIT" ]; then
+  fail "$REF moved to a newer build after you looked at it. Check for updates again to see what changed."
+fi
 step "Building (about a minute the first time)"
 # The whole build log is kept, so a failure shows its real cause instead of the last few lines.
 LOG="${TMPDIR:-/tmp}/baneyspaces-install.log"

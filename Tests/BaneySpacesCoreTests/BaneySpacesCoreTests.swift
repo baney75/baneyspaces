@@ -251,5 +251,8 @@ final class SavedLayoutTests: XCTestCase {
         XCTAssertFalse(Geometry.covers([CGRect(x: 0, y: 34, width: 1511, height: 948)], area: area))
         XCTAssertFalse(Geometry.covers([CGRect(x: 0, y: 34, width: 1512, height: 947)], area: area))
         XCTAssertFalse(Geometry.covers([], area: area))
+        // A 4-point gap between two tiled windows.
+        XCTAssertFalse(Geometry.covers([CGRect(x: 0, y: 34, width: 801, height: 948), CGRect(x: 805, y: 34, width: 707, height: 948)], area: area))
+        XCTAssertTrue(Geometry.covers([CGRect(x: -10, y: 0, width: 2000, height: 2000)], area: area))
     }
 }
