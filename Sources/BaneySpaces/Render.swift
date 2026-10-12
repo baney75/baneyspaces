@@ -128,7 +128,10 @@ enum Render {
         // The same dock with Terminal's window strip open over workspace 4.
         dock.tiles[3] = .init(id: 4, apps: dock.tiles[3].apps.map { a in
             var a = a
-            if a.name == "Terminal" { a.list = [.init(id: 1, title: "~/Projects/baneyspaces — swift build"), .init(id: 2, title: "ssh chapel1 — htop")] }
+            if a.name == "Terminal" {
+                a.list = [.init(id: 1, title: "New Tab"), .init(id: 2, title: "Forward and auto-reply - Proton Account", isLast: true),
+                          .init(id: 3, title: "YouTube - I finally ported TypeScript to Go")]
+            }
             return a
         }, isCurrent: true)
         dock.hover = .app(4, "4Terminal")

@@ -253,6 +253,8 @@ final class DockModel: ObservableObject {
     struct Window: Identifiable {
         let id: WindowID
         let title: String
+        /// The window used last on its workspace: where a plain click on the app goes.
+        var isLast = false
     }
     struct Tile: Identifiable {
         let id: Int
@@ -298,12 +300,15 @@ final class DockModel: ObservableObject {
         }
         tiles = DockTiles.make(current: spaces.model.current, windows: windows).map { t in
             let entries = spaces.entries(on: t.workspace)
+            let last = spaces.model.lastFocused[t.workspace]
             return Tile(id: t.workspace, apps: t.apps.map { a in
                 let pid = pid_t(a.key) ?? 0
                 return App(id: a.key, pid: pid, name: byPid[a.key]?.app ?? "App",
                            icon: NSRunningApplication(processIdentifier: pid)?.icon ?? NSWorkspace.shared.icon(for: .application),
                            windows: a.windows,
-                           list: entries.filter { "\($0.pid)" == a.key }.map { Window(id: $0.id, title: $0.title) })
+                           list: entries.filter { "\($0.pid)" == a.key }.map {
+                               Window(id: $0.id, title: WindowTitle.clean($0.title, app: $0.app), isLast: $0.id == last)
+                           })
             }, isCurrent: t.isCurrent)
         }
         // A strip for an app that's gone or down to one window closes.
@@ -428,25 +433,26 @@ struct DockView: View {
         }
     }
 
-    /// An app's windows on one workspace, each labeled with its title. Click one to go to it.
+    /// An app's windows on one workspace, a row each with its title (a browser's tab, a player's
+    /// video). Click one to go to it.
     private func windowStrip(_ app: DockModel.App, workspace n: Int) -> some View {
-        let tint = Chrome.workspace(n)
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Image(nsImage: app.icon).resizable().frame(width: 16, height: 16)
-                Text("\(app.name) · \(app.list.count) windows").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.white)
-                WorkspaceBadge(n: n, size: 16)
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 7) {
+                Image(nsImage: app.icon).resizable().frame(width: 18, height: 18)
+                Text(app.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+                Text("\(app.list.count) windows").font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
+                Spacer(minLength: 8)
+                WorkspaceBadge(n: n, size: 17)
             }
-            HStack(spacing: 6) {
-                ForEach(Array(app.list.prefix(8).enumerated()), id: \.element.id) { i, w in
-                    StripCard(title: w.title, index: i + 1, tint: tint) { model.onFocusWindow(w.id, n) }
-                }
+            .padding(.horizontal, 8).padding(.bottom, 4)
+            ForEach(app.list.prefix(10)) { w in
+                StripRow(window: w, icon: app.icon, tint: Chrome.workspace(n)) { model.onFocusWindow(w.id, n) }
             }
         }
-        .padding(10)
-        .background(Chrome.panel(cornerRadius: 16))
+        .padding(6).padding(.top, 4)
+        .frame(width: 320)
+        .background(Chrome.panel(cornerRadius: 14))
         .onHover { inside in model.onStrip = inside }
-        .transition(.opacity.combined(with: .move(edge: .bottom)))
     }
 
     /// Over the app, but never past either end of the dock.
@@ -615,32 +621,34 @@ struct DockView: View {
     }
 }
 
-/// One window in the dock's window strip: its title, two lines at most, numbered in order.
-private struct StripCard: View {
-    let title: String
-    let index: Int
+/// One window in the dock's window strip: its title on one line, the full title on hover.
+private struct StripRow: View {
+    let window: DockModel.Window
+    let icon: NSImage
     let tint: Color
     let action: () -> Void
     @State private var hovered = false
 
     var body: some View {
-        HStack(alignment: .top, spacing: 7) {
-            Text("\(index)").font(.system(size: 10, weight: .bold, design: .rounded)).foregroundStyle(.white)
-                .frame(width: 16, height: 16).background(Circle().fill(tint.opacity(hovered ? 1 : 0.7)))
-            Text(title.isEmpty ? "Untitled window" : title)
-                .font(.system(size: 11.5, weight: .medium)).foregroundStyle(.white.opacity(hovered ? 1 : 0.8))
-                .lineLimit(2).multilineTextAlignment(.leading)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
+        let title = window.title.isEmpty ? "Untitled window" : window.title
+        HStack(spacing: 8) {
+            Image(nsImage: icon).resizable().frame(width: 16, height: 16).opacity(hovered ? 1 : 0.85)
+            Text(title).font(.system(size: 12.5, weight: hovered ? .semibold : .regular))
+                .foregroundStyle(.white.opacity(hovered ? 1 : 0.85)).lineLimit(1).truncationMode(.tail)
+            Spacer(minLength: 6)
+            if window.isLast {
+                Text("Last used").font(.system(size: 10, weight: .medium)).foregroundStyle(.white.opacity(0.4))
+            }
         }
-        .padding(8)
-        .frame(width: 168, height: 50, alignment: .topLeading)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(hovered ? tint.opacity(0.3) : Color.white.opacity(0.07)))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(hovered ? tint : Color.white.opacity(0.08)))
+        .padding(.horizontal, 8)
+        .frame(height: 28)
+        .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(hovered ? tint.opacity(0.85) : .clear))
         .contentShape(Rectangle())
+        .help(title)
         .onHover { hovered = $0 }
         .onTapGesture(perform: action)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(title.isEmpty ? "Untitled window" : title)
+        .accessibilityLabel(title + (window.isLast ? ", last used" : ""))
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { action() }
     }

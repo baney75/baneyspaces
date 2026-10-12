@@ -114,3 +114,13 @@ final class TabHoldTests: XCTestCase {
         XCTAssertFalse(h.repeated(at: 5))
     }
 }
+
+final class WindowTitleTests: XCTestCase {
+    func testDropsTheAppNameAtTheEnd() {
+        XCTAssertEqual(WindowTitle.clean("New Tab - Helium", app: "Helium"), "New Tab")
+        XCTAssertEqual(WindowTitle.clean("Inbox - Proton Mail — helium", app: "Helium"), "Inbox - Proton Mail")
+        XCTAssertEqual(WindowTitle.clean("Helium", app: "Helium"), "Helium")
+        XCTAssertEqual(WindowTitle.clean("Helium notes", app: "Helium"), "Helium notes")
+        XCTAssertEqual(WindowTitle.clean(" Untouched ", app: ""), "Untouched")
+    }
+}

@@ -180,3 +180,19 @@ public struct TabHold: Sendable {
         return true
     }
 }
+
+/// Window titles as people read them: "Inbox - Proton Mail - Helium" is "Inbox - Proton Mail"
+/// once you already know it's Helium.
+public enum WindowTitle {
+    public static func clean(_ title: String, app: String) -> String {
+        let t = title.trimmingCharacters(in: .whitespaces)
+        guard !app.isEmpty else { return t }
+        for sep in [" - ", " — ", " – ", " | "] {
+            let suffix = sep + app
+            if t.count > suffix.count, t.lowercased().hasSuffix(suffix.lowercased()) {
+                return String(t.dropLast(suffix.count)).trimmingCharacters(in: .whitespaces)
+            }
+        }
+        return t
+    }
+}

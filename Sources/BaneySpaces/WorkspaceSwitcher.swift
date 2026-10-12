@@ -17,6 +17,8 @@ final class WorkspaceSwitcher {
     /// Apps in the order they were last brought forward, most recent first.
     private var appOrder: [pid_t] = []
     private var hold = TabHold()
+    /// Tab presses in this gesture, not counting repeats.
+    private var presses = 0
 
     init(spaces: Spaces) {
         self.spaces = spaces
@@ -38,9 +40,13 @@ final class WorkspaceSwitcher {
         // holding never races through the list.
         if isRepeat {
             guard isShowing, model.mode == .apps, hold.repeated(at: CFAbsoluteTimeGetCurrent()) else { return }
+            // Held from the very first press: the windows of the app you're already in, like ⌘`
+            // with a picker. Its first press moved the selection on; that move is taken back.
+            if presses == 1, model.windowBar == nil, windowCount(of: 0) > 1 { model.selected = 0 }
             return toggleWindowBar()
         }
         hold.press(at: CFAbsoluteTimeGetCurrent())
+        presses = isShowing ? presses + 1 : 1
         if isShowing, model.windowBar != nil {
             let c = model.windowBar!.windows.count
             model.windowBar!.selected = (model.windowBar!.selected + (forward ? 1 : c - 1)) % c
@@ -109,15 +115,24 @@ final class WorkspaceSwitcher {
         let app = model.apps[model.selected]
         var windows: [SwitcherModel.WindowTile] = []
         for n in [app.workspace] + Workspaces.range.filter({ $0 != app.workspace }) {
-            for e in spaces.entries(on: n) where e.pid == app.pid {
-                windows.append(.init(id: e.id, title: e.title, workspace: n))
-            }
+            // The window used last on each workspace leads that workspace's group.
+            let last = spaces.model.lastFocused[n]
+            let mine = spaces.entries(on: n).filter { $0.pid == app.pid }.sorted { a, _ in a.id == last }
+            for e in mine { windows.append(.init(id: e.id, title: WindowTitle.clean(e.title, app: e.app), workspace: n)) }
         }
         guard windows.count > 1 else { return }
         Trace.log("cmdTab window bar opened windows=\(windows.count)")
         // The first one is the window that tapping would land on; a tap from here moves on.
-        model.windowBar = .init(pid: app.pid, name: app.name, icon: app.icon, windows: windows, selected: 0)
+        // For the app you're in, its first window is the one in front, so start on the next one.
+        model.windowBar = .init(pid: app.pid, name: app.name, icon: app.icon, windows: windows, selected: model.selected == 0 ? 1 : 0)
         relayout()
+    }
+
+    /// Every window of the app at `index` in the list, on all workspaces.
+    private func windowCount(of index: Int) -> Int {
+        guard model.apps.indices.contains(index) else { return 0 }
+        let pid = model.apps[index].pid
+        return model.apps.filter { $0.pid == pid }.reduce(0) { $0 + $1.windows }
     }
 
     /// The bar changed size: keep it centered.
