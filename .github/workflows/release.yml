@@ -1,0 +1,33 @@
+name: Release
+# Pushing a version tag (git tag v0.2.2 && git push origin v0.2.2) publishes the stable release,
+# with notes taken from that version's CHANGELOG section. The app offers it to everyone on the
+# Stable channel; nothing installs until they press Update.
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check the tag matches VERSION
+        run: test "${GITHUB_REF_NAME#v}" = "$(cat VERSION)" || { echo "Tag $GITHUB_REF_NAME doesn't match VERSION $(cat VERSION)"; exit 1; }
+      - name: Test
+        run: swift test
+      - name: Bundle the app
+        run: BANEYSPACES_ADHOC=1 BANEYSPACES_ARM64_ONLY=1 scripts/bundle.sh
+      - name: Write the notes
+        run: scripts/release-notes.sh "$GITHUB_REF_NAME" > notes.md
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --notes-file notes.md --prerelease=false --latest
+          else
+            gh release create "$GITHUB_REF_NAME" --title "BaneySpaces $(cat VERSION)" --notes-file notes.md --latest --verify-tag
+          fi

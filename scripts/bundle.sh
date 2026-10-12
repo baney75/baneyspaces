@@ -17,7 +17,10 @@ cp "$BIN" "$APP/Contents/MacOS/BaneySpaces"
 swift scripts/make-icon.swift build/BaneySpaces.iconset
 iconutil -c icns build/BaneySpaces.iconset -o "$APP/Contents/Resources/BaneySpaces.icns"
 
-sed "s/@VERSION@/$VERSION/g" Resources/Info.plist > "$APP/Contents/Info.plist"
+# The commit and its date tell the updater exactly which build this is.
+COMMIT=$(git rev-parse HEAD 2>/dev/null || echo unknown)
+COMMIT_DATE=$(TZ=UTC git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)
+sed -e "s/@VERSION@/$VERSION/g" -e "s/@COMMIT@/$COMMIT/g" -e "s/@COMMIT_DATE@/$COMMIT_DATE/g" Resources/Info.plist > "$APP/Contents/Info.plist"
 # A stable local identity keeps the Accessibility permission across rebuilds; ad-hoc is the fallback.
 if [ "${BANEYSPACES_ADHOC:-}" != 1 ] && IDENT=$(scripts/signing-identity.sh 2>/dev/null); then
   codesign --force --sign "${IDENT%%$'\t'*}" --keychain "${IDENT#*$'\t'}" --identifier com.baney.baneyspaces "$APP"

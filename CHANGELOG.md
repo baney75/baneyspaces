@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Updates from the menu bar, Stable or Nightly.** BaneySpaces checks once a day (or on
+  request) and offers a newer build with its release notes; it installs only when you press
+  Update Now, keeps running if the build fails, and shows what changed after it restarts.
+  Nightly builds are published automatically each night `main` changed, and stable releases
+  when a version is tagged, with notes written from this changelog and the commit history.
 - **Keep Usable by Automation** (menu bar menu): apps on this list are never hidden whole.
   Their windows on other workspaces are parked out of view instead, because macOS refuses
   background clicks and keys to a hidden app, which cut off tools like Cua. Cua Spaces is on the

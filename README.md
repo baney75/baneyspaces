@@ -136,6 +136,26 @@ The installer also quits it and turns off its open-at-login setting. AeroSpace s
 Open setup again any time from the menu bar icon, or by opening BaneySpaces from Finder or
 Spotlight.
 
+### Updates
+
+BaneySpaces looks for a new version once a day and, when there is one, the menu bar menu shows
+**Update to BaneySpaces …**. Nothing installs until you press **Update Now** in the window that
+shows what changed. The update builds on your Mac the same way the first install did, so the
+Accessibility permission carries over, then BaneySpaces restarts and shows the release notes.
+If the build fails, BaneySpaces keeps running as it was and offers the log.
+
+Pick what you follow under **Updates** in the menu:
+
+- **Stable** (the default): tagged releases, each one tested and described in the
+  [changelog](CHANGELOG.md).
+- **Nightly**: a build of the newest code, published each night something changed. Its notes
+  list what's coming in the next release and every change since the last one. Switching back
+  to Stable waits for a stable release newer than the nightly you have, so you never go
+  backwards.
+
+The daily check asks GitHub's public release list and sends nothing about your Mac. Turn it off
+under **Updates › Check for Updates Daily** and use **Check Now** instead.
+
 ### If the permission won't take
 
 macOS ties the Accessibility switch to the app's signature. If you reinstalled, or the local
@@ -172,6 +192,11 @@ such as [Cua](https://github.com/trycua/cua), can't use it until you switch back
 under **Keep Usable by Automation** in the menu bar menu and its windows are parked just out of
 view instead, where those tools can still click and type. Cua Spaces is on the list from the
 start, so its picture-in-picture window stays put.
+
+Parked windows never slide across the screen: they move behind the windows of the workspace you
+go to, or while their app is hidden for a moment. Some apps animate every window move (Chromium
+browsers such as Helium take a quarter second); BaneySpaces notices that once and hides such an
+app as usual instead, and its menu entry says so.
 
 ## Limits
 

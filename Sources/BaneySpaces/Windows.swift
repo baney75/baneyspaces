@@ -254,10 +254,10 @@ enum Windows {
         }
     }
 
-    /// Whether the windows in front of `id` hide every usable part of every screen, so the
-    /// window can move without being seen, wherever its path goes. Windows in `moving` don't
-    /// count: they're on their way out too.
-    static func isCovered(_ id: WindowID, ignoring moving: Set<WindowID>) -> Bool {
+    /// Whether the windows in front of `id` hide every usable part of the screens within `path`
+    /// (the box from where a window is to where it goes), so it can move there unseen. Windows
+    /// in `moving` don't count: they're on their way out too.
+    static func isCovered(_ id: WindowID, ignoring moving: Set<WindowID>, path: CGRect) -> Bool {
         let above = CGWindowListCopyWindowInfo([.optionOnScreenAboveWindow], id) as? [[String: Any]] ?? []
         let rects = above.compactMap { w -> CGRect? in
             guard (w[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
@@ -267,7 +267,21 @@ enum Windows {
         }
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
         // A maximized window can stop a point or two short of the menu bar; motion there is invisible.
-        return NSScreen.screens.allSatisfy { Geometry.covers(rects, area: Geometry.toAX($0.visibleFrame, primaryHeight: primaryHeight).insetBy(dx: 2, dy: 2)) }
+        return NSScreen.screens.allSatisfy { screen in
+            let area = Geometry.toAX(screen.visibleFrame, primaryHeight: primaryHeight).insetBy(dx: 2, dy: 2).intersection(path)
+            return area.isNull || Geometry.covers(rects, area: area)
+        }
+    }
+
+    /// Apps with a window on screen now that a person can see (not one parked in the corner).
+    static func pidsInSight(screens: [CGRect]) -> Set<pid_t> {
+        let shown = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        return Set(shown.compactMap { w -> pid_t? in
+            guard (w[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+                  let b = (w[kCGWindowBounds as String] as? NSDictionary).flatMap({ CGRect(dictionaryRepresentation: $0) }),
+                  b.width > 50, b.height > 50, !Geometry.isStranded(b, screens: screens) else { return nil }
+            return (w[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value
+        })
     }
 
     /// Whether the window server shows none of these windows on screen (their app hid).
