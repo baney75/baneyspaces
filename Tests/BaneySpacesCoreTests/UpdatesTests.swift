@@ -22,6 +22,9 @@ final class UpdatesTests: XCTestCase {
         XCTAssertLessThan(Version("0.2")!, Version("0.2.1")!)
         XCTAssertNil(Version("nightly"))
         XCTAssertNil(Version("v1.2.x"))
+        XCTAssertNil(Version("v+1.0"))
+        XCTAssertNil(Version("-1.2"))
+        XCTAssertNil(Version("v1..2"))
     }
 
     func testStableOffersOnlyANewerTaggedRelease() {

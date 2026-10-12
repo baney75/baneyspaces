@@ -109,6 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         startWhenTrusted()
         updater.onChange = { [weak self] in self?.updateIcon() }
+        updater.isBusy = { [weak self] in self?.spaces.switching ?? false }
         updater.start()
         // The first launch walks through setup, and so does any launch without permission (an
         // update that macOS no longer trusts). Otherwise it's one click away in the menu.
