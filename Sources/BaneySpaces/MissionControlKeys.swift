@@ -65,6 +65,8 @@ final class MissionControlKeys {
         inGesture = false
         swallowTab = true
     }
+    /// Tab let go during a gesture, ⌘ still held.
+    var onTabUp: () -> Void = {}
     var onCmdReleased: () -> Void = {}
     var onCancel: () -> Void = {}
     /// Read on the tap thread; set when a ⌘Tab gesture starts, cleared when it ends.
@@ -203,6 +205,8 @@ final class MissionControlKeys {
                     // never waits on the main one, so the reading is close to the press.
                     let time = ProcessInfo.processInfo.systemUptime
                     DispatchQueue.main.async { me.onCmdTab(!back, isRepeat, time) }
+                } else if type == .keyUp, inGesture {
+                    DispatchQueue.main.async { me.onTabUp() }
                 }
                 return nil
             }
