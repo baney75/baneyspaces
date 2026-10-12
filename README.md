@@ -84,7 +84,7 @@ there. The last button opens the overview of all nine.
 While it's on, the macOS Dock stays out of sight. BaneySpaces saves the Dock's own hiding
 settings first and puts them back exactly when you turn the Workspace Dock off or quit. If
 BaneySpaces ever crashed with it on, open BaneySpaces again (or run the uninstaller) and the
-Dock comes back; by hand it's `defaults write com.apple.dock autohide-delay -float 0.5; killall Dock`.
+Dock comes back; by hand, `defaults delete com.apple.dock autohide-delay; killall Dock` gives the Dock its usual delay.
 
 ## Your windows are safe
 
