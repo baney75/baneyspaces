@@ -1,0 +1,1037 @@
+import AppKit
+import BaneySpacesCore
+import Carbon.HIToolbox
+import SwiftUI
+
+/// One place to open, find, install, update and remove apps, and to run the Mac's everyday
+/// commands. Type to search everything at once, or pick a menu (Apps, Install, Remove, Update,
+/// System, Workspaces) and search inside it. It can take ⌘Space from Spotlight.
+enum Launcher {
+    /// ⌘Space opens the launcher instead of Spotlight. Off unless chosen.
+    static var onCmdSpace: Bool {
+        get { UserDefaults.standard.bool(forKey: "launcherOnCmdSpace") }
+        set { UserDefaults.standard.set(newValue, forKey: "launcherOnCmdSpace") }
+    }
+}
+
+/// What the launcher can do in the rest of BaneySpaces.
+struct LauncherActions {
+    var focusApp: (pid_t) -> Void = { _ in }
+    var switchTo: (Int) -> Void = { _ in }
+    var appsOn: (Int) -> [String] = { _ in [] }
+    /// Workspaces each running app (by bundle path) has windows on.
+    var workspacesByApp: () -> [String: [Int]] = { [:] }
+    var showOverview: () -> Void = {}
+    var bringBack: () -> Void = {}
+    var toggleDock: () -> Void = {}
+    var dockOn: () -> Bool = { false }
+    var checkForUpdates: () -> Void = {}
+    var showSetup: () -> Void = {}
+}
+
+final class LauncherController: NSObject, NSWindowDelegate {
+    let model: LauncherModel
+    private var panel: LauncherPanel?
+
+    init(actions: LauncherActions) {
+        model = LauncherModel(actions: actions)
+        super.init()
+        model.close = { [weak self] in self?.hide() }
+    }
+
+    var isShown: Bool { panel?.isVisible == true }
+
+    func toggle() { isShown ? hide() : show() }
+
+    func show(scope: LauncherModel.Scope = .root) {
+        let p = panel ?? makePanel()
+        panel = p
+        model.prepare(scope: scope)
+        let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main ?? NSScreen.screens[0]
+        let size = NSSize(width: 700, height: 500)
+        // A little above center, where Spotlight sits.
+        let origin = NSPoint(x: screen.visibleFrame.midX - size.width / 2,
+                             y: screen.visibleFrame.minY + screen.visibleFrame.height * 0.62 - size.height / 2)
+        p.setFrame(NSRect(origin: origin, size: size), display: false)
+        // Drawn with the new list before it appears, never with the last one's.
+        p.contentView?.layoutSubtreeIfNeeded()
+        p.alphaValue = 1
+        p.makeKeyAndOrderFront(nil)
+        p.displayIfNeeded()
+        if let field = model.field { p.makeFirstResponder(field) }
+    }
+
+    func hide() {
+        guard let p = panel, p.isVisible else { return }
+        p.orderOut(nil)
+    }
+
+    /// Clicking anywhere else puts it away, like Spotlight.
+    func windowDidResignKey(_ notification: Notification) {
+        if !model.alertOpen { hide() }
+    }
+
+    private func makePanel() -> LauncherPanel {
+        let p = LauncherPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        p.isOpaque = false
+        p.backgroundColor = .clear
+        p.hasShadow = false
+        p.level = .modalPanel
+        p.hidesOnDeactivate = false
+        p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient, .ignoresCycle]
+        p.delegate = self
+        p.contentView = NSHostingView(rootView: LauncherView(model: model).environment(\.colorScheme, .dark))
+        return p
+    }
+}
+
+/// Takes the keyboard without bringing BaneySpaces forward, so the app you were in stays in front.
+final class LauncherPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+}
+
+// MARK: Model
+
+struct LauncherItem: Identifiable {
+    enum Icon {
+        case file(String)
+        case symbol(String)
+        case image(NSImage)
+        case remote(URL?)
+    }
+    enum State: Equatable { case idle, working, failed }
+
+    let id: String
+    var section: String
+    var title: String
+    var subtitle: String = ""
+    var icon: Icon
+    /// Shown at the right: "Install", "Open", a workspace number.
+    var badge: String = ""
+    var state = State.idle
+    var run: () -> Void
+    /// ⌘↩: show in Finder, or a cask's web page.
+    var reveal: URL?
+}
+
+final class LauncherModel: ObservableObject {
+    enum Scope: String, CaseIterable {
+        case root, apps, install, remove, update, system, workspaces
+
+        var title: String {
+            switch self {
+            case .root: "Search"
+            case .apps: "Apps"
+            case .install: "Install"
+            case .remove: "Remove"
+            case .update: "Update"
+            case .system: "System"
+            case .workspaces: "Workspaces"
+            }
+        }
+        var symbol: String {
+            switch self {
+            case .root: "magnifyingglass"
+            case .apps: "square.grid.2x2"
+            case .install: "arrow.down.circle"
+            case .remove: "trash"
+            case .update: "arrow.triangle.2.circlepath"
+            case .system: "gearshape"
+            case .workspaces: "rectangle.split.3x3"
+            }
+        }
+        var blurb: String {
+            switch self {
+            case .root: ""
+            case .apps: "Every app on this Mac"
+            case .install: "Thousands of apps from Homebrew and the App Store"
+            case .remove: "Uninstall apps Homebrew installed"
+            case .update: "Homebrew apps, macOS and BaneySpaces"
+            case .system: "Lock, sleep, restart, dark mode and more"
+            case .workspaces: "Go to any of the nine"
+            }
+        }
+        var placeholder: String {
+            switch self {
+            case .root: "Search apps, commands and workspaces"
+            case .install: "Search for an app to install"
+            default: "Search \(title.lowercased())"
+            }
+        }
+    }
+
+    enum Job: Equatable { case installing, removing, failed(String) }
+
+    @Published var query = "" { didSet { if query != oldValue { selected = 0; rebuild(); searchStore() } } }
+    @Published private(set) var scope = Scope.root
+    @Published private(set) var items: [LauncherItem] = []
+    @Published var selected = 0
+    @Published private(set) var jobs: [String: Job] = [:]
+    @Published private(set) var storeResults: [StoreApp] = []
+    @Published private(set) var catalogState = CaskCatalog.State.idle
+    weak var field: NSTextField?
+    var close: () -> Void = {}
+    var alertOpen = false
+
+    private let actions: LauncherActions
+    private var apps: [AppEntry] = []
+    private var running: [String: [Int]] = [:]
+    private var recents = Recents(UserDefaults.standard.stringArray(forKey: "launcherRecents") ?? [])
+    private var iconCache: [String: NSImage] = [:]
+    private let catalog = CaskCatalog()
+    private var storeWork: DispatchWorkItem?
+
+    init(actions: LauncherActions) {
+        self.actions = actions
+        apps = AppEntry.scan()
+    }
+
+    func prepare(scope: Scope) {
+        self.scope = scope
+        query = ""
+        field?.stringValue = ""
+        selected = 0
+        running = actions.workspacesByApp()
+        storeResults = []
+        rebuild()
+        // Apps installed since the last look show up without a restart.
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let fresh = AppEntry.scan()
+            DispatchQueue.main.async { self?.apps = fresh; self?.rebuild() }
+        }
+        if scope == .install || scope == .remove { loadCatalog() }
+    }
+
+    func enter(_ s: Scope) {
+        scope = s
+        query = ""
+        field?.stringValue = ""
+        selected = 0
+        storeResults = []
+        if s == .install || s == .remove { loadCatalog() }
+        rebuild()
+    }
+
+    func back() {
+        guard scope != .root else { return }
+        enter(.root)
+    }
+
+    func icon(for path: String) -> NSImage {
+        if let i = iconCache[path] { return i }
+        let i = NSWorkspace.shared.icon(forFile: path)
+        iconCache[path] = i
+        return i
+    }
+
+    // MARK: Keys
+
+    func move(_ by: Int) {
+        guard !items.isEmpty else { return }
+        selected = (selected + by + items.count) % items.count
+    }
+
+    func runSelected(reveal: Bool = false) {
+        guard items.indices.contains(selected) else { return }
+        let item = items[selected]
+        if reveal, let url = item.reveal {
+            close()
+            if url.isFileURL { NSWorkspace.shared.activateFileViewerSelecting([url]) } else { NSWorkspace.shared.open(url) }
+            return
+        }
+        item.run()
+    }
+
+    func run(_ item: LauncherItem) {
+        if let i = items.firstIndex(where: { $0.id == item.id }) { selected = i }
+        item.run()
+    }
+
+    /// Tab: into the selected menu, or complete "Install …" from the search.
+    func tab() {
+        guard items.indices.contains(selected) else { return }
+        let id = items[selected].id
+        if id.hasPrefix("scope:"), let s = Scope(rawValue: String(id.dropFirst("scope:".count))) { enter(s) } else if id == "find-install" { items[selected].run() }
+    }
+
+    // MARK: Building the list
+
+    private func rebuild() {
+        let q = query
+        var out: [LauncherItem] = []
+        switch scope {
+        case .root:
+            if q.isEmpty {
+                out += recentApps().prefix(5)
+                out += menuItems()
+            } else {
+                out += appItems(q, limit: 8)
+                out += workspaceItems(q)
+                out += commandItems(q)
+                out += menuItems().filter { Fuzzy.score(q, $0.title) != nil }
+                out.append(LauncherItem(id: "find-install", section: "Install", title: "Install “\(q)”…",
+                                        subtitle: "Search Homebrew and the App Store", icon: .symbol("arrow.down.circle"),
+                                        badge: "⇥", run: { [weak self] in self?.enter(.install); self?.setQuery(q) }))
+            }
+        case .apps: out = appItems(q, limit: 500)
+        case .install: out = installItems(q)
+        case .remove: out = removeItems(q)
+        case .update: out = updateItems().filter { q.isEmpty || Fuzzy.score(q, $0.title) != nil }
+        case .system: out = commandItems(q)
+        case .workspaces: out = workspaceItems(q, all: true)
+        }
+        items = out
+        if selected >= items.count { selected = max(0, items.count - 1) }
+    }
+
+    private func setQuery(_ q: String) {
+        field?.stringValue = q
+        query = q
+    }
+
+    private func menuItems() -> [LauncherItem] {
+        Scope.allCases.filter { $0 != .root }.map { s in
+            LauncherItem(id: "scope:\(s.rawValue)", section: "Menu", title: s.title, subtitle: s.blurb, icon: .symbol(s.symbol),
+                         badge: "⇥", run: { [weak self] in self?.enter(s) })
+        }
+    }
+
+    private func recentApps() -> [LauncherItem] {
+        recents.paths.compactMap { path in apps.first { $0.path == path } }.map { appItem($0, section: "Recent") }
+    }
+
+    private func appItems(_ q: String, limit: Int) -> [LauncherItem] {
+        let matches: [AppEntry]
+        if q.isEmpty {
+            matches = apps
+        } else {
+            matches = apps.compactMap { a -> (AppEntry, Int)? in
+                guard let s = Fuzzy.score(q, a.name) else { return nil }
+                return (a, s + recents.boost(a.path) + (running[a.path] != nil ? 15 : 0))
+            }
+            .sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.0.name < $1.0.name }
+            .map(\.0)
+        }
+        return matches.prefix(limit).map { appItem($0, section: "Apps") }
+    }
+
+    private func appItem(_ a: AppEntry, section: String) -> LauncherItem {
+        let on = running[a.path] ?? []
+        let where_ = on.isEmpty ? a.folder : on.count == 1 ? "Open on workspace \(on[0])" : "Open on workspaces \(on.map(String.init).joined(separator: ", "))"
+        return LauncherItem(id: "app:\(a.path)", section: section, title: a.name, subtitle: where_, icon: .file(a.path),
+                            badge: on.isEmpty ? "" : on.map(String.init).joined(separator: "·"),
+                            run: { [weak self] in self?.open(a) }, reveal: URL(fileURLWithPath: a.path))
+    }
+
+    /// A running app is gone to, wherever its windows are; anything else opens here.
+    private func open(_ a: AppEntry) {
+        close()
+        recents.used(a.path)
+        UserDefaults.standard.set(recents.paths, forKey: "launcherRecents")
+        let url = URL(fileURLWithPath: a.path)
+        if let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleURL?.path == a.path }), running[a.path] != nil {
+            actions.focusApp(app.processIdentifier)
+            return
+        }
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = true
+        NSWorkspace.shared.openApplication(at: url, configuration: config) { _, error in
+            if let error { NSLog("BaneySpaces: couldn't open %@: %@", a.path, error.localizedDescription) }
+        }
+    }
+
+    private func workspaceItems(_ q: String, all: Bool = false) -> [LauncherItem] {
+        Workspaces.range.compactMap { n in
+            let apps = actions.appsOn(n)
+            let title = "Workspace \(n)"
+            let text = "\(title) \(apps.joined(separator: " "))"
+            if !q.isEmpty {
+                // "3" or "ws 3" goes straight there; names find the workspace an app is on.
+                let digitMatch = q.trimmingCharacters(in: .whitespaces) == String(n)
+                if !digitMatch && Fuzzy.score(q, title) == nil && !apps.contains(where: { Fuzzy.score(q, $0).map { $0 >= 500 } ?? false }) { return nil }
+            } else if !all { return nil }
+            _ = text
+            return LauncherItem(id: "ws:\(n)", section: "Workspaces", title: title,
+                                subtitle: apps.isEmpty ? "Empty" : apps.joined(separator: ", "), icon: .symbol("\(n).square"),
+                                run: { [weak self] in self?.close(); self?.actions.switchTo(n) })
+        }
+    }
+
+    private func commandItems(_ q: String) -> [LauncherItem] {
+        let dockOn = actions.dockOn()
+        let all: [(String, String, String, () -> Void)] = [
+            ("Lock Screen", "lock", "", { System.lock() }),
+            ("Sleep", "moon.zzz", "", { System.run("/usr/bin/pmset", ["sleepnow"]) }),
+            ("Restart…", "restart", "macOS asks before restarting", { System.loginWindow("rrst") }),
+            ("Shut Down…", "power", "macOS asks before shutting down", { System.loginWindow("rsdn") }),
+            ("Log Out…", "rectangle.portrait.and.arrow.right", "macOS asks before logging out", { System.loginWindow("rlgo") }),
+            ("Toggle Dark Mode", "circle.lefthalf.filled", "Asks once to let BaneySpaces change appearance", { System.toggleDarkMode() }),
+            ("Take a Screenshot", "camera.viewfinder", "Choose an area, a window or the screen", { System.run("/usr/bin/open", ["-a", "Screenshot"]) }),
+            ("Show All Workspaces", "square.grid.3x3", "", { [weak self] in self?.actions.showOverview() }),
+            ("Bring Every Window Back", "arrow.uturn.backward.circle", "Gathers every window onto workspace 1", { [weak self] in self?.actions.bringBack() }),
+            (dockOn ? "Turn Off Workspace Dock" : "Turn On Workspace Dock", "dock.rectangle", "", { [weak self] in self?.actions.toggleDock() }),
+            ("Set Up BaneySpaces", "slider.horizontal.3", "", { [weak self] in self?.actions.showSetup() }),
+        ]
+        return all.filter { q.isEmpty || Fuzzy.score(q, $0.0) != nil }.map { c in
+            LauncherItem(id: "cmd:\(c.0)", section: "System", title: c.0, subtitle: c.2, icon: .symbol(c.1),
+                         run: { [weak self] in self?.close(); DispatchQueue.main.async(execute: c.3) })
+        }
+    }
+
+    private func updateItems() -> [LauncherItem] {
+        var out: [LauncherItem] = []
+        if Brew.path != nil {
+            out.append(LauncherItem(id: "upd:brew", section: "Update", title: "Update Homebrew Apps",
+                                    subtitle: "Runs brew update and brew upgrade in Terminal, where you can watch it",
+                                    icon: .symbol("shippingbox"),
+                                    run: { [weak self] in self?.close(); Brew.openInTerminal("brew update && brew upgrade") }))
+        }
+        out.append(LauncherItem(id: "upd:macos", section: "Update", title: "Update macOS and App Store Apps",
+                                subtitle: "Opens Software Update", icon: .symbol("apple.logo"),
+                                run: { [weak self] in
+                                    self?.close()
+                                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Software-Update-Settings.extension")!)
+                                }))
+        out.append(LauncherItem(id: "upd:self", section: "Update", title: "Check for BaneySpaces Updates",
+                                subtitle: "Stable or Nightly, as set in the menu bar", icon: .symbol("square.grid.3x3.fill"),
+                                run: { [weak self] in self?.close(); self?.actions.checkForUpdates() }))
+        return out
+    }
+
+    // MARK: Install and remove
+
+    /// Picks for an empty Install search: well-known apps most Macs want.
+    private static let popular = ["google-chrome", "firefox", "visual-studio-code", "ghostty", "obsidian", "slack", "discord",
+                                  "spotify", "zoom", "vlc", "1password", "rectangle", "iina", "appcleaner", "the-unarchiver"]
+
+    private func loadCatalog() {
+        catalog.load { [weak self] state in
+            self?.catalogState = state
+            self?.rebuild()
+        }
+    }
+
+    private func installItems(_ q: String) -> [LauncherItem] {
+        var out: [LauncherItem] = []
+        if Brew.path == nil {
+            out.append(LauncherItem(id: "brew:get", section: "Homebrew", title: "Get Homebrew First",
+                                    subtitle: "The free installer most Mac developers use. Opens Terminal; it asks for your password.",
+                                    icon: .symbol("shippingbox"),
+                                    run: { [weak self] in self?.close(); Brew.installHomebrew() }))
+        }
+        let installed = Brew.installedCasks()
+        let casks = q.isEmpty
+            ? Self.popular.compactMap { t in catalog.casks.first { $0.token == t } }
+            : Cask.search(q, in: catalog.casks, limit: 25)
+        if catalog.casks.isEmpty {
+            switch catalogState {
+            case .loading: out.append(LauncherItem(id: "brew:loading", section: "Homebrew", title: "Loading Homebrew’s app list…",
+                                                   icon: .symbol("hourglass"), state: .working, run: {}))
+            case .failed(let why): out.append(LauncherItem(id: "brew:failed", section: "Homebrew", title: "Couldn’t load Homebrew’s app list",
+                                                           subtitle: why + ". Press ↩ to try again.", icon: .symbol("wifi.exclamationmark"),
+                                                           run: { [weak self] in self?.catalog.reset(); self?.loadCatalog() }))
+            default: break
+            }
+        }
+        for c in casks { out.append(caskItem(c, installed: installed.contains(c.token), section: q.isEmpty ? "Popular" : "Homebrew")) }
+        for app in storeResults {
+            let local = app.bundleID.flatMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) }
+            out.append(LauncherItem(id: "store:\(app.id)", section: "App Store", title: app.name,
+                                    subtitle: [app.seller, app.price].filter { !$0.isEmpty }.joined(separator: " · "),
+                                    icon: .remote(app.artwork), badge: local != nil ? "Installed" : "App Store",
+                                    run: { [weak self] in
+                                        self?.close()
+                                        if let local { NSWorkspace.shared.open(local) } else if let url = app.storeURL { NSWorkspace.shared.open(url) }
+                                    }, reveal: app.webURL))
+        }
+        return out
+    }
+
+    private func caskItem(_ c: Cask, installed: Bool, section: String) -> LauncherItem {
+        let job = jobs[c.token]
+        var item = LauncherItem(id: "cask:\(c.token)", section: section, title: c.name,
+                                subtitle: c.desc.isEmpty ? c.token : c.desc, icon: .symbol("shippingbox"),
+                                badge: installed ? "Installed" : "Install", run: {},
+                                reveal: URL(string: c.homepage))
+        if let local = Brew.appPath(for: c, installedApps: apps) { item.icon = .file(local) }
+        switch job {
+        case .installing: item.badge = "Installing…"; item.state = .working
+        case .removing: item.badge = "Removing…"; item.state = .working
+        case .failed(let why):
+            item.state = .failed
+            item.subtitle = why + " Press ↩ to finish in Terminal."
+            item.badge = "Failed"
+            item.run = { [weak self] in self?.close(); Brew.openInTerminal("brew install --cask \(c.token)") }
+            return item
+        case nil: break
+        }
+        if job == nil {
+            item.run = installed
+                ? { [weak self] in
+                    guard let self else { return }
+                    if let path = Brew.appPath(for: c, installedApps: self.apps), let a = self.apps.first(where: { $0.path == path }) { self.open(a) }
+                }
+                : { [weak self] in self?.install(c) }
+        }
+        return item
+    }
+
+    private func install(_ c: Cask) {
+        guard Brew.path != nil else { return Brew.installHomebrew() }
+        jobs[c.token] = .installing
+        rebuild()
+        Brew.run(["install", "--cask", c.token]) { [weak self] ok, tail in
+            guard let self else { return }
+            if ok {
+                self.jobs[c.token] = nil
+                self.apps = AppEntry.scan()
+                Toast.show("\(c.name) is installed", symbol: "checkmark.circle.fill")
+            } else {
+                self.jobs[c.token] = .failed(tail.isEmpty ? "Homebrew stopped." : "Homebrew: \(tail).")
+                Toast.show("\(c.name) didn’t install. Open the launcher to finish in Terminal.", symbol: "exclamationmark.triangle.fill")
+            }
+            self.rebuild()
+        }
+    }
+
+    private func removeItems(_ q: String) -> [LauncherItem] {
+        guard Brew.path != nil else {
+            return [LauncherItem(id: "rm:none", section: "Remove", title: "Homebrew isn’t installed",
+                                 subtitle: "Apps from elsewhere are removed by dragging them from Applications to the Trash.",
+                                 icon: .symbol("shippingbox"), run: {})]
+        }
+        let installed = Brew.installedCasks().sorted()
+        let list = installed.map { t in catalog.casks.first { $0.token == t } ?? Cask(token: t, name: t, desc: "", homepage: "") }
+            .filter { q.isEmpty || Fuzzy.score(q, $0.name) != nil || Fuzzy.score(q, $0.token) != nil }
+        if list.isEmpty {
+            return [LauncherItem(id: "rm:empty", section: "Remove", title: q.isEmpty ? "Homebrew hasn’t installed any apps" : "No Homebrew app matches",
+                                 icon: .symbol("tray"), run: {})]
+        }
+        return list.map { c in
+            var item = LauncherItem(id: "rm:\(c.token)", section: "Installed with Homebrew", title: c.name,
+                                    subtitle: c.desc.isEmpty ? c.token : c.desc, icon: .symbol("shippingbox"), badge: "Remove",
+                                    run: { [weak self] in self?.remove(c) }, reveal: URL(string: c.homepage))
+            if let local = Brew.appPath(for: c, installedApps: apps) { item.icon = .file(local) }
+            if jobs[c.token] == .removing { item.badge = "Removing…"; item.state = .working; item.run = {} }
+            return item
+        }
+    }
+
+    private func remove(_ c: Cask) {
+        let alert = NSAlert()
+        alert.messageText = "Remove \(c.name)?"
+        alert.informativeText = "Homebrew uninstalls the app. Its documents and settings stay."
+        alert.addButton(withTitle: "Remove")
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons[0].hasDestructiveAction = true
+        alertOpen = true
+        NSApp.activate(ignoringOtherApps: true)
+        let answer = alert.runModal()
+        alertOpen = false
+        field?.window?.makeKey()
+        guard answer == .alertFirstButtonReturn else { return }
+        jobs[c.token] = .removing
+        rebuild()
+        Brew.run(["uninstall", "--cask", c.token]) { [weak self] ok, tail in
+            guard let self else { return }
+            self.jobs[c.token] = nil
+            self.apps = AppEntry.scan()
+            Toast.show(ok ? "\(c.name) is removed" : "\(c.name) wasn’t removed: \(tail)",
+                       symbol: ok ? "trash.fill" : "exclamationmark.triangle.fill")
+            self.rebuild()
+        }
+    }
+
+    /// App Store results arrive a moment after typing stops, and only in the Install menu.
+    private func searchStore() {
+        storeWork?.cancel()
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard scope == .install, q.count >= 2 else {
+            if !storeResults.isEmpty { storeResults = []; rebuild() }
+            return
+        }
+        let work = DispatchWorkItem { [weak self] in
+            StoreApp.search(q) { results in
+                guard let self, self.query.trimmingCharacters(in: .whitespaces) == q, self.scope == .install else { return }
+                self.storeResults = results
+                self.rebuild()
+            }
+        }
+        storeWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+    }
+}
+
+// MARK: Sources
+
+struct AppEntry: Equatable {
+    let name: String
+    let path: String
+    /// Where it lives, for the subtitle: "Applications", "Utilities", "System".
+    let folder: String
+
+    private static var roots: [(String, String)] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return [("/Applications", "Applications"), ("/Applications/Utilities", "Utilities"),
+                ("/System/Applications", "Applications"), ("/System/Applications/Utilities", "Utilities"),
+                (home + "/Applications", "Your Applications"), ("/System/Library/CoreServices/Applications", "System"),
+                ("/Applications/Setapp", "Setapp")]
+    }
+
+    /// Every app in the usual folders, plus one folder level down (Adobe and the like). The
+    /// first copy of a name wins, in the order above.
+    static func scan() -> [AppEntry] {
+        let fm = FileManager.default
+        var seen = Set<String>()
+        var out: [AppEntry] = []
+        func add(_ path: String, _ folder: String) {
+            let name = fm.displayName(atPath: path).replacingOccurrences(of: ".app", with: "")
+            guard seen.insert(name.lowercased()).inserted else { return }
+            out.append(AppEntry(name: name, path: path, folder: folder))
+        }
+        add("/System/Library/CoreServices/Finder.app", "System")
+        for (root, folder) in roots {
+            guard let names = try? fm.contentsOfDirectory(atPath: root) else { continue }
+            for n in names.sorted() where !n.hasPrefix(".") {
+                let path = root + "/" + n
+                if n.hasSuffix(".app") { add(path, folder); continue }
+                guard root.hasSuffix("Applications"), n != "Utilities",
+                      let inner = try? fm.contentsOfDirectory(atPath: path) else { continue }
+                for m in inner.sorted() where m.hasSuffix(".app") { add(path + "/" + m, n) }
+            }
+        }
+        return out.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+}
+
+/// Homebrew's list of installable apps, kept on disk and refreshed once a day.
+final class CaskCatalog {
+    enum State: Equatable { case idle, loading, ready, failed(String) }
+    private(set) var casks: [Cask] = []
+    private var state = State.idle
+    private var waiting: [(State) -> Void] = []
+    private static let url = URL(string: "https://formulae.brew.sh/api/cask.json")!
+    private static let cache = Spaces.folder.appendingPathComponent("casks.json")
+
+    func reset() { state = .idle }
+
+    func load(_ done: @escaping (State) -> Void) {
+        if state == .ready || state == .loading {
+            if state == .loading { waiting.append(done) }
+            return done(state)
+        }
+        state = .loading
+        waiting = [done]
+        done(.loading)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let cached = (try? Data(contentsOf: Self.cache)).flatMap { try? JSONDecoder().decode([Cask].self, from: $0) } ?? []
+            let age = (try? FileManager.default.attributesOfItem(atPath: Self.cache.path)[.modificationDate] as? Date)
+                .map { Date().timeIntervalSince($0) } ?? .infinity
+            if !cached.isEmpty { self?.finish(cached, .ready) }
+            guard cached.isEmpty || age > 86_400 else { return }
+            URLSession.shared.dataTask(with: Self.url) { data, response, error in
+                let ok = (response as? HTTPURLResponse)?.statusCode == 200
+                let fresh = ok ? data.map(Cask.parseCatalog) ?? [] : []
+                if !fresh.isEmpty {
+                    try? FileManager.default.createDirectory(at: Spaces.folder, withIntermediateDirectories: true)
+                    try? JSONEncoder().encode(fresh).write(to: Self.cache, options: .atomic)
+                    self?.finish(fresh, .ready)
+                } else if cached.isEmpty {
+                    self?.finish([], .failed(error?.localizedDescription ?? "No answer from formulae.brew.sh"))
+                }
+            }.resume()
+        }
+    }
+
+    private func finish(_ list: [Cask], _ s: State) {
+        DispatchQueue.main.async {
+            self.casks = list
+            self.state = s
+            let w = self.waiting
+            if s != .loading { self.waiting = [] }
+            w.forEach { $0(s) }
+        }
+    }
+}
+
+enum Brew {
+    static var path: String? {
+        ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"].first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
+    /// Tokens of the casks Homebrew has installed, read from its Caskroom folder.
+    static func installedCasks() -> Set<String> {
+        let rooms = ["/opt/homebrew/Caskroom", "/usr/local/Caskroom"]
+        return Set(rooms.flatMap { (try? FileManager.default.contentsOfDirectory(atPath: $0)) ?? [] }.filter { !$0.hasPrefix(".") })
+    }
+
+    /// The installed app a cask most likely put in Applications, matched by name.
+    static func appPath(for c: Cask, installedApps: [AppEntry]) -> String? {
+        let names = [c.name, c.token.replacingOccurrences(of: "-", with: " ")].map { $0.lowercased() }
+        return installedApps.first { names.contains($0.name.lowercased()) }?.path
+    }
+
+    /// Cask tokens are lowercase letters, digits and - @ . only; anything else is refused before
+    /// it reaches a shell.
+    static func isSafe(_ token: String) -> Bool {
+        !token.isEmpty && token.allSatisfy { $0.isASCII && ($0.isLowercase || $0.isNumber || "-@._".contains($0)) }
+    }
+
+    /// Runs brew without a terminal. An installer that wants a password fails here and is
+    /// finished in Terminal instead. Calls back on the main thread with the last useful line.
+    static func run(_ args: [String], done: @escaping (Bool, String) -> Void) {
+        guard let brew = path, args.dropFirst(2).allSatisfy(isSafe) else { return done(false, "not a Homebrew app name") }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: brew)
+            p.arguments = args
+            var env = ProcessInfo.processInfo.environment
+            env["HOMEBREW_NO_AUTO_UPDATE"] = "1"
+            env["HOMEBREW_NO_ENV_HINTS"] = "1"
+            env["NONINTERACTIVE"] = "1"
+            env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+            p.environment = env
+            let pipe = Pipe()
+            p.standardOutput = pipe
+            p.standardError = pipe
+            p.standardInput = FileHandle.nullDevice
+            var ok = false
+            var text = ""
+            do {
+                try p.run()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                p.waitUntilExit()
+                ok = p.terminationStatus == 0
+                text = String(decoding: data, as: UTF8.self)
+            } catch {
+                text = error.localizedDescription
+            }
+            let tail = text.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+                .last { !$0.isEmpty && !$0.hasPrefix("==>") } ?? ""
+            DispatchQueue.main.async { done(ok, String(tail.prefix(140))) }
+        }
+    }
+
+    /// Opens Terminal running `command`, so its output and any password prompt are in view.
+    static func openInTerminal(_ command: String) {
+        let url = Spaces.folder.appendingPathComponent("launcher.command")
+        let script = """
+        #!/bin/zsh
+        export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+        \(command)
+        echo
+        echo "Finished. You can close this window."
+
+        """
+        try? FileManager.default.createDirectory(at: Spaces.folder, withIntermediateDirectories: true)
+        try? script.write(to: url, atomically: true, encoding: .utf8)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
+        NSWorkspace.shared.open(url)
+    }
+
+    /// Homebrew's own installer, from brew.sh, in Terminal where it can ask for a password.
+    static func installHomebrew() {
+        openInTerminal(#"/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)""#)
+    }
+}
+
+/// A Mac App Store result from Apple's public search.
+struct StoreApp: Identifiable {
+    let id: Int
+    let name: String
+    let seller: String
+    let price: String
+    let bundleID: String?
+    let artwork: URL?
+    let webURL: URL?
+    var storeURL: URL? {
+        webURL.flatMap { URL(string: $0.absoluteString.replacingOccurrences(of: "https://", with: "macappstore://")) }
+    }
+
+    static func search(_ term: String, done: @escaping ([StoreApp]) -> Void) {
+        var c = URLComponents(string: "https://itunes.apple.com/search")!
+        c.queryItems = [.init(name: "term", value: term), .init(name: "entity", value: "macSoftware"), .init(name: "limit", value: "6"),
+                        .init(name: "country", value: Locale.current.region?.identifier ?? "US")]
+        guard let url = c.url else { return done([]) }
+        URLSession.shared.dataTask(with: url) { data, _, _ in
+            let json = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            let results = (json?["results"] as? [[String: Any]] ?? []).compactMap { r -> StoreApp? in
+                guard let id = r["trackId"] as? Int, let name = r["trackName"] as? String else { return nil }
+                return StoreApp(id: id, name: name, seller: r["sellerName"] as? String ?? r["artistName"] as? String ?? "",
+                                price: r["formattedPrice"] as? String ?? "", bundleID: r["bundleId"] as? String,
+                                artwork: (r["artworkUrl100"] as? String).flatMap(URL.init(string:)),
+                                webURL: (r["trackViewUrl"] as? String).flatMap(URL.init(string:)))
+            }
+            DispatchQueue.main.async { done(results) }
+        }.resume()
+    }
+}
+
+/// The Mac's everyday commands.
+enum System {
+    static func run(_ path: String, _ args: [String]) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: path)
+        p.arguments = args
+        try? p.run()
+    }
+
+    /// ⌃⌘Q, the lock shortcut macOS itself listens for.
+    static func lock() {
+        let src = CGEventSource(stateID: .hidSystemState)
+        let q = CGKeyCode(kVK_ANSI_Q)
+        for down in [true, false] {
+            let e = CGEvent(keyboardEventSource: src, virtualKey: q, keyDown: down)
+            e?.flags = [.maskCommand, .maskControl]
+            e?.post(tap: .cghidEventTap)
+        }
+    }
+
+    /// Restart, shut down or log out through macOS's own confirmation dialog.
+    static func loginWindow(_ event: String) {
+        run("/usr/bin/osascript", ["-e", "tell application \"loginwindow\" to «event aevt\(event)»"])
+    }
+
+    static func toggleDarkMode() {
+        run("/usr/bin/osascript", ["-e", "tell application \"System Events\" to tell appearance preferences to set dark mode to not dark mode"])
+    }
+}
+
+/// A short message near the top of the screen, for work that finishes after the launcher closed.
+enum Toast {
+    private static var panel: NSPanel?
+    private static var work: DispatchWorkItem?
+
+    static func show(_ text: String, symbol: String) {
+        let view = HStack(spacing: 10) {
+            Image(systemName: symbol).font(.system(size: 16, weight: .semibold)).foregroundStyle(Chrome.accent)
+            Text(text).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 11)
+        .background(Chrome.panel(cornerRadius: 16))
+        .padding(24)
+        .environment(\.colorScheme, .dark)
+        let host = NSHostingView(rootView: view)
+        let size = host.fittingSize
+        let p = panel ?? {
+            let p = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            p.isOpaque = false
+            p.backgroundColor = .clear
+            p.hasShadow = false
+            p.ignoresMouseEvents = true
+            p.level = .statusBar
+            p.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
+            return p
+        }()
+        panel = p
+        p.contentView = host
+        let screen = NSScreen.main ?? NSScreen.screens[0]
+        p.setFrame(NSRect(x: screen.visibleFrame.midX - size.width / 2, y: screen.visibleFrame.maxY - size.height,
+                          width: size.width, height: size.height), display: true)
+        p.alphaValue = 1
+        p.orderFrontRegardless()
+        work?.cancel()
+        let w = DispatchWorkItem {
+            NSAnimationContext.runAnimationGroup({ $0.duration = 0.25; p.animator().alphaValue = 0 }, completionHandler: { p.orderOut(nil) })
+        }
+        work = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5, execute: w)
+    }
+}
+
+// MARK: Views
+
+struct LauncherView: View {
+    @ObservedObject var model: LauncherModel
+
+    var body: some View {
+        VStack(spacing: 0) {
+            searchBar
+            Rectangle().fill(Color.white.opacity(0.08)).frame(height: 1)
+            results
+            Rectangle().fill(Color.white.opacity(0.08)).frame(height: 1)
+            footer
+        }
+        .background(Chrome.panel(cornerRadius: 22))
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .padding(1)
+    }
+
+    private var searchBar: some View {
+        HStack(spacing: 10) {
+            Image(systemName: model.scope.symbol).font(.system(size: 18, weight: .medium)).foregroundStyle(.white.opacity(0.6))
+                .frame(width: 24)
+            if model.scope != .root {
+                HStack(spacing: 4) {
+                    Text(model.scope.title)
+                    Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).opacity(0.7)
+                }
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 9).padding(.vertical, 4)
+                .background(Capsule().fill(Chrome.accent.opacity(0.85)))
+                .onTapGesture { model.back() }
+                .accessibilityLabel("\(model.scope.title) menu. Press Delete to go back.")
+            }
+            SearchField(model: model, placeholder: model.scope.placeholder)
+                .frame(height: 30)
+        }
+        .padding(.horizontal, 18)
+        .frame(height: 62)
+    }
+
+    private var results: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 2) {
+                    // One view per item, header included, so the list never mixes old and new rows.
+                    ForEach(Array(model.items.enumerated()), id: \.element.id) { i, item in
+                        VStack(alignment: .leading, spacing: 2) {
+                            if i == 0 || model.items[i - 1].section != item.section {
+                                Text(item.section.uppercased())
+                                    .font(.system(size: 10, weight: .bold)).tracking(0.8)
+                                    .foregroundStyle(.white.opacity(0.4))
+                                    .padding(.leading, 12).padding(.top, i == 0 ? 4 : 10).padding(.bottom, 2)
+                            }
+                            row(item, selected: i == model.selected)
+                        }
+                        .id(item.id)
+                    }
+                    if model.items.isEmpty {
+                        Text("Nothing matches “\(model.query)”").foregroundStyle(.white.opacity(0.5))
+                            .frame(maxWidth: .infinity).padding(.top, 40)
+                    }
+                }
+                .padding(8)
+                .id(model.scope)
+            }
+            .onChange(of: model.selected) { i in
+                if model.items.indices.contains(i) { proxy.scrollTo(model.items[i].id) }
+            }
+        }
+    }
+
+    private func row(_ item: LauncherItem, selected: Bool) -> some View {
+        HStack(spacing: 12) {
+            iconView(item.icon).frame(width: 30, height: 30)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(item.title).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                if !item.subtitle.isEmpty {
+                    Text(item.subtitle).font(.system(size: 11.5))
+                        .foregroundStyle(item.state == .failed ? Color.orange : .white.opacity(0.5)).lineLimit(1)
+                }
+            }
+            Spacer(minLength: 8)
+            if item.state == .working { ProgressView().controlSize(.small).scaleEffect(0.8) }
+            if !item.badge.isEmpty { badge(item.badge, strong: selected) }
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 46)
+        .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(selected ? Color.white.opacity(0.13) : .clear))
+        .overlay(alignment: .leading) {
+            if selected { Capsule().fill(Chrome.accent).frame(width: 3, height: 22).offset(x: 1) }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { model.run(item) }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+    }
+
+    private func badge(_ text: String, strong: Bool) -> some View {
+        Text(text)
+            .font(.system(size: 11, weight: .semibold, design: text.count <= 5 ? .rounded : .default))
+            .foregroundStyle(.white.opacity(strong ? 0.95 : 0.6))
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(Capsule().fill(text == "Install" && strong ? Chrome.accent : Color.white.opacity(0.1)))
+    }
+
+    @ViewBuilder private func iconView(_ icon: LauncherItem.Icon) -> some View {
+        switch icon {
+        case .file(let path): Image(nsImage: model.icon(for: path)).resizable().interpolation(.high)
+        case .image(let img): Image(nsImage: img).resizable()
+        case .symbol(let name):
+            RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.white.opacity(0.09))
+                .overlay(Image(systemName: name).font(.system(size: 14, weight: .medium)).foregroundStyle(.white.opacity(0.85)))
+        case .remote(let url):
+            AsyncImage(url: url) { $0.resizable() } placeholder: { RoundedRectangle(cornerRadius: 7).fill(Color.white.opacity(0.08)) }
+                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        }
+    }
+
+    private var footer: some View {
+        HStack(spacing: 16) {
+            hint("↩", "Open")
+            hint("⌘↩", "Show in Finder")
+            hint("⇥", "Open menu")
+            if model.scope != .root { hint("⌫", "Back") }
+            Spacer()
+            hint("esc", "Close")
+        }
+        .padding(.horizontal, 18)
+        .frame(height: 34)
+    }
+
+    private func hint(_ key: String, _ what: String) -> some View {
+        HStack(spacing: 5) {
+            Text(key).font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                .padding(.horizontal, 5).padding(.vertical, 1.5)
+                .background(RoundedRectangle(cornerRadius: 4).fill(Color.white.opacity(0.1)))
+            Text(what).font(.system(size: 11))
+        }
+        .foregroundStyle(.white.opacity(0.5))
+    }
+}
+
+/// The search box: an AppKit field, so arrow keys, Return, Tab and Esc steer the list.
+private struct SearchField: NSViewRepresentable {
+    @ObservedObject var model: LauncherModel
+    var placeholder: String
+
+    func makeNSView(context: Context) -> NSTextField {
+        let f = NSTextField()
+        f.isBordered = false
+        f.drawsBackground = false
+        f.focusRingType = .none
+        f.font = .systemFont(ofSize: 21, weight: .regular)
+        f.textColor = .white
+        f.delegate = context.coordinator
+        f.cell?.lineBreakMode = .byTruncatingTail
+        model.field = f
+        return f
+    }
+
+    func updateNSView(_ f: NSTextField, context: Context) {
+        f.placeholderAttributedString = NSAttributedString(string: placeholder, attributes: [
+            .foregroundColor: NSColor.white.withAlphaComponent(0.35), .font: NSFont.systemFont(ofSize: 21),
+        ])
+        if f.stringValue != model.query { f.stringValue = model.query }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(model: model) }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        let model: LauncherModel
+        init(model: LauncherModel) { self.model = model }
+
+        func controlTextDidChange(_ n: Notification) {
+            guard let f = n.object as? NSTextField else { return }
+            model.query = f.stringValue
+        }
+
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy sel: Selector) -> Bool {
+            switch sel {
+            case #selector(NSResponder.moveDown(_:)): model.move(1)
+            case #selector(NSResponder.moveUp(_:)): model.move(-1)
+            case #selector(NSResponder.insertNewline(_:)):
+                model.runSelected(reveal: NSEvent.modifierFlags.contains(.command))
+            case #selector(NSResponder.insertTab(_:)): model.tab()
+            case #selector(NSResponder.cancelOperation(_:)):
+                if !model.query.isEmpty { model.query = "" } else if model.scope != .root { model.back() } else { model.close() }
+            case #selector(NSResponder.deleteBackward(_:)) where model.query.isEmpty && model.scope != .root:
+                model.back()
+            default: return false
+            }
+            return true
+        }
+    }
+}

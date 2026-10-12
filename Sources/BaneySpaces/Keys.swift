@@ -133,6 +133,30 @@ enum SystemShortcuts {
         UserDefaults.standard.removeObject(forKey: freedKey)
     }
 
+    // MARK: Spotlight
+
+    /// "Show Spotlight search" on ⌘Space, as macOS stores it: space, key code 49, ⌘.
+    private static let spotlight = (id: 64, key: 32, code: 49, mods: 1048576)
+    private static let spotlightFreedKey = "freedSpotlight"
+
+    /// True while BaneySpaces holds ⌘Space for its launcher, Spotlight's shortcut switched off.
+    static var spotlightFreed: Bool { UserDefaults.standard.bool(forKey: spotlightFreedKey) }
+
+    /// Hands ⌘Space to the launcher. Recorded only if Spotlight had it, so giving it back never
+    /// turns on a shortcut the person had turned off. Slow; call it off the main thread.
+    static func freeSpotlight() {
+        guard !spotlightFreed, enabled(spotlight.id) else { return }
+        UserDefaults.standard.set(true, forKey: spotlightFreedKey)
+        write([spotlight], enabled: false)
+    }
+
+    /// Gives ⌘Space back to Spotlight, if `freeSpotlight()` took it.
+    static func restoreSpotlight() {
+        guard spotlightFreed else { return }
+        write([spotlight], enabled: true)
+        UserDefaults.standard.removeObject(forKey: spotlightFreedKey)
+    }
+
     private static func write(_ targets: [(id: Int, key: Int, code: Int, mods: Int)], enabled on: Bool) {
         guard !targets.isEmpty else { return }
         CFPreferencesAppSynchronize(domain)

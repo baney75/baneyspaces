@@ -18,11 +18,35 @@ final class MissionControlKeys {
         self.onPress = onPress
     }
 
-    /// ⌘Tab switches workspaces instead of apps. Off unless chosen in setup.
-    static var cmdTabEnabled: Bool {
-        get { UserDefaults.standard.bool(forKey: "cmdTabSwitchesWorkspaces") }
-        set { UserDefaults.standard.set(newValue, forKey: "cmdTabSwitchesWorkspaces") }
+    /// What ⌘Tab does. Off (macOS's own switcher) unless chosen in setup.
+    enum CmdTabMode: String, CaseIterable, Identifiable {
+        /// macOS's app switcher, untouched.
+        case off
+        /// Every app with a window, on any workspace, most recent first; picking one goes there.
+        case apps
+        /// Workspaces, most recent first.
+        case workspaces
+
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .off: "macOS"
+            case .apps: "Apps on every workspace"
+            case .workspaces: "Workspaces"
+            }
+        }
     }
+
+    static var cmdTabMode: CmdTabMode {
+        get {
+            if let raw = UserDefaults.standard.string(forKey: "cmdTabMode"), let m = CmdTabMode(rawValue: raw) { return m }
+            // 0.2 had one switch: ⌘Tab switches workspaces.
+            return UserDefaults.standard.bool(forKey: "cmdTabSwitchesWorkspaces") ? .workspaces : .off
+        }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: "cmdTabMode") }
+    }
+
+    static var cmdTabEnabled: Bool { cmdTabMode != .off }
 
     /// Called on the main thread while ⌘ is held: Tab (forward) or ⇧Tab (back), ⌘ released, Esc.
     var onCmdTab: (Bool) -> Void = { _ in }

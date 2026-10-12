@@ -590,6 +590,25 @@ final class Spaces {
         switchTo(n)
     }
 
+    /// Goes to an app wherever it is: the window of it used last, on whichever workspace that is,
+    /// preferring the workspace you're on. An app with no windows is simply brought forward.
+    /// `on` limits it to one workspace, for an app icon clicked in a dock tile.
+    func focusApp(_ pid: pid_t, on only: Int? = nil) {
+        guard active else { NSRunningApplication(processIdentifier: pid)?.activate(options: []); return }
+        refresh()
+        let mine = windows.values.filter { $0.pid == pid && model.workspace(of: $0.id) != nil }
+        let order = only.map { [$0] } ?? ([model.current] + recent.filter { $0 != model.current } + Array(Workspaces.range))
+        for n in order {
+            let here = mine.filter { model.workspace(of: $0.id) == n }
+            guard !here.isEmpty else { continue }
+            let last = model.lastFocused[n].flatMap { id in here.first { $0.id == id } }
+            let pick = last ?? here.first { !$0.isMinimized } ?? here[0]
+            return focus(pick.id, on: n)
+        }
+        if let only { return switchTo(only) }
+        NSRunningApplication(processIdentifier: pid)?.activate(options: [])
+    }
+
     /// Sends one window to workspace `n` without going there.
     func move(_ id: WindowID, to n: Int) {
         guard active, Workspaces.range.contains(n) else { return }

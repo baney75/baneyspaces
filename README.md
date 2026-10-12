@@ -78,13 +78,39 @@ The menu bar icon shows the number of the workspace you're on, and its menu has 
 Turn on **Workspace Dock** in setup or the menu bar menu and the Dock shows your workspaces
 instead of your apps. Rest the pointer on the bottom edge of the screen and it slides up: a
 tile for each workspace in use, plus the one you're on, each with its apps and its number.
-Click a tile to go there; hover it to see what's on it; right-click it to send the front window
-there. The last button opens the overview of all nine.
+Click an app's icon to go straight to that app, or the tile around it to go to the workspace;
+hover to see what's there; right-click to send the front window there. The dashed tile goes to
+the first empty workspace, the search button opens the launcher, and the last button opens the
+overview of all nine.
 
 While it's on, the macOS Dock stays out of sight. BaneySpaces saves the Dock's own hiding
 settings first and puts them back exactly when you turn the Workspace Dock off or quit. If
 BaneySpaces ever crashed with it on, open BaneySpaces again (or run the uninstaller) and the
 Dock comes back; by hand, `defaults delete com.apple.dock autohide-delay; killall Dock` gives the Dock its usual delay.
+
+## ⌘Tab across workspaces
+
+macOS's ⌘Tab only reaches apps on the workspace you're on. In setup, set **⌘Tab switches** to
+**Apps on every workspace** and it steps through every app with a window, most recently used
+first, each marked with the workspace it's on. Let go of ⌘ and you're on that app's window,
+wherever it is. **Workspaces** steps through workspaces instead. ⌘⇧Tab steps back; Esc cancels.
+
+## Launcher
+
+One box to open, find, install and remove apps. Open it from the menu bar menu or the Workspace
+Dock, or turn on **⌘Space opens the BaneySpaces launcher** in setup to use it in place of
+Spotlight. Turning that off gives ⌘Space back to Spotlight, and so does quitting BaneySpaces.
+
+- **Type** to search apps, commands and workspaces at once. An app that's already open takes you
+  to the workspace it's on.
+- **Tab** into a menu: **Apps**, **Install**, **Remove**, **Update**, **System** (lock, sleep,
+  restart, dark mode, screenshot) or **Workspaces**. Delete on an empty search goes back.
+- **Install** searches Homebrew's whole app list and the Mac App Store. Return installs a
+  Homebrew app in the background and tells you when it's ready; an installer that needs your
+  password finishes in Terminal, where you can see it. App Store results open in the App Store.
+  No Homebrew yet? The first row installs it, in Terminal.
+- **Remove** lists apps Homebrew installed and asks before uninstalling one.
+- **⌘Return** shows an app in Finder, or a Homebrew app's web page.
 
 ## Your windows are safe
 

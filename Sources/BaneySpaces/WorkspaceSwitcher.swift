@@ -1,47 +1,98 @@
 import AppKit
+import BaneySpacesCore
 import SwiftUI
 
-/// ⌘Tab for workspaces: hold ⌘, tap Tab to step through the workspaces that have windows
-/// (most recent first), let go to go there. ⌘⇧Tab steps back; Esc cancels.
+/// ⌘Tab across workspaces: hold ⌘, tap Tab to step, let go to go there. ⌘⇧Tab steps back;
+/// Esc cancels. In app mode it steps through every app with a window, on any workspace, most
+/// recently used first, and letting go lands on that app's window wherever it is. In workspace
+/// mode it steps through workspaces with windows, most recent first.
 final class WorkspaceSwitcher {
     private let spaces: Spaces
     private let model = SwitcherModel()
     private var panel: NSPanel?
     private var watchdog: Timer?
+    /// Apps in the order they were last brought forward, most recent first.
+    private var appOrder: [pid_t] = []
 
     init(spaces: Spaces) {
         self.spaces = spaces
+        if let front = NSWorkspace.shared.frontmostApplication?.processIdentifier { appOrder = [front] }
     }
 
     var isShowing: Bool { panel?.isVisible == true }
 
+    /// Called for every app that comes forward, by any means.
+    func noteActivated(_ pid: pid_t) {
+        guard pid != getpid() else { return }
+        appOrder.removeAll { $0 == pid }
+        appOrder.insert(pid, at: 0)
+        if appOrder.count > 64 { appOrder.removeLast() }
+    }
+
     func step(forward: Bool) {
         if !isShowing {
-            let order = spaces.switcherOrder()
-            Trace.log("cmdTab show order=\(order) current=\(spaces.model.current)")
-            model.tiles = order.map { n in
-                SwitcherModel.Tile(n: n, icons: icons(on: n), count: spaces.entries(on: n).count)
+            model.mode = MissionControlKeys.cmdTabMode == .workspaces ? .workspaces : .apps
+            if model.mode == .workspaces {
+                let order = spaces.switcherOrder()
+                Trace.log("cmdTab show order=\(order) current=\(spaces.model.current)")
+                model.tiles = order.map { n in
+                    SwitcherModel.Tile(n: n, icons: icons(on: n), count: spaces.entries(on: n).count)
+                }
+            } else {
+                model.apps = appTiles()
+                Trace.log("cmdTab show apps=\(model.apps.count) current=\(spaces.model.current)")
             }
-            // The first tap lands on the previous workspace, like the app switcher.
-            model.selected = order.count > 1 ? (forward ? 1 : order.count - 1) : 0
+            // The first tap lands on the previous one, like the app switcher.
+            let c = model.count
+            model.selected = c > 1 ? (forward ? 1 : c - 1) : 0
             show()
-        } else if !model.tiles.isEmpty {
-            let c = model.tiles.count
+        } else if model.count > 0 {
+            let c = model.count
             model.selected = (model.selected + (forward ? 1 : c - 1)) % c
         }
     }
 
     func commit() {
         guard isShowing else { return }
-        let target = model.tiles.indices.contains(model.selected) ? model.tiles[model.selected].n : nil
         hide()
-        Trace.log("cmdTab commit target=\(target.map(String.init) ?? "none") current=\(spaces.model.current)")
-        if let target, target != spaces.model.current { spaces.switchTo(target, announce: false) }
+        switch model.mode {
+        case .workspaces:
+            let target = model.tiles.indices.contains(model.selected) ? model.tiles[model.selected].n : nil
+            Trace.log("cmdTab commit target=\(target.map(String.init) ?? "none") current=\(spaces.model.current)")
+            if let target, target != spaces.model.current { spaces.switchTo(target, announce: false) }
+        case .apps:
+            guard model.apps.indices.contains(model.selected) else { return }
+            let app = model.apps[model.selected]
+            Trace.log("cmdTab commit app on=\(app.workspaces) current=\(spaces.model.current)")
+            noteActivated(app.pid)
+            spaces.focusApp(app.pid)
+        }
     }
 
     func cancel() {
         Trace.log("cmdTab cancel")
         hide()
+    }
+
+    /// Every app with a window on a workspace, most recently used first; the rest by name.
+    private func appTiles() -> [SwitcherModel.AppTile] {
+        var workspaces: [pid_t: [Int]] = [:]
+        var names: [pid_t: String] = [:]
+        var windows: [pid_t: Int] = [:]
+        for n in Workspaces.range {
+            for e in spaces.entries(on: n) {
+                if workspaces[e.pid]?.contains(n) != true { workspaces[e.pid, default: []].append(n) }
+                names[e.pid] = e.app
+                windows[e.pid, default: 0] += 1
+            }
+        }
+        let recent = appOrder.filter { workspaces[$0] != nil }
+        let rest = workspaces.keys.filter { !recent.contains($0) }.sorted { (names[$0] ?? "") < (names[$1] ?? "") }
+        return (recent + rest).map { pid in
+            SwitcherModel.AppTile(pid: pid, name: names[pid] ?? "App",
+                                  icon: NSRunningApplication(processIdentifier: pid)?.icon ?? NSWorkspace.shared.icon(for: .application),
+                                  workspaces: workspaces[pid] ?? [], windows: windows[pid] ?? 0)
+        }
     }
 
     private func icons(on n: Int) -> [NSImage] {
@@ -95,21 +146,70 @@ final class WorkspaceSwitcher {
 }
 
 final class SwitcherModel: ObservableObject {
+    enum Mode { case apps, workspaces }
     struct Tile: Identifiable {
         let n: Int
         let icons: [NSImage]
         let count: Int
         var id: Int { n }
     }
+    struct AppTile: Identifiable {
+        let pid: pid_t
+        let name: String
+        let icon: NSImage
+        let workspaces: [Int]
+        let windows: Int
+        var id: pid_t { pid }
+    }
+    @Published var mode = Mode.workspaces
     @Published var tiles: [Tile] = []
+    @Published var apps: [AppTile] = []
     @Published var selected = 0
+    var count: Int { mode == .apps ? apps.count : tiles.count }
 }
 
 struct SwitcherView: View {
     @ObservedObject var model: SwitcherModel
-    private let red = Color(red: 0.91, green: 0.26, blue: 0.29)
 
     var body: some View {
+        Group {
+            if model.mode == .apps { appRow } else { workspaceRow }
+        }
+        .padding(14)
+        .background(Chrome.panel(cornerRadius: 26))
+        .environment(\.colorScheme, .dark)
+    }
+
+    /// Long lists wrap onto more rows instead of running off the screen.
+    private var appRow: some View {
+        let columns = Array(repeating: GridItem(.fixed(104), spacing: 8), count: min(max(model.apps.count, 1), 8))
+        return VStack(spacing: 10) {
+            LazyVGrid(columns: columns, spacing: 8) {
+                ForEach(Array(model.apps.enumerated()), id: \.element.id) { i, app in
+                    let on = i == model.selected
+                    VStack(spacing: 6) {
+                        ZStack(alignment: .topTrailing) {
+                            Image(nsImage: app.icon).resizable().frame(width: 64, height: 64)
+                            WorkspaceBadge(numbers: app.workspaces).offset(x: 8, y: -4)
+                        }
+                        Text(app.name).font(.system(size: 12, weight: .medium)).foregroundStyle(.white.opacity(on ? 1 : 0.7))
+                            .lineLimit(1).frame(maxWidth: 92)
+                    }
+                    .frame(width: 104, height: 108)
+                    .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(on ? Color.white.opacity(0.16) : .clear))
+                    .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(on ? Chrome.accent.opacity(0.9) : .clear, lineWidth: 2))
+                    .accessibilityLabel("\(app.name), workspace \(app.workspaces.map(String.init).joined(separator: " and "))\(on ? ", selected" : "")")
+                }
+            }
+            if model.apps.indices.contains(model.selected) {
+                let app = model.apps[model.selected]
+                Text(app.workspaces.count == 1 ? "Workspace \(app.workspaces[0])" : "Workspaces \(app.workspaces.map(String.init).joined(separator: ", "))")
+                    .font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.55))
+            }
+        }
+    }
+
+    private var workspaceRow: some View {
         HStack(spacing: 12) {
             ForEach(Array(model.tiles.enumerated()), id: \.element.id) { i, tile in
                 let on = i == model.selected
@@ -127,15 +227,42 @@ struct SwitcherView: View {
                         .font(.caption).foregroundStyle(.white.opacity(0.65))
                 }
                 .frame(width: 108, height: 128)
-                .background(RoundedRectangle(cornerRadius: 16).fill(on ? red.opacity(0.22) : Color.white.opacity(0.06)))
-                .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(on ? red : Color.white.opacity(0.08), lineWidth: on ? 3 : 1))
+                .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(on ? Color.white.opacity(0.16) : Color.white.opacity(0.05)))
+                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(on ? Chrome.accent.opacity(0.9) : Color.white.opacity(0.08), lineWidth: on ? 2 : 1))
                 .accessibilityLabel("Workspace \(tile.n), \(tile.count) windows\(on ? ", selected" : "")")
             }
         }
-        .padding(16)
-        .background(RoundedRectangle(cornerRadius: 24).fill(Color.black.opacity(0.72)))
-        .overlay(RoundedRectangle(cornerRadius: 24).strokeBorder(Color.white.opacity(0.1)))
-        .environment(\.colorScheme, .dark)
+    }
+}
+
+/// A small pill with the workspace number (or numbers) an app's windows are on.
+struct WorkspaceBadge: View {
+    let numbers: [Int]
+    var body: some View {
+        if !numbers.isEmpty {
+            Text(numbers.prefix(3).map(String.init).joined(separator: "·") + (numbers.count > 3 ? "…" : ""))
+                .font(.system(size: 11, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 6).frame(minWidth: 20, minHeight: 20)
+                .background(Capsule().fill(Chrome.accent))
+                .overlay(Capsule().strokeBorder(Color.black.opacity(0.25), lineWidth: 1))
+        }
+    }
+}
+
+/// The look shared by the dock, the switcher and the launcher: a dark glass panel and one accent.
+enum Chrome {
+    static let accent = Color(red: 0.91, green: 0.26, blue: 0.29)
+
+    static func panel(cornerRadius r: CGFloat) -> some View {
+        let shape = RoundedRectangle(cornerRadius: r, style: .continuous)
+        return shape.fill(.ultraThinMaterial)
+            // Dark enough that text in the windows behind never reads through.
+            .overlay(shape.fill(Color(white: 0.07).opacity(0.88)))
+            // A light top edge and a faint outline, like glass catching light.
+            .overlay(shape.strokeBorder(LinearGradient(colors: [Color.white.opacity(0.22), Color.white.opacity(0.06)],
+                                                       startPoint: .top, endPoint: .bottom), lineWidth: 1))
+            .shadow(color: .black.opacity(0.45), radius: 24, y: 10)
     }
 }
 
