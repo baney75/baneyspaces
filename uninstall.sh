@@ -26,6 +26,13 @@ if [ -x "$APP/Contents/MacOS/BaneySpaces" ]; then
   "$APP/Contents/MacOS/BaneySpaces" --restore-dock >/dev/null 2>&1 || true
 fi
 
+# Without the app (already in the Trash), still undo the Workspace Dock's Dock setting.
+if [ "$(defaults read com.apple.dock autohide-delay 2>/dev/null)" = "1000" ]; then
+  step "Bringing the macOS Dock back"
+  defaults delete com.apple.dock autohide-delay
+  killall Dock 2>/dev/null || true
+fi
+
 step "Removing the app"
 # Open at Login belongs to the app itself, so it goes away with it.
 rm -rf "$APP"
