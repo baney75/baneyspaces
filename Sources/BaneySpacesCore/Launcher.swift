@@ -54,11 +54,17 @@ public struct Cask: Codable, Equatable, Sendable {
     public static func parseCatalog(_ data: Data) -> [Cask] {
         guard let all = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
         return all.compactMap { c in
-            guard let token = c["token"] as? String else { return nil }
+            guard let token = c["token"] as? String, isSafeToken(token) else { return nil }
             if (c["disabled"] as? Bool) == true || (c["deprecated"] as? Bool) == true { return nil }
             let name = (c["name"] as? [String])?.first ?? token
             return Cask(token: token, name: name, desc: c["desc"] as? String ?? "", homepage: c["homepage"] as? String ?? "")
         }
+    }
+
+    /// Cask tokens are lowercase letters, digits and - @ . _ only. Anything else is dropped
+    /// before it can reach brew or a Terminal script.
+    public static func isSafeToken(_ token: String) -> Bool {
+        !token.isEmpty && !token.hasPrefix("-") && token.allSatisfy { $0.isASCII && ($0.isLowercase || $0.isNumber || "-@._".contains($0)) }
     }
 
     /// The best matches for a query: by name or token first, then by description.
@@ -96,5 +102,52 @@ public struct Recents: Equatable, Sendable {
     public func boost(_ path: String) -> Int {
         guard let i = paths.firstIndex(of: path) else { return 0 }
         return 60 - i * 2
+    }
+}
+
+/// The ⌘Tab app list. An app split across workspaces gets one entry per workspace, so two
+/// Ghostty windows on 1 and 4 are two choices, not one that guesses. Entries go most recently
+/// used app first; within an app, the workspace it was last used on first, then the others in
+/// the order they were last visited.
+public enum AppSwitchList {
+    public struct Entry: Equatable, Sendable {
+        public let app: Int32
+        public let workspace: Int
+        public let windows: Int
+        /// The app has windows on other workspaces too.
+        public let isSplit: Bool
+    }
+
+    /// `windows` is (app, workspace) for every window. `appOrder` and `workspaceOrder` are most
+    /// recent first; `lastWorkspace[app]` is where that app was last in front.
+    public static func make(windows: [(app: Int32, workspace: Int)], appOrder: [Int32], workspaceOrder: [Int],
+                            lastWorkspace: [Int32: Int]) -> [Entry] {
+        var counts: [Int32: [Int: Int]] = [:]
+        var seen: [Int32] = []
+        for w in windows {
+            if counts[w.app] == nil { seen.append(w.app) }
+            counts[w.app, default: [:]][w.workspace, default: 0] += 1
+        }
+        let apps = appOrder.filter { counts[$0] != nil } + seen.filter { !appOrder.contains($0) }
+        func rank(_ n: Int) -> Int { workspaceOrder.firstIndex(of: n) ?? (100 + n) }
+        return apps.flatMap { app -> [Entry] in
+            let byWorkspace = counts[app]!
+            let order = byWorkspace.keys.sorted { a, b in
+                if a == lastWorkspace[app] { return true }
+                if b == lastWorkspace[app] { return false }
+                return rank(a) < rank(b)
+            }
+            return order.map { Entry(app: app, workspace: $0, windows: byWorkspace[$0]!, isSplit: byWorkspace.count > 1) }
+        }
+    }
+}
+
+/// Clicking an app in the dock again steps to its next window on that workspace.
+public enum WindowCycle {
+    /// The window to focus among `windows` (in a stable order) when `focused` is in front.
+    public static func next<ID: Equatable>(_ windows: [ID], after focused: ID?) -> ID? {
+        guard !windows.isEmpty else { return nil }
+        guard let focused, let i = windows.firstIndex(of: focused) else { return windows[0] }
+        return windows[(i + 1) % windows.count]
     }
 }

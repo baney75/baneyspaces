@@ -13,6 +13,15 @@
 - **⌘Tab across workspaces.** Setup's ⌘Tab choice is now macOS, Apps on every workspace, or
   Workspaces. Apps steps through every app with a window, most recently used first, each marked
   with its workspace number; let go and you land on that app's window wherever it is.
+- **Apps open on more than one workspace.** Every workspace has its own color, used the same in
+  the dock, ⌘Tab and the launcher. An app with windows on two workspaces shows once for each in
+  ⌘Tab, tinted in that workspace's color; hovering it in the dock rings its copy on the other
+  workspace and says where else it is; the launcher lists a row for each workspace. Clicking an
+  app with several windows in a dock tile steps through them, one dot per window.
+- Picking an app on the workspace you're on (dock, ⌘Tab, launcher) brings it forward. Before,
+  focus went back to the app you were in.
+- Installing from the launcher asks first, the same as removing. A launcher opened by a link
+  doesn't take the keyboard until clicked.
 - **Workspace Dock, redrawn.** Click any app icon in a tile to go straight to that app; click
   the tile around it to go to the workspace. Numbers sit under the tiles, the current one lit,
   and a dashed tile goes to the first empty workspace. A search button opens the launcher.

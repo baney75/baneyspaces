@@ -93,21 +93,25 @@ enum Render {
         // The ⌘Tab app switcher across workspaces, Mail selected.
         let appSwitcher = SwitcherModel()
         appSwitcher.mode = .apps
-        appSwitcher.apps = [("Safari", "/Applications/Safari.app", [1]), ("Mail", "/System/Applications/Mail.app", [2]),
-                            ("Terminal", "/System/Applications/Utilities/Terminal.app", [1, 4]), ("Music", "/System/Applications/Music.app", [3]),
-                            ("Photos", "/System/Applications/Photos.app", [5]), ("Maps", "/System/Applications/Maps.app", [7])]
-            .enumerated().map { i, a in SwitcherModel.AppTile(pid: pid_t(i + 1), name: a.0, icon: icon(a.1), workspaces: a.2, windows: a.2.count) }
+        // Ghostty is on workspaces 1 and 4 (two windows there): two entries, told apart by color.
+        appSwitcher.apps = [("Safari", "/Applications/Safari.app", 1, 1, false), ("Ghostty", "/System/Applications/Utilities/Terminal.app", 4, 2, true),
+                            ("Mail", "/System/Applications/Mail.app", 2, 1, false), ("Ghostty", "/System/Applications/Utilities/Terminal.app", 1, 1, true),
+                            ("Music", "/System/Applications/Music.app", 3, 1, false), ("Maps", "/System/Applications/Maps.app", 7, 1, false)]
+            .enumerated().map { i, a in SwitcherModel.AppTile(pid: a.4 ? 99 : pid_t(i + 1), name: a.0, icon: icon(a.1), workspace: a.2, windows: a.3, isSplit: a.4) }
         appSwitcher.selected = 1
         guard save(SwitcherView(model: appSwitcher).padding(30), "switcher-apps.png", CGSize(width: 820, height: 0)) else { return 1 }
 
         // The Workspace Dock with workspace 4 current, hovering Terminal on workspace 1.
         let dock = DockModel()
-        let app = { (n: Int, name: String, path: String) in DockModel.App(id: "\(n)\(name)", pid: 0, name: name, icon: icon(path), windows: 1) }
+        let app = { (n: Int, name: String, path: String) in
+            DockModel.App(id: "\(n)\(name)", pid: name == "Terminal" ? 99 : pid_t(n * 10 + name.count), name: name, icon: icon(path),
+                          windows: name == "Terminal" && n == 4 ? 2 : 1)
+        }
         dock.tiles = [
             .init(id: 1, apps: [app(1, "Claude", "/Applications/Safari.app"), app(1, "Terminal", "/System/Applications/Utilities/Terminal.app")], isCurrent: false),
             .init(id: 2, apps: [app(2, "Music", "/System/Applications/Music.app")], isCurrent: false),
             .init(id: 3, apps: [app(3, "Notes", "/System/Applications/Notes.app")], isCurrent: false),
-            .init(id: 4, apps: [app(4, "Mail", "/System/Applications/Mail.app"), app(4, "Calendar", "/System/Applications/Calendar.app"),
+            .init(id: 4, apps: [app(4, "Mail", "/System/Applications/Mail.app"), app(4, "Terminal", "/System/Applications/Utilities/Terminal.app"),
                                 app(4, "Messages", "/System/Applications/Messages.app")], isCurrent: true),
             .init(id: 5, apps: (0..<6).map { app(5, "App\($0)", ["/System/Applications/Photos.app", "/System/Applications/Maps.app", "/System/Applications/Preview.app", "/System/Applications/Books.app", "/System/Applications/News.app", "/System/Applications/Podcasts.app"][$0]) }, isCurrent: false),
         ]

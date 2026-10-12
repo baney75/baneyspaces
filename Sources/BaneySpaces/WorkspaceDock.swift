@@ -92,7 +92,7 @@ final class WorkspaceDock {
         self.spaces = spaces
         model.onPick = { [weak self] n in self?.spaces.switchTo(n, announce: false) }
         model.onSendHere = { [weak self] n in self?.spaces.moveFocused(to: n) }
-        model.onFocusApp = { [weak self] pid, n in self?.spaces.focusApp(pid, on: n) }
+        model.onFocusApp = { [weak self] pid, n in self?.spaces.focusApp(pid, on: n, cycle: true) }
         model.onShowOverview = { [weak self] in self?.hide(); self?.onShowOverview() }
         model.onShowLauncher = { [weak self] in self?.hide(); self?.onShowLauncher() }
         model.onTurnOff = { [weak self] in self?.onTurnOff() }
@@ -340,7 +340,11 @@ struct DockView: View {
         case .tile(let n): return model.tiles.first { $0.id == n }.map(title)
         case .app(let n, let id):
             guard let app = model.tiles.first(where: { $0.id == n })?.apps.first(where: { $0.id == id }) else { return nil }
-            return "\(app.name)\(app.windows > 1 ? " (\(app.windows) windows)" : "") · Workspace \(n)"
+            let elsewhere = model.tiles.filter { $0.id != n && $0.apps.contains { $0.pid == app.pid } }.map { String($0.id) }
+            var parts = ["\(app.name) · Workspace \(n)"]
+            if app.windows > 1 { parts.append("\(app.windows) windows, click again for the next") }
+            if !elsewhere.isEmpty { parts.append("also on \(elsewhere.joined(separator: ", "))") }
+            return parts.joined(separator: " · ")
         case .newWorkspace: return model.firstEmpty.map { "Go to Empty Workspace \($0)" }
         case .launcher: return "Find or Install an App"
         case .overview: return "Show All Workspaces"
@@ -363,11 +367,12 @@ struct DockView: View {
 
     private func tileView(_ tile: DockModel.Tile) -> some View {
         let hovered = isHovered(tile)
+        let tint = Chrome.workspace(tile.id)
         let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
         return VStack(spacing: 5) {
             ZStack(alignment: .topLeading) {
-                shape.fill(tile.isCurrent ? Chrome.accent.opacity(hovered ? 0.30 : 0.22) : Color.white.opacity(hovered ? 0.13 : 0.06))
-                    .overlay(shape.strokeBorder(tile.isCurrent ? Chrome.accent.opacity(0.85) : Color.white.opacity(hovered ? 0.18 : 0.08),
+                shape.fill(tile.isCurrent ? tint.opacity(hovered ? 0.34 : 0.26) : Color.white.opacity(hovered ? 0.13 : 0.06))
+                    .overlay(shape.strokeBorder(tile.isCurrent ? tint : Color.white.opacity(hovered ? 0.18 : 0.08),
                                                 lineWidth: tile.isCurrent ? 1.5 : 1))
                     .onHover { model.setHover(.tile(tile.id), $0) }
                     .onTapGesture { model.onPick(tile.id) }
@@ -377,9 +382,9 @@ struct DockView: View {
             // The number under the tile, lit for the workspace you're on, like the key that gets there.
             Text("\(tile.id)")
                 .font(.system(size: 10.5, weight: .bold, design: .rounded))
-                .foregroundStyle(tile.isCurrent ? Color.white : Color.white.opacity(hovered ? 0.8 : 0.45))
+                .foregroundStyle(tile.isCurrent ? Color.white : tint.opacity(hovered ? 1 : 0.85))
                 .frame(minWidth: 18, minHeight: 15)
-                .background(Capsule().fill(tile.isCurrent ? Chrome.accent : Color.clear))
+                .background(Capsule().fill(tile.isCurrent ? tint : Color.clear))
                 .allowsHitTesting(false)
         }
         .scaleEffect(hovered ? 1.06 : 1, anchor: .bottom)
@@ -425,10 +430,31 @@ struct DockView: View {
         }
     }
 
+    /// The app hovered anywhere in the dock, so its copies on other workspaces light up too.
+    private var hoveredPid: pid_t? {
+        guard case .app(let n, let id) = model.hover else { return nil }
+        return model.tiles.first { $0.id == n }?.apps.first { $0.id == id }?.pid
+    }
+
     private func appIcon(_ app: DockModel.App, in tile: DockModel.Tile, size: CGFloat) -> some View {
         let hovered = model.hover == .app(tile.id, app.id)
+        let twin = !hovered && hoveredPid == app.pid
         return Image(nsImage: app.icon).resizable().interpolation(.high).frame(width: size, height: size)
             .shadow(color: .black.opacity(hovered ? 0.4 : 0.2), radius: hovered ? 4 : 2, y: 1)
+            // The same app on another workspace: ringed in this tile's color while its twin is hovered.
+            .overlay(RoundedRectangle(cornerRadius: size * 0.26, style: .continuous)
+                .strokeBorder(Chrome.workspace(tile.id), lineWidth: twin ? 2 : 0).padding(-2))
+            // One dot per window when there's more than one; clicking again steps through them.
+            .overlay(alignment: .bottom) {
+                if app.windows > 1 {
+                    HStack(spacing: 2) {
+                        ForEach(0..<min(app.windows, 3), id: \.self) { _ in Circle().fill(Color.white).frame(width: 3, height: 3) }
+                    }
+                    .padding(.horizontal, 3).padding(.vertical, 2)
+                    .background(Capsule().fill(Color.black.opacity(0.6)))
+                    .offset(y: 5)
+                }
+            }
             .scaleEffect(hovered ? 1.18 : 1)
             .animation(.spring(response: 0.22, dampingFraction: 0.65), value: hovered)
             .contentShape(Rectangle())

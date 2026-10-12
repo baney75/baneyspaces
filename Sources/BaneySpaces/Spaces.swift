@@ -586,14 +586,28 @@ final class Spaces {
         if switching { return enqueue { [weak self] in self?.focus(id, on: n) } }
         // Picking a minimized window in the viewer means wanting it back.
         if let w = windows[id], w.isMinimized { w.unminimize() }
+        // Already here: raise it directly. A switch would first record the window in front (the
+        // app you're leaving, since docks and switchers never take focus) and land back on it.
+        if n == model.current, let w = windows[id], saved.frames[id] == nil {
+            stay(on: w)
+            persist()
+            return
+        }
         model.noteFocus(id)
         switchTo(n)
     }
 
     /// Goes to an app wherever it is: the window of it used last, on whichever workspace that is,
     /// preferring the workspace you're on. An app with no windows is simply brought forward.
-    /// `on` limits it to one workspace, for an app icon clicked in a dock tile.
-    func focusApp(_ pid: pid_t, on only: Int? = nil) {
+    /// The workspace an app was last in front on, from each workspace's last-focused window,
+    /// most recently visited workspace first.
+    func lastWorkspace(of pid: pid_t) -> Int? {
+        (recent + Array(Workspaces.range)).first { n in model.lastFocused[n].flatMap { windows[$0]?.pid } == pid }
+    }
+
+    /// `on` limits it to one workspace, for an app icon clicked in a dock tile. `cycle` steps to
+    /// the app's next window there when one of its windows on that workspace is already in front.
+    func focusApp(_ pid: pid_t, on only: Int? = nil, cycle: Bool = false) {
         guard active else { NSRunningApplication(processIdentifier: pid)?.activate(options: []); return }
         refresh()
         let mine = windows.values.filter { $0.pid == pid && model.workspace(of: $0.id) != nil }
@@ -601,6 +615,11 @@ final class Spaces {
         for n in order {
             let here = mine.filter { model.workspace(of: $0.id) == n }
             guard !here.isEmpty else { continue }
+            if cycle, n == model.current, let front = Windows.focused(in: Array(windows.values)),
+               here.contains(where: { $0.id == front.id }), here.count > 1,
+               let next = WindowCycle.next(here.map(\.id).sorted(), after: front.id) {
+                return focus(next, on: n)
+            }
             let last = model.lastFocused[n].flatMap { id in here.first { $0.id == id } }
             let pick = last ?? here.first { !$0.isMinimized } ?? here[0]
             return focus(pick.id, on: n)

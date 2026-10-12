@@ -63,9 +63,9 @@ final class WorkspaceSwitcher {
         case .apps:
             guard model.apps.indices.contains(model.selected) else { return }
             let app = model.apps[model.selected]
-            Trace.log("cmdTab commit app on=\(app.workspaces) current=\(spaces.model.current)")
+            Trace.log("cmdTab commit app on=\(app.workspace) current=\(spaces.model.current)")
             noteActivated(app.pid)
-            spaces.focusApp(app.pid)
+            spaces.focusApp(app.pid, on: app.workspace)
         }
     }
 
@@ -74,24 +74,26 @@ final class WorkspaceSwitcher {
         hide()
     }
 
-    /// Every app with a window on a workspace, most recently used first; the rest by name.
+    /// Every app with a window, most recently used first; an app on two workspaces once for each.
     private func appTiles() -> [SwitcherModel.AppTile] {
-        var workspaces: [pid_t: [Int]] = [:]
+        var windows: [(app: Int32, workspace: Int)] = []
         var names: [pid_t: String] = [:]
-        var windows: [pid_t: Int] = [:]
+        var titles: [String: [String]] = [:]
         for n in Workspaces.range {
             for e in spaces.entries(on: n) {
-                if workspaces[e.pid]?.contains(n) != true { workspaces[e.pid, default: []].append(n) }
+                windows.append((e.pid, n))
                 names[e.pid] = e.app
-                windows[e.pid, default: 0] += 1
+                titles["\(e.pid):\(n)", default: []].append(e.title)
             }
         }
-        let recent = appOrder.filter { workspaces[$0] != nil }
-        let rest = workspaces.keys.filter { !recent.contains($0) }.sorted { (names[$0] ?? "") < (names[$1] ?? "") }
-        return (recent + rest).map { pid in
-            SwitcherModel.AppTile(pid: pid, name: names[pid] ?? "App",
-                                  icon: NSRunningApplication(processIdentifier: pid)?.icon ?? NSWorkspace.shared.icon(for: .application),
-                                  workspaces: workspaces[pid] ?? [], windows: windows[pid] ?? 0)
+        var last: [Int32: Int] = [:]
+        for pid in Set(windows.map(\.app)) { last[pid] = spaces.lastWorkspace(of: pid) }
+        let list = AppSwitchList.make(windows: windows, appOrder: appOrder, workspaceOrder: spaces.recent, lastWorkspace: last)
+        return list.map { e in
+            SwitcherModel.AppTile(pid: e.app, name: names[e.app] ?? "App",
+                                  icon: NSRunningApplication(processIdentifier: e.app)?.icon ?? NSWorkspace.shared.icon(for: .application),
+                                  workspace: e.workspace, windows: e.windows, isSplit: e.isSplit,
+                                  titles: titles["\(e.app):\(e.workspace)"] ?? [])
         }
     }
 
@@ -157,9 +159,12 @@ final class SwitcherModel: ObservableObject {
         let pid: pid_t
         let name: String
         let icon: NSImage
-        let workspaces: [Int]
+        let workspace: Int
         let windows: Int
-        var id: pid_t { pid }
+        /// The same app has windows on another workspace too.
+        let isSplit: Bool
+        var titles: [String] = []
+        var id: String { "\(pid):\(workspace)" }
     }
     @Published var mode = Mode.workspaces
     @Published var tiles: [Tile] = []
@@ -180,31 +185,48 @@ struct SwitcherView: View {
         .environment(\.colorScheme, .dark)
     }
 
-    /// Long lists wrap onto more rows instead of running off the screen.
+    /// Long lists wrap onto more rows instead of running off the screen. An app on two
+    /// workspaces shows twice, each copy in its workspace's color with the number on it.
     private var appRow: some View {
         let columns = Array(repeating: GridItem(.fixed(104), spacing: 8), count: min(max(model.apps.count, 1), 8))
         return VStack(spacing: 10) {
             LazyVGrid(columns: columns, spacing: 8) {
                 ForEach(Array(model.apps.enumerated()), id: \.element.id) { i, app in
                     let on = i == model.selected
+                    let tint = Chrome.workspace(app.workspace)
                     VStack(spacing: 6) {
                         ZStack(alignment: .topTrailing) {
                             Image(nsImage: app.icon).resizable().frame(width: 64, height: 64)
-                            WorkspaceBadge(numbers: app.workspaces).offset(x: 8, y: -4)
+                            WorkspaceBadge(n: app.workspace).offset(x: 8, y: -4)
+                            if app.windows > 1 {
+                                Text("×\(app.windows)").font(.system(size: 10, weight: .bold, design: .rounded)).foregroundStyle(.white)
+                                    .padding(.horizontal, 5).frame(minHeight: 17)
+                                    .background(Capsule().fill(Color.black.opacity(0.75)))
+                                    .offset(x: 8, y: 50)
+                            }
                         }
                         Text(app.name).font(.system(size: 12, weight: .medium)).foregroundStyle(.white.opacity(on ? 1 : 0.7))
                             .lineLimit(1).frame(maxWidth: 92)
                     }
                     .frame(width: 104, height: 108)
-                    .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(on ? Color.white.opacity(0.16) : .clear))
-                    .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(on ? Chrome.accent.opacity(0.9) : .clear, lineWidth: 2))
-                    .accessibilityLabel("\(app.name), workspace \(app.workspaces.map(String.init).joined(separator: " and "))\(on ? ", selected" : "")")
+                    // A split app's copies are told apart at a glance by their workspace's color.
+                    .background(RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(on ? tint.opacity(0.28) : app.isSplit ? tint.opacity(0.10) : .clear))
+                    .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .strokeBorder(on ? tint : app.isSplit ? tint.opacity(0.35) : .clear, lineWidth: on ? 2 : 1))
+                    .accessibilityLabel("\(app.name), workspace \(app.workspace), \(app.windows) windows\(on ? ", selected" : "")")
                 }
             }
             if model.apps.indices.contains(model.selected) {
                 let app = model.apps[model.selected]
-                Text(app.workspaces.count == 1 ? "Workspace \(app.workspaces[0])" : "Workspaces \(app.workspaces.map(String.init).joined(separator: ", "))")
-                    .font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.55))
+                let title = app.titles.first { !$0.isEmpty }
+                HStack(spacing: 6) {
+                    Circle().fill(Chrome.workspace(app.workspace)).frame(width: 7, height: 7)
+                    Text(["Workspace \(app.workspace)", app.windows > 1 ? "\(app.windows) windows" : title].compactMap { $0 }.joined(separator: " · "))
+                        .lineLimit(1)
+                }
+                .font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.6))
+                .frame(maxWidth: 600)
             }
         }
     }
@@ -235,24 +257,33 @@ struct SwitcherView: View {
     }
 }
 
-/// A small pill with the workspace number (or numbers) an app's windows are on.
+/// A workspace's number in its own color, the same everywhere: dock, ⌘Tab and launcher.
 struct WorkspaceBadge: View {
-    let numbers: [Int]
+    let n: Int
+    var size: CGFloat = 20
     var body: some View {
-        if !numbers.isEmpty {
-            Text(numbers.prefix(3).map(String.init).joined(separator: "·") + (numbers.count > 3 ? "…" : ""))
-                .font(.system(size: 11, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 6).frame(minWidth: 20, minHeight: 20)
-                .background(Capsule().fill(Chrome.accent))
-                .overlay(Capsule().strokeBorder(Color.black.opacity(0.25), lineWidth: 1))
-        }
+        Text("\(n)")
+            .font(.system(size: size * 0.55, weight: .bold, design: .rounded))
+            .foregroundStyle(.white)
+            .frame(minWidth: size, minHeight: size)
+            .background(Circle().fill(Chrome.workspace(n)))
+            .overlay(Circle().strokeBorder(Color.black.opacity(0.25), lineWidth: 1))
     }
 }
 
 /// The look shared by the dock, the switcher and the launcher: a dark glass panel and one accent.
 enum Chrome {
     static let accent = Color(red: 0.91, green: 0.26, blue: 0.29)
+
+    /// One color per workspace, around the color wheel so neighbors never look alike. White
+    /// text reads on all of them.
+    static func workspace(_ n: Int) -> Color {
+        let hues: [Double] = [0.0, 0.07, 0.12, 0.33, 0.47, 0.55, 0.62, 0.74, 0.86]
+        let h = hues[(max(1, min(9, n)) - 1)]
+        // Yellow-green hues read lighter, so they get a little less brightness for white text.
+        let dim = (0.10...0.36).contains(h) ? 0.68 : 0.80
+        return Color(hue: h, saturation: 0.62, brightness: dim)
+    }
 
     static func panel(cornerRadius r: CGFloat) -> some View {
         let shape = RoundedRectangle(cornerRadius: r, style: .continuous)

@@ -16,7 +16,7 @@ enum Launcher {
 
 /// What the launcher can do in the rest of BaneySpaces.
 struct LauncherActions {
-    var focusApp: (pid_t) -> Void = { _ in }
+    var focusApp: (pid_t, Int?) -> Void = { _, _ in }
     var switchTo: (Int) -> Void = { _ in }
     var appsOn: (Int) -> [String] = { _ in [] }
     /// Workspaces each running app (by bundle path) has windows on.
@@ -43,7 +43,9 @@ final class LauncherController: NSObject, NSWindowDelegate {
 
     func toggle() { isShown ? hide() : show() }
 
-    func show(scope: LauncherModel.Scope = .root) {
+    /// `takeKeys: false` (opened by a link) shows it without taking the keyboard, so typing meant
+    /// for another app never lands in it; a click on it takes the keyboard.
+    func show(scope: LauncherModel.Scope = .root, takeKeys: Bool = true) {
         let p = panel ?? makePanel()
         panel = p
         model.prepare(scope: scope)
@@ -56,20 +58,33 @@ final class LauncherController: NSObject, NSWindowDelegate {
         // Drawn with the new list before it appears, never with the last one's.
         p.contentView?.layoutSubtreeIfNeeded()
         p.alphaValue = 1
-        p.makeKeyAndOrderFront(nil)
+        if takeKeys { p.makeKeyAndOrderFront(nil) } else { p.orderFrontRegardless(); watchClicksElsewhere() }
         p.displayIfNeeded()
         if let field = model.field { p.makeFirstResponder(field) }
     }
 
     func hide() {
+        if let m = clickMonitor { NSEvent.removeMonitor(m); clickMonitor = nil }
         guard let p = panel, p.isVisible else { return }
         p.orderOut(nil)
+    }
+
+    /// Without the keyboard, a launcher a link opened can't see Esc or lose focus; a click in any
+    /// other app puts it away instead.
+    private var clickMonitor: Any?
+    private func watchClicksElsewhere() {
+        if clickMonitor != nil { return }
+        clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            guard let self, self.panel?.isKeyWindow != true else { return }
+            self.hide()
+        }
     }
 
     /// Clicking anywhere else puts it away, like Spotlight.
     func windowDidResignKey(_ notification: Notification) {
         if !model.alertOpen { hide() }
     }
+
 
     private func makePanel() -> LauncherPanel {
         let p = LauncherPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -106,8 +121,10 @@ struct LauncherItem: Identifiable {
     var title: String
     var subtitle: String = ""
     var icon: Icon
-    /// Shown at the right: "Install", "Open", a workspace number.
+    /// Shown at the right: "Install", "Installed", "Failed".
     var badge: String = ""
+    /// Workspaces shown at the right as colored numbers.
+    var workspaces: [Int] = []
     var state = State.idle
     var run: () -> Void
     /// ⌘↩: show in Finder, or a cask's web page.
@@ -312,14 +329,30 @@ final class LauncherModel: ObservableObject {
             .sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.0.name < $1.0.name }
             .map(\.0)
         }
-        return matches.prefix(limit).map { appItem($0, section: "Apps") }
+        // An app open on more than one workspace also gets a row for each, to pick which.
+        return matches.prefix(limit).flatMap { a -> [LauncherItem] in
+            let on = running[a.path] ?? []
+            let main = appItem(a, section: "Apps")
+            guard on.count > 1, !q.isEmpty else { return [main] }
+            return [main] + on.map { n in
+                LauncherItem(id: "app:\(a.path):\(n)", section: "Apps", title: "\(a.name) on Workspace \(n)",
+                             subtitle: "The \(a.name) windows there", icon: .file(a.path), workspaces: [n],
+                             run: { [weak self] in self?.focus(a, on: n) }, reveal: URL(fileURLWithPath: a.path))
+            }
+        }
+    }
+
+    private func focus(_ a: AppEntry, on n: Int) {
+        close()
+        guard let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleURL?.path == a.path }) else { return open(a) }
+        actions.focusApp(app.processIdentifier, n)
     }
 
     private func appItem(_ a: AppEntry, section: String) -> LauncherItem {
         let on = running[a.path] ?? []
         let where_ = on.isEmpty ? a.folder : on.count == 1 ? "Open on workspace \(on[0])" : "Open on workspaces \(on.map(String.init).joined(separator: ", "))"
         return LauncherItem(id: "app:\(a.path)", section: section, title: a.name, subtitle: where_, icon: .file(a.path),
-                            badge: on.isEmpty ? "" : on.map(String.init).joined(separator: "·"),
+                            workspaces: on,
                             run: { [weak self] in self?.open(a) }, reveal: URL(fileURLWithPath: a.path))
     }
 
@@ -330,7 +363,7 @@ final class LauncherModel: ObservableObject {
         UserDefaults.standard.set(recents.paths, forKey: "launcherRecents")
         let url = URL(fileURLWithPath: a.path)
         if let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleURL?.path == a.path }), running[a.path] != nil {
-            actions.focusApp(app.processIdentifier)
+            actions.focusApp(app.processIdentifier, nil)
             return
         }
         let config = NSWorkspace.OpenConfiguration()
@@ -384,7 +417,7 @@ final class LauncherModel: ObservableObject {
             out.append(LauncherItem(id: "upd:brew", section: "Update", title: "Update Homebrew Apps",
                                     subtitle: "Runs brew update and brew upgrade in Terminal, where you can watch it",
                                     icon: .symbol("shippingbox"),
-                                    run: { [weak self] in self?.close(); Brew.openInTerminal("brew update && brew upgrade") }))
+                                    run: { [weak self] in self?.close(); Brew.openInTerminal(["brew", "update"], ["brew", "upgrade"]) }))
         }
         out.append(LauncherItem(id: "upd:macos", section: "Update", title: "Update macOS and App Store Apps",
                                 subtitle: "Opens Software Update", icon: .symbol("apple.logo"),
@@ -461,7 +494,7 @@ final class LauncherModel: ObservableObject {
             item.state = .failed
             item.subtitle = why + " Press ↩ to finish in Terminal."
             item.badge = "Failed"
-            item.run = { [weak self] in self?.close(); Brew.openInTerminal("brew install --cask \(c.token)") }
+            item.run = { [weak self] in self?.close(); Brew.openInTerminal(["brew", "install", "--cask", c.token]) }
             return item
         case nil: break
         }
@@ -471,9 +504,35 @@ final class LauncherModel: ObservableObject {
                     guard let self else { return }
                     if let path = Brew.appPath(for: c, installedApps: self.apps), let a = self.apps.first(where: { $0.path == path }) { self.open(a) }
                 }
-                : { [weak self] in self?.install(c) }
+                : { [weak self] in self?.confirmInstall(c) }
         }
         return item
+    }
+
+    /// Installing changes the Mac, so it is always asked, the same as removing.
+    private func confirmInstall(_ c: Cask) {
+        guard Brew.path != nil else { close(); return Brew.installHomebrew() }
+        guard ask("Install \(c.name)?", c.desc.isEmpty ? "Homebrew downloads and installs it from \(c.homepage.isEmpty ? "its maker" : c.homepage)."
+                  : "\(c.desc). Homebrew downloads it from \(c.homepage.isEmpty ? "its maker" : c.homepage).", button: "Install") else { return }
+        install(c)
+    }
+
+    /// A yes-or-no question over the launcher. The app you were in comes back afterwards.
+    private func ask(_ title: String, _ detail: String, button: String, destructive: Bool = false) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = detail
+        alert.addButton(withTitle: button)
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons[0].hasDestructiveAction = destructive
+        let previous = NSWorkspace.shared.frontmostApplication
+        alertOpen = true
+        NSApp.activate(ignoringOtherApps: true)
+        let answer = alert.runModal()
+        alertOpen = false
+        if let previous, previous.processIdentifier != getpid() { previous.activate(options: []) }
+        field?.window?.makeKey()
+        return answer == .alertFirstButtonReturn
     }
 
     private func install(_ c: Cask) {
@@ -518,18 +577,8 @@ final class LauncherModel: ObservableObject {
     }
 
     private func remove(_ c: Cask) {
-        let alert = NSAlert()
-        alert.messageText = "Remove \(c.name)?"
-        alert.informativeText = "Homebrew uninstalls the app. Its documents and settings stay."
-        alert.addButton(withTitle: "Remove")
-        alert.addButton(withTitle: "Cancel")
-        alert.buttons[0].hasDestructiveAction = true
-        alertOpen = true
-        NSApp.activate(ignoringOtherApps: true)
-        let answer = alert.runModal()
-        alertOpen = false
-        field?.window?.makeKey()
-        guard answer == .alertFirstButtonReturn else { return }
+        guard ask("Remove \(c.name)?", "Homebrew uninstalls the app. Its documents and settings stay.",
+                  button: "Remove", destructive: true) else { return }
         jobs[c.token] = .removing
         rebuild()
         Brew.run(["uninstall", "--cask", c.token]) { [weak self] ok, tail in
@@ -624,7 +673,8 @@ final class CaskCatalog {
         waiting = [done]
         done(.loading)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let cached = (try? Data(contentsOf: Self.cache)).flatMap { try? JSONDecoder().decode([Cask].self, from: $0) } ?? []
+            let cached = ((try? Data(contentsOf: Self.cache)).flatMap { try? JSONDecoder().decode([Cask].self, from: $0) } ?? [])
+                .filter { Cask.isSafeToken($0.token) }
             let age = (try? FileManager.default.attributesOfItem(atPath: Self.cache.path)[.modificationDate] as? Date)
                 .map { Date().timeIntervalSince($0) } ?? .infinity
             if !cached.isEmpty { self?.finish(cached, .ready) }
@@ -662,7 +712,7 @@ enum Brew {
     /// Tokens of the casks Homebrew has installed, read from its Caskroom folder.
     static func installedCasks() -> Set<String> {
         let rooms = ["/opt/homebrew/Caskroom", "/usr/local/Caskroom"]
-        return Set(rooms.flatMap { (try? FileManager.default.contentsOfDirectory(atPath: $0)) ?? [] }.filter { !$0.hasPrefix(".") })
+        return Set(rooms.flatMap { (try? FileManager.default.contentsOfDirectory(atPath: $0)) ?? [] }.filter(Cask.isSafeToken))
     }
 
     /// The installed app a cask most likely put in Applications, matched by name.
@@ -671,16 +721,10 @@ enum Brew {
         return installedApps.first { names.contains($0.name.lowercased()) }?.path
     }
 
-    /// Cask tokens are lowercase letters, digits and - @ . only; anything else is refused before
-    /// it reaches a shell.
-    static func isSafe(_ token: String) -> Bool {
-        !token.isEmpty && token.allSatisfy { $0.isASCII && ($0.isLowercase || $0.isNumber || "-@._".contains($0)) }
-    }
-
     /// Runs brew without a terminal. An installer that wants a password fails here and is
     /// finished in Terminal instead. Calls back on the main thread with the last useful line.
     static func run(_ args: [String], done: @escaping (Bool, String) -> Void) {
-        guard let brew = path, args.dropFirst(2).allSatisfy(isSafe) else { return done(false, "not a Homebrew app name") }
+        guard let brew = path, args.dropFirst(2).allSatisfy(Cask.isSafeToken) else { return done(false, "not a Homebrew app name") }
         DispatchQueue.global(qos: .userInitiated).async {
             let p = Process()
             p.executableURL = URL(fileURLWithPath: brew)
@@ -712,8 +756,17 @@ enum Brew {
         }
     }
 
-    /// Opens Terminal running `command`, so its output and any password prompt are in view.
-    static func openInTerminal(_ command: String) {
+    /// Opens Terminal running brew commands, so their output and any password prompt are in
+    /// view. Only brew, and only with fixed words or names that passed `Cask.isSafeToken`, each
+    /// quoted, ever reaches the script.
+    static func openInTerminal(_ commands: [String]...) {
+        let allowed: Set<String> = ["brew", "install", "uninstall", "--cask", "update", "upgrade"]
+        guard commands.allSatisfy({ $0.first == "brew" && $0.allSatisfy { allowed.contains($0) || Cask.isSafeToken($0) } }) else { return }
+        let lines = commands.map { $0.map { "'\($0)'" }.joined(separator: " ") }.joined(separator: " && ")
+        runInTerminal(lines)
+    }
+
+    private static func runInTerminal(_ command: String) {
         let url = Spaces.folder.appendingPathComponent("launcher.command")
         let script = """
         #!/bin/zsh
@@ -731,7 +784,7 @@ enum Brew {
 
     /// Homebrew's own installer, from brew.sh, in Terminal where it can ask for a password.
     static func installHomebrew() {
-        openInTerminal(#"/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)""#)
+        runInTerminal(#"/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)""#)
     }
 }
 
@@ -924,6 +977,7 @@ struct LauncherView: View {
             Spacer(minLength: 8)
             if item.state == .working { ProgressView().controlSize(.small).scaleEffect(0.8) }
             if !item.badge.isEmpty { badge(item.badge, strong: selected) }
+            HStack(spacing: 3) { ForEach(item.workspaces.prefix(5), id: \.self) { WorkspaceBadge(n: $0, size: 18) } }
         }
         .padding(.horizontal, 10)
         .frame(height: 46)

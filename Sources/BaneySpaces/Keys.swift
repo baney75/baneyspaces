@@ -142,15 +142,30 @@ enum SystemShortcuts {
     /// True while BaneySpaces holds ⌘Space for its launcher, Spotlight's shortcut switched off.
     static var spotlightFreed: Bool { UserDefaults.standard.bool(forKey: spotlightFreedKey) }
 
-    /// Hands ⌘Space to the launcher. Recorded only if Spotlight had it, so giving it back never
-    /// turns on a shortcut the person had turned off. Slow; call it off the main thread.
-    static func freeSpotlight() {
-        guard !spotlightFreed, enabled(spotlight.id) else { return }
-        UserDefaults.standard.set(true, forKey: spotlightFreedKey)
-        write([spotlight], enabled: false)
+    /// Taking and giving back run one at a time, in order, so a quick on-off can't leave
+    /// Spotlight switched off with nothing recorded to turn it back on.
+    static let spotlightQueue = DispatchQueue(label: "com.baney.baneyspaces.spotlight")
+
+    /// True while macOS opens Spotlight on ⌘Space. Someone who moved Spotlight to other keys or
+    /// turned it off already left ⌘Space free.
+    static var spotlightOwnsCmdSpace: Bool {
+        guard enabled(spotlight.id) else { return false }
+        let all = CFPreferencesCopyAppValue("AppleSymbolicHotKeys" as CFString, domain) as? [String: Any]
+        let params = ((all?[String(spotlight.id)] as? [String: Any])?["value"] as? [String: Any])?["parameters"] as? [Int]
+        guard let params, params.count >= 3 else { return true }
+        return params[1] == spotlight.code && params[2] == spotlight.mods
     }
 
-    /// Gives ⌘Space back to Spotlight, if `freeSpotlight()` took it.
+    /// Hands ⌘Space to the launcher. Only Spotlight on ⌘Space is switched off, and only that is
+    /// recorded, so giving it back never turns on a shortcut the person had turned off or moved.
+    /// Slow; run it on `spotlightQueue`.
+    static func freeSpotlight() {
+        guard !spotlightFreed, spotlightOwnsCmdSpace else { return }
+        write([spotlight], enabled: false)
+        UserDefaults.standard.set(true, forKey: spotlightFreedKey)
+    }
+
+    /// Gives ⌘Space back to Spotlight, if `freeSpotlight()` took it. Run it on `spotlightQueue`.
     static func restoreSpotlight() {
         guard spotlightFreed else { return }
         write([spotlight], enabled: true)

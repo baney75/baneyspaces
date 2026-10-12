@@ -25,7 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private lazy var switcher = WorkspaceSwitcher(spaces: spaces)
     private lazy var launcher: LauncherController = {
         var a = LauncherActions()
-        a.focusApp = { [weak self] pid in self?.spaces.focusApp(pid) }
+        a.focusApp = { [weak self] pid, n in self?.spaces.focusApp(pid, on: n) }
         a.switchTo = { [weak self] n in self?.run { $0.switchTo(n) } }
         a.appsOn = { [weak self] n in self?.spaces.apps(on: n) ?? [] }
         a.workspacesByApp = { [weak self] in
@@ -92,7 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // shortcuts back on before the app's settings are deleted.
         if CommandLine.arguments.contains("--restore-shortcuts") {
             SystemShortcuts.restore()
-            SystemShortcuts.restoreSpotlight()
+            SystemShortcuts.spotlightQueue.sync { SystemShortcuts.restoreSpotlight() }
             exit(0)
         }
         // `BaneySpaces --restore-dock`: the uninstaller's way to put the macOS Dock back if the
@@ -180,7 +180,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dock.stop(restoreSystemDock: true)
         if started { spaces.restoreAll() }
         // ⌘Space goes back to Spotlight while BaneySpaces isn't running; the next launch takes it again.
-        SystemShortcuts.restoreSpotlight()
+        SystemShortcuts.spotlightQueue.sync { SystemShortcuts.restoreSpotlight() }
         spaces.flushWrites()
     }
 
@@ -250,7 +250,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// apps until then. Picking a different modifier in setup re-registers them.
     private func registerShortcuts() {
         hotkeys.removeAll()
-        if Launcher.onCmdSpace, SystemShortcuts.spotlightFreed {
+        if Launcher.onCmdSpace, !SystemShortcuts.spotlightOwnsCmdSpace {
             hotkeys.register(keyCode: kVK_Space, modifiers: cmdKey) { [weak self] in self?.launcher.toggle() }
         }
         guard started else { return }
@@ -392,7 +392,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func setLauncherOnCmdSpace(_ on: Bool) {
         Launcher.onCmdSpace = on
         if setup.model.launcherOnCmdSpace != on { setup.model.launcherOnCmdSpace = on }
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        SystemShortcuts.spotlightQueue.async { [weak self] in
             if on { SystemShortcuts.freeSpotlight() } else { SystemShortcuts.restoreSpotlight() }
             DispatchQueue.main.async { self?.registerShortcuts() }
         }
@@ -481,7 +481,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case "restore": run { _ in bringBack() }
         case "viewer": run { _ in viewer.toggle() }
         // Opening it changes nothing on its own, so a web page may: every action inside needs a key press.
-        case "launcher": launcher.show(scope: LauncherModel.Scope(rawValue: url.lastPathComponent) ?? .root)
+        case "launcher": launcher.show(scope: LauncherModel.Scope(rawValue: url.lastPathComponent) ?? .root, takeKeys: false)
         case "dock":
             // Turning it off is always allowed. Showing it or turning it on (which hides the
             // macOS Dock) is for checks, only when `defaults write com.baney.baneyspaces
