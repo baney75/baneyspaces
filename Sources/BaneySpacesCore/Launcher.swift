@@ -161,7 +161,9 @@ public enum WindowCycle {
 /// very short; a hold counts only once the key has been down `threshold` seconds, and only
 /// once per press.
 public struct TabHold: Sendable {
-    public static let threshold: Double = 0.35
+    /// Well past macOS's default repeat delay (about 0.375 s), so a slow, deliberate tap is still
+    /// a tap: a lower value turned careful taps in the window bar into "go back".
+    public static let threshold: Double = 0.6
     private var pressedAt: Double?
     private var fired = false
 

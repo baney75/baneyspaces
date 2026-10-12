@@ -103,10 +103,11 @@ final class TabHoldTests: XCTestCase {
         var h = TabHold()
         h.press(at: 10)
         XCTAssertFalse(h.repeated(at: 10.05)) // a very short repeat delay isn't a hold yet
-        XCTAssertTrue(h.repeated(at: 10.4))
-        XCTAssertFalse(h.repeated(at: 10.5)) // still the same press
+        XCTAssertFalse(h.repeated(at: 10.4))  // a slow tap past macOS's default repeat delay isn't either
+        XCTAssertTrue(h.repeated(at: 10.62))
+        XCTAssertFalse(h.repeated(at: 10.8))  // still the same press
         h.press(at: 11)
-        XCTAssertTrue(h.repeated(at: 11.36))
+        XCTAssertTrue(h.repeated(at: 11.61))
     }
 
     func testRepeatWithoutAPressNeverFires() {
