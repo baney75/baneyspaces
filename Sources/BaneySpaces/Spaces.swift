@@ -588,7 +588,9 @@ final class Spaces {
         if let w = windows[id], w.isMinimized { w.unminimize() }
         // Already here: raise it directly. A switch would first record the window in front (the
         // app you're leaving, since docks and switchers never take focus) and land back on it.
-        if n == model.current, let w = windows[id], saved.frames[id] == nil {
+        if n == model.current, let w = windows[id] {
+            // A window still parked off screen here (an earlier restore didn't land) comes back first.
+            if let frame = saved.frames[id], restore(w, to: frame, screens: Windows.screens()) { saved.frames[id] = nil }
             stay(on: w)
             persist()
             return

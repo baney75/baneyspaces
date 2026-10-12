@@ -161,8 +161,9 @@ enum SystemShortcuts {
     /// Slow; run it on `spotlightQueue`.
     static func freeSpotlight() {
         guard !spotlightFreed, spotlightOwnsCmdSpace else { return }
-        write([spotlight], enabled: false)
+        // Recorded first: a crash mid-write still leaves a note to turn Spotlight back on.
         UserDefaults.standard.set(true, forKey: spotlightFreedKey)
+        write([spotlight], enabled: false)
     }
 
     /// Gives ⌘Space back to Spotlight, if `freeSpotlight()` took it. Run it on `spotlightQueue`.

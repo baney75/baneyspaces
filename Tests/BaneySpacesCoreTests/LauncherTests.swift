@@ -71,6 +71,14 @@ final class AppSwitchListTests: XCTestCase {
         XCTAssertEqual(list.map(\.isSplit), [false, true, true])
     }
 
+    func testOneTapReachesThePreviousAppWhenTheFrontAppIsSplit() {
+        // In Ghostty (1) on workspace 1, Ghostty also on 4; Mail (2) was used before.
+        let windows: [(app: Int32, workspace: Int)] = [(1, 1), (1, 4), (2, 2), (3, 5)]
+        let list = AppSwitchList.make(windows: windows, appOrder: [1, 2, 3], workspaceOrder: [1, 2, 4], lastWorkspace: [1: 1])
+        XCTAssertEqual(list.map(\.app), [1, 2, 1, 3])
+        XCTAssertEqual(list.map(\.workspace), [1, 2, 4, 5])
+    }
+
     func testAppsNeverBroughtForwardStillAppear() {
         let list = AppSwitchList.make(windows: [(7, 3), (8, 5)], appOrder: [8], workspaceOrder: [], lastWorkspace: [:])
         XCTAssertEqual(list.map(\.app), [8, 7])

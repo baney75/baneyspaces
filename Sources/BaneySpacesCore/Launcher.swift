@@ -130,7 +130,7 @@ public enum AppSwitchList {
         }
         let apps = appOrder.filter { counts[$0] != nil } + seen.filter { !appOrder.contains($0) }
         func rank(_ n: Int) -> Int { workspaceOrder.firstIndex(of: n) ?? (100 + n) }
-        return apps.flatMap { app -> [Entry] in
+        let grouped = apps.map { app -> [Entry] in
             let byWorkspace = counts[app]!
             let order = byWorkspace.keys.sorted { a, b in
                 if a == lastWorkspace[app] { return true }
@@ -139,6 +139,10 @@ public enum AppSwitchList {
             }
             return order.map { Entry(app: app, workspace: $0, windows: byWorkspace[$0]!, isSplit: byWorkspace.count > 1) }
         }
+        // One tap of ⌘Tab goes back to the previous app, as on macOS: the front app's copies on
+        // other workspaces wait until after that app instead of sitting between them.
+        guard grouped.count > 1, grouped[0].count > 1 else { return grouped.flatMap { $0 } }
+        return [grouped[0][0]] + grouped[1] + grouped[0].dropFirst() + grouped.dropFirst(2).flatMap { $0 }
     }
 }
 
