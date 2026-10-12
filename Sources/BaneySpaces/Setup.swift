@@ -14,6 +14,8 @@ final class SetupModel: ObservableObject {
     @Published var viewerKeys = MissionControlKeys.enabled
     @Published var cmdTab = MissionControlKeys.cmdTabEnabled
     var onCmdTabChange: ((Bool) -> Void)?
+    @Published var workspaceDock = WorkspaceDock.enabled
+    var onWorkspaceDockChange: ((Bool) -> Void)?
     @Published var aeroSpaceRunning = SetupModel.isAeroSpaceRunning
     @Published var loginNeedsApproval = SMAppService.mainApp.status == .requiresApproval
     @Published var screenshotsFreed = SystemShortcuts.hasFreed
@@ -156,6 +158,11 @@ final class SetupModel: ObservableObject {
         onCmdTabChange?(on)
     }
 
+    func setWorkspaceDock(_ on: Bool) {
+        workspaceDock = on
+        onWorkspaceDockChange?(on)
+    }
+
     func setOpenAtLogin(_ on: Bool) {
         UserDefaults.standard.set(true, forKey: "loginItemChosen")
         do {
@@ -276,6 +283,9 @@ struct SetupView: View {
                 }
                 Toggle("⌘Tab switches workspaces instead of apps", isOn: Binding(get: { model.cmdTab }, set: { model.setCmdTab($0) }))
                 Text("Hold ⌘ and tap Tab to step through your workspaces, most recent first; let go to go there. ⌘⇧Tab steps back and Esc cancels. Switch apps from the Dock or Spotlight instead.")
+                    .font(.callout).foregroundStyle(.secondary)
+                Toggle("Workspace Dock in place of the macOS Dock", isOn: Binding(get: { model.workspaceDock }, set: { model.setWorkspaceDock($0) }))
+                Text("Rest the pointer on the bottom edge of the screen to see your workspaces, each with its apps; click one to go there. The macOS Dock stays out of sight while this is on and comes back as it was when you turn it off or quit BaneySpaces.")
                     .font(.callout).foregroundStyle(.secondary)
             }
 

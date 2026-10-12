@@ -73,6 +73,19 @@ workspaces in the same 3×3 grid as the number keys, with every window's app and
 
 The menu bar icon shows the number of the workspace you're on, and its menu has the same view.
 
+## Workspace Dock
+
+Turn on **Workspace Dock** in setup or the menu bar menu and the Dock shows your workspaces
+instead of your apps. Rest the pointer on the bottom edge of the screen and it slides up: a
+tile for each workspace in use, plus the one you're on, each with its apps and its number.
+Click a tile to go there; hover it to see what's on it; right-click it to send the front window
+there. The last button opens the overview of all nine.
+
+While it's on, the macOS Dock stays out of sight. BaneySpaces saves the Dock's own hiding
+settings first and puts them back exactly when you turn the Workspace Dock off or quit. If
+BaneySpaces ever crashed with it on, open BaneySpaces again (or run the uninstaller) and the
+Dock comes back; by hand it's `defaults write com.apple.dock autohide-delay -float 0.5; killall Dock`.
+
 ## Your windows are safe
 
 A window on another workspace isn't minimized, closed or moved. BaneySpaces hides its app, the
