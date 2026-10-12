@@ -117,6 +117,32 @@ Spotlight. Turning that off gives ⌘Space back to Spotlight, and so does quitti
   No Homebrew yet? The first row installs it, in Terminal.
 - **Remove** lists apps Homebrew installed and asks before uninstalling one.
 - **⌘Return** shows an app in Finder, or a Homebrew app's web page.
+- **Search the web and ask agents.** Type anything and the launcher offers your search engine,
+  an image search and your agent. Start with **?** to ask your agent (Claude unless you pick
+  another in setup); it opens a new chat in your default browser with the question asked.
+- **Bangs**, as on DuckDuckGo: `!yt cats`, `!i sunsets`, `!w Erie`, `!gh baneyspaces`,
+  `!claude why is the sky blue`, or the bang at the end (`cats !yt`). Type `!` to see them all;
+  Tab fills one in. A bang that isn't built in goes to DuckDuckGo, which knows thousands.
+  Agents: `!claude`, `!chatgpt`, `!pplx`, `!grok`, `!copilot`, `!lechat`.
+
+### Your own bangs
+
+Add them in setup under **Find and install apps › Your bangs**: a trigger, a name, and the
+search address with `{q}` where the words go. One with a built-in's trigger replaces it.
+
+Scripts and agents can manage them from a terminal:
+
+```sh
+B=~/Applications/BaneySpaces.app/Contents/MacOS/BaneySpaces
+$B --bangs add jira Jira 'https://acme.atlassian.net/browse/{q}'
+$B --bangs add ask Claude 'https://claude.ai/new?q={q}' --agent
+$B --bangs list
+$B --bangs remove jira
+```
+
+They live in `~/Library/Application Support/BaneySpaces/bangs.json`
+(`[{"trigger": "jira", "name": "Jira", "url": "https://…/{q}", "agent": false}]`). Only
+`https`, `http` and Apple Maps addresses are accepted.
 
 ## Your windows are safe
 

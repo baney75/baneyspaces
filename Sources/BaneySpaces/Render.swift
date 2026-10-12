@@ -154,6 +154,12 @@ enum Render {
         launcher.query = "ma"
         guard save(LauncherView(model: launcher).frame(height: 500).padding(30).background(Color(white: 0.3)), "launcher-search.png", CGSize(width: 760, height: 0)) else { return 1 }
 
+        // Bangs: typing "!", then a question for the default agent.
+        launcher.query = "!y"
+        guard save(LauncherView(model: launcher).frame(height: 500).padding(30).background(Color(white: 0.3)), "launcher-bangs.png", CGSize(width: 760, height: 0)) else { return 1 }
+        launcher.query = "sunset photos"
+        guard save(LauncherView(model: launcher).frame(height: 500).padding(30).background(Color(white: 0.3)), "launcher-web.png", CGSize(width: 760, height: 0)) else { return 1 }
+
         // The first thing a new person sees: permission not granted yet.
         let fresh = SetupModel()
         fresh.trusted = false

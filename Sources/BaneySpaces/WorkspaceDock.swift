@@ -90,6 +90,8 @@ final class WorkspaceDock {
     /// Hidden because the pointer moved away while still on the bottom edge: it comes back only
     /// after the pointer leaves the edge, so a pointer parked there can't make it bob up and down.
     private var needsRearm = false
+    /// The screen whose edge that was; another screen's edge is fresh.
+    private var rearmScreen: NSScreen?
 
     init(spaces: Spaces) {
         self.spaces = spaces
@@ -153,6 +155,7 @@ final class WorkspaceDock {
             if keep { awaySince = nil; return }
             if awaySince == nil { awaySince = Date() }
             if Date().timeIntervalSince(awaySince!) > 0.4 {
+                rearmScreen = p.screen
                 hide()
                 needsRearm = true
             }
@@ -165,7 +168,8 @@ final class WorkspaceDock {
                 && !NSScreen.screens.contains { $0 != s && $0.frame.contains(NSPoint(x: mouse.x, y: s.frame.minY - 1)) }
         }
         guard let screen, NSEvent.pressedMouseButtons == 0 else { edgeSince = nil; needsRearm = false; return }
-        if needsRearm { edgeSince = nil; return }
+        if needsRearm, screen == rearmScreen { edgeSince = nil; return }
+        needsRearm = false
         // Only under the dock, as the macOS Dock does; the corners and the rest of the edge stay free.
         let width = panel?.frame.width ?? 560
         guard abs(mouse.x - screen.frame.midX) <= width / 2 + 24 else { edgeSince = nil; return }
@@ -233,6 +237,8 @@ final class WorkspaceDock {
         p.isOpaque = false
         p.backgroundColor = .clear
         p.hasShadow = false
+        // The window list's full titles show on hover though BaneySpaces is never the active app.
+        p.allowsToolTipsWhenApplicationIsInactive = true
         // Not over full-screen apps: a video's controls or a game sit along that edge.
         p.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
         p.contentView = FirstClickHostingView(rootView: DockView(model: model).environment(\.colorScheme, .dark))

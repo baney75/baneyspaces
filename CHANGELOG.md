@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Bangs, web search and agents in the launcher.** `!yt cats`, `!i sunsets`, `cats !yt`, and
+  about 35 more built in; any other bang goes to DuckDuckGo. Plain words offer your search
+  engine, images and your agent; `?` asks your agent (Claude, ChatGPT, Perplexity, Grok,
+  Copilot or Le Chat, picked in setup) in a new browser tab with the question filled in.
+  Add your own bangs in setup, or from a script or agent with `BaneySpaces --bangs add`.
+
 - **Pick a window, not just an app.** In ⌘Tab, hold Tab on an app with more than one window to
   open its window bar: every window of that app, on any workspace, labeled with its title (a
   browser's tab, a player's video) and its workspace color. Tab through it and let go of ⌘ to go

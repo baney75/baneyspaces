@@ -93,7 +93,11 @@ final class WorkspaceSwitcher {
                 let w = bar.windows[bar.selected]
                 // Where it is now: it may have moved, or closed, since the bar opened.
                 spaces.refresh()
-                guard let n = spaces.model.workspace(of: w.id) else { return Trace.log("cmdTab commit window gone") }
+                guard let n = spaces.model.workspace(of: w.id) else {
+                    // Closed meanwhile: the app is still the choice.
+                    Trace.log("cmdTab commit window gone")
+                    return spaces.focusApp(bar.pid)
+                }
                 Trace.log("cmdTab commit window on=\(n) current=\(spaces.model.current)")
                 noteActivated(bar.pid)
                 return spaces.focus(w.id, on: n)
@@ -125,14 +129,15 @@ final class WorkspaceSwitcher {
         for n in [app.workspace] + Workspaces.range.filter({ $0 != app.workspace }) {
             // The window used last on each workspace leads that workspace's group.
             let last = spaces.model.lastFocused[n]
-            let mine = spaces.entries(on: n).filter { $0.pid == app.pid }.sorted { a, _ in a.id == last }
+            let mine = spaces.entries(on: n).filter { $0.pid == app.pid }.sorted { $0.id == last && $1.id != last }
             for e in mine { windows.append(.init(id: e.id, title: WindowTitle.clean(e.title, app: e.app), workspace: n)) }
         }
         guard windows.count > 1 else { return }
         Trace.log("cmdTab window bar opened windows=\(windows.count)")
         // The first one is the window that tapping would land on; a tap from here moves on.
         // For the app you're in, its first window is the one in front, so start on the next one.
-        model.windowBar = .init(pid: app.pid, name: app.name, icon: app.icon, windows: windows, selected: model.selected == 0 ? 1 : 0)
+        let inFront = NSWorkspace.shared.frontmostApplication?.processIdentifier == app.pid && app.workspace == spaces.model.current
+        model.windowBar = .init(pid: app.pid, name: app.name, icon: app.icon, windows: windows, selected: inFront ? 1 : 0)
         relayout()
     }
 

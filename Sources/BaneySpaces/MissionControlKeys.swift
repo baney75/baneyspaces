@@ -184,12 +184,13 @@ final class MissionControlKeys {
             let mods = event.flags.intersection([.maskControl, .maskCommand, .maskAlternate])
             if mods == .maskCommand {
                 // A held Tab that wasn't part of a gesture (⌘ pressed after Tab) starts nothing.
-                if isRepeat && !inGesture { return Unmanaged.passUnretained(event) }
+                if isRepeat && !inGesture { return nil }
                 if type == .keyDown {
                     inGesture = true
                     let back = event.flags.contains(.maskShift)
-                    // When the key was pressed, not when the main thread gets to it.
-                    let time = Double(event.timestamp) / 1_000_000_000
+                    // When the key arrived here, not when the main thread gets to it. This thread
+                    // never waits on the main one, so the reading is close to the press.
+                    let time = ProcessInfo.processInfo.systemUptime
                     DispatchQueue.main.async { me.onCmdTab(!back, isRepeat, time) }
                 }
                 return nil
@@ -198,6 +199,7 @@ final class MissionControlKeys {
         if inGesture, code == escapeKey {
             if type == .keyDown {
                 inGesture = false
+                swallowTab = true
                 DispatchQueue.main.async { me.onCancel() }
             }
             return nil
