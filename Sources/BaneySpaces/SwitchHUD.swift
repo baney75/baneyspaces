@@ -13,11 +13,15 @@ final class SwitchHUD {
     private var hideWork: DispatchWorkItem?
     private let model = HUDModel()
 
-    func show(_ n: Int) {
+    /// `occupied` lights the workspaces that have windows; `icons` are the apps on `n`.
+    func show(_ n: Int, occupied: Set<Int> = [], icons: [NSImage] = []) {
         guard SwitchHUD.enabled else { return }
         model.current = n
+        model.occupied = occupied
+        model.icons = icons
         let p = panel ?? makePanel()
         panel = p
+        if let host = p.contentView { host.layoutSubtreeIfNeeded(); p.setContentSize(host.fittingSize) }
         if let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main {
             let size = p.frame.size
             p.setFrameOrigin(NSPoint(x: screen.frame.midX - size.width / 2, y: screen.frame.minY + screen.frame.height * 0.16))
@@ -51,35 +55,58 @@ final class SwitchHUD {
     }
 }
 
-private final class HUDModel: ObservableObject {
+final class HUDModel: ObservableObject {
     @Published var current = 1
+    @Published var occupied: Set<Int> = []
+    @Published var icons: [NSImage] = []
 }
 
-private struct HUDView: View {
+/// The 3×3 grid as the number keys lay it out: the workspace you went to filled in its own
+/// color with its number, workspaces with windows lit, empty ones faint. Below, its name and apps.
+struct HUDView: View {
     @ObservedObject var model: HUDModel
-    private let red = Color(red: 0.91, green: 0.26, blue: 0.29)
 
     var body: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 12) {
             VStack(spacing: 5) {
                 ForEach(0..<3, id: \.self) { row in
                     HStack(spacing: 5) {
-                        ForEach(1...3, id: \.self) { col in
-                            let n = row * 3 + col
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(n == model.current ? red : Color.white.opacity(0.16))
-                                .frame(width: 22, height: 16)
+                        ForEach(1...3, id: \.self) { col in cell(row * 3 + col) }
+                    }
+                }
+            }
+            HStack(spacing: 6) {
+                Text("Workspace \(model.current)").font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
+                if model.icons.isEmpty {
+                    Text("Empty").font(.system(size: 12, weight: .medium)).foregroundStyle(.white.opacity(0.45))
+                } else {
+                    HStack(spacing: -3) {
+                        ForEach(Array(model.icons.enumerated()), id: \.offset) { _, icon in
+                            Image(nsImage: icon).resizable().frame(width: 18, height: 18)
                         }
                     }
                 }
             }
-            Text("\(model.current)")
-                .font(.system(size: 30, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
+            .frame(height: 18)
         }
-        .padding(18)
-        .background(RoundedRectangle(cornerRadius: 20).fill(Color.black.opacity(0.62)))
-        .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(Color.white.opacity(0.1)))
+        .padding(.horizontal, 18).padding(.vertical, 16)
+        .background(Chrome.panel(cornerRadius: 22))
+        .padding(28)
+        .environment(\.colorScheme, .dark)
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel("Workspace \(model.current)")
+    }
+
+    private func cell(_ n: Int) -> some View {
+        let on = n == model.current
+        let used = model.occupied.contains(n)
+        return RoundedRectangle(cornerRadius: 7, style: .continuous)
+            .fill(on ? Chrome.workspace(n) : Color.white.opacity(used ? 0.2 : 0.07))
+            .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .strokeBorder(on ? Color.white.opacity(0.35) : Color.white.opacity(used ? 0.12 : 0.05), lineWidth: 1))
+            .overlay(Text("\(n)").font(.system(size: on ? 17 : 11, weight: .bold, design: .rounded))
+                .foregroundStyle(.white.opacity(on ? 1 : used ? 0.6 : 0.25)))
+            .frame(width: 40, height: 30)
+            .shadow(color: on ? Chrome.workspace(n).opacity(0.6) : .clear, radius: 8)
     }
 }

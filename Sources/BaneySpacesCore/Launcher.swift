@@ -155,3 +155,46 @@ public enum WindowCycle {
         return windows[(i + 1) % windows.count]
     }
 }
+
+/// Holding Tab in the ⌘Tab switcher (instead of tapping it) opens or closes the window bar.
+/// macOS sends repeats while a key is held, after the person's own repeat delay, which can be
+/// very short; a hold counts only once the key has been down `threshold` seconds, and only
+/// once per press.
+public struct TabHold: Sendable {
+    /// Well past macOS's default repeat delay (about 0.375 s), so a slow, deliberate tap is still
+    /// a tap: a lower value turned careful taps in the window bar into "go back".
+    public static let threshold: Double = 0.6
+    private var pressedAt: Double?
+    private var fired = false
+
+    public init() {}
+
+    /// A fresh Tab press (not a repeat).
+    public mutating func press(at t: Double) {
+        pressedAt = t
+        fired = false
+    }
+
+    /// A repeat of the held Tab. True exactly once per press, when it has been held long enough.
+    public mutating func repeated(at t: Double) -> Bool {
+        guard let pressedAt, !fired, t - pressedAt >= Self.threshold else { return false }
+        fired = true
+        return true
+    }
+}
+
+/// Window titles as people read them: "Inbox - Proton Mail - Helium" is "Inbox - Proton Mail"
+/// once you already know it's Helium.
+public enum WindowTitle {
+    public static func clean(_ title: String, app: String) -> String {
+        let t = title.trimmingCharacters(in: .whitespaces)
+        guard !app.isEmpty else { return t }
+        for sep in [" - ", " — ", " – ", " | "] {
+            let suffix = sep + app
+            if t.count > suffix.count, t.lowercased().hasSuffix(suffix.lowercased()) {
+                return String(t.dropLast(suffix.count)).trimmingCharacters(in: .whitespaces)
+            }
+        }
+        return t
+    }
+}

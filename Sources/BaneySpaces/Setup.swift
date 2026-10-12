@@ -1,4 +1,5 @@
 import AppKit
+import BaneySpacesCore
 import ApplicationServices
 import ServiceManagement
 import SwiftUI
@@ -16,7 +17,17 @@ final class SetupModel: ObservableObject {
     var onCmdTabChange: ((MissionControlKeys.CmdTabMode) -> Void)?
     @Published var workspaceDock = WorkspaceDock.enabled
     var onWorkspaceDockChange: ((Bool) -> Void)?
+    @Published var dockEdge = WorkspaceDock.edge
+    var onDockEdgeChange: ((DockEdge) -> Void)?
     @Published var launcherOnCmdSpace = Launcher.onCmdSpace
+    @Published var searchEngine = Launcher.searchEngine { didSet { Launcher.searchEngine = searchEngine } }
+    @Published var agent = Launcher.agent { didSet { Launcher.agent = agent } }
+    @Published var customBangs = Launcher.readCustomBangs().bangs
+    @Published var newTrigger = ""
+    @Published var newName = ""
+    @Published var newURL = ""
+    @Published var newIsAgent = false
+    @Published var bangProblem: String?
     var onLauncherChange: ((Bool) -> Void)?
     @Published var aeroSpaceRunning = SetupModel.isAeroSpaceRunning
     @Published var loginNeedsApproval = SMAppService.mainApp.status == .requiresApproval
@@ -170,6 +181,34 @@ final class SetupModel: ObservableObject {
         onLauncherChange?(on)
     }
 
+    func addBang() {
+        if let why = Bangs.problem(trigger: newTrigger, name: newName, url: newURL) { bangProblem = why; return }
+        let bang = Bang(trigger: newTrigger, name: newName, url: newURL, agent: newIsAgent)
+        do {
+            customBangs = try Launcher.updateCustomBangs { Bangs.adding(bang, to: $0) ?? $0 }
+            newTrigger = ""; newName = ""; newURL = ""; newIsAgent = false
+            bangProblem = nil
+        } catch {
+            bangProblem = error.localizedDescription
+        }
+    }
+
+    func removeBang(_ trigger: String) {
+        do {
+            customBangs = try Launcher.updateCustomBangs { $0.filter { $0.trigger != trigger } }
+            bangProblem = nil
+        } catch {
+            bangProblem = error.localizedDescription
+        }
+    }
+
+    /// Bangs changed elsewhere (the file, an agent) show up when setup opens.
+    func reloadBangs() {
+        let read = Launcher.readCustomBangs()
+        customBangs = read.bangs
+        bangProblem = read.problems.first
+    }
+
     func setOpenAtLogin(_ on: Bool) {
         UserDefaults.standard.set(true, forKey: "loginItemChosen")
         do {
@@ -297,15 +336,37 @@ struct SetupView: View {
                     .fixedSize()
                 }
                 Text(cmdTabNote).font(.callout).foregroundStyle(.secondary)
-                Toggle("Workspace Dock in place of the macOS Dock", isOn: Binding(get: { model.workspaceDock }, set: { model.setWorkspaceDock($0) }))
-                Text("Rest the pointer on the bottom edge of the screen to see your workspaces, each with its apps; click one to go there. The macOS Dock stays out of sight while this is on and comes back as it was when you turn it off or quit BaneySpaces.")
+                HStack {
+                    Toggle("Workspace Dock in place of the macOS Dock", isOn: Binding(get: { model.workspaceDock }, set: { model.setWorkspaceDock($0) }))
+                    Spacer()
+                    Picker("", selection: Binding(get: { model.dockEdge }, set: { model.dockEdge = $0; model.onDockEdgeChange?($0) })) {
+                        ForEach(DockEdge.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }
+                    .labelsHidden().fixedSize().disabled(!model.workspaceDock)
+                }
+                Text("Rest the pointer on the dock's edge of the screen to see your workspaces, each with its apps; click one to go there. At the top it waits a moment longer, so reaching for the menu bar doesn't bring it up. The macOS Dock stays out of sight while this is on and comes back as it was when you turn it off or quit BaneySpaces.")
                     .font(.callout).foregroundStyle(.secondary)
             }
 
             step(done: true, title: "Find and install apps") {
                 Toggle("⌘Space opens the BaneySpaces launcher instead of Spotlight", isOn: Binding(get: { model.launcherOnCmdSpace }, set: { model.setLauncher($0) }))
-                Text("Search your apps and go straight to the workspace one is open on. Install apps from Homebrew and the App Store, remove them, update everything, and lock, sleep or restart, from one box. Turn this off to give ⌘Space back to Spotlight; the launcher stays in the menu bar menu and the Workspace Dock.")
+                Text("Open apps, install and remove them, search the web and ask an agent, from one box. Off gives ⌘Space back to Spotlight; the launcher stays in the menu bar and the Workspace Dock.")
                     .font(.callout).foregroundStyle(.secondary)
+                Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 6) {
+                    GridRow {
+                        Text("Search the web with")
+                        Picker("", selection: $model.searchEngine) { ForEach(Bangs.engines, id: \.trigger) { Text($0.name).tag($0.trigger) } }
+                            .labelsHidden().fixedSize()
+                    }
+                    GridRow {
+                        Text("Ask questions (?) with")
+                        Picker("", selection: $model.agent) { ForEach(Bangs.agents, id: \.trigger) { Text($0.name).tag($0.trigger) } }
+                            .labelsHidden().fixedSize()
+                    }
+                }
+                Text("Type !yt cats, !i sunsets or ? a question. Type ! to see every bang.")
+                    .font(.callout).foregroundStyle(.secondary)
+                DisclosureGroup("Your bangs\(model.customBangs.isEmpty ? "" : " (\(model.customBangs.count))")") { bangEditor.padding(.top, 6) }
             }
 
             if model.desktops > 1 {
@@ -339,6 +400,41 @@ struct SetupView: View {
         }
         .padding(24)
         .frame(width: 520)
+    }
+
+    /// Your own bangs: each a trigger, a name and an address with {q} where the words go.
+    private var bangEditor: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(model.customBangs, id: \.trigger) { b in
+                HStack {
+                    Text("!\(b.trigger)").monospaced().frame(width: 70, alignment: .leading)
+                    Text(b.name + (b.isAgent ? " (agent)" : "")).lineLimit(1)
+                    Text(b.url).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                    Spacer()
+                    Button { model.removeBang(b.trigger) } label: { Image(systemName: "minus.circle") }
+                        .buttonStyle(.borderless).help("Remove !\(b.trigger)")
+                }
+            }
+            HStack {
+                TextField("trigger", text: $model.newTrigger).frame(width: 70)
+                TextField("Name", text: $model.newName).frame(width: 100)
+                TextField("https://example.com/search?q={q}", text: $model.newURL)
+            }
+            .textFieldStyle(.roundedBorder)
+            HStack {
+                Toggle("It's an AI agent", isOn: $model.newIsAgent)
+                Spacer()
+                Button("Add Bang", action: model.addBang)
+            }
+            if let why = model.bangProblem { Text(why).font(.callout).foregroundStyle(.orange) }
+            Text(verbatim: "A bang with a built-in's trigger replaces it. Agents and scripts can add them too:")
+                .font(.caption).foregroundStyle(.secondary)
+            Text(verbatim: "~/Applications/BaneySpaces.app/Contents/MacOS/BaneySpaces --bangs add jira Jira 'https://acme.atlassian.net/browse/{q}'")
+                .font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
     }
 
     private var cmdTabNote: String {
@@ -399,6 +495,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     func show() {
         model.justEnabled = false
         model.reload()
+        model.reloadBangs()
         model.startWatching()
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)

@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- **The Workspace Dock can sit on any side:** bottom, left, right or top, from setup, the menu
+  bar menu, or a tile's right-click menu. It opens when the pointer rests on that edge under it,
+  the label and window strip open on its inner side, and a dock too long for the screen shrinks
+  to fit. At the top it sits under the menu bar and waits half a second, and never opens from
+  the corners, so reaching for a menu doesn't bring it up.
+- Holding Tab in ⌘Tab now takes 0.6 s; a slow tap in the window bar no longer drops back to
+  the apps.
+
+- **Bangs, web search and agents in the launcher.** `!yt cats`, `!i sunsets`, `cats !yt`, and
+  about 35 more built in; any other bang goes to DuckDuckGo. Plain words offer your search
+  engine, images and your agent; `?` asks your agent (Claude, ChatGPT, Perplexity, Grok,
+  Copilot or Le Chat, picked in setup) in a new browser tab with the question filled in.
+  Add your own bangs in setup, or from a script or agent with `BaneySpaces --bangs add`.
+
+- **Pick a window, not just an app.** In ⌘Tab, hold Tab on an app with more than one window to
+  open its window bar: every window of that app, on any workspace, labeled with its title (a
+  browser's tab, a player's video) and its workspace color. Tab through it and let go of ⌘ to go
+  to that window; hold Tab again to go back to the apps.
+- The switch HUD is redrawn: solid glass, the workspace you went to filled in its color with its
+  number, workspaces with windows lit, and its apps underneath.
+- The Workspace Dock appears only when the pointer rests on the bottom edge under it, and a
+  pointer parked on the edge beside it no longer makes it pop up and down.
+- In the Workspace Dock, rest the pointer on an app with more than one window and a strip of its
+  windows opens over it, each labeled with its title. Click one to go to it.
+
 - **Launcher** (menu bar menu, the Workspace Dock, or ⌘Space if you choose): one box to open,
   find, install, update and remove apps. Type to search apps, commands and workspaces at once,
   or Tab into a menu: Apps, Install, Remove, Update, System, Workspaces. Install searches

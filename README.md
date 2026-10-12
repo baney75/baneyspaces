@@ -78,10 +78,17 @@ The menu bar icon shows the number of the workspace you're on, and its menu has 
 Turn on **Workspace Dock** in setup or the menu bar menu and the Dock shows your workspaces
 instead of your apps. Rest the pointer on the bottom edge of the screen and it slides up: a
 tile for each workspace in use, plus the one you're on, each with its apps and its number.
-Click an app's icon to go straight to that app, or the tile around it to go to the workspace;
+Click an app's icon to go straight to that app (again for its next window), or the tile around
+it to go to the workspace. Rest on an app with several windows and a strip of them opens over
+it, each labeled with its title, to pick one;
 hover to see what's there; right-click to send the front window there. The dashed tile goes to
 the first empty workspace, the search button opens the launcher, and the last button opens the
 overview of all nine.
+
+It can sit on any side of the screen: choose **Bottom**, **Left**, **Right** or **Top** in setup,
+in the menu bar menu under **Workspace Dock Position**, or from a tile's right-click menu. At the
+top it sits under the menu bar and waits half a second before opening, so reaching for a menu
+doesn't bring it up. A dock with more tiles than the screen has room for shrinks to fit.
 
 While it's on, the macOS Dock stays out of sight. BaneySpaces saves the Dock's own hiding
 settings first and puts them back exactly when you turn the Workspace Dock off or quit. If
@@ -94,6 +101,10 @@ macOS's ⌘Tab only reaches apps on the workspace you're on. In setup, set **⌘
 **Apps on every workspace** and it steps through every app with a window, most recently used
 first, each marked with the workspace it's on. Let go of ⌘ and you're on that app's window,
 wherever it is. **Workspaces** steps through workspaces instead. ⌘⇧Tab steps back; Esc cancels.
+
+On an app with more than one window, **hold Tab** to open its window bar: each window by title
+(a browser's tab, a player's video) and workspace. Tab through it and let go to land on that
+window; hold Tab again to go back to the apps.
 
 ## Launcher
 
@@ -111,6 +122,32 @@ Spotlight. Turning that off gives ⌘Space back to Spotlight, and so does quitti
   No Homebrew yet? The first row installs it, in Terminal.
 - **Remove** lists apps Homebrew installed and asks before uninstalling one.
 - **⌘Return** shows an app in Finder, or a Homebrew app's web page.
+- **Search the web and ask agents.** Type anything and the launcher offers your search engine,
+  an image search and your agent. Start with **?** to ask your agent (Claude unless you pick
+  another in setup); it opens a new chat in your default browser with the question asked.
+- **Bangs**, as on DuckDuckGo: `!yt cats`, `!i sunsets`, `!w Erie`, `!gh baneyspaces`,
+  `!claude why is the sky blue`, or the bang at the end (`cats !yt`). Type `!` to see them all;
+  Tab fills one in. A bang that isn't built in goes to DuckDuckGo, which knows thousands.
+  Agents: `!claude`, `!chatgpt`, `!pplx`, `!grok`, `!copilot`, `!lechat`.
+
+### Your own bangs
+
+Add them in setup under **Find and install apps › Your bangs**: a trigger, a name, and the
+search address with `{q}` where the words go. One with a built-in's trigger replaces it.
+
+Scripts and agents can manage them from a terminal:
+
+```sh
+B=~/Applications/BaneySpaces.app/Contents/MacOS/BaneySpaces
+$B --bangs add jira Jira 'https://acme.atlassian.net/browse/{q}'
+$B --bangs add ask Claude 'https://claude.ai/new?q={q}' --agent
+$B --bangs list
+$B --bangs remove jira
+```
+
+They live in `~/Library/Application Support/BaneySpaces/bangs.json`
+(`[{"trigger": "jira", "name": "Jira", "url": "https://…/{q}", "agent": false}]`). Only
+`https`, `http` and Apple Maps addresses are accepted.
 
 ## Your windows are safe
 

@@ -74,10 +74,38 @@ final class WorkspaceDock {
         set { UserDefaults.standard.set(newValue, forKey: "workspaceDock") }
     }
 
+    /// Which side of the screen it lives on. Bottom unless chosen.
+    static var edge: DockEdge {
+        get { DockEdge(rawValue: UserDefaults.standard.string(forKey: "dockEdge") ?? "") ?? .bottom }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: "dockEdge") }
+    }
+
+    /// True while any app shows a menu: a window at the pop-up menu level is on screen.
+    static func otherMenuOpen() -> Bool {
+        let level = Int(CGWindowLevelForKey(.popUpMenuWindow))
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        return windows.contains { ($0[kCGWindowLayer as String] as? Int) == level && ($0[kCGWindowOwnerPID as String] as? Int32) != getpid() }
+    }
+
+    /// Moves it to another side; it comes up there the next time the pointer rests on that edge.
+    func setEdge(_ e: DockEdge) {
+        WorkspaceDock.edge = e
+        let screen = shownOn ?? NSScreen.main
+        hide(animated: false)
+        needsRearm = false
+        edgeSince = nil
+        spanLength = nil
+        model.edge = e
+        // Shown by a script, it stays shown, now on its new side.
+        if pinned, let screen { show(on: screen) }
+    }
+
     private let spaces: Spaces
     var onShowOverview: () -> Void = {}
     var onShowLauncher: () -> Void = {}
     var onTurnOff: () -> Void = {}
+    /// Picking a side from a tile's menu; the app delegate keeps setup and the menu in step.
+    var onSetEdge: (DockEdge) -> Void = { _ in }
     let model = DockModel()
     private var panel: DockPanel?
     private var timer: Timer?
@@ -87,15 +115,24 @@ final class WorkspaceDock {
     private(set) var isShown = false
     /// Shown by a script or a test, not the pointer: it stays until hidden the same way.
     private var pinned = false
+    /// Hidden because the pointer moved away while still on the bottom edge: it comes back only
+    /// after the pointer leaves the edge, so a pointer parked there can't make it bob up and down.
+    private var needsRearm = false
+    /// The screen whose edge that was; another screen's edge is fresh.
+    private var rearmScreen: NSScreen?
 
     init(spaces: Spaces) {
         self.spaces = spaces
         model.onPick = { [weak self] n in self?.spaces.switchTo(n, announce: false) }
         model.onSendHere = { [weak self] n in self?.spaces.moveFocused(to: n) }
         model.onFocusApp = { [weak self] pid, n in self?.spaces.focusApp(pid, on: n, cycle: true) }
+        model.onFocusWindow = { [weak self] id, n in self?.spaces.focus(id, on: n) }
+        // After SwiftUI has laid out the strip, so the new size is the real one.
+        model.onLayoutChange = { [weak self] in DispatchQueue.main.async { self?.resize() } }
         model.onShowOverview = { [weak self] in self?.hide(); self?.onShowOverview() }
         model.onShowLauncher = { [weak self] in self?.hide(); self?.onShowLauncher() }
         model.onTurnOff = { [weak self] in self?.onTurnOff() }
+        model.onSetEdge = { [weak self] e in self?.onSetEdge(e) }
         // A tile's right-click menu keeps the dock up while it's open.
         NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { [weak self] _ in
             self?.model.menuOpen = true
@@ -143,21 +180,34 @@ final class WorkspaceDock {
         if isShown {
             guard let p = panel else { return }
             // Hovering the dock or the edge below it keeps it up; a menu open from it too.
-            let keep = p.frame.insetBy(dx: -24, dy: -24).contains(mouse) || model.menuOpen
+            let screenFrame = (shownOn ?? p.screen)?.frame ?? p.frame
+            let keep = WorkspaceDock.edge.keepZone(dock: p.frame, screen: screenFrame).contains(mouse) || model.menuOpen
             if keep { awaySince = nil; return }
             if awaySince == nil { awaySince = Date() }
-            if Date().timeIntervalSince(awaySince!) > 0.4 { hide() }
+            if Date().timeIntervalSince(awaySince!) > 0.4 {
+                rearmScreen = p.screen
+                hide()
+                needsRearm = true
+            }
             return
         }
-        // Resting on the bottom edge, buttons up (not dragging a window or a selection).
-        // The bottom edge of a screen with no other screen below it, as the macOS Dock uses.
-        let screen = NSScreen.screens.first { s in
-            mouse.x >= s.frame.minX && mouse.x < s.frame.maxX && mouse.y >= s.frame.minY - 1 && mouse.y < s.frame.minY + 2
-                && !NSScreen.screens.contains { $0 != s && $0.frame.contains(NSPoint(x: mouse.x, y: s.frame.minY - 1)) }
-        }
-        guard let screen, NSEvent.pressedMouseButtons == 0 else { edgeSince = nil; return }
+        // Resting on the dock's edge, buttons up (not dragging a window or a selection), on an
+        // edge with no other screen beyond it, as the macOS Dock uses.
+        let edge = WorkspaceDock.edge
+        let screens = NSScreen.screens
+        let screen = edge.screen(at: mouse, among: screens.map(\.frame)).map { screens[$0] }
+        guard let screen, NSEvent.pressedMouseButtons == 0 else { edgeSince = nil; needsRearm = false; return }
+        if needsRearm, screen == rearmScreen { edgeSince = nil; return }
+        needsRearm = false
+        // Only along the dock itself; the corners and the rest of the edge stay free.
+        let length = spanLength ?? 560
+        guard edge.withinSpan(mouse, screen: screen.frame, visible: screen.visibleFrame, length: length) else { edgeSince = nil; return }
         if edgeSince == nil { edgeSince = Date() }
-        if Date().timeIntervalSince(edgeSince!) > 0.12 { show(on: screen) }
+        guard Date().timeIntervalSince(edgeSince!) > edge.dwell else { return }
+        // A menu open in another app (a menu bar title, a status item) is what the pointer is
+        // there for; the dock waits until it closes.
+        if WorkspaceDock.otherMenuOpen() { return }
+        show(on: screen)
     }
 
     /// `baneyspaces://dock/show`: for scripts and checks. It stays until `dock/hide`.
@@ -170,28 +220,40 @@ final class WorkspaceDock {
     private func show(on screen: NSScreen) {
         edgeSince = nil
         awaySince = nil
+        model.reset()
+        model.shown = true
+        let edge = WorkspaceDock.edge
+        model.maxLength = (edge.isVertical ? screen.visibleFrame.height : screen.frame.width) - 32
         model.load(from: spaces)
         let p = panel ?? makePanel()
         panel = p
         isShown = true
+        p.contentView?.layoutSubtreeIfNeeded()
         let size = p.contentView?.fittingSize ?? .zero
-        let up = NSRect(x: screen.frame.midX - size.width / 2, y: screen.frame.minY + 6, width: size.width, height: size.height)
-        p.setFrame(up.offsetBy(dx: 0, dy: -18), display: false)
+        let up = edge.frame(size: size, screen: screen.frame, visible: screen.visibleFrame)
+        shownOn = screen
+        spanLength = edge.isVertical ? size.height : size.width
+        p.setFrame(up.offsetBy(dx: edge.away.dx, dy: edge.away.dy), display: false)
         p.alphaValue = 0
         p.orderFrontRegardless()
-        NSAnimationContext.runAnimationGroup { ctx in
+        NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.18
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
             p.animator().setFrame(up, display: true)
             p.animator().alphaValue = 1
-        }
+        }, completionHandler: { [weak self] in
+            // The first layout may not have measured itself yet (a dock shrunk to fit settles a
+            // pass later); size to what it really is now.
+            self?.resize()
+        })
     }
 
     func hide(animated: Bool = true) {
         guard isShown, let p = panel else { return }
         isShown = false
-        model.hover = nil
-        let down = p.frame.offsetBy(dx: 0, dy: -18)
+        model.reset()
+        let away = WorkspaceDock.edge.away
+        let down = p.frame.offsetBy(dx: away.dx, dy: away.dy)
         guard animated else { p.orderOut(nil); return }
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.14
@@ -204,13 +266,22 @@ final class WorkspaceDock {
         })
     }
 
-    /// Tiles come and go as workspaces fill and empty; the dock stays centered.
+    /// Tiles come and go as workspaces fill and empty; the dock stays centered on its edge.
+    /// The tiles are centered in the panel (or pinned to its edge side), so growing the panel
+    /// for the window strip never moves them out from under the pointer.
     private func resize() {
-        guard let p = panel, let screen = p.screen ?? NSScreen.main else { return }
+        guard isShown, let p = panel, let screen = shownOn ?? p.screen ?? NSScreen.main else { return }
         let size = p.contentView?.fittingSize ?? p.frame.size
         guard size != p.frame.size else { return }
-        p.setFrame(NSRect(x: screen.frame.midX - size.width / 2, y: p.frame.minY, width: size.width, height: size.height), display: true)
+        p.setFrame(WorkspaceDock.edge.frame(size: size, screen: screen.frame, visible: screen.visibleFrame), display: true)
+        spanLength = WorkspaceDock.edge.isVertical ? size.height : size.width
     }
+
+    /// The screen it came up on, so a resize keeps it there.
+    private var shownOn: NSScreen?
+    /// How far it reaches along its edge when last shown, for the stretch of edge that opens it.
+    /// Forgotten when it moves to another edge, where that length means nothing.
+    private var spanLength: CGFloat?
 
     private func makePanel() -> DockPanel {
         let p = DockPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -218,6 +289,8 @@ final class WorkspaceDock {
         p.isOpaque = false
         p.backgroundColor = .clear
         p.hasShadow = false
+        // The window list's full titles show on hover though BaneySpaces is never the active app.
+        p.allowsToolTipsWhenApplicationIsInactive = true
         // Not over full-screen apps: a video's controls or a game sit along that edge.
         p.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
         p.contentView = FirstClickHostingView(rootView: DockView(model: model).environment(\.colorScheme, .dark))
@@ -243,6 +316,15 @@ final class DockModel: ObservableObject {
         let name: String
         let icon: NSImage
         let windows: Int
+        /// This app's windows on the tile's workspace, with their titles (a browser's front tab,
+        /// a player's video), for the window strip.
+        var list: [Window] = []
+    }
+    struct Window: Identifiable {
+        let id: WindowID
+        let title: String
+        /// The window used last on its workspace: where a plain click on the app goes.
+        var isLast = false
     }
     struct Tile: Identifiable {
         let id: Int
@@ -258,7 +340,32 @@ final class DockModel: ObservableObject {
     }
 
     @Published var tiles: [Tile] = []
-    @Published var hover: Hover?
+    @Published var edge = WorkspaceDock.edge
+    /// The longest the tiles can run along the edge on this screen; a longer dock shrinks to fit.
+    @Published var maxLength: CGFloat = .infinity
+    var onSetEdge: (DockEdge) -> Void = { _ in }
+    @Published var hover: Hover? {
+        didSet {
+            hoverChanged()
+            // A side dock's label column grows and shrinks with what's hovered.
+            if edge.isVertical, (hover == nil) != (oldValue == nil) || hover != oldValue { onLayoutChange() }
+        }
+    }
+    /// The window strip: an app's windows on one workspace, opened by resting on its icon.
+    @Published var strip: (workspace: Int, app: String)? {
+        didSet {
+            // Removed from under the pointer, it never hears the pointer leave.
+            if strip == nil { onStrip = false }
+            if (strip == nil) != (oldValue == nil) || strip?.app != oldValue?.app { onLayoutChange() }
+        }
+    }
+    /// Up on screen; a dwell that ends after the dock hid opens nothing.
+    var shown = false
+    /// The pointer is on the strip itself, which keeps it open.
+    var onStrip = false
+    private var dwell: DispatchWorkItem?
+    var onFocusWindow: (WindowID, Int) -> Void = { _, _ in }
+    var onLayoutChange: () -> Void = {}
     var menuOpen = false
     var onPick: (Int) -> Void = { _ in }
     var onFocusApp: (pid_t, Int) -> Void = { _, _ in }
@@ -280,13 +387,60 @@ final class DockModel: ObservableObject {
             windows[n] = entries.map { "\($0.pid)" }
         }
         tiles = DockTiles.make(current: spaces.model.current, windows: windows).map { t in
-            Tile(id: t.workspace, apps: t.apps.map { a in
+            let entries = spaces.entries(on: t.workspace)
+            let last = spaces.model.lastFocused[t.workspace]
+            return Tile(id: t.workspace, apps: t.apps.map { a in
                 let pid = pid_t(a.key) ?? 0
                 return App(id: a.key, pid: pid, name: byPid[a.key]?.app ?? "App",
                            icon: NSRunningApplication(processIdentifier: pid)?.icon ?? NSWorkspace.shared.icon(for: .application),
-                           windows: a.windows)
+                           windows: a.windows,
+                           list: entries.filter { "\($0.pid)" == a.key }.map {
+                               Window(id: $0.id, title: WindowTitle.clean($0.title, app: $0.app), isLast: $0.id == last)
+                           })
             }, isCurrent: t.isCurrent)
         }
+        // A strip for an app that's gone or down to one window closes.
+        if let s = strip, (stripApp?.list.count ?? 0) < 2 || !tiles.contains(where: { $0.id == s.workspace }) { strip = nil }
+    }
+
+    var stripApp: App? {
+        guard let s = strip else { return nil }
+        return tiles.first { $0.id == s.workspace }?.apps.first { $0.id == s.app }
+    }
+
+    /// Resting on an app with more than one window here opens its strip after a moment. Moving
+    /// to another app or button closes it; drifting up to the strip, or across its own tile, doesn't.
+    private func hoverChanged() {
+        dwell?.cancel()
+        switch hover {
+        case .app(let n, let id):
+            if let s = strip, s.workspace == n, s.app == id { return }
+            // Crossing another icon in the same tile on the way up to the strip keeps it; resting
+            // there opens that app's strip instead. Another tile's app closes it.
+            if let s = strip, s.workspace != n, !onStrip { strip = nil }
+            guard let app = tiles.first(where: { $0.id == n })?.apps.first(where: { $0.id == id }), app.list.count > 1 else { return }
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, self.shown, self.hover == .app(n, id) else { return }
+                self.strip = (n, id)
+            }
+            dwell = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: work)
+        case .newWorkspace, .launcher, .overview:
+            if !onStrip { strip = nil }
+        case .tile(let n):
+            if let s = strip, s.workspace != n, !onStrip { strip = nil }
+        case nil:
+            break
+        }
+    }
+
+    /// The dock went away.
+    func reset() {
+        shown = false
+        dwell?.cancel()
+        hover = nil
+        onStrip = false
+        strip = nil
     }
 
     func setHover(_ h: Hover, _ inside: Bool) {
@@ -294,31 +448,134 @@ final class DockModel: ObservableObject {
     }
 }
 
+private struct AppCenters: PreferenceKey {
+    static var defaultValue: [String: CGPoint] = [:]
+    static func reduce(value: inout [String: CGPoint], nextValue: () -> [String: CGPoint]) { value.merge(nextValue()) { $1 } }
+}
+
+/// Reports a view's center in the dock's space under `key`, to line the label and strip up with it.
+private struct CenterReport: ViewModifier {
+    let key: String
+    func body(content: Content) -> some View {
+        content.background(GeometryReader { g in
+            let f = g.frame(in: .named("dock"))
+            Color.clear.preference(key: AppCenters.self, value: [key: CGPoint(x: f.midX, y: f.midY)])
+        })
+    }
+}
+
+private struct SizeReport: ViewModifier {
+    @Binding var size: CGSize
+    func body(content: Content) -> some View {
+        content.background(GeometryReader { g in Color.clear.onAppear { size = g.size }.onChange(of: g.size) { size = $0 } })
+    }
+}
+
 struct DockView: View {
     @ObservedObject var model: DockModel
     private let tileSize: CGFloat = 64
+    /// Where each tile, app icon and button sits in the dock, so the strip and label line up with it.
+    @State private var centers: [String: CGPoint] = [:]
+    @State private var sideSize: CGSize = .zero
+    @State private var barSize: CGSize = .zero
+    @State private var stackSize: CGSize = .zero
 
     var body: some View {
-        VStack(spacing: 8) {
-            // Room above the tiles for what the pointer is on; clicks pass through it.
-            label.frame(height: 24)
-            HStack(alignment: .bottom, spacing: 8) {
-                ForEach(model.tiles) { tile in tileView(tile) }
-                if let n = model.firstEmpty, !model.tiles.contains(where: { $0.id == n }) { newWorkspaceButton(n) }
-                Capsule().fill(Color.white.opacity(0.14)).frame(width: 1, height: 44).padding(.horizontal, 4).padding(.bottom, 14)
-                squareButton(.launcher, "magnifyingglass", "Find or Install an App") { model.onShowLauncher() }
-                squareButton(.overview, "square.grid.3x3", "Show All Workspaces") { model.onShowOverview() }
-            }
-            .padding(.horizontal, 10)
-            .padding(.top, 10)
-            .padding(.bottom, 4)
-            .background(Chrome.panel(cornerRadius: 24))
+        let edge = model.edge
+        // The label or strip goes on the screen side of the tiles: above a bottom dock, beside a side one.
+        let stack = edge.isVertical ? AnyLayout(HStackLayout(alignment: .center, spacing: 8)) : AnyLayout(VStackLayout(alignment: .center, spacing: 8))
+        return stack {
+            if edge == .bottom || edge == .right { side }
+            fittedBar
+            if edge == .top || edge == .left { side }
         }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 4)
-        // Wide enough for a long label above a short dock.
-        .frame(minWidth: 480)
+        .modifier(SizeReport(size: $stackSize))
+        .coordinateSpace(name: "dock")
+        .onPreferenceChange(AppCenters.self) { centers = $0 }
+        .padding(edge.isVertical ? .vertical : .horizontal, 16)
+        .padding(edge == .bottom ? .bottom : edge == .top ? .top : edge == .left ? .leading : .trailing, 4)
+        // Room for a long label beside a short dock.
+        .frame(minWidth: edge.isVertical ? nil : 480, minHeight: edge.isVertical ? 300 : nil)
         .fixedSize()
+    }
+
+    /// The bar, shrunk evenly when all its tiles wouldn't fit along the screen's edge.
+    /// How much the bar is shrunk to fit its edge (1 when it fits).
+    private var barScale: CGFloat {
+        let length = model.edge.isVertical ? barSize.height : barSize.width
+        return length > 0 && model.maxLength.isFinite ? min(1, model.maxLength / length) : 1
+    }
+
+    @ViewBuilder private var fittedBar: some View {
+        let scale = barScale
+        if scale < 1 {
+            bar.scaleEffect(scale).frame(width: barSize.width * scale, height: barSize.height * scale)
+        } else {
+            bar
+        }
+    }
+
+    /// The tiles and buttons, in a row or, on a side, a column.
+    private var bar: some View {
+        let vertical = model.edge.isVertical
+        let layout = vertical ? AnyLayout(VStackLayout(alignment: .center, spacing: 8)) : AnyLayout(HStackLayout(alignment: .bottom, spacing: 8))
+        return layout {
+            ForEach(model.tiles) { tile in tileView(tile) }
+            if let n = model.firstEmpty, !model.tiles.contains(where: { $0.id == n }) { newWorkspaceButton(n) }
+            Capsule().fill(Color.white.opacity(0.14))
+                .frame(width: vertical ? 44 : 1, height: vertical ? 1 : 44)
+                .padding(vertical ? .vertical : .horizontal, 4).padding(.bottom, vertical ? 0 : 14)
+            squareButton(.launcher, "magnifyingglass", "Find or Install an App") { model.onShowLauncher() }
+            squareButton(.overview, "square.grid.3x3", "Show All Workspaces") { model.onShowOverview() }
+        }
+        .padding(.horizontal, 10)
+        .padding(.top, 10)
+        .padding(.bottom, vertical ? 10 : 4)
+        .background(Chrome.panel(cornerRadius: 24))
+        .modifier(SizeReport(size: $barSize))
+    }
+
+    /// What the pointer is on, or the window strip, lined up with it.
+    @ViewBuilder private var side: some View {
+        let vertical = model.edge.isVertical
+        if let app = model.stripApp, let n = model.strip?.workspace {
+            windowStrip(app, workspace: n)
+                .modifier(SizeReport(size: $sideSize))
+                .offset(sideOffset("\(n):\(app.id)"))
+        } else if vertical {
+            // As wide as the label, and nothing when there's none, so the panel (and the area that
+            // keeps the dock up) never reaches far into the screen. The panel resizes with it, and
+            // the bar stays put because the panel is pinned to its edge.
+            label.modifier(SizeReport(size: $sideSize))
+                .offset(sideOffset(hoverKey))
+        } else {
+            label.frame(height: 24)
+        }
+    }
+
+    /// The dock key for what the pointer is on, as reported by `CenterReport`.
+    private var hoverKey: String {
+        switch model.hover {
+        case .tile(let n): return "tile:\(n)"
+        case .app(let n, let id): return "\(n):\(id)"
+        case .newWorkspace: return "btn:new"
+        case .launcher: return "btn:launcher"
+        case .overview: return "btn:overview"
+        case nil: return ""
+        }
+    }
+
+    /// Across from `key` along the dock, but never past either end of it.
+    private func sideOffset(_ key: String) -> CGSize {
+        guard let c = centers[key], barSize != .zero, sideSize != .zero, stackSize != .zero else { return .zero }
+        // The bar as drawn, shrunk to fit or not; the centers are measured as drawn too.
+        let bar = CGSize(width: barSize.width * barScale, height: barSize.height * barScale)
+        if model.edge.isVertical {
+            let room = max(0, (bar.height - sideSize.height) / 2)
+            return CGSize(width: 0, height: min(max(c.y - stackSize.height / 2, -room), room))
+        }
+        let room = max(0, (bar.width - sideSize.width) / 2)
+        return CGSize(width: min(max(c.x - stackSize.width / 2, -room), room), height: 0)
     }
 
     @ViewBuilder private var label: some View {
@@ -352,6 +609,34 @@ struct DockView: View {
         }
     }
 
+    /// An app's windows on one workspace, a row each with its title (a browser's tab, a player's
+    /// video). Click one to go to it.
+    private func windowStrip(_ app: DockModel.App, workspace n: Int) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 7) {
+                Image(nsImage: app.icon).resizable().frame(width: 18, height: 18)
+                Text(app.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+                Text("\(app.list.count) windows").font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
+                Spacer(minLength: 8)
+                WorkspaceBadge(n: n, size: 17)
+            }
+            .padding(.horizontal, 8).padding(.bottom, 4)
+            // Every window is reachable: past ten, the list scrolls.
+            ScrollView(.vertical, showsIndicators: app.list.count > 10) {
+                VStack(spacing: 2) {
+                    ForEach(app.list) { w in
+                        StripRow(window: w, icon: app.icon, tint: Chrome.workspace(n)) { model.onFocusWindow(w.id, n) }
+                    }
+                }
+            }
+            .frame(height: CGFloat(min(app.list.count, 10)) * 30)
+        }
+        .padding(6).padding(.top, 4)
+        .frame(width: 320)
+        .background(Chrome.panel(cornerRadius: 14))
+        .onHover { inside in model.onStrip = inside }
+    }
+
     private func title(_ tile: DockModel.Tile) -> String {
         guard !tile.apps.isEmpty else { return "Workspace \(tile.id) · empty" }
         let apps = tile.apps.map { $0.windows > 1 ? "\($0.name) (\($0.windows))" : $0.name }
@@ -379,6 +664,7 @@ struct DockView: View {
                 icons(tile).frame(width: tileSize, height: tileSize)
             }
             .frame(width: tileSize, height: tileSize)
+            .modifier(CenterReport(key: "tile:\(tile.id)"))
             // The number under the tile, lit for the workspace you're on, like the key that gets there.
             Text("\(tile.id)")
                 .font(.system(size: 10.5, weight: .bold, design: .rounded))
@@ -395,6 +681,13 @@ struct DockView: View {
             Divider()
             Button("Find or Install an App") { model.onShowLauncher() }
             Button("Show All Workspaces") { model.onShowOverview() }
+            Menu("Position on Screen") {
+                ForEach(DockEdge.allCases, id: \.self) { e in
+                    Button { model.onSetEdge(e) } label: {
+                        if e == model.edge { Label(e.title, systemImage: "checkmark") } else { Text(e.title) }
+                    }
+                }
+            }
             Button("Turn Off Workspace Dock") { model.onTurnOff() }
         }
         .accessibilityElement(children: .contain)
@@ -455,6 +748,7 @@ struct DockView: View {
                     .offset(y: 5)
                 }
             }
+            .modifier(CenterReport(key: "\(tile.id):\(app.id)"))
             .scaleEffect(hovered ? 1.18 : 1)
             .animation(.spring(response: 0.22, dampingFraction: 0.65), value: hovered)
             .contentShape(Rectangle())
@@ -474,6 +768,7 @@ struct DockView: View {
                 .background(shape.fill(Color.white.opacity(hovered ? 0.08 : 0.0)))
                 .overlay(Image(systemName: "plus").font(.system(size: 16, weight: .semibold)).foregroundStyle(.white.opacity(hovered ? 0.9 : 0.45)))
                 .frame(width: tileSize * 0.75, height: tileSize)
+                .modifier(CenterReport(key: "btn:new"))
             Color.clear.frame(width: 18, height: 15)
         }
         .contentShape(Rectangle())
@@ -492,6 +787,7 @@ struct DockView: View {
                 .fill(Color.white.opacity(hovered ? 0.14 : 0.05))
                 .overlay(Image(systemName: symbol).font(.system(size: 19, weight: .medium)).foregroundStyle(.white.opacity(hovered ? 0.95 : 0.7)))
                 .frame(width: tileSize, height: tileSize)
+                .modifier(CenterReport(key: which == .launcher ? "btn:launcher" : "btn:overview"))
             Color.clear.frame(width: 18, height: 15)
         }
         .scaleEffect(hovered ? 1.06 : 1, anchor: .bottom)
@@ -501,6 +797,39 @@ struct DockView: View {
         .onTapGesture(perform: action)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(name)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { action() }
+    }
+}
+
+/// One window in the dock's window strip: its title on one line, the full title on hover.
+private struct StripRow: View {
+    let window: DockModel.Window
+    let icon: NSImage
+    let tint: Color
+    let action: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        let title = window.title.isEmpty ? "Untitled window" : window.title
+        HStack(spacing: 8) {
+            Image(nsImage: icon).resizable().frame(width: 16, height: 16).opacity(hovered ? 1 : 0.85)
+            Text(title).font(.system(size: 12.5, weight: hovered ? .semibold : .regular))
+                .foregroundStyle(.white.opacity(hovered ? 1 : 0.85)).lineLimit(1).truncationMode(.tail)
+            Spacer(minLength: 6)
+            if window.isLast {
+                Text("Last used").font(.system(size: 10, weight: .medium)).foregroundStyle(.white.opacity(0.4))
+            }
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 28)
+        .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(hovered ? tint.opacity(0.85) : .clear))
+        .contentShape(Rectangle())
+        .help(title)
+        .onHover { hovered = $0 }
+        .onTapGesture(perform: action)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title + (window.isLast ? ", last used" : ""))
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { action() }
     }

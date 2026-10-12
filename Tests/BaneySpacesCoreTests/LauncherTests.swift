@@ -97,3 +97,31 @@ final class AppSwitchListTests: XCTestCase {
         XCTAssertNil(WindowCycle.next([Int](), after: nil))
     }
 }
+
+final class TabHoldTests: XCTestCase {
+    func testFiresOnceAfterTheThreshold() {
+        var h = TabHold()
+        h.press(at: 10)
+        XCTAssertFalse(h.repeated(at: 10.05)) // a very short repeat delay isn't a hold yet
+        XCTAssertFalse(h.repeated(at: 10.4))  // a slow tap past macOS's default repeat delay isn't either
+        XCTAssertTrue(h.repeated(at: 10.62))
+        XCTAssertFalse(h.repeated(at: 10.8))  // still the same press
+        h.press(at: 11)
+        XCTAssertTrue(h.repeated(at: 11.61))
+    }
+
+    func testRepeatWithoutAPressNeverFires() {
+        var h = TabHold()
+        XCTAssertFalse(h.repeated(at: 5))
+    }
+}
+
+final class WindowTitleTests: XCTestCase {
+    func testDropsTheAppNameAtTheEnd() {
+        XCTAssertEqual(WindowTitle.clean("New Tab - Helium", app: "Helium"), "New Tab")
+        XCTAssertEqual(WindowTitle.clean("Inbox - Proton Mail — helium", app: "Helium"), "Inbox - Proton Mail")
+        XCTAssertEqual(WindowTitle.clean("Helium", app: "Helium"), "Helium")
+        XCTAssertEqual(WindowTitle.clean("Helium notes", app: "Helium"), "Helium notes")
+        XCTAssertEqual(WindowTitle.clean(" Untouched ", app: ""), "Untouched")
+    }
+}

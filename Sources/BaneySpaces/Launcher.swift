@@ -12,6 +12,130 @@ enum Launcher {
         get { UserDefaults.standard.bool(forKey: "launcherOnCmdSpace") }
         set { UserDefaults.standard.set(newValue, forKey: "launcherOnCmdSpace") }
     }
+
+    /// The bang a plain web search uses: Google unless chosen.
+    static var searchEngine: String {
+        get { UserDefaults.standard.string(forKey: "launcherSearchEngine") ?? "g" }
+        set { UserDefaults.standard.set(newValue, forKey: "launcherSearchEngine") }
+    }
+
+    /// The agent a "?" question goes to: Claude unless chosen.
+    static var agent: String {
+        get { UserDefaults.standard.string(forKey: "launcherAgent") ?? "claude" }
+        set { UserDefaults.standard.set(newValue, forKey: "launcherAgent") }
+    }
+
+    /// Your own bangs, as JSON: [{"trigger": "jira", "name": "Jira", "url": "https://…/browse/{q}"}].
+    static let customBangsURL = Spaces.folder.appendingPathComponent("bangs.json")
+
+    /// The bangs you added, and anything wrong with the file. No file is no bangs, not a problem.
+    static func readCustomBangs() -> (bangs: [Bang], problems: [String], readable: Bool) {
+        guard let data = try? Data(contentsOf: customBangsURL) else {
+            let exists = FileManager.default.fileExists(atPath: customBangsURL.path)
+            return ([], exists ? ["bangs.json can't be read."] : [], !exists)
+        }
+        return Bangs.decodeCustom(data)
+    }
+
+    enum SaveError: LocalizedError {
+        case unreadable(String)
+        var errorDescription: String? {
+            switch self { case .unreadable(let why): "\(why) Fix or delete \(Launcher.customBangsURL.path) first, so nothing in it is lost." }
+        }
+    }
+
+    /// Saves the list with `change` applied to what's on disk now. Refuses when the file can't be
+    /// read as a list (writing would erase it), and throws if the write itself fails.
+    @discardableResult
+    static func updateCustomBangs(_ change: ([Bang]) -> [Bang]) throws -> [Bang] {
+        let current = readCustomBangs()
+        // Any entry it couldn't use would be dropped by saving, so it waits until the file is fixed.
+        guard current.readable, current.problems.isEmpty else {
+            throw SaveError.unreadable(current.problems.first.map { "bangs.json: \($0)" } ?? "bangs.json can't be read.")
+        }
+        let list = change(current.bangs)
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        try FileManager.default.createDirectory(at: Spaces.folder, withIntermediateDirectories: true)
+        try enc.encode(list).write(to: customBangsURL, options: .atomic)
+        return list
+    }
+
+    static func loadBangs() -> [Bang] { Bangs.all(custom: readCustomBangs().bangs) }
+
+    /// `BaneySpaces --bangs list | add <trigger> <name> <address with {q}> [--agent] | remove <trigger>`:
+    /// for scripts and agents. The running app picks changes up the next time the launcher opens.
+    static func commandLine(_ args: [String]) -> Int32 {
+        func out(_ s: String) { FileHandle.standardOutput.write(Data((s + "\n").utf8)) }
+        func err(_ s: String) { FileHandle.standardError.write(Data((s + "\n").utf8)) }
+        let usage = """
+        usage: BaneySpaces --bangs list
+               BaneySpaces --bangs add <trigger> <name> <address with {q}> [--agent]
+               BaneySpaces --bangs remove <trigger>
+        Example: BaneySpaces --bangs add jira Jira 'https://acme.atlassian.net/browse/{q}'
+        """
+        switch args.first {
+        case "list", nil:
+            let read = readCustomBangs()
+            read.problems.forEach { err("bangs.json: \($0)") }
+            let mine = Set(read.bangs.map(\.trigger))
+            for b in Bangs.all(custom: read.bangs) {
+                out("!\(b.trigger)\t\(b.name)\t\(b.url)\(b.isAgent ? "\tagent" : "")\(mine.contains(b.trigger) ? "\tcustom" : "")")
+            }
+            return 0
+        case "add":
+            let rest = args.dropFirst().filter { $0 != "--agent" }
+            guard rest.count == 3 else { err(usage); return 2 }
+            let r = Array(rest)
+            if let why = Bangs.problem(trigger: r[0], name: r[1], url: r[2]) { err(why); return 1 }
+            let bang = Bang(trigger: r[0], name: r[1], url: r[2], agent: args.contains("--agent"))
+            do {
+                let list = try updateCustomBangs { Bangs.adding(bang, to: $0) ?? $0 }
+                guard let added = list.last else { return 1 }
+                out("Added !\(added.trigger) (\(added.name)).")
+                return 0
+            } catch {
+                err(error.localizedDescription)
+                return 1
+            }
+        case "remove":
+            guard args.count == 2 else { err(usage); return 2 }
+            let t = args[1].lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "! "))
+            guard readCustomBangs().bangs.contains(where: { $0.trigger == t }) else {
+                err("No bang of yours is !\(t). Built-in bangs can be replaced by adding one with the same trigger.")
+                return 1
+            }
+            do {
+                try updateCustomBangs { $0.filter { $0.trigger != t } }
+                out("Removed !\(t).")
+                return 0
+            } catch {
+                err(error.localizedDescription)
+                return 1
+            }
+        default:
+            err(usage)
+            return 2
+        }
+    }
+
+    /// Opens the custom bangs file, writing an example first if there isn't one.
+    static func editCustomBangs() {
+        if !FileManager.default.fileExists(atPath: customBangsURL.path) {
+            let example = """
+            [
+              {"trigger": "jw", "name": "JW Player docs", "url": "https://docs.jwplayer.com/search?q={q}"},
+              {"trigger": "ask", "name": "Claude", "url": "https://claude.ai/new?q={q}", "agent": true}
+            ]
+
+            """
+            try? FileManager.default.createDirectory(at: Spaces.folder, withIntermediateDirectories: true)
+            try? example.write(to: customBangsURL, atomically: true, encoding: .utf8)
+        }
+        let edit = NSWorkspace.OpenConfiguration()
+        let textEdit = URL(fileURLWithPath: "/System/Applications/TextEdit.app")
+        NSWorkspace.shared.open([customBangsURL], withApplicationAt: textEdit, configuration: edit)
+    }
 }
 
 /// What the launcher can do in the rest of BaneySpaces.
@@ -133,11 +257,12 @@ struct LauncherItem: Identifiable {
 
 final class LauncherModel: ObservableObject {
     enum Scope: String, CaseIterable {
-        case root, apps, install, remove, update, system, workspaces
+        case root, web, apps, install, remove, update, system, workspaces
 
         var title: String {
             switch self {
             case .root: "Search"
+            case .web: "Search the Web"
             case .apps: "Apps"
             case .install: "Install"
             case .remove: "Remove"
@@ -149,6 +274,7 @@ final class LauncherModel: ObservableObject {
         var symbol: String {
             switch self {
             case .root: "magnifyingglass"
+            case .web: "globe"
             case .apps: "square.grid.2x2"
             case .install: "arrow.down.circle"
             case .remove: "trash"
@@ -160,6 +286,7 @@ final class LauncherModel: ObservableObject {
         var blurb: String {
             switch self {
             case .root: ""
+            case .web: "Bangs like !yt and !i, and AI agents like !claude"
             case .apps: "Every app on this Mac"
             case .install: "Thousands of apps from Homebrew and the App Store"
             case .remove: "Uninstall apps Homebrew installed"
@@ -170,7 +297,8 @@ final class LauncherModel: ObservableObject {
         }
         var placeholder: String {
             switch self {
-            case .root: "Search apps, commands and workspaces"
+            case .root: "Search apps, the web (!yt), or ask (?)"
+            case .web: "Search the web, or !bang, or ? to ask"
             case .install: "Search for an app to install"
             default: "Search \(title.lowercased())"
             }
@@ -197,6 +325,7 @@ final class LauncherModel: ObservableObject {
     private var iconCache: [String: NSImage] = [:]
     private let catalog = CaskCatalog()
     private var storeWork: DispatchWorkItem?
+    private var bangs = Launcher.loadBangs()
 
     init(actions: LauncherActions) {
         self.actions = actions
@@ -210,6 +339,7 @@ final class LauncherModel: ObservableObject {
         selected = 0
         running = actions.workspacesByApp()
         storeResults = []
+        bangs = Launcher.loadBangs()
         rebuild()
         // Apps installed since the last look show up without a restart.
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -268,7 +398,8 @@ final class LauncherModel: ObservableObject {
     func tab() {
         guard items.indices.contains(selected) else { return }
         let id = items[selected].id
-        if id.hasPrefix("scope:"), let s = Scope(rawValue: String(id.dropFirst("scope:".count))) { enter(s) } else if id == "find-install" { items[selected].run() }
+        if id.hasPrefix("scope:"), let s = Scope(rawValue: String(id.dropFirst("scope:".count))) { enter(s) }
+        else if id == "find-install" || id.hasPrefix("bang-pick:") { items[selected].run() }
     }
 
     // MARK: Building the list
@@ -276,7 +407,14 @@ final class LauncherModel: ObservableObject {
     private func rebuild() {
         let q = query
         var out: [LauncherItem] = []
+        // A bang or a question takes over the list, wherever you are: it's clearly for the web.
+        if scope == .root || scope == .web, let web = webItems(q) {
+            items = web
+            if selected >= items.count { selected = max(0, items.count - 1) }
+            return
+        }
         switch scope {
+        case .web: out = q.isEmpty ? bangDirectory() : searchEverywhere(q)
         case .root:
             if q.isEmpty {
                 out += recentApps().prefix(5)
@@ -286,6 +424,7 @@ final class LauncherModel: ObservableObject {
                 out += workspaceItems(q)
                 out += commandItems(q)
                 out += menuItems().filter { Fuzzy.score(q, $0.title) != nil }
+                out += searchEverywhere(q).prefix(3)
                 out.append(LauncherItem(id: "find-install", section: "Install", title: "Install “\(q)”…",
                                         subtitle: "Search Homebrew and the App Store", icon: .symbol("arrow.down.circle"),
                                         badge: "⇥", run: { [weak self] in self?.enter(.install); self?.setQuery(q) }))
@@ -299,6 +438,100 @@ final class LauncherModel: ObservableObject {
         }
         items = out
         if selected >= items.count { selected = max(0, items.count - 1) }
+    }
+
+    // MARK: Web and agents
+
+    /// "!yt cats", "cats !yt", "!y" while typing a bang, or "? a question". Nil for anything else.
+    private func webItems(_ q: String) -> [LauncherItem]? {
+        let t = q.trimmingCharacters(in: .whitespaces)
+        if t.hasPrefix("?") {
+            let question = String(t.dropFirst()).trimmingCharacters(in: .whitespaces)
+            let mine = Bangs.find(Launcher.agent, in: bangs) ?? Bangs.agents[0]
+            return [bangItem(mine, question, section: "Ask")]
+                + bangs.filter { $0.isAgent && $0.trigger != mine.trigger }.map { bangItem($0, question, section: "Other agents") }
+        }
+        // Still typing the bang: "!" or "!yo" with nothing after it yet.
+        if t.hasPrefix("!"), !t.contains(" ") {
+            let partial = String(t.dropFirst())
+            if let exact = Bangs.find(partial, in: bangs), !partial.isEmpty {
+                return [bangItem(exact, "", section: "Bang")] + Bangs.suggest(partial, in: bangs).filter { $0 != exact }.map(bangPick)
+            }
+            let picks = Bangs.suggest(partial, in: bangs).map(bangPick)
+            return picks.isEmpty && !partial.isEmpty ? [unknownBang(partial, "")] : picks
+        }
+        guard let parsed = Bangs.parse(t) else { return nil }
+        guard let bang = Bangs.find(parsed.trigger, in: bangs) else { return [unknownBang(parsed.trigger, parsed.terms)] }
+        return [bangItem(bang, parsed.terms, section: "Bang")]
+    }
+
+    /// One row that searches (or asks) with a bang.
+    private func bangItem(_ b: Bang, _ terms: String, section: String) -> LauncherItem {
+        let title: String
+        if terms.isEmpty { title = "Open \(b.name)" } else if b.isAgent { title = "Ask \(b.name) “\(terms)”" } else { title = "Search \(b.name) for “\(terms)”" }
+        let subtitle = b.isAgent ? "!\(b.trigger) · opens a new chat in your browser with the question asked" : "!\(b.trigger) · opens in your browser"
+        return LauncherItem(id: "bang:\(b.trigger):\(section)", section: section, title: title, subtitle: subtitle, icon: .symbol(Self.symbol(for: b)),
+                            run: { [weak self] in self?.openWeb(b.address(for: terms)) })
+    }
+
+    /// A bang offered while typing "!": Tab or Return fills it in, ready for the words.
+    private func bangPick(_ b: Bang) -> LauncherItem {
+        LauncherItem(id: "bang-pick:\(b.trigger)", section: "Bangs", title: b.name, subtitle: "!\(b.trigger)",
+                     icon: .symbol(Self.symbol(for: b)), badge: "⇥", run: { [weak self] in self?.setQuery("!\(b.trigger) ") })
+    }
+
+    private func unknownBang(_ trigger: String, _ terms: String) -> LauncherItem {
+        LauncherItem(id: "bang-ddg:\(trigger)", section: "Bang", title: "Search with !\(trigger)\(terms.isEmpty ? "" : " for “\(terms)”")",
+                     subtitle: "Not a built-in bang; DuckDuckGo knows thousands more", icon: .symbol("globe"),
+                     run: { [weak self] in self?.openWeb(Bangs.fallbackAddress(trigger: trigger, terms: terms)) })
+    }
+
+    /// Plain words: your search engine, images, and your agent first, then every other bang.
+    private func searchEverywhere(_ q: String) -> [LauncherItem] {
+        let engine = Bangs.find(Launcher.searchEngine, in: bangs) ?? Bangs.builtIn.first { $0.trigger == "g" }!
+        let agent = Bangs.find(Launcher.agent, in: bangs) ?? Bangs.agents[0]
+        let images = Bangs.find("i", in: bangs)
+        var seen = Set<String>()
+        let lead = [engine, images, agent].compactMap { $0 }.filter { seen.insert($0.trigger).inserted }
+        let builtInImages = Bangs.builtIn.first { $0.trigger == "i" }
+        let leadItems = lead.map { b -> LauncherItem in
+            var item = bangItem(b, q, section: "Web")
+            if b == builtInImages { item.title = "Search images for “\(q)”" }
+            return item
+        }
+        guard scope == .web else { return leadItems }
+        let skip = Set(lead.map(\.trigger) + ["img", "gi"])
+        return leadItems + bangs.filter { !skip.contains($0.trigger) }.map { bangItem($0, q, section: $0.isAgent ? "Agents" : "Sites") }
+    }
+
+    /// The Search the Web menu with nothing typed: every agent and site, each a bang to fill in.
+    private func bangDirectory() -> [LauncherItem] {
+        bangs.filter(\.isAgent).map { var i = bangPick($0); i.section = "Agents"; return i }
+            + bangs.filter { !$0.isAgent }.map { var i = bangPick($0); i.section = "Sites"; return i }
+            + [LauncherItem(id: "bang-edit", section: "Your bangs", title: "Add Your Own Bangs…",
+                            subtitle: "Opens bangs.json; each needs a trigger, a name and an address with {q}", icon: .symbol("plus"),
+                            run: { [weak self] in self?.close(); Launcher.editCustomBangs() })]
+    }
+
+    private static func symbol(for b: Bang) -> String {
+        if b.isAgent { return "sparkles" }
+        switch b.trigger {
+        case "i", "img", "gi", "ddgi": return "photo"
+        case "v", "yt": return "play.rectangle"
+        case "maps", "am": return "map"
+        case "gh", "so", "mdn", "npm", "pypi", "apple", "hf", "brew": return "chevron.left.forwardslash.chevron.right"
+        case "bible", "esv": return "book.closed"
+        case "a", "ebay": return "cart"
+        case "w", "d", "scholar", "wa": return "text.book.closed"
+        default: return "globe"
+        }
+    }
+
+    /// In a new tab of your default browser (or Maps for an Apple Maps bang).
+    private func openWeb(_ url: URL?) {
+        close()
+        guard let url else { return NSSound.beep() }
+        NSWorkspace.shared.open(url)
     }
 
     private func setQuery(_ q: String) {

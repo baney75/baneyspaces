@@ -6,6 +6,9 @@ import SwiftUI
 /// Esc cancels. In app mode it steps through every app with a window, on any workspace, most
 /// recently used first, and letting go lands on that app's window wherever it is. In workspace
 /// mode it steps through workspaces with windows, most recent first.
+///
+/// Holding Tab on an app with more than one window opens the window bar: that app's windows,
+/// on every workspace, to tab through the same way. Holding Tab again goes back to the apps.
 final class WorkspaceSwitcher {
     private let spaces: Spaces
     private let model = SwitcherModel()
@@ -13,6 +16,10 @@ final class WorkspaceSwitcher {
     private var watchdog: Timer?
     /// Apps in the order they were last brought forward, most recent first.
     private var appOrder: [pid_t] = []
+    private var hold = TabHold()
+    /// Tab presses in this gesture, not counting repeats.
+    private var presses = 0
+    private var selectedBeforePress = 0
 
     init(spaces: Spaces) {
         self.spaces = spaces
@@ -29,8 +36,30 @@ final class WorkspaceSwitcher {
         if appOrder.count > 64 { appOrder.removeLast() }
     }
 
-    func step(forward: Bool) {
+    /// `time` is the system uptime when the key arrived, read on the tap's thread.
+    func step(forward: Bool, isRepeat: Bool, at time: Double) {
+        // A held Tab opens or closes the window bar once; its other repeats do nothing, so
+        // holding never races through the list.
+        if isRepeat {
+            guard isShowing, model.mode == .apps, hold.repeated(at: time) else { return }
+            if model.windowBar != nil { return toggleWindowBar() }
+            // The press that began this hold moved the selection on; the hold is about the app
+            // that was selected before it. Held from the very first press, that's the app you're in.
+            let target = presses == 1 ? 0 : selectedBeforePress
+            guard windowCount(of: target) > 1 else { return }
+            model.selected = target
+            return toggleWindowBar()
+        }
+        hold.press(at: time)
+        presses = isShowing ? presses + 1 : 1
+        selectedBeforePress = model.selected
+        if isShowing, model.windowBar != nil {
+            let c = model.windowBar!.windows.count
+            model.windowBar!.selected = (model.windowBar!.selected + (forward ? 1 : c - 1)) % c
+            return
+        }
         if !isShowing {
+            model.windowBar = nil
             model.mode = MissionControlKeys.cmdTabMode == .workspaces ? .workspaces : .apps
             if model.mode == .workspaces {
                 let order = spaces.switcherOrder()
@@ -61,6 +90,19 @@ final class WorkspaceSwitcher {
             Trace.log("cmdTab commit target=\(target.map(String.init) ?? "none") current=\(spaces.model.current)")
             if let target, target != spaces.model.current { spaces.switchTo(target, announce: false) }
         case .apps:
+            if let bar = model.windowBar, bar.windows.indices.contains(bar.selected) {
+                let w = bar.windows[bar.selected]
+                // Where it is now: it may have moved, or closed, since the bar opened.
+                spaces.refresh()
+                guard let n = spaces.model.workspace(of: w.id) else {
+                    // Closed meanwhile: the app is still the choice.
+                    Trace.log("cmdTab commit window gone")
+                    return spaces.focusApp(bar.pid)
+                }
+                Trace.log("cmdTab commit window on=\(n) current=\(spaces.model.current)")
+                noteActivated(bar.pid)
+                return spaces.focus(w.id, on: n)
+            }
             guard model.apps.indices.contains(model.selected) else { return }
             let app = model.apps[model.selected]
             Trace.log("cmdTab commit app on=\(app.workspace) current=\(spaces.model.current)")
@@ -72,6 +114,49 @@ final class WorkspaceSwitcher {
     func cancel() {
         Trace.log("cmdTab cancel")
         hide()
+    }
+
+    /// Opens the selected app's window bar, or closes it back to the apps. An app with one
+    /// window has nothing to pick, so a hold on it does nothing.
+    private func toggleWindowBar() {
+        if model.windowBar != nil {
+            model.windowBar = nil
+            Trace.log("cmdTab window bar closed")
+            return relayout()
+        }
+        guard model.apps.indices.contains(model.selected) else { return }
+        let app = model.apps[model.selected]
+        var windows: [SwitcherModel.WindowTile] = []
+        for n in [app.workspace] + Workspaces.range.filter({ $0 != app.workspace }) {
+            // The window used last on each workspace leads that workspace's group.
+            let last = spaces.model.lastFocused[n]
+            let mine = spaces.entries(on: n).filter { $0.pid == app.pid }.sorted { $0.id == last && $1.id != last }
+            for e in mine { windows.append(.init(id: e.id, title: WindowTitle.clean(e.title, app: e.app), workspace: n)) }
+        }
+        guard windows.count > 1 else { return }
+        Trace.log("cmdTab window bar opened windows=\(windows.count)")
+        // The first one is the window that tapping would land on; a tap from here moves on.
+        // For the app you're in, its first window is the one in front, so start on the next one.
+        let inFront = NSWorkspace.shared.frontmostApplication?.processIdentifier == app.pid && app.workspace == spaces.model.current
+        model.windowBar = .init(pid: app.pid, name: app.name, icon: app.icon, windows: windows, selected: inFront ? 1 : 0)
+        relayout()
+    }
+
+    /// Every window of the app at `index` in the list, on all workspaces.
+    private func windowCount(of index: Int) -> Int {
+        guard model.apps.indices.contains(index) else { return 0 }
+        let pid = model.apps[index].pid
+        return model.apps.filter { $0.pid == pid }.reduce(0) { $0 + $1.windows }
+    }
+
+    /// The bar changed size: keep it centered.
+    private func relayout() {
+        guard let p = panel, let host = p.contentView as? NSHostingView<SwitcherView> else { return }
+        host.layoutSubtreeIfNeeded()
+        let size = host.fittingSize
+        let screen = p.screen ?? NSScreen.main
+        guard let frame = screen?.frame else { return }
+        p.setFrame(NSRect(x: frame.midX - size.width / 2, y: frame.midY - size.height / 2, width: size.width, height: size.height), display: true)
     }
 
     /// Every app with a window, most recently used first; an app on two workspaces once for each.
@@ -122,7 +207,7 @@ final class WorkspaceSwitcher {
         watchdog = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             guard let self, self.isShowing else { return }
             if !NSEvent.modifierFlags.contains(.command) {
-                MissionControlKeys.inGesture = false
+                MissionControlKeys.gestureEndedElsewhere()
                 self.commit()
             }
         }
@@ -166,6 +251,20 @@ final class SwitcherModel: ObservableObject {
         var titles: [String] = []
         var id: String { "\(pid):\(workspace)" }
     }
+    struct WindowTile: Identifiable {
+        let id: WindowID
+        let title: String
+        let workspace: Int
+    }
+    /// The window bar: one app's windows, open while Tab was held on it.
+    struct WindowBar {
+        let pid: pid_t
+        let name: String
+        let icon: NSImage
+        let windows: [WindowTile]
+        var selected: Int
+    }
+    @Published var windowBar: WindowBar?
     @Published var mode = Mode.workspaces
     @Published var tiles: [Tile] = []
     @Published var apps: [AppTile] = []
@@ -178,7 +277,7 @@ struct SwitcherView: View {
 
     var body: some View {
         Group {
-            if model.mode == .apps { appRow } else { workspaceRow }
+            if let bar = model.windowBar { windowRow(bar) } else if model.mode == .apps { appRow } else { workspaceRow }
         }
         .padding(14)
         .background(Chrome.panel(cornerRadius: 26))
@@ -224,9 +323,46 @@ struct SwitcherView: View {
                     Circle().fill(Chrome.workspace(app.workspace)).frame(width: 7, height: 7)
                     Text(["Workspace \(app.workspace)", app.windows > 1 ? "\(app.windows) windows" : title].compactMap { $0 }.joined(separator: " · "))
                         .lineLimit(1)
+                    if model.apps.filter({ $0.pid == app.pid }).reduce(0, { $0 + $1.windows }) > 1 {
+                        Text("Hold Tab to pick a window").foregroundStyle(.white.opacity(0.4))
+                    }
                 }
                 .font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.6))
                 .frame(maxWidth: 600)
+            }
+        }
+    }
+
+    /// One app's windows, each with its title and workspace color. Wraps after four.
+    private func windowRow(_ bar: SwitcherModel.WindowBar) -> some View {
+        let columns = Array(repeating: GridItem(.fixed(200), spacing: 8), count: min(bar.windows.count, 4))
+        return VStack(spacing: 12) {
+            HStack(spacing: 8) {
+                Image(nsImage: bar.icon).resizable().frame(width: 22, height: 22)
+                Text("\(bar.name) windows").font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
+                Text("Hold Tab to go back").font(.system(size: 11, weight: .medium)).foregroundStyle(.white.opacity(0.45))
+            }
+            LazyVGrid(columns: columns, spacing: 8) {
+                ForEach(Array(bar.windows.enumerated()), id: \.element.id) { i, w in
+                    let on = i == bar.selected
+                    let tint = Chrome.workspace(w.workspace)
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Image(nsImage: bar.icon).resizable().frame(width: 30, height: 30)
+                            Spacer()
+                            WorkspaceBadge(n: w.workspace)
+                        }
+                        Text(w.title.isEmpty ? "Untitled window" : w.title)
+                            .font(.system(size: 12, weight: .medium)).foregroundStyle(.white.opacity(on ? 1 : 0.75))
+                            .lineLimit(2).multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, minHeight: 32, alignment: .topLeading)
+                    }
+                    .padding(12)
+                    .frame(width: 200)
+                    .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(on ? tint.opacity(0.28) : Color.white.opacity(0.06)))
+                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(on ? tint : Color.white.opacity(0.08), lineWidth: on ? 2 : 1))
+                    .accessibilityLabel("\(w.title), workspace \(w.workspace)\(on ? ", selected" : "")")
+                }
             }
         }
     }
