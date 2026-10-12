@@ -41,4 +41,16 @@ public enum Geometry {
         let w = min(saved?.width ?? size.width, s.width), h = min(saved?.height ?? size.height, s.height)
         return CGRect(x: s.midX - w / 2, y: s.midY - h / 2, width: w, height: h).integral
     }
+
+    /// Whether `rects` together leave no part of `area` showing, checked on a grid of points
+    /// `step` apart plus the far edges. A window moving under them can't be seen.
+    public static func covers(_ rects: [CGRect], area: CGRect, step: CGFloat = 8) -> Bool {
+        guard !area.isEmpty else { return true }
+        var xs = Array(stride(from: area.minX + 0.5, to: area.maxX, by: step)); xs.append(area.maxX - 0.5)
+        var ys = Array(stride(from: area.minY + 0.5, to: area.maxY, by: step)); ys.append(area.maxY - 0.5)
+        for y in ys {
+            for x in xs where !rects.contains(where: { $0.contains(CGPoint(x: x, y: y)) }) { return false }
+        }
+        return true
+    }
 }

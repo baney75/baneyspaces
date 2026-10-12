@@ -198,3 +198,20 @@ enum ParkedApps {
         bundleIDs = ids
     }
 }
+
+/// Apps seen animating their window moves (Chromium browsers take about 0.25 s). Parking one
+/// would either show it sliding or hold every switch until it stopped, so it's hidden like any
+/// other app instead, even when it's on the parked list. Learned once and remembered.
+enum SlowMovers {
+    private static let key = "slowMovers"
+
+    static var bundleIDs: Set<String> {
+        get { Set(UserDefaults.standard.array(forKey: key) as? [String] ?? []) }
+        set { UserDefaults.standard.set(newValue.sorted(), forKey: key) }
+    }
+
+    static func contains(_ pid: pid_t) -> Bool {
+        guard let id = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier else { return false }
+        return bundleIDs.contains(id)
+    }
+}

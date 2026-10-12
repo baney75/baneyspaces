@@ -7,6 +7,10 @@
   background clicks and keys to a hidden app, which cut off tools like Cua. Cua Spaces is on the
   list by default, so its picture-in-picture window no longer disappears on a switch. A window
   automation opens in a parked app joins that app's workspace instead of yours.
+- Nothing slides across the screen when windows are parked. Parking happens behind the windows
+  of the workspace you go to, and windows come back behind the ones you leave. An app that
+  animates its window moves (Chromium browsers like Helium take a quarter second) is noticed
+  once and hidden instead, even on the Keep Usable by Automation list; its menu entry says so.
 - Switching workspaces no longer jumps to a parked app's workspace. Hiding the app you left made
   macOS bring the parked app forward, its window sliding out of the corner, and BaneySpaces took
   that as you picking it.

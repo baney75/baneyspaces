@@ -254,6 +254,28 @@ enum Windows {
         }
     }
 
+    /// Whether the windows in front of `id` hide every usable part of every screen, so the
+    /// window can move without being seen, wherever its path goes. Windows in `moving` don't
+    /// count: they're on their way out too.
+    static func isCovered(_ id: WindowID, ignoring moving: Set<WindowID>) -> Bool {
+        let above = CGWindowListCopyWindowInfo([.optionOnScreenAboveWindow], id) as? [[String: Any]] ?? []
+        let rects = above.compactMap { w -> CGRect? in
+            guard (w[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+                  ((w[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1) >= 1,
+                  let n = (w[kCGWindowNumber as String] as? NSNumber)?.uint32Value, !moving.contains(n) else { return nil }
+            return (w[kCGWindowBounds as String] as? NSDictionary).flatMap { CGRect(dictionaryRepresentation: $0) }
+        }
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        // A maximized window can stop a point or two short of the menu bar; motion there is invisible.
+        return NSScreen.screens.allSatisfy { Geometry.covers(rects, area: Geometry.toAX($0.visibleFrame, primaryHeight: primaryHeight).insetBy(dx: 2, dy: 2)) }
+    }
+
+    /// Whether the window server shows none of these windows on screen (their app hid).
+    static func allOffscreen(_ ids: Set<WindowID>) -> Bool {
+        let shown = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
+        return !shown.contains { ($0[kCGWindowNumber as String] as? NSNumber).map { ids.contains($0.uint32Value) } ?? false }
+    }
+
     /// Screen frames in Accessibility coordinates.
     static func screens() -> [CGRect] {
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
