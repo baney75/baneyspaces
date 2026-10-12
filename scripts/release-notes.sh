@@ -25,9 +25,12 @@ if [ "$TARGET" = nightly ]; then
   if [ -n "$COMING" ]; then
     printf '### Coming in the next release\n\n%s\n\n' "$COMING"
   fi
-  printf '### Changes since %s\n\n' "${LAST:-the first commit}"
-  git log --no-merges --format='- %s (%h)' ${LAST:+"$LAST"..HEAD} | head -60
-  echo
+  CHANGES=$(git log --no-merges --format='- %s (%h)' ${LAST:+"$LAST"..HEAD} | head -60)
+  if [ -n "$CHANGES" ]; then
+    printf '### Changes since %s\n\n%s\n' "${LAST:-the first commit}" "$CHANGES"
+  else
+    printf 'Nothing has changed since %s; this build is the same code.\n' "$LAST"
+  fi
 else
   VERSION="${TARGET#v}"
   NOTES=$(section "$VERSION")
