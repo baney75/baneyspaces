@@ -64,6 +64,20 @@ public enum DockEdge: String, CaseIterable, Sendable {
         return CGRect(origin: origin, size: size)
     }
 
+    /// Where the pointer can be while the dock stays up: the dock itself, everything between it
+    /// and its edge of the screen (for the top dock, the menu bar the pointer came down from),
+    /// and a little slack all around.
+    public func keepZone(dock: CGRect, screen: CGRect) -> CGRect {
+        var r = dock
+        switch self {
+        case .bottom: r = CGRect(x: r.minX, y: screen.minY - 1, width: r.width, height: r.maxY - screen.minY + 1)
+        case .top: r = CGRect(x: r.minX, y: r.minY, width: r.width, height: screen.maxY + 1 - r.minY)
+        case .left: r = CGRect(x: screen.minX - 1, y: r.minY, width: r.maxX - screen.minX + 1, height: r.height)
+        case .right: r = CGRect(x: r.minX, y: r.minY, width: screen.maxX + 1 - r.minX, height: r.height)
+        }
+        return r.insetBy(dx: -24, dy: -24)
+    }
+
     /// The way it slides out of sight: toward its edge.
     public var away: CGVector {
         switch self {

@@ -51,9 +51,20 @@ final class MissionControlKeys {
     /// Called on the main thread while ⌘ is held: Tab (forward) or ⇧Tab (back), and whether the
     /// press is a repeat of a held Tab; ⌘ released; Esc.
     var onCmdTab: (_ forward: Bool, _ isRepeat: Bool, _ time: Double) -> Void = { _, _, _ in }
-    /// Read and written on the tap thread only: a gesture ended while Tab may still be held, so
-    /// its repeats and its release are swallowed instead of typing into the app just picked.
-    private static var swallowTab = false
+    /// A gesture ended while Tab may still be held, so its repeats and its release are swallowed
+    /// instead of typing into the app just picked. Set on the tap thread, or by the switcher when
+    /// it notices ⌘ let go that the tap missed.
+    private static var _swallowTab = false
+    private static var swallowTab: Bool {
+        get { gestureLock.lock(); defer { gestureLock.unlock() }; return _swallowTab }
+        set { gestureLock.lock(); _swallowTab = newValue; gestureLock.unlock() }
+    }
+
+    /// The gesture ended without the tap seeing ⌘ let go.
+    static func gestureEndedElsewhere() {
+        inGesture = false
+        swallowTab = true
+    }
     var onCmdReleased: () -> Void = {}
     var onCancel: () -> Void = {}
     /// Read on the tap thread; set when a ⌘Tab gesture starts, cleared when it ends.

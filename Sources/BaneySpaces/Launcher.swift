@@ -28,18 +28,40 @@ enum Launcher {
     /// Your own bangs, as JSON: [{"trigger": "jira", "name": "Jira", "url": "https://…/browse/{q}"}].
     static let customBangsURL = Spaces.folder.appendingPathComponent("bangs.json")
 
-    /// The bangs you added, as saved.
-    static var customBangs: [Bang] {
-        get { (try? Data(contentsOf: customBangsURL)).flatMap { try? JSONDecoder().decode([Bang].self, from: $0) } ?? [] }
-        set {
-            let enc = JSONEncoder()
-            enc.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-            try? FileManager.default.createDirectory(at: Spaces.folder, withIntermediateDirectories: true)
-            try? enc.encode(newValue).write(to: customBangsURL, options: .atomic)
+    /// The bangs you added, and anything wrong with the file. No file is no bangs, not a problem.
+    static func readCustomBangs() -> (bangs: [Bang], problems: [String], readable: Bool) {
+        guard let data = try? Data(contentsOf: customBangsURL) else {
+            let exists = FileManager.default.fileExists(atPath: customBangsURL.path)
+            return ([], exists ? ["bangs.json can't be read."] : [], !exists)
+        }
+        return Bangs.decodeCustom(data)
+    }
+
+    enum SaveError: LocalizedError {
+        case unreadable(String)
+        var errorDescription: String? {
+            switch self { case .unreadable(let why): "\(why) Fix or delete \(Launcher.customBangsURL.path) first, so nothing in it is lost." }
         }
     }
 
-    static func loadBangs() -> [Bang] { Bangs.all(custom: customBangs) }
+    /// Saves the list with `change` applied to what's on disk now. Refuses when the file can't be
+    /// read as a list (writing would erase it), and throws if the write itself fails.
+    @discardableResult
+    static func updateCustomBangs(_ change: ([Bang]) -> [Bang]) throws -> [Bang] {
+        let current = readCustomBangs()
+        // Any entry it couldn't use would be dropped by saving, so it waits until the file is fixed.
+        guard current.readable, current.problems.isEmpty else {
+            throw SaveError.unreadable(current.problems.first.map { "bangs.json: \($0)" } ?? "bangs.json can't be read.")
+        }
+        let list = change(current.bangs)
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        try FileManager.default.createDirectory(at: Spaces.folder, withIntermediateDirectories: true)
+        try enc.encode(list).write(to: customBangsURL, options: .atomic)
+        return list
+    }
+
+    static func loadBangs() -> [Bang] { Bangs.all(custom: readCustomBangs().bangs) }
 
     /// `BaneySpaces --bangs list | add <trigger> <name> <address with {q}> [--agent] | remove <trigger>`:
     /// for scripts and agents. The running app picks changes up the next time the launcher opens.
@@ -54,8 +76,10 @@ enum Launcher {
         """
         switch args.first {
         case "list", nil:
-            let mine = Set(customBangs.map(\.trigger))
-            for b in loadBangs() {
+            let read = readCustomBangs()
+            read.problems.forEach { err("bangs.json: \($0)") }
+            let mine = Set(read.bangs.map(\.trigger))
+            for b in Bangs.all(custom: read.bangs) {
                 out("!\(b.trigger)\t\(b.name)\t\(b.url)\(b.isAgent ? "\tagent" : "")\(mine.contains(b.trigger) ? "\tcustom" : "")")
             }
             return 0
@@ -64,18 +88,31 @@ enum Launcher {
             guard rest.count == 3 else { err(usage); return 2 }
             let r = Array(rest)
             if let why = Bangs.problem(trigger: r[0], name: r[1], url: r[2]) { err(why); return 1 }
-            guard let list = Bangs.adding(Bang(trigger: r[0], name: r[1], url: r[2], agent: args.contains("--agent")), to: customBangs) else { return 1 }
-            customBangs = list
-            out("Added !\(list.last!.trigger) (\(list.last!.name)).")
-            return 0
+            let bang = Bang(trigger: r[0], name: r[1], url: r[2], agent: args.contains("--agent"))
+            do {
+                let list = try updateCustomBangs { Bangs.adding(bang, to: $0) ?? $0 }
+                guard let added = list.last else { return 1 }
+                out("Added !\(added.trigger) (\(added.name)).")
+                return 0
+            } catch {
+                err(error.localizedDescription)
+                return 1
+            }
         case "remove":
             guard args.count == 2 else { err(usage); return 2 }
-            let t = args[1].lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "!"))
-            let before = customBangs
-            guard before.contains(where: { $0.trigger == t }) else { err("No bang of yours is !\(t). Built-in bangs can be replaced by adding one with the same trigger."); return 1 }
-            customBangs = before.filter { $0.trigger != t }
-            out("Removed !\(t).")
-            return 0
+            let t = args[1].lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "! "))
+            guard readCustomBangs().bangs.contains(where: { $0.trigger == t }) else {
+                err("No bang of yours is !\(t). Built-in bangs can be replaced by adding one with the same trigger.")
+                return 1
+            }
+            do {
+                try updateCustomBangs { $0.filter { $0.trigger != t } }
+                out("Removed !\(t).")
+                return 0
+            } catch {
+                err(error.localizedDescription)
+                return 1
+            }
         default:
             err(usage)
             return 2
@@ -454,10 +491,12 @@ final class LauncherModel: ObservableObject {
         let engine = Bangs.find(Launcher.searchEngine, in: bangs) ?? Bangs.builtIn.first { $0.trigger == "g" }!
         let agent = Bangs.find(Launcher.agent, in: bangs) ?? Bangs.agents[0]
         let images = Bangs.find("i", in: bangs)
-        let lead = [engine, images, agent].compactMap { $0 }
+        var seen = Set<String>()
+        let lead = [engine, images, agent].compactMap { $0 }.filter { seen.insert($0.trigger).inserted }
+        let builtInImages = Bangs.builtIn.first { $0.trigger == "i" }
         let leadItems = lead.map { b -> LauncherItem in
             var item = bangItem(b, q, section: "Web")
-            if b.trigger == "i" { item.title = "Search images for “\(q)”" }
+            if b == builtInImages { item.title = "Search images for “\(q)”" }
             return item
         }
         guard scope == .web else { return leadItems }

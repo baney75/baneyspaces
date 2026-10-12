@@ -36,7 +36,8 @@ final class WorkspaceSwitcher {
         if appOrder.count > 64 { appOrder.removeLast() }
     }
 
-    func step(forward: Bool, isRepeat: Bool = false, at time: Double = CFAbsoluteTimeGetCurrent()) {
+    /// `time` is the system uptime when the key arrived, read on the tap's thread.
+    func step(forward: Bool, isRepeat: Bool, at time: Double) {
         // A held Tab opens or closes the window bar once; its other repeats do nothing, so
         // holding never races through the list.
         if isRepeat {
@@ -206,7 +207,7 @@ final class WorkspaceSwitcher {
         watchdog = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             guard let self, self.isShowing else { return }
             if !NSEvent.modifierFlags.contains(.command) {
-                MissionControlKeys.inGesture = false
+                MissionControlKeys.gestureEndedElsewhere()
                 self.commit()
             }
         }

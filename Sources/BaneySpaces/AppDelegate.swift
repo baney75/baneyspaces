@@ -322,7 +322,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(parkedAppsItem())
         let dockItem = item("Workspace Dock", #selector(toggleWorkspaceDock))
         dockItem.state = WorkspaceDock.enabled ? .on : .off
-        dockItem.toolTip = "A dock of your workspaces in place of the macOS Dock. Rest the pointer on the bottom edge of the screen to show it."
+        dockItem.toolTip = "A dock of your workspaces in place of the macOS Dock. Rest the pointer on the \(WorkspaceDock.edge.title.lowercased()) edge of the screen to show it."
         menu.addItem(dockItem)
         if WorkspaceDock.enabled {
             let pos = NSMenuItem(title: "Workspace Dock Position", action: nil, keyEquivalent: "")

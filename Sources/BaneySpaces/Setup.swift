@@ -22,7 +22,7 @@ final class SetupModel: ObservableObject {
     @Published var launcherOnCmdSpace = Launcher.onCmdSpace
     @Published var searchEngine = Launcher.searchEngine { didSet { Launcher.searchEngine = searchEngine } }
     @Published var agent = Launcher.agent { didSet { Launcher.agent = agent } }
-    @Published var customBangs = Launcher.customBangs
+    @Published var customBangs = Launcher.readCustomBangs().bangs
     @Published var newTrigger = ""
     @Published var newName = ""
     @Published var newURL = ""
@@ -183,17 +183,30 @@ final class SetupModel: ObservableObject {
 
     func addBang() {
         if let why = Bangs.problem(trigger: newTrigger, name: newName, url: newURL) { bangProblem = why; return }
-        guard let list = Bangs.adding(Bang(trigger: newTrigger, name: newName, url: newURL, agent: newIsAgent), to: Launcher.customBangs) else { return }
-        Launcher.customBangs = list
-        customBangs = list
-        newTrigger = ""; newName = ""; newURL = ""; newIsAgent = false
-        bangProblem = nil
+        let bang = Bang(trigger: newTrigger, name: newName, url: newURL, agent: newIsAgent)
+        do {
+            customBangs = try Launcher.updateCustomBangs { Bangs.adding(bang, to: $0) ?? $0 }
+            newTrigger = ""; newName = ""; newURL = ""; newIsAgent = false
+            bangProblem = nil
+        } catch {
+            bangProblem = error.localizedDescription
+        }
     }
 
     func removeBang(_ trigger: String) {
-        let list = Launcher.customBangs.filter { $0.trigger != trigger }
-        Launcher.customBangs = list
-        customBangs = list
+        do {
+            customBangs = try Launcher.updateCustomBangs { $0.filter { $0.trigger != trigger } }
+            bangProblem = nil
+        } catch {
+            bangProblem = error.localizedDescription
+        }
+    }
+
+    /// Bangs changed elsewhere (the file, an agent) show up when setup opens.
+    func reloadBangs() {
+        let read = Launcher.readCustomBangs()
+        customBangs = read.bangs
+        bangProblem = read.problems.first
     }
 
     func setOpenAtLogin(_ on: Bool) {
@@ -482,6 +495,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     func show() {
         model.justEnabled = false
         model.reload()
+        model.reloadBangs()
         model.startWatching()
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)

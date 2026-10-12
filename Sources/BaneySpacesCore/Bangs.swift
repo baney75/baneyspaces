@@ -27,10 +27,14 @@ public struct Bang: Codable, Equatable, Sendable {
         let t = terms.trimmingCharacters(in: .whitespaces)
         if t.isEmpty {
             if let home, let u = Bangs.safeURL(home) { return u }
-            guard let u = URL(string: url.replacingOccurrences(of: "{q}", with: "")), let scheme = u.scheme, let host = u.host else {
+            // The site itself: scheme, host and port kept, path and search dropped.
+            guard var c = URLComponents(string: url.replacingOccurrences(of: "{q}", with: "")), c.host != nil else {
                 return Bangs.safeURL(url.replacingOccurrences(of: "{q}", with: ""))
             }
-            return Bangs.safeURL("\(scheme)://\(host)/")
+            c.path = "/"
+            c.query = nil
+            c.fragment = nil
+            return c.string.flatMap(Bangs.safeURL)
         }
         return Bangs.safeURL(url.replacingOccurrences(of: "{q}", with: Bangs.encode(t)))
     }
@@ -126,10 +130,58 @@ public enum Bangs {
 
     /// Custom bangs first, so one can replace a built-in; then the built-ins.
     public static func all(custom: [Bang]) -> [Bang] {
-        let mine = custom.filter { !$0.trigger.isEmpty && safeURL($0.url.replacingOccurrences(of: "{q}", with: "x")) != nil }
-            .map { Bang(trigger: $0.trigger.lowercased(), name: $0.name, url: $0.url, home: $0.home, agent: $0.isAgent) }
+        let mine = normalize(custom).bangs
         let taken = Set(mine.map(\.trigger))
         return mine + builtIn.filter { !taken.contains($0.trigger) }
+    }
+
+    /// A trigger as stored: trimmed, without a leading "!", lowercased.
+    static func canonical(_ trigger: String) -> String {
+        var t = trigger.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        while t.hasPrefix("!") { t.removeFirst() }
+        return t
+    }
+
+    /// Valid bangs with canonical triggers, the first of each trigger kept; and why any were left out.
+    public static func normalize(_ list: [Bang]) -> (bangs: [Bang], problems: [String]) {
+        var seen = Set<String>()
+        var out: [Bang] = []
+        var problems: [String] = []
+        for b in list {
+            let t = canonical(b.trigger)
+            if let why = problem(trigger: t, name: b.name, url: b.url) {
+                problems.append("!\(t.isEmpty ? "?" : t): \(why)")
+                continue
+            }
+            guard seen.insert(t).inserted else {
+                problems.append("!\(t) is listed twice; the first one is used.")
+                continue
+            }
+            out.append(Bang(trigger: t, name: b.name.trimmingCharacters(in: .whitespaces), url: b.url.trimmingCharacters(in: .whitespaces),
+                            home: b.home, agent: b.isAgent))
+        }
+        return (out, problems)
+    }
+
+    /// Reads a bangs.json. Entries are read one by one, so a bad one costs only itself; `readable`
+    /// is false when the file as a whole isn't a JSON list, and then it must not be written over.
+    public static func decodeCustom(_ data: Data) -> (bangs: [Bang], problems: [String], readable: Bool) {
+        guard let raw = try? JSONSerialization.jsonObject(with: data) as? [Any] else {
+            return ([], ["bangs.json isn't a list of bangs. (TextEdit's curly quotes are a common cause.)"], false)
+        }
+        var bangs: [Bang] = []
+        var problems: [String] = []
+        for (i, entry) in raw.enumerated() {
+            guard JSONSerialization.isValidJSONObject(entry as? [String: Any] ?? [:]),
+                  let d = try? JSONSerialization.data(withJSONObject: entry as? [String: Any] ?? [:]),
+                  let b = try? JSONDecoder().decode(Bang.self, from: d) else {
+                problems.append("Entry \(i + 1) needs a trigger, a name and a url.")
+                continue
+            }
+            bangs.append(b)
+        }
+        let n = normalize(bangs)
+        return (n.bangs, problems + n.problems, true)
     }
 
     /// Why a new bang can't be saved, in a sentence for the person, or nil if it can.
@@ -149,8 +201,7 @@ public enum Bangs {
     /// A list with `bang` added (replacing any with its trigger) or nil if it isn't valid.
     public static func adding(_ bang: Bang, to list: [Bang]) -> [Bang]? {
         guard problem(trigger: bang.trigger, name: bang.name, url: bang.url) == nil else { return nil }
-        var t = bang.trigger.trimmingCharacters(in: .whitespaces).lowercased()
-        if t.hasPrefix("!") { t.removeFirst() }
+        let t = canonical(bang.trigger)
         let clean = Bang(trigger: t, name: bang.name.trimmingCharacters(in: .whitespaces),
                          url: bang.url.trimmingCharacters(in: .whitespaces), home: bang.home, agent: bang.isAgent)
         return list.filter { $0.trigger != t } + [clean]

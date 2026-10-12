@@ -80,13 +80,24 @@ final class WorkspaceDock {
         set { UserDefaults.standard.set(newValue.rawValue, forKey: "dockEdge") }
     }
 
+    /// True while any app shows a menu: a window at the pop-up menu level is on screen.
+    static func otherMenuOpen() -> Bool {
+        let level = Int(CGWindowLevelForKey(.popUpMenuWindow))
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        return windows.contains { ($0[kCGWindowLayer as String] as? Int) == level && ($0[kCGWindowOwnerPID as String] as? Int32) != getpid() }
+    }
+
     /// Moves it to another side; it comes up there the next time the pointer rests on that edge.
     func setEdge(_ e: DockEdge) {
         WorkspaceDock.edge = e
+        let screen = shownOn ?? NSScreen.main
         hide(animated: false)
         needsRearm = false
         edgeSince = nil
+        spanLength = nil
         model.edge = e
+        // Shown by a script, it stays shown, now on its new side.
+        if pinned, let screen { show(on: screen) }
     }
 
     private let spaces: Spaces
@@ -169,7 +180,8 @@ final class WorkspaceDock {
         if isShown {
             guard let p = panel else { return }
             // Hovering the dock or the edge below it keeps it up; a menu open from it too.
-            let keep = p.frame.insetBy(dx: -24, dy: -24).contains(mouse) || model.menuOpen
+            let screenFrame = (shownOn ?? p.screen)?.frame ?? p.frame
+            let keep = WorkspaceDock.edge.keepZone(dock: p.frame, screen: screenFrame).contains(mouse) || model.menuOpen
             if keep { awaySince = nil; return }
             if awaySince == nil { awaySince = Date() }
             if Date().timeIntervalSince(awaySince!) > 0.4 {
@@ -188,10 +200,14 @@ final class WorkspaceDock {
         if needsRearm, screen == rearmScreen { edgeSince = nil; return }
         needsRearm = false
         // Only along the dock itself; the corners and the rest of the edge stay free.
-        let length = panel.map { edge.isVertical ? $0.frame.height : $0.frame.width } ?? 560
+        let length = spanLength ?? 560
         guard edge.withinSpan(mouse, screen: screen.frame, visible: screen.visibleFrame, length: length) else { edgeSince = nil; return }
         if edgeSince == nil { edgeSince = Date() }
-        if Date().timeIntervalSince(edgeSince!) > edge.dwell { show(on: screen) }
+        guard Date().timeIntervalSince(edgeSince!) > edge.dwell else { return }
+        // A menu open in another app (a menu bar title, a status item) is what the pointer is
+        // there for; the dock waits until it closes.
+        if WorkspaceDock.otherMenuOpen() { return }
+        show(on: screen)
     }
 
     /// `baneyspaces://dock/show`: for scripts and checks. It stays until `dock/hide`.
@@ -216,6 +232,7 @@ final class WorkspaceDock {
         let size = p.contentView?.fittingSize ?? .zero
         let up = edge.frame(size: size, screen: screen.frame, visible: screen.visibleFrame)
         shownOn = screen
+        spanLength = edge.isVertical ? size.height : size.width
         p.setFrame(up.offsetBy(dx: edge.away.dx, dy: edge.away.dy), display: false)
         p.alphaValue = 0
         p.orderFrontRegardless()
@@ -257,10 +274,14 @@ final class WorkspaceDock {
         let size = p.contentView?.fittingSize ?? p.frame.size
         guard size != p.frame.size else { return }
         p.setFrame(WorkspaceDock.edge.frame(size: size, screen: screen.frame, visible: screen.visibleFrame), display: true)
+        spanLength = WorkspaceDock.edge.isVertical ? size.height : size.width
     }
 
     /// The screen it came up on, so a resize keeps it there.
     private var shownOn: NSScreen?
+    /// How far it reaches along its edge when last shown, for the stretch of edge that opens it.
+    /// Forgotten when it moves to another edge, where that length means nothing.
+    private var spanLength: CGFloat?
 
     private func makePanel() -> DockPanel {
         let p = DockPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -323,7 +344,13 @@ final class DockModel: ObservableObject {
     /// The longest the tiles can run along the edge on this screen; a longer dock shrinks to fit.
     @Published var maxLength: CGFloat = .infinity
     var onSetEdge: (DockEdge) -> Void = { _ in }
-    @Published var hover: Hover? { didSet { hoverChanged() } }
+    @Published var hover: Hover? {
+        didSet {
+            hoverChanged()
+            // A side dock's label column grows and shrinks with what's hovered.
+            if edge.isVertical, (hover == nil) != (oldValue == nil) || hover != oldValue { onLayoutChange() }
+        }
+    }
     /// The window strip: an app's windows on one workspace, opened by resting on its icon.
     @Published var strip: (workspace: Int, app: String)? {
         didSet {
@@ -473,9 +500,14 @@ struct DockView: View {
     }
 
     /// The bar, shrunk evenly when all its tiles wouldn't fit along the screen's edge.
-    @ViewBuilder private var fittedBar: some View {
+    /// How much the bar is shrunk to fit its edge (1 when it fits).
+    private var barScale: CGFloat {
         let length = model.edge.isVertical ? barSize.height : barSize.width
-        let scale = length > 0 && model.maxLength.isFinite ? min(1, model.maxLength / length) : 1
+        return length > 0 && model.maxLength.isFinite ? min(1, model.maxLength / length) : 1
+    }
+
+    @ViewBuilder private var fittedBar: some View {
+        let scale = barScale
         if scale < 1 {
             bar.scaleEffect(scale).frame(width: barSize.width * scale, height: barSize.height * scale)
         } else {
@@ -511,9 +543,11 @@ struct DockView: View {
                 .modifier(SizeReport(size: $sideSize))
                 .offset(sideOffset("\(n):\(app.id)"))
         } else if vertical {
+            // As wide as the label, and nothing when there's none, so the panel (and the area that
+            // keeps the dock up) never reaches far into the screen. The panel resizes with it, and
+            // the bar stays put because the panel is pinned to its edge.
             label.modifier(SizeReport(size: $sideSize))
                 .offset(sideOffset(hoverKey))
-                .frame(width: 320, alignment: model.edge == .left ? .leading : .trailing)
         } else {
             label.frame(height: 24)
         }
@@ -534,11 +568,13 @@ struct DockView: View {
     /// Across from `key` along the dock, but never past either end of it.
     private func sideOffset(_ key: String) -> CGSize {
         guard let c = centers[key], barSize != .zero, sideSize != .zero, stackSize != .zero else { return .zero }
+        // The bar as drawn, shrunk to fit or not; the centers are measured as drawn too.
+        let bar = CGSize(width: barSize.width * barScale, height: barSize.height * barScale)
         if model.edge.isVertical {
-            let room = max(0, (barSize.height - sideSize.height) / 2)
+            let room = max(0, (bar.height - sideSize.height) / 2)
             return CGSize(width: 0, height: min(max(c.y - stackSize.height / 2, -room), room))
         }
-        let room = max(0, (barSize.width - sideSize.width) / 2)
+        let room = max(0, (bar.width - sideSize.width) / 2)
         return CGSize(width: min(max(c.x - stackSize.width / 2, -room), room), height: 0)
     }
 

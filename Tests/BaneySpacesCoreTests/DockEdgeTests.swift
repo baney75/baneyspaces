@@ -56,4 +56,22 @@ final class DockEdgeTests: XCTestCase {
         XCTAssertLessThan(DockEdge.left.away.dx, 0)
         XCTAssertGreaterThan(DockEdge.right.away.dx, 0)
     }
+
+    /// The pointer that brought the dock up is inside the zone that keeps it up, on every edge,
+    /// including the top dock, which sits below a menu bar the pointer is resting on.
+    func testThePointThatOpensTheDockKeepsItOpen() {
+        let notched = CGRect(x: 0, y: 0, width: 1512, height: 905) // 77 pt above it: notch menu bar
+        let points: [DockEdge: CGPoint] = [.bottom: CGPoint(x: 756, y: 0), .top: CGPoint(x: 756, y: 981.5),
+                                           .left: CGPoint(x: 0, y: 452), .right: CGPoint(x: 1511.5, y: 452)]
+        for edge in DockEdge.allCases {
+            let size = edge.isVertical ? CGSize(width: 120, height: 600) : CGSize(width: 600, height: 120)
+            let dock = edge.frame(size: size, screen: main, visible: notched)
+            let p = points[edge]!
+            XCTAssertEqual(edge.screen(at: p, among: [main]), 0, "\(edge) trigger")
+            XCTAssertTrue(edge.keepZone(dock: dock, screen: main).contains(p), "\(edge) keeps its own trigger point")
+            // Well into the screen is outside it.
+            XCTAssertFalse(edge.keepZone(dock: dock, screen: main).contains(CGPoint(x: 756, y: 452)) && !dock.contains(CGPoint(x: 756, y: 452)),
+                           "\(edge) lets go in the middle of the screen")
+        }
+    }
 }

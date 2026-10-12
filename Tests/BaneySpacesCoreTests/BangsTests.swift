@@ -72,4 +72,28 @@ final class BangsTests: XCTestCase {
         XCTAssertEqual(two?.map(\.name), ["Jira 2"])
         XCTAssertNil(Bangs.adding(Bang(trigger: "x", name: "X", url: "file:///{q}"), to: []))
     }
+
+    func testCustomFileSurvivesBadEntriesAndDuplicates() {
+        let json = """
+        [{"trigger": "a1", "name": "A", "url": "https://a.example/{q}"},
+         {"trigger": "b1", "url": "https://b.example/{q}"},
+         {"trigger": "Jira", "name": "Jira", "url": "https://j.example/{q}"},
+         {"trigger": "jira", "name": "Jira 2", "url": "https://j2.example/{q}"},
+         {"trigger": "!x", "name": "X", "url": "https://x.example/{q}"}]
+        """
+        let r = Bangs.decodeCustom(Data(json.utf8))
+        XCTAssertTrue(r.readable)
+        XCTAssertEqual(r.bangs.map(\.trigger), ["a1", "jira", "x"])
+        XCTAssertEqual(r.bangs.first { $0.trigger == "jira" }?.name, "Jira")
+        XCTAssertEqual(r.problems.count, 2)
+        XCTAssertFalse(Bangs.decodeCustom(Data("[{“trigger”: 1}]".utf8)).readable)
+        XCTAssertEqual(Bangs.all(custom: [Bang(trigger: "Jira", name: "J", url: "https://j/{q}"), Bang(trigger: "jira", name: "K", url: "https://k/{q}")])
+            .filter { $0.trigger == "jira" }.count, 1)
+    }
+
+    func testSiteKeepsItsPort() {
+        let b = Bang(trigger: "dev", name: "Dev", url: "http://localhost:3000/search?q={q}")
+        XCTAssertEqual(b.address(for: "")?.absoluteString, "http://localhost:3000/")
+        XCTAssertEqual(Bang(trigger: "a", name: "A", url: "https://acme.example:8443/x/{q}").address(for: "")?.absoluteString, "https://acme.example:8443/")
+    }
 }
