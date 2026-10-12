@@ -282,8 +282,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 .map { FileManager.default.displayName(atPath: $0.path).replacingOccurrences(of: ".app", with: "") } ?? id
             apps.append((name, id))
         }
+        let slow = SlowMovers.bundleIDs
         for app in apps {
-            let it = item(app.name, #selector(toggleParked(_:)))
+            // An app that slides its windows when moved is hidden anyway, so nothing moves on screen.
+            let title = on.contains(app.bundleID) && slow.contains(app.bundleID) ? "\(app.name) (hidden: it animates window moves)" : app.name
+            let it = item(title, #selector(toggleParked(_:)))
             it.representedObject = app.bundleID
             it.state = on.contains(app.bundleID) ? .on : .off
             sub.addItem(it)
@@ -295,6 +298,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleParked(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String else { return }
         ParkedApps.toggle(id)
+        // Checking an app again gives it a fresh try at parking.
+        if ParkedApps.bundleIDs.contains(id) { SlowMovers.bundleIDs.remove(id) }
         spaces.reapply()
     }
 

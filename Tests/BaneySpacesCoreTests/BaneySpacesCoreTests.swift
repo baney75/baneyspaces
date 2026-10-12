@@ -242,4 +242,14 @@ final class SavedLayoutTests: XCTestCase {
         saved.save(to: url)
         XCTAssertEqual(SavedLayout.load(from: url), saved)
     }
+
+    func testCoversNeedsEveryPartOfTheArea() {
+        let area = CGRect(x: 0, y: 34, width: 1512, height: 948)
+        XCTAssertTrue(Geometry.covers([area], area: area))
+        XCTAssertTrue(Geometry.covers([CGRect(x: 0, y: 34, width: 800, height: 948), CGRect(x: 800, y: 34, width: 712, height: 948)], area: area))
+        // A sliver open at the bottom-right corner, where parked windows sit.
+        XCTAssertFalse(Geometry.covers([CGRect(x: 0, y: 34, width: 1511, height: 948)], area: area))
+        XCTAssertFalse(Geometry.covers([CGRect(x: 0, y: 34, width: 1512, height: 947)], area: area))
+        XCTAssertFalse(Geometry.covers([], area: area))
+    }
 }
