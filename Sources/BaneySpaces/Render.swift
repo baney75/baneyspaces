@@ -118,6 +118,13 @@ enum Render {
         dock.hover = .app(1, "1Terminal")
         guard save(DockView(model: dock).padding(.vertical, 20).background(Color(white: 0.35)), "dock.png", CGSize(width: 820, height: 0)) else { return 1 }
 
+        // The switch HUD, landing on workspace 4.
+        let hud = HUDModel()
+        hud.current = 4
+        hud.occupied = [1, 2, 3, 4, 5, 7]
+        hud.icons = [icon("/System/Applications/Mail.app"), icon("/System/Applications/Utilities/Terminal.app"), icon("/System/Applications/Messages.app")]
+        guard save(HUDView(model: hud).background(Color(white: 0.35)), "hud.png", CGSize(width: 260, height: 0)) else { return 1 }
+
         // The same dock with Terminal's window strip open over workspace 4.
         dock.tiles[3] = .init(id: 4, apps: dock.tiles[3].apps.map { a in
             var a = a

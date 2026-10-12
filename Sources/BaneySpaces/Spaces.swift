@@ -249,7 +249,12 @@ final class Spaces {
             queued.append(.switchTo(n: n, focus: moveFocus, announce: announce))
             return
         }
-        if announce, moveFocus { hud.show(n) }
+        if announce, moveFocus {
+            var seen = Set<pid_t>()
+            let icons = model.windows(on: n).compactMap { windows[$0]?.pid }.filter { seen.insert($0).inserted }
+                .prefix(5).compactMap { NSRunningApplication(processIdentifier: $0)?.icon }
+            hud.show(n, occupied: Set(Workspaces.range.filter { !model.windows(on: $0).isEmpty }), icons: Array(icons))
+        }
         generation += 1
         clock = SwitchClock(target: n)
         refresh()
