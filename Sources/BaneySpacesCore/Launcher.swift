@@ -181,6 +181,15 @@ public struct TabHold: Sendable {
         fired = true
         return true
     }
+
+    /// Which app a hold opens. The press that began the hold already moved the selection on, so
+    /// the hold means the app selected before it (on the very first press, the app you're in).
+    /// When that app has one window there is nothing to pick, so it opens the app the press
+    /// landed on, the one highlighted. Nil when neither has more than one window.
+    public static func target(before: Int, landed: Int, windows: (Int) -> Int) -> Int? {
+        for i in [before, landed] where windows(i) > 1 { return i }
+        return nil
+    }
 }
 
 /// Window titles as people read them: "Inbox - Proton Mail - Helium" is "Inbox - Proton Mail"

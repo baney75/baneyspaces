@@ -9,6 +9,8 @@
   the corners, so reaching for a menu doesn't bring it up.
 - Holding Tab in ⌘Tab now takes 0.6 s; a slow tap in the window bar no longer drops back to
   the apps.
+- Holding ⌘Tab from the first press opens the highlighted app's windows when the app you're in
+  has only one window. Before, the hold did nothing.
 
 - **Bangs, web search and agents in the launcher.** `!yt cats`, `!i sunsets`, `cats !yt`, and
   about 35 more built in; any other bang goes to DuckDuckGo. Plain words offer your search

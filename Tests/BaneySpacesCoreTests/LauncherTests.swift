@@ -110,6 +110,16 @@ final class TabHoldTests: XCTestCase {
         XCTAssertTrue(h.repeated(at: 11.61))
     }
 
+    func testTargetPrefersTheAppBeforeThePress() {
+        let windows = [0: 1, 1: 2, 2: 3]
+        let count = { windows[$0] ?? 0 }
+        XCTAssertEqual(TabHold.target(before: 2, landed: 1, windows: count), 2)
+        // Held from the first press in a one-window app: the highlighted app opens instead.
+        XCTAssertEqual(TabHold.target(before: 0, landed: 1, windows: count), 1)
+        XCTAssertNil(TabHold.target(before: 0, landed: 0, windows: count))
+        XCTAssertNil(TabHold.target(before: 0, landed: 5, windows: count))
+    }
+
     func testRepeatWithoutAPressNeverFires() {
         var h = TabHold()
         XCTAssertFalse(h.repeated(at: 5))
