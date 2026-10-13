@@ -184,6 +184,10 @@ enum Render {
         guard save(LauncherView(model: launcher).frame(height: 500).padding(30).background(Color(white: 0.3)), "launcher.png", CGSize(width: 760, height: 0)) else { return 1 }
         launcher.query = "ma"
         guard save(LauncherView(model: launcher).frame(height: 500).padding(30).background(Color(white: 0.3)), "launcher-search.png", CGSize(width: 760, height: 0)) else { return 1 }
+        // A coding agent by name, offered in your terminal.
+        launcher.agents = ["claude": "/usr/local/bin/claude", "codex": "/usr/local/bin/codex"]
+        launcher.query = "claude"
+        guard save(LauncherView(model: launcher).frame(height: 500).padding(30).background(Color(white: 0.3)), "launcher-agents.png", CGSize(width: 760, height: 0)) else { return 1 }
 
         // Bangs: typing "!", then a question for the default agent.
         launcher.query = "!y"

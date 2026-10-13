@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Start Claude Code or Codex from the launcher.** Type `claude` or `codex` and Return opens it
+  in your terminal (Ghostty, iTerm2, WezTerm or Warp before Terminal), in your home folder.
+  Only agents installed on this Mac are offered.
+- The Workspace Dock's ring around the hovered icon now traces the icon itself instead of a box
+  around it, so it no longer runs into the tile's edge.
 - **Drag windows between workspaces in the Workspace Dock.** Drag an app's icon onto another
   tile and its windows on that workspace move there; drag a window out of the strip to move just
   that one. The tile it will land on lights up in its color, and dropping on the dashed tile
