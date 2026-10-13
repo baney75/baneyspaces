@@ -387,6 +387,9 @@ final class Spaces {
         guard active, pid != getpid() else { return }
         defer { frontPid = pid }
         Windows.markResponsive(pid)
+        // Asked for by `openWindowHere`: its window is on the way, here.
+        if let o = opening, o.pid == pid, Date() < o.until { return }
+        activatedAt = Date()
         if switching {
             if pid != expectedFront { followPending = true }
             return
@@ -449,7 +452,9 @@ final class Spaces {
         // activation unhid goes back into hiding. Following it pulled you off the workspace you
         // had just gone to, Finder or Ghostty a moment after you arrived.
         let putAway = (saved.frames[w.id] != nil && ParkedApps.contains(pid)) || saved.hiddenApps.contains(pid)
-        if putAway, Date().timeIntervalSince(max(leftAt, handedOffAt)) < 0.5 {
+        // Timed from when the activation arrived: one that came mid-switch is only looked at once
+        // the switch, parking included, is over.
+        if putAway, activatedAt.timeIntervalSince(max(leftAt, handedOffAt)) < 0.5 {
             Trace.log("followFocus stayed: \(w.appName) came forward after the front app left")
             if let id = model.lastFocused[model.current], let t = windows[id], saved.frames[id] == nil, t.pid != pid {
                 stay(on: t)
@@ -492,9 +497,13 @@ final class Spaces {
     /// then (one it opened).
     private func hideOnceBehind(_ pid: pid_t) {
         waitUntil(timeout: 0.3, interval: 0.01, { NSWorkspace.shared.frontmostApplication?.processIdentifier != pid }) { [self] in
-            guard active, NSWorkspace.shared.frontmostApplication?.processIdentifier != pid,
-                  !model.windows(on: model.current).contains(where: { windows[$0]?.pid == pid }),
-                  let app = NSRunningApplication(processIdentifier: pid), !app.isHidden else { return }
+            guard active, !model.windows(on: model.current).contains(where: { windows[$0]?.pid == pid }) else { return }
+            // Still in front (focus didn't move here): the workspace is applied again instead,
+            // which hides it the usual way.
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier != pid else {
+                return switching ? () : switchTo(model.current, announce: false)
+            }
+            guard let app = NSRunningApplication(processIdentifier: pid), !app.isHidden else { return }
             ownHides.insert(pid)
             ownHidesUntil = Date().addingTimeInterval(1)
             app.hide()
@@ -522,6 +531,10 @@ final class Spaces {
     /// When a switch last handed focus away from the app in front (hid it, left a parked app,
     /// or went to an empty workspace). macOS then picks an app to put in front on its own.
     private var handedOffAt = Date.distantPast
+    /// When the last app activation BaneySpaces didn't ask for arrived.
+    private var activatedAt = Date.distantPast
+    /// An app `openWindowHere` asked for a window, until when: its coming forward isn't followed.
+    private var opening: (pid: pid_t, until: Date)?
     /// The app in front, as of the last activation.
     private var frontPid: pid_t?
     /// Apps BaneySpaces itself just hid; their hide notifications arrive late.
@@ -712,8 +725,7 @@ final class Spaces {
         let known = Windows.standardIDs(of: pid)
         guard AXUIElementPerformAction(item, kAXPressAction as CFString) == .success else { return false }
         // An app that comes forward for it isn't asking to be followed to its workspace.
-        expectedFront = pid
-        settleUntil = Date().addingTimeInterval(1.5)
+        opening = (pid, Date().addingTimeInterval(1.5))
         waitUntil(timeout: 1.5, interval: 0.02, { !Windows.standardIDs(of: pid).subtracting(known).isEmpty }) { [weak self] in
             guard let self, self.active else { return }
             if self.switching { return self.enqueue { [weak self] in self?.finishOpening(pid, besides: known) } }
@@ -723,7 +735,7 @@ final class Spaces {
     }
 
     private func finishOpening(_ pid: pid_t, besides known: Set<WindowID>) {
-        settleUntil = .distantPast
+        opening = nil
         if !showNewWindow(of: pid, besides: known) { focusApp(pid) }
     }
 
