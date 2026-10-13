@@ -235,6 +235,15 @@ enum Windows {
         return result
     }
 
+    /// Whether the window in front is in full screen, on its own macOS Space.
+    static func frontIsFullScreen() -> Bool {
+        guard let pid = focusedPid() else { return false }
+        let ax = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(ax, 0.25)
+        guard let el: AXUIElement = ax.value(kAXFocusedWindowAttribute) else { return false }
+        return el.bool("AXFullScreen")
+    }
+
     static func focused(of pid: pid_t, in windows: [Window]) -> Window? {
         let ax = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(ax, 0.25)
