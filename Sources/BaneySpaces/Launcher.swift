@@ -142,6 +142,11 @@ enum Launcher {
 /// What the launcher can do in the rest of BaneySpaces.
 struct LauncherActions {
     var focusApp: (pid_t, Int?) -> Void = { _, _ in }
+    /// A new window of a running app on the workspace you're on; false when it can't make one.
+    var openWindowHere: (pid_t) -> Bool = { _ in false }
+    /// Whether a running app has a New Window command.
+    var canOpenWindow: (pid_t) -> Bool = { _ in false }
+    var current: () -> Int = { 1 }
     var switchTo: (Int) -> Void = { _ in }
     var appsOn: (Int) -> [String] = { _ in [] }
     /// Workspaces each running app (by bundle path) has windows on.
@@ -571,11 +576,13 @@ final class LauncherModel: ObservableObject {
             .sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.0.name < $1.0.name }
             .map(\.0)
         }
-        // An app open on more than one workspace also gets a row for each, to pick which.
+        // An app open on more than one workspace also gets a row for each, to pick which, and so
+        // does one that opens a new window here instead of going to its workspace.
         return matches.prefix(limit).flatMap { a -> [LauncherItem] in
             let on = running[a.path] ?? []
-            let main = appItem(a, section: "Apps")
-            guard on.count > 1, !q.isEmpty else { return [main] }
+            let look = !q.isEmpty && limit <= 8
+            let main = appItem(a, section: "Apps", look: look)
+            guard on.count > 1 || opensHere(a, look: look), !q.isEmpty else { return [main] }
             return [main] + on.map { n in
                 LauncherItem(id: "app:\(a.path):\(n)", section: "Apps", title: "\(a.name) on Workspace \(n)",
                              subtitle: "The \(a.name) windows there", icon: .file(a.path), workspaces: [n],
@@ -600,25 +607,47 @@ final class LauncherModel: ObservableObject {
 
     private func focus(_ a: AppEntry, on n: Int) {
         close()
-        guard let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleURL?.path == a.path }) else { return open(a) }
+        guard let app = runningApp(a) else { return open(a) }
         actions.focusApp(app.processIdentifier, n)
     }
 
-    private func appItem(_ a: AppEntry, section: String) -> LauncherItem {
+    private func appItem(_ a: AppEntry, section: String, look: Bool = false) -> LauncherItem {
         let on = running[a.path] ?? []
-        let where_ = on.isEmpty ? a.folder : on.count == 1 ? "Open on workspace \(on[0])" : "Open on workspaces \(on.map(String.init).joined(separator: ", "))"
+        var where_ = on.isEmpty ? a.folder : on.count == 1 ? "Open on workspace \(on[0])" : "Open on workspaces \(on.map(String.init).joined(separator: ", "))"
+        if opensHere(a, look: look) { where_ += " · Return opens a new window here" }
         return LauncherItem(id: "app:\(a.path)", section: section, title: a.name, subtitle: where_, icon: .file(a.path),
                             workspaces: on,
                             run: { [weak self] in self?.open(a) }, reveal: URL(fileURLWithPath: a.path))
     }
 
-    /// A running app is gone to, wherever its windows are; anything else opens here.
+    /// Apps found to have a New Window command, by path. Only a yes is kept: a no can be an app
+    /// that was busy, still building its menus, or showing a sheet.
+    private var newWindowCommand: Set<String> = []
+
+    /// An app open only on other workspaces that can open a window here: opening it does that,
+    /// as opening an app on a Mac desktop where it has no window would. `look` reads the app's
+    /// menus, 15–130 ms an app, so rows only look for the few best matches of a search.
+    private func opensHere(_ a: AppEntry, look: Bool = true) -> Bool {
+        guard let on = running[a.path], !on.contains(actions.current()), let app = runningApp(a) else { return false }
+        if newWindowCommand.contains(a.path) { return true }
+        guard look, actions.canOpenWindow(app.processIdentifier) else { return false }
+        newWindowCommand.insert(a.path)
+        return true
+    }
+
+    private func runningApp(_ a: AppEntry) -> NSRunningApplication? {
+        NSWorkspace.shared.runningApplications.first { $0.bundleURL?.path == a.path }
+    }
+
+    /// A running app opens a new window here when it's open only elsewhere and can; otherwise
+    /// it's gone to, wherever its windows are. Anything else opens here.
     private func open(_ a: AppEntry) {
         close()
         recents.used(a.path)
         UserDefaults.standard.set(recents.paths, forKey: "launcherRecents")
         let url = URL(fileURLWithPath: a.path)
-        if let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleURL?.path == a.path }), running[a.path] != nil {
+        if let app = runningApp(a), running[a.path] != nil {
+            if opensHere(a), actions.openWindowHere(app.processIdentifier) { return }
             actions.focusApp(app.processIdentifier, nil)
             return
         }

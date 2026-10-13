@@ -239,11 +239,14 @@ enum ParkedApps {
     }
 }
 
-/// Apps seen animating their window moves (Chromium browsers take about 0.25 s). Parking one
-/// would either show it sliding or hold every switch until it stopped, so it's hidden like any
-/// other app instead, even when it's on the parked list. Learned once and remembered.
+/// Apps seen animating their window moves. Parking one would either show it sliding or hold
+/// every switch until it stopped, so it's hidden like any other app instead, even when it's on
+/// the parked list. Learned once and remembered. Moves no longer animate where the app has
+/// AXEnhancedUserInterface on (see `Window.withoutAnimation`), which is what put Chromium
+/// browsers and Ghostty here; the list learned before that was kept under "slowMovers" and is
+/// left behind.
 enum SlowMovers {
-    private static let key = "slowMovers"
+    private static let key = "slowMovers2"
 
     static var bundleIDs: Set<String> {
         get { Set(UserDefaults.standard.array(forKey: key) as? [String] ?? []) }

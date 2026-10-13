@@ -26,7 +26,9 @@ When one returns, add the date and the commit that brought it back.
 
 | Bug Donovan sees | Reported | Fixed, then broken by | Guard |
 | --- | --- | --- | --- |
-| Windows slide to and from the bottom-right corner | 10-10, 10-12 (×2), 10-13 | `9801f13` hid apps instead of parking. `9512b94` brought parking back for the Keep Usable by Automation list (Helium, Cua Spaces). `5d080f0` only hid the slide from view. | `motion-probe.swift` |
+| Windows slide to and from the bottom-right corner | 10-10, 10-12 (×2), 10-13 | `9801f13` hid apps instead of parking. `9512b94` brought parking back for the Keep Usable by Automation list (Helium, Cua Spaces). `5d080f0` only hid the slide from view. Root cause (10-13): apps with `AXEnhancedUserInterface` on animate every Accessibility move; `Window.withoutAnimation` turns it off for each move. Every app split across workspaces (Ghostty) slid until then. | `motion-probe.swift` (10-13: 26–30 positions per window before, none after) |
+| Going to an empty workspace pulls you back to another one | 10-13 | Never guarded. Hiding the app in front makes macOS activate the next app (Finder, Ghostty), and `followFocus` followed it. Only parked apps were ignored. | none automatic: switch to an empty workspace 5 times and read `current` in `state.json` |
+| An app open elsewhere, opened again here, takes you to its old workspace | 10-13 | Never guarded. The app activates ~54 ms before its new window exists (Ghostty, measured). | none automatic: on an empty workspace press Ghostty's new-window key; the window must land there |
 | ⌘Tab window bar glitches or comes up wrong | 10-12, 10-13 | #4, #5, #6, #8 | none yet; add one |
 | Holding Tab lands on the wrong app | 10-12 | #6 | none yet; add one |
 

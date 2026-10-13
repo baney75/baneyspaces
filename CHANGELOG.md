@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Windows no longer slide to the corner.** An app split across workspaces (Ghostty with
+  windows on two) had its other windows glide across the screen on every switch, because apps
+  with the accessibility setting AXEnhancedUserInterface on animate every move. It's off for
+  the moment of each move now, and the move is instant. Switches with one went from about 300 ms
+  to under 100.
+- Going to an empty workspace no longer bounces you back. macOS hands focus to some other app
+  when the one in front hides, and BaneySpaces had been following it.
+- Opening an app here that's open on another workspace opens it here. The launcher opens a new
+  window of it on the workspace you're on (a row still goes to its other workspace), and a new
+  window an app makes right after coming forward (Ghostty's global New Window key) stays here.
 - **Start Claude Code or Codex from the launcher.** Type `claude` or `codex` and Return opens it
   in your terminal (Ghostty, iTerm2, WezTerm or Warp before Terminal), in your home folder.
   Only agents installed on this Mac are offered.
