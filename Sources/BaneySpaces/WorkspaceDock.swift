@@ -111,6 +111,7 @@ final class WorkspaceDock {
     private var timer: Timer?
     private var edgeSince: Date?
     private var awaySince: Date?
+    private var buttonsUpSince: Date?
     private(set) var isRunning = false
     private(set) var isShown = false
     /// Shown by a script or a test, not the pointer: it stays until hidden the same way.
@@ -127,6 +128,9 @@ final class WorkspaceDock {
         model.onSendHere = { [weak self] n in self?.spaces.moveFocused(to: n) }
         model.onFocusApp = { [weak self] pid, n in self?.spaces.focusApp(pid, on: n, cycle: true) }
         model.onFocusWindow = { [weak self] id, n in self?.spaces.focus(id, on: n) }
+        model.onMove = { [weak self] ids, n in self?.spaces.move(ids, to: n) }
+        // Reloads wait out a drag; one that moved nothing catches up here.
+        model.onDragDone = { [weak self] in self?.reload() }
         // After SwiftUI has laid out the strip, so the new size is the real one.
         model.onLayoutChange = { [weak self] in DispatchQueue.main.async { self?.resize() } }
         model.onShowOverview = { [weak self] in self?.hide(); self?.onShowOverview() }
@@ -164,8 +168,9 @@ final class WorkspaceDock {
 
     /// Workspaces changed: a shown dock follows along.
     func reload() {
-        // Mid-switch the windows are on the move; the switch's end calls this again.
-        guard isShown, !spaces.switching else { return }
+        // Mid-switch the windows are on the move; the switch's end calls this again. A drag in
+        // progress keeps its tiles; a reload could pull the dragged icon out from under it.
+        guard isShown, !spaces.switching, model.drag == nil else { return }
         model.load(from: spaces)
         resize()
     }
@@ -177,11 +182,20 @@ final class WorkspaceDock {
         // The overview already shows every workspace; the dock stays down while it's open.
         if MissionControlKeys.viewerOpen { if isShown { hide() }; edgeSince = nil; return }
         let mouse = NSEvent.mouseLocation
+        // A drag whose mouse-up never reached the dock (the screen locked, another app took the
+        // pointer) would hold it open forever; once the button has been up a moment, it's over.
+        if model.drag != nil, NSEvent.pressedMouseButtons == 0 {
+            if buttonsUpSince == nil { buttonsUpSince = Date() }
+            if Date().timeIntervalSince(buttonsUpSince!) > 0.3 { model.cancelDrag() }
+        } else {
+            buttonsUpSince = nil
+        }
         if isShown {
             guard let p = panel else { return }
-            // Hovering the dock or the edge below it keeps it up; a menu open from it too.
+            // Hovering the dock or the edge below it keeps it up; a menu open from it too, and a
+            // drag that strays off it on the way to a tile.
             let screenFrame = (shownOn ?? p.screen)?.frame ?? p.frame
-            let keep = WorkspaceDock.edge.keepZone(dock: p.frame, screen: screenFrame).contains(mouse) || model.menuOpen
+            let keep = WorkspaceDock.edge.keepZone(dock: p.frame, screen: screenFrame).contains(mouse) || model.menuOpen || model.drag != nil
             if keep { awaySince = nil; return }
             if awaySince == nil { awaySince = Date() }
             if Date().timeIntervalSince(awaySince!) > 0.4 {
@@ -332,6 +346,16 @@ final class DockModel: ObservableObject {
         let isCurrent: Bool
         var windowCount: Int { apps.reduce(0) { $0 + $1.windows } }
     }
+    /// An app's windows on one workspace, or one window from the strip, being dragged to another
+    /// workspace. `location` is the pointer in the dock's own space.
+    struct Drag {
+        let ids: [WindowID]
+        let from: Int
+        let icon: NSImage
+        /// What moves, for the label: an app's name or a window's title.
+        let name: String
+        var location: CGPoint
+    }
     /// What the pointer rests on: a whole tile, one app in a tile, or a button.
     enum Hover: Equatable {
         case tile(Int)
@@ -359,6 +383,12 @@ final class DockModel: ObservableObject {
             if (strip == nil) != (oldValue == nil) || strip?.app != oldValue?.app { onLayoutChange() }
         }
     }
+    @Published var drag: Drag?
+    /// Each tile's and button's frame in the dock, keyed as `CenterReport` reports them, to find
+    /// the tile under a drag.
+    var frames: [String: CGRect] = [:]
+    /// When the last drag ended: the click that ends a drag isn't also a click on the icon.
+    private var dragEnded = Date.distantPast
     /// Up on screen; a dwell that ends after the dock hid opens nothing.
     var shown = false
     /// The pointer is on the strip itself, which keeps it open.
@@ -370,6 +400,8 @@ final class DockModel: ObservableObject {
     var onPick: (Int) -> Void = { _ in }
     var onFocusApp: (pid_t, Int) -> Void = { _, _ in }
     var onSendHere: (Int) -> Void = { _ in }
+    var onMove: ([WindowID], Int) -> Void = { _, _ in }
+    var onDragDone: () -> Void = {}
     var onShowOverview: () -> Void = {}
     var onShowLauncher: () -> Void = {}
     var onTurnOff: () -> Void = {}
@@ -412,6 +444,8 @@ final class DockModel: ObservableObject {
     /// to another app or button closes it; drifting up to the strip, or across its own tile, doesn't.
     private func hoverChanged() {
         dwell?.cancel()
+        // Mid-drag the strip stays as it was: it may hold the row being dragged.
+        if drag != nil { return }
         switch hover {
         case .app(let n, let id):
             if let s = strip, s.workspace == n, s.app == id { return }
@@ -434,8 +468,57 @@ final class DockModel: ObservableObject {
         }
     }
 
+    /// The workspace a drag would land on, if any.
+    var dropTarget: Int? {
+        guard let drag else { return nil }
+        var tiles: [Int: CGRect] = [:]
+        for t in self.tiles { if let f = frames["tile:\(t.id)"] { tiles[t.id] = f } }
+        let empty = firstEmpty.flatMap { n in frames["btn:new"].map { (workspace: n, frame: $0) } }
+        return DockDrop.target(at: drag.location, from: drag.from, tiles: tiles, empty: empty)
+    }
+
+    func dragged(_ ids: [WindowID], from n: Int, icon: NSImage, name: String, to location: CGPoint) {
+        // A gesture still tracking after the dock hid is dead; it starts nothing.
+        guard shown else { return }
+        if drag == nil {
+            dwell?.cancel()
+            NSCursor.closedHand.push()
+        }
+        drag = Drag(ids: ids, from: n, icon: icon, name: name, location: location)
+    }
+
+    /// Let go over another workspace's tile: the windows move there, and you stay where you are.
+    func endDrag() {
+        guard let drag else { return }
+        NSCursor.pop()
+        let to = dropTarget
+        self.drag = nil
+        dragEnded = Date()
+        if let to {
+            // The strip came from the workspace they left; it closes rather than list them there.
+            strip = nil
+            onMove(drag.ids, to)
+        } else {
+            onDragDone()
+        }
+    }
+
+    /// Ends a drag without moving anything.
+    func cancelDrag() {
+        guard drag != nil else { return }
+        NSCursor.pop()
+        drag = nil
+        dragEnded = Date()
+        onDragDone()
+    }
+
+    /// A click, unless it's the mouse-up that ends a drag.
+    var clickCounts: Bool { drag == nil && Date().timeIntervalSince(dragEnded) > 0.3 }
+
     /// The dock went away.
     func reset() {
+        if drag != nil { NSCursor.pop() }
+        drag = nil
         shown = false
         dwell?.cancel()
         hover = nil
@@ -448,18 +531,18 @@ final class DockModel: ObservableObject {
     }
 }
 
-private struct AppCenters: PreferenceKey {
-    static var defaultValue: [String: CGPoint] = [:]
-    static func reduce(value: inout [String: CGPoint], nextValue: () -> [String: CGPoint]) { value.merge(nextValue()) { $1 } }
+private struct AppFrames: PreferenceKey {
+    static var defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) { value.merge(nextValue()) { $1 } }
 }
 
-/// Reports a view's center in the dock's space under `key`, to line the label and strip up with it.
+/// Reports a view's frame in the dock's space under `key`, to line the label and strip up with
+/// it and to find the tile under a drag.
 private struct CenterReport: ViewModifier {
     let key: String
     func body(content: Content) -> some View {
         content.background(GeometryReader { g in
-            let f = g.frame(in: .named("dock"))
-            Color.clear.preference(key: AppCenters.self, value: [key: CGPoint(x: f.midX, y: f.midY)])
+            Color.clear.preference(key: AppFrames.self, value: [key: g.frame(in: .named("dock"))])
         })
     }
 }
@@ -475,7 +558,7 @@ struct DockView: View {
     @ObservedObject var model: DockModel
     private let tileSize: CGFloat = 64
     /// Where each tile, app icon and button sits in the dock, so the strip and label line up with it.
-    @State private var centers: [String: CGPoint] = [:]
+    @State private var frames: [String: CGRect] = [:]
     @State private var sideSize: CGSize = .zero
     @State private var barSize: CGSize = .zero
     @State private var stackSize: CGSize = .zero
@@ -490,8 +573,17 @@ struct DockView: View {
             if edge == .top || edge == .left { side }
         }
         .modifier(SizeReport(size: $stackSize))
+        // The icon being dragged follows the pointer.
+        .overlay(alignment: .topLeading) {
+            if let drag = model.drag {
+                Image(nsImage: drag.icon).resizable().interpolation(.high).frame(width: 36, height: 36)
+                    .shadow(color: .black.opacity(0.45), radius: 6, y: 2)
+                    .position(drag.location)
+                    .allowsHitTesting(false)
+            }
+        }
         .coordinateSpace(name: "dock")
-        .onPreferenceChange(AppCenters.self) { centers = $0 }
+        .onPreferenceChange(AppFrames.self) { frames = $0; model.frames = $0 }
         .padding(edge.isVertical ? .vertical : .horizontal, 16)
         .padding(edge == .bottom ? .bottom : edge == .top ? .top : edge == .left ? .leading : .trailing, 4)
         // Room for a long label beside a short dock.
@@ -567,7 +659,7 @@ struct DockView: View {
 
     /// Across from `key` along the dock, but never past either end of it.
     private func sideOffset(_ key: String) -> CGSize {
-        guard let c = centers[key], barSize != .zero, sideSize != .zero, stackSize != .zero else { return .zero }
+        guard let c = frames[key].map({ CGPoint(x: $0.midX, y: $0.midY) }), barSize != .zero, sideSize != .zero, stackSize != .zero else { return .zero }
         // The bar as drawn, shrunk to fit or not; the centers are measured as drawn too.
         let bar = CGSize(width: barSize.width * barScale, height: barSize.height * barScale)
         if model.edge.isVertical {
@@ -593,6 +685,10 @@ struct DockView: View {
     }
 
     private var labelText: String? {
+        if let drag = model.drag {
+            guard let to = model.dropTarget else { return "Drop on a workspace to move \(drag.name)" }
+            return "Move \(drag.name) to Workspace \(to)"
+        }
         switch model.hover {
         case .tile(let n): return model.tiles.first { $0.id == n }.map(title)
         case .app(let n, let id):
@@ -615,17 +711,27 @@ struct DockView: View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 7) {
                 Image(nsImage: app.icon).resizable().frame(width: 18, height: 18)
-                Text(app.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
-                Text("\(app.list.count) windows").font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
+                // Mid-drag the strip stays (it holds the row being dragged), so it says where
+                // the drag lands in place of the label it covers.
+                if model.drag != nil, let text = labelText {
+                    Text(text).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white).lineLimit(1).truncationMode(.middle)
+                } else {
+                    Text(app.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+                    Text("\(app.list.count) windows").font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
+                }
                 Spacer(minLength: 8)
-                WorkspaceBadge(n: n, size: 17)
+                WorkspaceBadge(n: model.dropTarget ?? n, size: 17)
             }
             .padding(.horizontal, 8).padding(.bottom, 4)
             // Every window is reachable: past ten, the list scrolls.
             ScrollView(.vertical, showsIndicators: app.list.count > 10) {
                 VStack(spacing: 2) {
                     ForEach(app.list) { w in
-                        StripRow(window: w, icon: app.icon, tint: Chrome.workspace(n)) { model.onFocusWindow(w.id, n) }
+                        StripRow(window: w, icon: app.icon, tint: Chrome.workspace(n), dragging: model.drag?.ids == [w.id],
+                                 onDrag: { model.dragged([w.id], from: n, icon: app.icon, name: w.title.isEmpty ? app.name : "“\(w.title)”", to: $0) },
+                                 onDragEnd: { model.endDrag() }) {
+                            if model.clickCounts { model.onFocusWindow(w.id, n) }
+                        }
                     }
                 }
             }
@@ -651,14 +757,15 @@ struct DockView: View {
     }
 
     private func tileView(_ tile: DockModel.Tile) -> some View {
-        let hovered = isHovered(tile)
+        let target = model.dropTarget == tile.id
+        let hovered = isHovered(tile) || target
         let tint = Chrome.workspace(tile.id)
         let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
         return VStack(spacing: 5) {
             ZStack(alignment: .topLeading) {
                 shape.fill(tile.isCurrent ? tint.opacity(hovered ? 0.34 : 0.26) : Color.white.opacity(hovered ? 0.13 : 0.06))
-                    .overlay(shape.strokeBorder(tile.isCurrent ? tint : Color.white.opacity(hovered ? 0.18 : 0.08),
-                                                lineWidth: tile.isCurrent ? 1.5 : 1))
+                    .overlay(shape.strokeBorder(tile.isCurrent || target ? tint : Color.white.opacity(hovered ? 0.18 : 0.08),
+                                                lineWidth: target ? 2.5 : tile.isCurrent ? 1.5 : 1))
                     .onHover { model.setHover(.tile(tile.id), $0) }
                     .onTapGesture { model.onPick(tile.id) }
                 icons(tile).frame(width: tileSize, height: tileSize)
@@ -730,7 +837,8 @@ struct DockView: View {
     }
 
     private func appIcon(_ app: DockModel.App, in tile: DockModel.Tile, size: CGFloat) -> some View {
-        let hovered = model.hover == .app(tile.id, app.id)
+        let dragging = model.drag.map { $0.from == tile.id && $0.ids == app.list.map(\.id) } ?? false
+        let hovered = model.drag == nil && model.hover == .app(tile.id, app.id)
         let twin = !hovered && hoveredPid == app.pid
         return Image(nsImage: app.icon).resizable().interpolation(.high).frame(width: size, height: size)
             .shadow(color: .black.opacity(hovered ? 0.4 : 0.2), radius: hovered ? 4 : 2, y: 1)
@@ -751,9 +859,16 @@ struct DockView: View {
             .modifier(CenterReport(key: "\(tile.id):\(app.id)"))
             .scaleEffect(hovered ? 1.18 : 1)
             .animation(.spring(response: 0.22, dampingFraction: 0.65), value: hovered)
+            .opacity(dragging ? 0.3 : 1)
             .contentShape(Rectangle())
             .onHover { model.setHover(.app(tile.id, app.id), $0) }
-            .onTapGesture { model.onFocusApp(app.pid, tile.id) }
+            // Drag it onto another tile to move all its windows here there.
+            .gesture(
+                DragGesture(minimumDistance: 4, coordinateSpace: .named("dock"))
+                    .onChanged { v in model.dragged(app.list.map(\.id), from: tile.id, icon: app.icon, name: app.name, to: v.location) }
+                    .onEnded { _ in model.endDrag() }
+            )
+            .simultaneousGesture(TapGesture().onEnded { if model.clickCounts { model.onFocusApp(app.pid, tile.id) } })
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("\(app.name), workspace \(tile.id)")
             .accessibilityAddTraits(.isButton)
@@ -761,7 +876,7 @@ struct DockView: View {
     }
 
     private func newWorkspaceButton(_ n: Int) -> some View {
-        let hovered = model.hover == .newWorkspace
+        let hovered = model.hover == .newWorkspace || model.dropTarget == n
         let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
         return VStack(spacing: 5) {
             shape.strokeBorder(Color.white.opacity(hovered ? 0.35 : 0.16), style: StrokeStyle(lineWidth: 1.2, dash: [4, 4]))
@@ -807,6 +922,9 @@ private struct StripRow: View {
     let window: DockModel.Window
     let icon: NSImage
     let tint: Color
+    var dragging = false
+    var onDrag: (CGPoint) -> Void = { _ in }
+    var onDragEnd: () -> Void = {}
     let action: () -> Void
     @State private var hovered = false
 
@@ -825,9 +943,16 @@ private struct StripRow: View {
         .frame(height: 28)
         .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(hovered ? tint.opacity(0.85) : .clear))
         .contentShape(Rectangle())
+        .opacity(dragging ? 0.4 : 1)
         .help(title)
         .onHover { hovered = $0 }
-        .onTapGesture(perform: action)
+        // Drag it onto a workspace tile to move just this window there.
+        .gesture(
+            DragGesture(minimumDistance: 4, coordinateSpace: .named("dock"))
+                .onChanged { onDrag($0.location) }
+                .onEnded { _ in onDragEnd() }
+        )
+        .simultaneousGesture(TapGesture().onEnded(action))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title + (window.isLast ? ", last used" : ""))
         .accessibilityAddTraits(.isButton)

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Drag windows between workspaces in the Workspace Dock.** Drag an app's icon onto another
+  tile and its windows on that workspace move there; drag a window out of the strip to move just
+  that one. The tile it will land on lights up in its color, and dropping on the dashed tile
+  sends it to the first empty workspace. You stay on the workspace you're on.
 - **The Workspace Dock can sit on any side:** bottom, left, right or top, from setup, the menu
   bar menu, or a tile's right-click menu. It opens when the pointer rests on that edge under it,
   the label and window strip open on its inner side, and a dock too long for the screen shrinks

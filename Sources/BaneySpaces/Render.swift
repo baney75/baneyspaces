@@ -160,6 +160,15 @@ enum Render {
         guard save(DockView(model: dock).padding(.vertical, 20).background(Color(white: 0.35)), "dock-top.png", CGSize(width: 820, height: 0)) else { return 1 }
         dock.edge = .bottom
 
+        // Mail dragged from workspace 4 onto workspace 2. The first pass measures the tiles.
+        dock.strip = nil
+        dock.hover = nil
+        let dragView = DockView(model: dock).padding(.vertical, 20).background(Color(white: 0.35))
+        guard save(dragView, "dock-drag.png", CGSize(width: 820, height: 0)), let two = dock.frames["tile:2"] else { return 1 }
+        dock.drag = .init(ids: [1], from: 4, icon: icon("/System/Applications/Mail.app"), name: "Mail", location: CGPoint(x: two.midX + 6, y: two.midY - 4))
+        guard save(dragView, "dock-drag.png", CGSize(width: 820, height: 0)) else { return 1 }
+        dock.drag = nil
+
         // The ⌘Tab window bar: Tab held on Helium.
         let bar = SwitcherModel()
         bar.mode = .apps
