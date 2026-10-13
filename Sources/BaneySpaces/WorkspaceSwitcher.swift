@@ -242,12 +242,16 @@ final class WorkspaceSwitcher {
         }
         p.orderFrontRegardless()
         // A panel kept for hours has been seen to stay off screen though it was ordered in
-        // front. If the window server doesn't have it on screen, build a new one, once.
-        if !retried, !p.isOnScreenNow {
-            Trace.log("cmdTab panel not on screen; rebuilding it")
-            p.orderOut(nil)
-            panel = nil
-            return show(retried: true)
+        // front. If the window server doesn't have it on screen, build a new one, once. The
+        // window server hears of the order only after this run-loop turn, so look a moment later.
+        if !retried {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                guard let self, self.isShowing, self.panel === p, !p.isOnScreenNow else { return }
+                Trace.log("cmdTab panel not on screen; rebuilding it")
+                p.orderOut(nil)
+                self.panel = nil
+                self.show(retried: true)
+            }
         }
         // If the key watcher misses ⌘ being let go (it was off for a moment), notice it here.
         watchdog?.invalidate()

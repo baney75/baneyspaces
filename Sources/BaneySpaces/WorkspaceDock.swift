@@ -264,7 +264,9 @@ final class WorkspaceDock {
         // front. If the window server doesn't have it on screen, build a new one, once.
         guard !retried else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-            guard let self, self.isShown, self.panel === p, !p.isOnScreenNow, !Windows.frontIsFullScreen() else { return }
+            guard let self, self.isShown, self.panel === p, !p.isOnScreenNow,
+                  // A full-screen Space (no menu bar on that display) keeps the dock off on purpose.
+                  screen.visibleFrame != screen.frame, !Windows.frontIsFullScreen() else { return }
             Trace.log("dock panel not on screen; rebuilding it")
             p.orderOut(nil)
             self.panel = nil
