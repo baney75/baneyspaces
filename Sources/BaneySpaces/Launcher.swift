@@ -2,6 +2,7 @@ import AppKit
 import BaneySpacesCore
 import Carbon.HIToolbox
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// One place to open, find, install, update and remove apps, and to run the Mac's everyday
 /// commands. Type to search everything at once, or pick a menu (Apps, Install, Remove, Update,
@@ -326,6 +327,8 @@ final class LauncherModel: ObservableObject {
     private let catalog = CaskCatalog()
     private var storeWork: DispatchWorkItem?
     private var bangs = Launcher.loadBangs()
+    /// Terminal agents found on this Mac: command to path.
+    var agents: [String: String] = [:]
 
     init(actions: LauncherActions) {
         self.actions = actions
@@ -345,6 +348,11 @@ final class LauncherModel: ObservableObject {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let fresh = AppEntry.scan()
             DispatchQueue.main.async { self?.apps = fresh; self?.rebuild() }
+        }
+        Terminals.installedAgents { [weak self] found in
+            guard let self, found != self.agents else { return }
+            self.agents = found
+            self.rebuild()
         }
         if scope == .install || scope == .remove { loadCatalog() }
     }
@@ -421,6 +429,7 @@ final class LauncherModel: ObservableObject {
                 out += menuItems()
             } else {
                 out += appItems(q, limit: 8)
+                out += agentItems(q)
                 out += workspaceItems(q)
                 out += commandItems(q)
                 out += menuItems().filter { Fuzzy.score(q, $0.title) != nil }
@@ -572,6 +581,20 @@ final class LauncherModel: ObservableObject {
                              subtitle: "The \(a.name) windows there", icon: .file(a.path), workspaces: [n],
                              run: { [weak self] in self?.focus(a, on: n) }, reveal: URL(fileURLWithPath: a.path))
             }
+        }
+    }
+
+    /// "claude" or "codex": that agent, started in your terminal.
+    private func agentItems(_ q: String) -> [LauncherItem] {
+        let matches = TerminalAgent.matches(q, installed: agents.keys)
+        guard !matches.isEmpty, let terminal = Terminals.app() else { return [] }
+        let name = FileManager.default.displayName(atPath: terminal.path).replacingOccurrences(of: ".app", with: "")
+        return matches.map { a in
+            LauncherItem(id: "agent:\(a.command)", section: "Terminal", title: a.name, subtitle: "Opens in \(name) · runs \(a.command)",
+                         icon: .file(terminal.path), run: { [weak self] in
+                             self?.close()
+                             if let path = self?.agents[a.command] { Terminals.open(a, at: path, in: terminal) }
+                         })
         }
     }
 
@@ -1018,6 +1041,86 @@ enum Brew {
     /// Homebrew's own installer, from brew.sh, in Terminal where it can ask for a password.
     static func installHomebrew() {
         runInTerminal(#"/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)""#)
+    }
+}
+
+/// Your terminal, and the coding agents it can run.
+enum Terminals {
+    /// The terminal agents open in: see `TerminalChoice`.
+    static func app() -> URL? {
+        guard let type = UTType("com.apple.terminal.shell-script") else { return nil }
+        let ws = NSWorkspace.shared
+        let capable = ws.urlsForApplications(toOpen: type)
+        var byID: [String: URL] = [:]
+        for url in capable { if let id = Bundle(url: url)?.bundleIdentifier, byID[id] == nil { byID[id] = url } }
+        let handler = ws.urlForApplication(toOpen: type)
+        let pick = TerminalChoice.pick(handler: handler.flatMap { Bundle(url: $0)?.bundleIdentifier }, capable: Set(byID.keys))
+        return byID[pick] ?? handler ?? ws.urlForApplication(withBundleIdentifier: TerminalChoice.terminal)
+    }
+
+    /// Writes the agent's script and hands it to the terminal, which runs it in a new window.
+    static func open(_ agent: TerminalAgent, at path: String, in terminal: URL) {
+        let url = Spaces.folder.appendingPathComponent("agent-\(agent.command).command")
+        guard let script = agent.script(at: path) else {
+            return Toast.show("Couldn’t start \(agent.name) from \(path)", symbol: "exclamationmark.triangle.fill")
+        }
+        do {
+            try FileManager.default.createDirectory(at: Spaces.folder, withIntermediateDirectories: true)
+            try script.write(to: url, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
+        } catch {
+            return Toast.show("Couldn’t start \(agent.name): \(error.localizedDescription)", symbol: "exclamationmark.triangle.fill")
+        }
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = true
+        NSWorkspace.shared.open([url], withApplicationAt: terminal, configuration: config) { _, error in
+            if let error { DispatchQueue.main.async { Toast.show("Couldn’t start \(agent.name): \(error.localizedDescription)", symbol: "exclamationmark.triangle.fill") } }
+        }
+    }
+
+    private static var found: (at: Date, agents: [String: String])?
+
+    /// The agents on this Mac (command to path), checked off the main thread at most every five
+    /// minutes: the usual install folders first, then your login shell's PATH for anything
+    /// installed somewhere else. The shell gets two seconds; a profile that leaves something
+    /// running in the background can't hold the check open.
+    static func installedAgents(_ done: @escaping ([String: String]) -> Void) {
+        if let found, Date().timeIntervalSince(found.at) < 300 { return done(found.agents) }
+        DispatchQueue.global(qos: .utility).async {
+            let fm = FileManager.default
+            var paths: [String: String] = [:]
+            for cmd in TerminalAgent.all.map(\.command) {
+                paths[cmd] = TerminalAgent.folders.lazy
+                    .map { (($0 as NSString).expandingTildeInPath as NSString).appendingPathComponent(cmd) }
+                    .first(where: fm.isExecutableFile(atPath:))
+            }
+            let missing = TerminalAgent.all.map(\.command).filter { paths[$0] == nil }
+            if !missing.isEmpty {
+                let out = fm.temporaryDirectory.appendingPathComponent("baneyspaces-agents-\(UUID().uuidString)")
+                fm.createFile(atPath: out.path, contents: nil)
+                defer { try? fm.removeItem(at: out) }
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/bin/zsh")
+                p.arguments = ["-lc", "command -v " + missing.joined(separator: " ")]
+                p.standardOutput = try? FileHandle(forWritingTo: out)
+                p.standardError = FileHandle.nullDevice
+                p.standardInput = FileHandle.nullDevice
+                if (try? p.run()) != nil {
+                    let deadline = Date().addingTimeInterval(2)
+                    while p.isRunning && Date() < deadline { usleep(20_000) }
+                    if p.isRunning { p.terminate() }
+                    let text = (try? String(contentsOf: out, encoding: .utf8)) ?? ""
+                    for line in text.split(separator: "\n") where line.hasPrefix("/") && fm.isExecutableFile(atPath: String(line)) {
+                        let cmd = (String(line) as NSString).lastPathComponent
+                        if missing.contains(cmd) { paths[cmd] = String(line) }
+                    }
+                }
+            }
+            DispatchQueue.main.async {
+                found = (Date(), paths)
+                done(paths)
+            }
+        }
     }
 }
 

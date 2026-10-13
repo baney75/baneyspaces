@@ -853,14 +853,17 @@ struct DockView: View {
         let dragging = model.drag.map { $0.from == tile.id && $0.ids == app.list.map(\.id) } ?? false
         let hovered = model.drag == nil && model.hover == .app(tile.id, app.id)
         let twin = !hovered && hoveredPid == app.pid
+        let ring: CGFloat = hovered ? 2 : twin ? 1 : 0
         return Image(nsImage: app.icon).resizable().interpolation(.high).frame(width: size, height: size)
             .shadow(color: .black.opacity(hovered ? 0.4 : 0.2), radius: hovered ? 4 : 2, y: 1)
             // The icon under the pointer is ringed in its workspace's color. The same app on
             // another workspace gets only a faint outline, so the ring never lands on the copy
-            // you aren't pointing at.
-            .overlay(RoundedRectangle(cornerRadius: size * 0.26, style: .continuous)
-                .strokeBorder(hovered ? Chrome.workspace(tile.id) : Color.white.opacity(0.4),
-                              lineWidth: hovered ? 2 : twin ? 1 : 0).padding(-2))
+            // you aren't pointing at. A macOS icon's art fills the middle 824 of its 1024 points
+            // with a corner of about 185, so the ring traces that, a point outside it; around the
+            // whole image it floated off the art and ran into the tile's edge.
+            .overlay(RoundedRectangle(cornerRadius: size * 0.18 + ring + 1, style: .continuous)
+                .strokeBorder(hovered ? Chrome.workspace(tile.id) : Color.white.opacity(0.4), lineWidth: ring)
+                .padding(size * 100 / 1024 - ring - 1))
             // One dot per window when there's more than one; clicking again steps through them.
             .overlay(alignment: .bottom) {
                 if app.windows > 1 {

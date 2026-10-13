@@ -132,6 +132,10 @@ Spotlight. Turning that off gives ⌘Space back to Spotlight, and so does quitti
   `!claude why is the sky blue`, or the bang at the end (`cats !yt`). Type `!` to see them all;
   Tab fills one in. A bang that isn't built in goes to DuckDuckGo, which knows thousands.
   Agents: `!claude`, `!chatgpt`, `!pplx`, `!grok`, `!copilot`, `!lechat`.
+- **Coding agents in your terminal.** Type `claude` or `codex` and, if it's installed, the
+  launcher offers to start Claude Code or Codex in your terminal, in your home folder. That's
+  the app that opens `.command` files, or Ghostty, iTerm2, WezTerm or Warp when that's still
+  Terminal and one of them is installed.
 
 ### Your own bangs
 
