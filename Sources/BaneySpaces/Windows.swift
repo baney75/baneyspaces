@@ -26,11 +26,11 @@ struct Window {
 
     func setOrigin(_ p: CGPoint) {
         guard Windows.isResponsive(pid) else { return }
-        element.set(kAXPositionAttribute, p, .cgPoint)
+        withoutAnimation { element.set(kAXPositionAttribute, p, .cgPoint) }
     }
     func setSize(_ s: CGSize) {
         guard Windows.isResponsive(pid) else { return }
-        element.set(kAXSizeAttribute, s, .cgSize)
+        withoutAnimation { element.set(kAXSizeAttribute, s, .cgSize) }
     }
     /// Moves a window back to `r`. A parked window kept its size, so usually one move is all it
     /// takes; resizing makes apps lay out again, which is slow and can flicker.
@@ -39,10 +39,35 @@ struct Window {
     }
 
     func setFrame(_ r: CGRect) {
+        guard Windows.isResponsive(pid) else { return }
         // Size, move, size again: a window that would cross a screen edge gets clamped otherwise.
-        setSize(r.size)
-        setOrigin(r.origin)
-        setSize(r.size)
+        withoutAnimation {
+            element.set(kAXSizeAttribute, r.size, .cgSize)
+            element.set(kAXPositionAttribute, r.origin, .cgPoint)
+            element.set(kAXSizeAttribute, r.size, .cgSize)
+        }
+    }
+
+    /// While an app has AXEnhancedUserInterface on, AppKit animates every move made through
+    /// Accessibility: a parked window slid across the screen to the corner for a fifth of a
+    /// second (Ghostty, measured: 20 positions; with it off, one). Chromium browsers turn it on,
+    /// and assistive tools can turn it on for every app. It's off for the move and back on right
+    /// after, which leaves the move instant and whoever wanted it on unaffected.
+    private func withoutAnimation(_ move: () -> Void) {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.1)
+        let key = "AXEnhancedUserInterface" as CFString
+        var raw: CFTypeRef?
+        let on = AXUIElementCopyAttributeValue(app, key, &raw) == .success && (raw as? Bool) == true
+        if on { AXUIElementSetAttributeValue(app, key, kCFBooleanFalse) }
+        move()
+        guard on, AXUIElementSetAttributeValue(app, key, kCFBooleanTrue) != .success else { return }
+        // Busy laying out after a resize: try again in a moment, with longer to answer, so
+        // whoever turned it on (VoiceOver, automation) doesn't lose it.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            AXUIElementSetMessagingTimeout(app, 0.5)
+            AXUIElementSetAttributeValue(app, key, kCFBooleanTrue)
+        }
     }
 
     func unminimize() {
@@ -214,6 +239,19 @@ enum Windows {
 
     /// Whether the app still lists this window among its open ones. Some apps hide a window on
     /// ⌘W instead of closing it, so the window server alone can't tell.
+    /// The app's standard windows that Accessibility lists, by number: what a new window looks
+    /// like to BaneySpaces. The window server also lists every app's invisible helper windows
+    /// (Ghostty has 14), which come and go on their own.
+    static func standardIDs(of pid: pid_t) -> Set<WindowID> {
+        guard isResponsive(pid) else { return [] }
+        let ax = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(ax, 0.1)
+        let listed: [AXUIElement] = ax.value(kAXWindowsAttribute) ?? []
+        return Set(listed.compactMap { el in
+            el.string(kAXSubroleAttribute) == kAXStandardWindowSubrole as String ? el.windowID : nil
+        })
+    }
+
     static func lists(_ id: WindowID, pid: pid_t) -> Bool {
         let ax = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(ax, 0.25)
@@ -317,6 +355,39 @@ enum Windows {
             return ia.width * ia.height < ib.width * ib.height
         }
         return best?.1 ?? areas.first?.1 ?? frame
+    }
+
+    /// The app's own New Window command: a menu item named New … Window (New Window, New Finder
+    /// Window, New Personal Window), preferring the one on plain ⌘N. Matched by name, not by ⌘N
+    /// alone, which in Notes or Mail makes a note or a message instead, and which Ghostty gives
+    /// up when its New Window key is changed. Works on a hidden app, which stays hidden.
+    static func newWindowItem(_ pid: pid_t) -> AXUIElement? {
+        guard isResponsive(pid) else { return nil }
+        // Every element asked gets the short timeout: an app that hangs partway through its
+        // menus must not hold the launcher.
+        func children(_ e: AXUIElement) -> [AXUIElement] {
+            AXUIElementSetMessagingTimeout(e, 0.25)
+            return e.value(kAXChildrenAttribute) ?? []
+        }
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.25)
+        guard let bar: AXUIElement = app.value(kAXMenuBarAttribute) else { return nil }
+        var named: AXUIElement?
+        // The Apple menu is first and never has it.
+        for menu in children(bar).dropFirst() {
+            for list in children(menu) {
+                for item in children(list) {
+                    guard let title = item.string(kAXTitleAttribute), title.hasPrefix("New"),
+                          title.localizedCaseInsensitiveContains("window"), item.bool(kAXEnabledAttribute) else { continue }
+                    if item.string("AXMenuItemCmdChar") == "N", (item.value("AXMenuItemCmdModifiers") as NSNumber?)?.intValue == 0 {
+                        return item
+                    }
+                    if named == nil { named = item }
+                }
+            }
+            guard isResponsive(pid) else { return nil }
+        }
+        return named
     }
 }
 

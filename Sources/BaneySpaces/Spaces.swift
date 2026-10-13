@@ -387,6 +387,9 @@ final class Spaces {
         guard active, pid != getpid() else { return }
         defer { frontPid = pid }
         Windows.markResponsive(pid)
+        // Asked for by `openWindowHere`: its window is on the way, here.
+        if let o = opening, o.pid == pid, Date() < o.until { return }
+        activatedAt = Date()
         if switching {
             if pid != expectedFront { followPending = true }
             return
@@ -436,28 +439,102 @@ final class Spaces {
         if n == model.current && saved.frames[w.id] == nil {
             lastKey[pid] = w.id
             model.noteFocus(w.id)
+            // An app BaneySpaces hid, opening a window here: macOS unhid all of it, so its windows
+            // from other workspaces are in sight too. They go back out of view.
+            if strayed(pid) { return switchTo(model.current, announce: false) }
             return persist()
         }
         if let here = windowHere(of: pid) { return stay(on: here) }
-        // When the app in front closes its last window here, quits or hides, macOS hands focus to
-        // the next app. An app kept unhidden for automation is often next in line, and that isn't
-        // you picking it: stay here.
-        if saved.frames[w.id] != nil, ParkedApps.contains(pid), Date().timeIntervalSince(leftAt) < 0.5 {
+        let known = Windows.standardIDs(of: pid)
+        // When the app in front closes its last window here, quits or hides (a switch hiding it
+        // too), macOS hands focus to the next app in line on its own: often one BaneySpaces just
+        // put away, parked or hidden. That isn't you picking it: stay here, and an app the
+        // activation unhid goes back into hiding. Following it pulled you off the workspace you
+        // had just gone to, Finder or Ghostty a moment after you arrived.
+        let putAway = (saved.frames[w.id] != nil && ParkedApps.contains(pid)) || saved.hiddenApps.contains(pid)
+        // Timed from when the activation arrived: one that came mid-switch is only looked at once
+        // the switch, parking included, is over.
+        if putAway, activatedAt.timeIntervalSince(max(leftAt, handedOffAt)) < 0.5 {
             Trace.log("followFocus stayed: \(w.appName) came forward after the front app left")
             if let id = model.lastFocused[model.current], let t = windows[id], saved.frames[id] == nil, t.pid != pid {
-                return stay(on: t)
+                stay(on: t)
+            } else {
+                takeFocus()
             }
-            return takeFocus()
+            if saved.hiddenApps.contains(pid) { hideOnceBehind(pid) }
+            // Unless it came forward to open a window here after all (its New Window key, pressed
+            // right after the switch): that window shows.
+            waitUntil(timeout: 0.5, interval: 0.02, { !Windows.standardIDs(of: pid).subtracting(known).isEmpty }) { [self] in
+                guard active, !switching else { return }
+                _ = showNewWindow(of: pid, besides: known)
+            }
+            return
         }
-        Trace.log("followFocus \(w.appName) to \(n)")
-        lastKey[pid] = w.id
-        model.noteFocus(w.id)
-        switchTo(n, announce: true)
+        // An app opening a new window (a global New Window key, a file opened in it) comes
+        // forward before the window exists, still focused on its window elsewhere: Ghostty's
+        // came 54 ms after it activated. Give the window that long to show up here before
+        // following the app away.
+        let gen = generation
+        following += 1
+        let ticket = following
+        waitUntil(timeout: Self.newWindowGrace, interval: 0.02, {
+            !Windows.standardIDs(of: pid).subtracting(known).isEmpty
+        }) { [self] in
+            guard following == ticket, gen == generation, active, !switching,
+                  NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
+            if showNewWindow(of: pid, besides: known) {
+                return Trace.log("followFocus stayed: \(w.appName) opened a window here")
+            }
+            Trace.log("followFocus \(w.appName) to \(n)")
+            lastKey[pid] = w.id
+            model.noteFocus(w.id)
+            switchTo(n, announce: true)
+        }
+    }
+
+    /// Hides an app BaneySpaces put away that came forward on its own, once it's out of the front:
+    /// hiding the app in front makes macOS pick yet another app. Not if it has a window here by
+    /// then (one it opened).
+    private func hideOnceBehind(_ pid: pid_t) {
+        waitUntil(timeout: 0.3, interval: 0.01, { NSWorkspace.shared.frontmostApplication?.processIdentifier != pid }) { [self] in
+            guard active, !model.windows(on: model.current).contains(where: { windows[$0]?.pid == pid }) else { return }
+            // Still in front (focus didn't move here): the workspace is applied again instead,
+            // which hides it the usual way.
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier != pid else {
+                return switching ? () : switchTo(model.current, announce: false)
+            }
+            guard let app = NSRunningApplication(processIdentifier: pid), !app.isHidden else { return }
+            ownHides.insert(pid)
+            ownHidesUntil = Date().addingTimeInterval(1)
+            app.hide()
+            saved.hiddenApps.insert(pid)
+        }
+    }
+
+    /// How long an app that came forward gets to open a window here before BaneySpaces follows
+    /// it to its workspace. Long enough for an app to make a window after activating, short
+    /// enough that a Dock click on an app elsewhere still feels immediate.
+    private static let newWindowGrace: TimeInterval = 0.2
+    /// Counts followFocus calls; one waiting out `newWindowGrace` stands down for a newer one.
+    private var following = 0
+
+    /// The app has windows on other workspaces that aren't out of view: it was unhidden.
+    private func strayed(_ pid: pid_t) -> Bool {
+        guard NSRunningApplication(processIdentifier: pid)?.isHidden == false else { return false }
+        return windows.values.contains { $0.pid == pid && model.workspace(of: $0.id).map { $0 != model.current } == true
+            && saved.frames[$0.id] == nil && !$0.isMinimized }
     }
 
     /// When the app in front last closed a window here, quit or hid. An activation right after
     /// that is macOS picking the next app, not you.
     private var leftAt = Date.distantPast
+    /// When a switch last handed focus away from the app in front (hid it, left a parked app,
+    /// or went to an empty workspace). macOS then picks an app to put in front on its own.
+    private var handedOffAt = Date.distantPast
+    /// When the last app activation BaneySpaces didn't ask for arrived.
+    private var activatedAt = Date.distantPast
+    /// An app `openWindowHere` asked for a window, until when: its coming forward isn't followed.
+    private var opening: (pid: pid_t, until: Date)?
     /// The app in front, as of the last activation.
     private var frontPid: pid_t?
     /// Apps BaneySpaces itself just hid; their hide notifications arrive late.
@@ -639,6 +716,44 @@ final class Spaces {
         NSRunningApplication(processIdentifier: pid)?.activate(options: [])
     }
 
+    /// Opens a new window of a running app here, with the app's own New Window command, and
+    /// focuses it once it exists. The app stays hidden until then, and its windows on other
+    /// workspaces stay where they are. False when the app has no New Window command; an app
+    /// that makes no window in time is gone to instead.
+    func openWindowHere(_ pid: pid_t) -> Bool {
+        guard active, let item = Windows.newWindowItem(pid) else { return false }
+        let known = Windows.standardIDs(of: pid)
+        guard AXUIElementPerformAction(item, kAXPressAction as CFString) == .success else { return false }
+        // An app that comes forward for it isn't asking to be followed to its workspace.
+        opening = (pid, Date().addingTimeInterval(1.5))
+        waitUntil(timeout: 1.5, interval: 0.02, { !Windows.standardIDs(of: pid).subtracting(known).isEmpty }) { [weak self] in
+            guard let self, self.active else { return }
+            if self.switching { return self.enqueue { [weak self] in self?.finishOpening(pid, besides: known) } }
+            self.finishOpening(pid, besides: known)
+        }
+        return true
+    }
+
+    private func finishOpening(_ pid: pid_t, besides known: Set<WindowID>) {
+        opening = nil
+        if !showNewWindow(of: pid, besides: known) { focusApp(pid) }
+    }
+
+    /// Shows a window the app just opened, which joined the workspace you're on: the app's others
+    /// are parked before it shows, and it takes focus. False when there's no such window.
+    private func showNewWindow(of pid: pid_t, besides known: Set<WindowID>) -> Bool {
+        // A full scan: the window server may already have counted the window before
+        // Accessibility listed it, and a quick refresh would then never look again.
+        refresh(full: true)
+        guard let new = windows.values.first(where: { $0.pid == pid && !known.contains($0.id) && model.workspace(of: $0.id) == model.current }) else {
+            return false
+        }
+        lastKey[pid] = new.id
+        model.noteFocus(new.id)
+        switchTo(model.current, announce: false)
+        return true
+    }
+
     /// Sends one window to workspace `n` without going there.
     func move(_ id: WindowID, to n: Int) { move([id], to: n) }
 
@@ -761,6 +876,7 @@ final class Spaces {
                 // brings back its windows from other workspaces.
                 takeFocus(finderFallback: !how.hideApps.contains(Self.finderPid ?? -1))
             }
+            if moveFocus, !deferred.isEmpty || leavingParked != nil || target == nil { handedOffAt = Date() }
             clock.mark(.done)
             // Only a switch that really brought an app forward vouches for the next one's idea of
             // which app is in front.
