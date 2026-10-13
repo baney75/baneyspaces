@@ -646,7 +646,8 @@ final class Spaces {
     func move(_ ids: [WindowID], to n: Int) {
         guard active, Workspaces.range.contains(n), !ids.isEmpty else { return }
         if switching { return enqueue { [weak self] in self?.move(ids, to: n) } }
-        for id in ids { model.assign(id, to: n) }
+        // The window last used there stays the one a visit lands on.
+        for id in ids { model.assign(id, to: n, focus: false) }
         switchTo(model.current, takeFocus: false, announce: false)
     }
 

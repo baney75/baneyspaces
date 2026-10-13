@@ -111,6 +111,7 @@ final class WorkspaceDock {
     private var timer: Timer?
     private var edgeSince: Date?
     private var awaySince: Date?
+    private var buttonsUpSince: Date?
     private(set) var isRunning = false
     private(set) var isShown = false
     /// Shown by a script or a test, not the pointer: it stays until hidden the same way.
@@ -128,6 +129,8 @@ final class WorkspaceDock {
         model.onFocusApp = { [weak self] pid, n in self?.spaces.focusApp(pid, on: n, cycle: true) }
         model.onFocusWindow = { [weak self] id, n in self?.spaces.focus(id, on: n) }
         model.onMove = { [weak self] ids, n in self?.spaces.move(ids, to: n) }
+        // Reloads wait out a drag; one that moved nothing catches up here.
+        model.onDragDone = { [weak self] in self?.reload() }
         // After SwiftUI has laid out the strip, so the new size is the real one.
         model.onLayoutChange = { [weak self] in DispatchQueue.main.async { self?.resize() } }
         model.onShowOverview = { [weak self] in self?.hide(); self?.onShowOverview() }
@@ -179,6 +182,14 @@ final class WorkspaceDock {
         // The overview already shows every workspace; the dock stays down while it's open.
         if MissionControlKeys.viewerOpen { if isShown { hide() }; edgeSince = nil; return }
         let mouse = NSEvent.mouseLocation
+        // A drag whose mouse-up never reached the dock (the screen locked, another app took the
+        // pointer) would hold it open forever; once the button has been up a moment, it's over.
+        if model.drag != nil, NSEvent.pressedMouseButtons == 0 {
+            if buttonsUpSince == nil { buttonsUpSince = Date() }
+            if Date().timeIntervalSince(buttonsUpSince!) > 0.3 { model.cancelDrag() }
+        } else {
+            buttonsUpSince = nil
+        }
         if isShown {
             guard let p = panel else { return }
             // Hovering the dock or the edge below it keeps it up; a menu open from it too, and a
@@ -390,6 +401,7 @@ final class DockModel: ObservableObject {
     var onFocusApp: (pid_t, Int) -> Void = { _, _ in }
     var onSendHere: (Int) -> Void = { _ in }
     var onMove: ([WindowID], Int) -> Void = { _, _ in }
+    var onDragDone: () -> Void = {}
     var onShowOverview: () -> Void = {}
     var onShowLauncher: () -> Void = {}
     var onTurnOff: () -> Void = {}
@@ -466,6 +478,8 @@ final class DockModel: ObservableObject {
     }
 
     func dragged(_ ids: [WindowID], from n: Int, icon: NSImage, name: String, to location: CGPoint) {
+        // A gesture still tracking after the dock hid is dead; it starts nothing.
+        guard shown else { return }
         if drag == nil {
             dwell?.cancel()
             NSCursor.closedHand.push()
@@ -484,7 +498,18 @@ final class DockModel: ObservableObject {
             // The strip came from the workspace they left; it closes rather than list them there.
             strip = nil
             onMove(drag.ids, to)
+        } else {
+            onDragDone()
         }
+    }
+
+    /// Ends a drag without moving anything.
+    func cancelDrag() {
+        guard drag != nil else { return }
+        NSCursor.pop()
+        drag = nil
+        dragEnded = Date()
+        onDragDone()
     }
 
     /// A click, unless it's the mouse-up that ends a drag.
@@ -686,10 +711,16 @@ struct DockView: View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 7) {
                 Image(nsImage: app.icon).resizable().frame(width: 18, height: 18)
-                Text(app.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
-                Text("\(app.list.count) windows").font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
+                // Mid-drag the strip stays (it holds the row being dragged), so it says where
+                // the drag lands in place of the label it covers.
+                if model.drag != nil, let text = labelText {
+                    Text(text).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white).lineLimit(1).truncationMode(.middle)
+                } else {
+                    Text(app.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+                    Text("\(app.list.count) windows").font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
+                }
                 Spacer(minLength: 8)
-                WorkspaceBadge(n: n, size: 17)
+                WorkspaceBadge(n: model.dropTarget ?? n, size: 17)
             }
             .padding(.horizontal, 8).padding(.bottom, 4)
             // Every window is reachable: past ten, the list scrolls.
