@@ -231,7 +231,7 @@ final class WorkspaceDock {
         if on { show(on: NSScreen.main ?? NSScreen.screens[0]) } else { hide() }
     }
 
-    private func show(on screen: NSScreen) {
+    private func show(on screen: NSScreen, retried: Bool = false) {
         edgeSince = nil
         awaySince = nil
         model.reset()
@@ -260,6 +260,17 @@ final class WorkspaceDock {
             // pass later); size to what it really is now.
             self?.resize()
         })
+        // After hours up, the panel has been seen to stay off screen though it was ordered in
+        // front. If the window server doesn't have it on screen, build a new one, once.
+        guard !retried else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            guard let self, self.isShown, self.panel === p, !p.isOnScreenNow, !Windows.frontIsFullScreen() else { return }
+            Trace.log("dock panel not on screen; rebuilding it")
+            p.orderOut(nil)
+            self.panel = nil
+            self.isShown = false
+            self.show(on: screen, retried: true)
+        }
     }
 
     func hide(animated: Bool = true) {
@@ -842,9 +853,12 @@ struct DockView: View {
         let twin = !hovered && hoveredPid == app.pid
         return Image(nsImage: app.icon).resizable().interpolation(.high).frame(width: size, height: size)
             .shadow(color: .black.opacity(hovered ? 0.4 : 0.2), radius: hovered ? 4 : 2, y: 1)
-            // The same app on another workspace: ringed in this tile's color while its twin is hovered.
+            // The icon under the pointer is ringed in its workspace's color. The same app on
+            // another workspace gets only a faint outline, so the ring never lands on the copy
+            // you aren't pointing at.
             .overlay(RoundedRectangle(cornerRadius: size * 0.26, style: .continuous)
-                .strokeBorder(Chrome.workspace(tile.id), lineWidth: twin ? 2 : 0).padding(-2))
+                .strokeBorder(hovered ? Chrome.workspace(tile.id) : Color.white.opacity(0.4),
+                              lineWidth: hovered ? 2 : twin ? 1 : 0).padding(-2))
             // One dot per window when there's more than one; clicking again steps through them.
             .overlay(alignment: .bottom) {
                 if app.windows > 1 {

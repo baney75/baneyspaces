@@ -17,6 +17,9 @@ final class WorkspaceSwitcher {
     /// Apps in the order they were last brought forward, most recent first.
     private var appOrder: [pid_t] = []
     private var hold = TabHold()
+    /// Checks a press once it has lasted long enough to be a hold. Key repeats alone aren't
+    /// enough: they don't always reach the event tap, and then holding Tab did nothing.
+    private var holdCheck: DispatchWorkItem?
 
     init(spaces: Spaces) {
         self.spaces = spaces
@@ -37,26 +40,20 @@ final class WorkspaceSwitcher {
     func step(forward: Bool, isRepeat: Bool, at time: Double) {
         // A held Tab opens or closes the window bar once, on the app that's highlighted; its
         // other repeats do nothing, so holding never races through the list.
-        if isRepeat {
-            guard isShowing, model.mode == .apps, hold.repeated(at: time) else { return }
-            if model.windowBar != nil { return toggleWindowBar() }
-            guard windowCount(of: model.selected) > 1 else {
-                Trace.log("cmdTab hold: highlighted app has one window")
-                return
-            }
-            return toggleWindowBar()
-        }
+        if isRepeat { return held(at: time, via: "repeat") }
         guard !isShowing else {
             // Wait to see whether this press is a tap (step when it's let go) or a hold (stay).
             // Workspaces have no window bar, so a press there steps at once.
             if model.mode == .apps {
                 hold.press(at: time, forward: forward, deferStep: true)
+                checkHold(pressedAt: time)
             } else {
                 advance(forward)
             }
             return
         }
         hold.press(at: time)
+        checkHold(pressedAt: time)
         model.windowBar = nil
         model.mode = MissionControlKeys.cmdTabMode == .workspaces ? .workspaces : .apps
         if model.mode == .workspaces {
@@ -75,8 +72,36 @@ final class WorkspaceSwitcher {
         show()
     }
 
+    /// Tab held past the threshold, by a key repeat or the hold check, whichever comes first:
+    /// opens or closes the window bar once, on the app that's highlighted.
+    private func held(at time: Double, via source: String) {
+        guard isShowing, model.mode == .apps, hold.repeated(at: time) else { return }
+        holdCheck?.cancel()
+        if model.windowBar != nil { return toggleWindowBar() }
+        guard windowCount(of: model.selected) > 1 else {
+            Trace.log("cmdTab hold (\(source)): highlighted app has one window")
+            return
+        }
+        Trace.log("cmdTab hold (\(source))")
+        toggleWindowBar()
+    }
+
+    /// When the press would become a hold, looks at the keyboard itself: Tab still down is a
+    /// hold, whether or not any repeat arrived.
+    private func checkHold(pressedAt time: Double) {
+        holdCheck?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, CGEventSource.keyState(.hidSystemState, key: CGKeyCode(MissionControlKeys.tabKey)) else { return }
+            self.held(at: ProcessInfo.processInfo.systemUptime, via: "check")
+        }
+        holdCheck = work
+        let wait = TabHold.threshold - (ProcessInfo.processInfo.systemUptime - time)
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0, wait) + 0.02, execute: work)
+    }
+
     /// Tab let go: a tap takes its step now.
     func tabReleased() {
+        holdCheck?.cancel()
         guard isShowing, let forward = hold.release() else { return }
         advance(forward)
     }
@@ -204,7 +229,7 @@ final class WorkspaceSwitcher {
         }
     }
 
-    private func show() {
+    private func show(retried: Bool = false) {
         let p = panel ?? makePanel()
         panel = p
         let host = p.contentView as! NSHostingView<SwitcherView>
@@ -216,6 +241,14 @@ final class WorkspaceSwitcher {
                               width: size.width, height: size.height), display: true)
         }
         p.orderFrontRegardless()
+        // A panel kept for hours has been seen to stay off screen though it was ordered in
+        // front. If the window server doesn't have it on screen, build a new one, once.
+        if !retried, !p.isOnScreenNow {
+            Trace.log("cmdTab panel not on screen; rebuilding it")
+            p.orderOut(nil)
+            panel = nil
+            return show(retried: true)
+        }
         // If the key watcher misses ⌘ being let go (it was off for a moment), notice it here.
         watchdog?.invalidate()
         watchdog = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
@@ -228,6 +261,7 @@ final class WorkspaceSwitcher {
     }
 
     private func hide() {
+        holdCheck?.cancel()
         watchdog?.invalidate()
         watchdog = nil
         panel?.orderOut(nil)
@@ -444,6 +478,17 @@ enum Chrome {
             .overlay(shape.strokeBorder(LinearGradient(colors: [Color.white.opacity(0.22), Color.white.opacity(0.06)],
                                                        startPoint: .top, endPoint: .bottom), lineWidth: 1))
             .shadow(color: .black.opacity(0.45), radius: 24, y: 10)
+    }
+}
+
+extension NSWindow {
+    /// Whether the window server has this window on screen right now, which `isVisible` can
+    /// claim when it isn't.
+    var isOnScreenNow: Bool {
+        guard windowNumber > 0,
+              let info = CGWindowListCopyWindowInfo(.optionIncludingWindow, CGWindowID(windowNumber)) as? [[String: Any]],
+              let w = info.first else { return false }
+        return (w[kCGWindowIsOnscreen as String] as? Bool) ?? false
     }
 }
 
