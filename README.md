@@ -81,7 +81,10 @@ tile for each workspace in use, plus the one you're on, each with its apps and i
 Click an app's icon to go straight to that app (again for its next window), or the tile around
 it to go to the workspace. Rest on an app with several windows and a strip of them opens over
 it, each labeled with its title, to pick one;
-hover to see what's there; right-click to send the front window there. The dashed tile goes to
+hover to see what's there; right-click to send the front window there. Drag an app's icon onto
+another tile to move its windows on that workspace there, or drag one window out of the strip to
+move just that one; drop it on the dashed tile to start a new workspace with it. You stay where
+you are. The dashed tile goes to
 the first empty workspace, the search button opens the launcher, and the last button opens the
 overview of all nine.
 

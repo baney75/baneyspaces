@@ -640,10 +640,13 @@ final class Spaces {
     }
 
     /// Sends one window to workspace `n` without going there.
-    func move(_ id: WindowID, to n: Int) {
-        guard active, Workspaces.range.contains(n) else { return }
-        if switching { return enqueue { [weak self] in self?.move(id, to: n) } }
-        model.assign(id, to: n)
+    func move(_ id: WindowID, to n: Int) { move([id], to: n) }
+
+    /// Sends windows to workspace `n` without going there, in one switch.
+    func move(_ ids: [WindowID], to n: Int) {
+        guard active, Workspaces.range.contains(n), !ids.isEmpty else { return }
+        if switching { return enqueue { [weak self] in self?.move(ids, to: n) } }
+        for id in ids { model.assign(id, to: n) }
         switchTo(model.current, takeFocus: false, announce: false)
     }
 
