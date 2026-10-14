@@ -795,24 +795,26 @@ struct DockView: View {
         }
         .scaleEffect(hovered ? 1.06 : 1, anchor: .bottom)
         .animation(.spring(response: 0.25, dampingFraction: 0.72), value: hovered)
-        .contextMenu {
-            Button("Go to Workspace \(tile.id)") { model.onPick(tile.id) }
-            Button("Send Front Window to Workspace \(tile.id)") { model.onSendHere(tile.id) }
-            Divider()
-            Button("Find or Install an App") { model.onShowLauncher() }
-            Button("Show All Workspaces") { model.onShowOverview() }
-            Menu("Position on Screen") {
-                ForEach(DockEdge.allCases, id: \.self) { e in
-                    Button { model.onSetEdge(e) } label: {
-                        if e == model.edge { Label(e.title, systemImage: "checkmark") } else { Text(e.title) }
-                    }
-                }
-            }
-            Button("Turn Off Workspace Dock") { model.onTurnOff() }
-        }
+        .contextMenu { tileMenu(tile) }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(title(tile) + (tile.isCurrent ? ", current" : ""))
         .accessibilityAction { model.onPick(tile.id) }
+    }
+
+    @ViewBuilder private func tileMenu(_ tile: DockModel.Tile) -> some View {
+        Button("Go to Workspace \(tile.id)") { model.onPick(tile.id) }
+        Button("Send Front Window to Workspace \(tile.id)") { model.onSendHere(tile.id) }
+        Divider()
+        Button("Find or Install an App") { model.onShowLauncher() }
+        Button("Show All Workspaces") { model.onShowOverview() }
+        Menu("Position on Screen") {
+            ForEach(DockEdge.allCases, id: \.self) { e in
+                Button { model.onSetEdge(e) } label: {
+                    if e == model.edge { Label(e.title, systemImage: "checkmark") } else { Text(e.title) }
+                }
+            }
+        }
+        Button("Turn Off Workspace Dock") { model.onTurnOff() }
     }
 
     /// One app fills the tile; two sit side by side; up to four share a grid; more show three
@@ -888,12 +890,14 @@ struct DockView: View {
                     .onEnded { _ in model.endDrag() }
             )
             .simultaneousGesture(TapGesture().onEnded { if model.clickCounts { model.onFocusApp(app.pid, tile.id) } })
-            // Its own menu, in place of the tile's: an app that hangs can be force quit from here.
+            // The app's own items above the tile's: an app that hangs can be force quit from here.
             .contextMenu {
                 Button("Show \(app.name)") { model.onFocusApp(app.pid, tile.id) }
-                Divider()
                 Button("Quit \(app.name)") { NSRunningApplication(processIdentifier: app.pid)?.terminate() }
+                Divider()
                 Button("Force Quit \(app.name)") { NSRunningApplication(processIdentifier: app.pid)?.forceTerminate() }
+                Divider()
+                tileMenu(tile)
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("\(app.name), workspace \(tile.id)")

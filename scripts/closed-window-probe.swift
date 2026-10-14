@@ -1,8 +1,8 @@
-// Fails if a window an app closed stays on a workspace. Ghostty keeps every window it closes
-// alive in the window server; BaneySpaces kept them too, so ⌘Tab, the docks and the launcher
-// sent you to a workspace for a window that never came forward. This opens a Ghostty window on
-// workspace <n>, closes it, and reads state.json. Run it with BaneySpaces installed and running
-// and Ghostty open.
+// Fails if a window an app closed stays on a workspace. Ghostty keeps windows it closed alive
+// in the window server; BaneySpaces kept them too, so ⌘Tab, the docks and the launcher sent you
+// to a workspace for a window that never came forward. This opens a Ghostty window with two tabs
+// on workspace <n>, closes the front tab, and reads state.json. It also fails if the window left
+// open is dropped with it. Run it with BaneySpaces installed and running and Ghostty open.
 //   swift scripts/closed-window-probe.swift 4
 // It switches your screen to workspace <n> and leaves you there.
 import AppKit
@@ -61,37 +61,61 @@ let app = AXUIElementCreateApplication(ghostty.processIdentifier)
 open("baneyspaces://switch/\(n)")
 Thread.sleep(forTimeInterval: 1)
 
-// File > New Window, pressed without bringing Ghostty forward: the window opens here.
-let before = Set(axWindows(app).compactMap(id))
-guard let bar = { () -> AXUIElement? in
+// Presses a File menu item without bringing Ghostty forward, and returns the window it opened.
+func press(_ name: String) -> AXUIElement {
+    let before = Set(axWindows(app).compactMap(id))
     var raw: CFTypeRef?
     AXUIElementCopyAttributeValue(app, kAXMenuBarAttribute as CFString, &raw)
-    return raw.map { $0 as! AXUIElement }
-}(), let item = children(bar).filter({ title($0) == "File" }).flatMap(children).flatMap(children)
-    .first(where: { title($0) == "New Window" }) else { fail("no File > New Window in Ghostty") }
-AXUIElementPerformAction(item, kAXPressAction as CFString)
-var new: AXUIElement?
-for _ in 0..<100 where new == nil {
-    Thread.sleep(forTimeInterval: 0.03)
-    new = axWindows(app).first { id($0).map { !before.contains($0) } ?? false }
+    guard let bar = raw.map({ $0 as! AXUIElement }),
+          let item = children(bar).filter({ title($0) == "File" }).flatMap(children).flatMap(children)
+            .first(where: { title($0) == name }) else { fail("no File > \(name) in Ghostty") }
+    AXUIElementPerformAction(item, kAXPressAction as CFString)
+    for _ in 0..<100 {
+        Thread.sleep(forTimeInterval: 0.03)
+        if let w = axWindows(app).first(where: { id($0).map { !before.contains($0) } ?? false }) { return w }
+    }
+    fail("File > \(name) opened no window")
 }
-guard let window = new, let wid = id(window) else { fail("Ghostty opened no window") }
-Thread.sleep(forTimeInterval: 1.2)
-open("baneyspaces://switch/\(n)")
-Thread.sleep(forTimeInterval: 0.8)
-guard workspaces()[String(n)]?.contains(wid) == true else { fail("window \(wid) never joined workspace \(n)") }
-
-var raw: CFTypeRef?
-AXUIElementCopyAttributeValue(window, kAXCloseButtonAttribute as CFString, &raw)
-guard let close = raw.map({ $0 as! AXUIElement }) else { fail("window \(wid) has no close button") }
-AXUIElementPerformAction(close, kAXPressAction as CFString)
-Thread.sleep(forTimeInterval: 1)
-// Any switch looks again; the workspace you're on is the cheapest one.
-open("baneyspaces://switch/\(n)")
-Thread.sleep(forTimeInterval: 0.8)
-
-let kept = alive(wid)
-if let ws = workspaces().first(where: { $0.value.contains(wid) })?.key {
-    fail("closed window \(wid) still on workspace \(ws) (window server \(kept ? "keeps" : "dropped") it)")
+func close(_ w: AXUIElement) {
+    var raw: CFTypeRef?
+    AXUIElementCopyAttributeValue(w, kAXCloseButtonAttribute as CFString, &raw)
+    guard let button = raw.map({ $0 as! AXUIElement }) else { fail("window \(id(w) ?? 0) has no close button") }
+    AXUIElementPerformAction(button, kAXPressAction as CFString)
 }
-print("closed window \(wid) left the workspaces (window server \(kept ? "keeps it alive, the case this guards" : "dropped it; Ghostty didn't keep this one"))")
+/// Any switch looks again; the workspace you're on is the cheapest one.
+func rescan() {
+    Thread.sleep(forTimeInterval: 1)
+    open("baneyspaces://switch/\(n)")
+    Thread.sleep(forTimeInterval: 0.8)
+}
+
+// A window with a second tab. Closing the tab in front leaves its window alive in the window
+// server, on no macOS desktop: the ghost this guards against.
+let window = press("New Window")
+let tab = press("New Tab")
+guard let wid = id(window), let tid = id(tab) else { fail("no window numbers") }
+rescan()
+guard workspaces()[String(n)]?.contains(tid) == true else { fail("tab \(tid) never joined workspace \(n)") }
+close(tab)
+rescan()
+let kept = alive(tid)
+let ws = workspaces()
+// The window that stayed open must stay where it is.
+let stayed = ws[String(n)]?.contains(wid) == true
+// No workspace may hold a Ghostty window Ghostty doesn't list (an earlier ghost, too).
+let listed = Set(axWindows(app).compactMap(id))
+let server = Set((CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? [])
+    .filter { ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == ghostty.processIdentifier }
+    .compactMap { ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value })
+let ghosts = ws.flatMap { n, ids in ids.filter { server.contains($0) && !listed.contains($0) }.map { "\($0) on \(n)" } }
+close(window)
+if let on = ws.first(where: { $0.value.contains(tid) })?.key {
+    fail("closed tab \(tid) still on workspace \(on) (window server \(kept ? "keeps" : "dropped") it)")
+}
+guard stayed else { fail("open window \(wid) left workspace \(n) along with the closed tab") }
+guard ghosts.isEmpty else { fail("Ghostty windows it doesn't list are on workspaces: \(ghosts.joined(separator: ", "))") }
+guard kept else {
+    print("INCONCLUSIVE: Ghostty freed the closed tab \(tid), so there was no ghost to drop. Run it again.")
+    exit(3)
+}
+print("closed tab \(tid) left the workspaces though the window server keeps it; open window \(wid) stayed")

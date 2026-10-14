@@ -44,6 +44,10 @@ final class Spaces {
     /// at startup; when its window shows up later it goes back where it was, and until then its
     /// entry stays in the saved layout instead of being forgotten.
     private var pendingLayout: [WindowID: SavedLayout.Entry] = [:]
+    /// Windows dropped as closed (see `closedWindows`), with their workspace and parked frame. A
+    /// tab behind another tab looks closed too; when its app lists it again (the tab in front
+    /// closed), it goes back to its workspace instead of joining the one you're on.
+    private var dormant: [WindowID: (pid: pid_t, workspace: Int, frame: CGRect?)] = [:]
     /// Workspaces from most to least recently visited, for the ⌘Tab switcher.
     private(set) var recent: [Int] = [1]
     private var screensWork: DispatchWorkItem?
@@ -131,10 +135,16 @@ final class Spaces {
         clock.scan = firstScan ? "first" : last(lastScan!, snap.appWindows, pids)
         RunningApps.invalidate()
         let pidsNow = RunningApps.regular
-        let (list, unsure) = Windows.all(owners: snap.owners)
+        let (list, unsure, listed, partial) = Windows.all(owners: snap.owners)
         // A window the app closed but kept isn't one any more, though the window server says it's alive.
-        let answered = pidsNow.intersection(snap.owners).subtracting(unsure)
-        let alive = snap.alive.subtracting(closedWindows(listed: Set(list.map(\.id)), answered: answered, offscreen: snap.offscreen))
+        let answered = pidsNow.intersection(snap.owners).subtracting(unsure).subtracting(partial)
+        let closed = closedWindows(listed: listed, answered: answered, offscreen: snap.offscreen)
+        for id in closed {
+            guard let ws = model.workspace(of: id), let pid = snap.offscreen[id] else { continue }
+            dormant[id] = (pid, ws, saved.frames[id])
+        }
+        let alive = snap.alive.subtracting(closed)
+        dormant = dormant.filter { snap.alive.contains($0.key) }
         // Accessibility lists only the windows on the macOS desktop being shown. A window it
         // missed keeps the handle from an earlier listing; that handle still moves the window.
         var next = windows.filter { alive.contains($0.key) }
@@ -152,6 +162,13 @@ final class Spaces {
         var returned = false
         var fromLayout = Set<WindowID>()
         for id in added {
+            if let d = dormant.removeValue(forKey: id), windows[id]?.pid == d.pid {
+                model.assign(id, to: d.workspace, focus: false)
+                if d.workspace != model.current, let f = d.frame { saved.frames[id] = f }
+                fromLayout.insert(id)
+                returned = returned || d.workspace != model.current
+                continue
+            }
             guard let entry = pendingLayout.removeValue(forKey: id), windows[id]?.pid == entry.pid else { continue }
             model.assign(id, to: entry.workspace, focus: false)
             fromLayout.insert(id)
@@ -166,9 +183,12 @@ final class Spaces {
             }
         }
         // An app that autosaves its window position can reopen a window at the hiding spot.
+        // One that belongs on another workspace isn't moved into sight here: it's recorded as
+        // parked, to come back to the middle of the screen when you go there.
         for id in added {
             guard let w = windows[id], !w.isMinimized, let f = w.frame, Geometry.isStranded(f, screens: screens) else { continue }
-            w.setFrame(Geometry.restoreFrame(saved: nil, size: f.size, screens: screens))
+            let to = Geometry.restoreFrame(saved: nil, size: f.size, screens: screens)
+            if model.workspace(of: id) == model.current { w.setFrame(to) } else if saved.frames[id] == nil { saved.frames[id] = to }
         }
         // A window recorded as parked on the workspace being shown, yet back in plain sight
         // (an app that applied our move late), is simply shown. Its old record would otherwise
@@ -216,13 +236,12 @@ final class Spaces {
     /// Ghostty keeps every window it closes, and a tab behind another tab is one too. The window
     /// server still counts them, so without this they stayed on their workspace for good, and
     /// ⌘Tab, the docks and the launcher sent you there for a window that never came forward.
-    /// A window is closed only when its app answered and didn't list it, it isn't on screen, its
-    /// app isn't hidden, and it's on no macOS desktop or on one being shown. A minimized window
+    /// A window is closed only when its app answered and didn't list it, it isn't on screen, and
+    /// it's on no macOS desktop or on one being shown. A minimized window, and a hidden app's,
     /// is still listed; one on another desktop, or in full screen, is on a desktop not shown.
     private func closedWindows(listed: Set<WindowID>, answered: Set<pid_t>, offscreen: [WindowID: pid_t]) -> Set<WindowID> {
         Set(Set(model.home.keys).union(pendingLayout.keys).filter { id in
-            guard !listed.contains(id), let pid = offscreen[id], answered.contains(pid),
-                  NSRunningApplication(processIdentifier: pid)?.isHidden == false else { return false }
+            guard !listed.contains(id), let pid = offscreen[id], answered.contains(pid) else { return false }
             return Windows.onNoOtherDesktop(id)
         })
     }
@@ -731,7 +750,13 @@ final class Spaces {
     func focusApp(_ pid: pid_t, on only: Int? = nil, cycle: Bool = false) {
         guard active else { NSRunningApplication(processIdentifier: pid)?.activate(options: []); return }
         refresh()
-        let mine = windows.values.filter { $0.pid == pid && model.workspace(of: $0.id) != nil }
+        var mine = windows.values.filter { $0.pid == pid && model.workspace(of: $0.id) != nil }
+        // A hidden app's window closing doesn't prompt a scan (its windows are off screen anyway),
+        // so ask the app which windows it has: going to one it closed would bring nothing forward.
+        if let listed = Windows.listedIDs(of: pid), mine.contains(where: { !listed.contains($0.id) }) {
+            refresh(full: true)
+            mine = windows.values.filter { $0.pid == pid && model.workspace(of: $0.id) != nil }
+        }
         let order = only.map { [$0] } ?? ([model.current] + recent.filter { $0 != model.current } + Array(Workspaces.range))
         for n in order {
             let here = mine.filter { model.workspace(of: $0.id) == n }

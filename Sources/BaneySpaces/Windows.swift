@@ -173,8 +173,10 @@ enum Windows {
     /// popovers and windows on other macOS desktops are left alone. Apps are asked in parallel:
     /// Accessibility answers each app separately, so a slow app no longer delays the rest.
     /// `unsure` lists the apps that were skipped or didn't answer in time; their windows may be
-    /// missing from the result.
-    static func all(owners: Set<pid_t>? = nil) -> (windows: [Window], unsure: Set<pid_t>) {
+    /// missing from the result. `listed` is every window number the apps gave, of any kind, and
+    /// `partial` the apps that gave an element whose number couldn't be read: only an app that
+    /// answered in full can say a window it didn't list is closed.
+    static func all(owners: Set<pid_t>? = nil) -> (windows: [Window], unsure: Set<pid_t>, listed: Set<WindowID>, partial: Set<pid_t>) {
         // Only apps that own a window are asked. A running app with no windows is often frozen by
         // macOS and never answers, which would cost a full timeout on every scan.
         let candidates = owners.map { RunningApps.regular.intersection($0) } ?? RunningApps.regular
@@ -184,6 +186,7 @@ enum Windows {
             return (pid, app.localizedName ?? "App")
         }
         var results = [[Window]](repeating: [], count: apps.count)
+        var listedIDs = Set<WindowID>(), partial = Set<pid_t>()
         let lock = NSLock()
         DispatchQueue.concurrentPerform(iterations: apps.count) { i in
             let (pid, name) = apps[i]
@@ -195,13 +198,18 @@ enum Windows {
             // would be retried at full speed forever instead of backing off.
             if listed == nil { lock.lock(); unsure.insert(pid); lock.unlock(); markUnresponsive(pid) } else { markResponsive(pid) }
             let elements = listed ?? []
-            let found = elements.compactMap { el -> Window? in
-                guard let id = el.windowID, el.string(kAXSubroleAttribute) == kAXStandardWindowSubrole as String else { return nil }
+            let ids = elements.map(\.windowID)
+            let found = zip(elements, ids).compactMap { el, id -> Window? in
+                guard let id, el.string(kAXSubroleAttribute) == kAXStandardWindowSubrole as String else { return nil }
                 return Window(id: id, element: el, pid: pid, appName: name)
             }
-            lock.lock(); results[i] = found; lock.unlock()
+            lock.lock()
+            results[i] = found
+            listedIDs.formUnion(ids.compactMap { $0 })
+            if ids.contains(nil) { partial.insert(pid) }
+            lock.unlock()
         }
-        return (results.flatMap { $0 }, unsure)
+        return (results.flatMap { $0 }, unsure, listedIDs, partial)
     }
 
     static func alive() -> Set<WindowID> { snapshot(apps: RunningApps.regular).alive }
@@ -275,6 +283,16 @@ enum Windows {
         return Set(listed.compactMap { el in
             el.string(kAXSubroleAttribute) == kAXStandardWindowSubrole as String ? el.windowID : nil
         })
+    }
+
+    /// Every window number the app lists, of any kind; nil when it doesn't answer in full.
+    static func listedIDs(of pid: pid_t) -> Set<WindowID>? {
+        guard isResponsive(pid) else { return nil }
+        let ax = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(ax, 0.25)
+        guard let listed: [AXUIElement] = ax.value(kAXWindowsAttribute) else { return nil }
+        let ids = listed.map(\.windowID)
+        return ids.contains(nil) ? nil : Set(ids.compactMap { $0 })
     }
 
     static func lists(_ id: WindowID, pid: pid_t) -> Bool {
