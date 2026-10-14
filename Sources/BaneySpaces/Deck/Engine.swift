@@ -389,25 +389,35 @@ final class Engine {
         return true
     }
 
-    /// A Ghostty of its own for agent work: a separate process, started without coming forward,
-    /// that quits when its window closes. Scripting your Ghostty to open a window from behind made
-    /// AppKit fold it into your tab group and froze every terminal for minutes (2026-10-14); a
-    /// separate process can't touch yours. `started` gets its pid, to claim the window.
-    func newAgentTerminal(in dir: String?, command: String, started: @escaping (pid_t) -> Void) -> Bool {
-        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.mitchellh.ghostty") else { return false }
+    /// A terminal for agent work, opened from behind in Terminal, not your Ghostty. Every way of
+    /// getting a Ghostty window without bringing Ghostty forward failed on 2026-10-14: scripting
+    /// your Ghostty to open one froze all its terminals for seven minutes (AppKit folding the new
+    /// window into its tab group), a second Ghostty started with `-e` shows "Allow Ghostty to
+    /// execute?" in the middle of your screen every time, and one started without `-e` opens no
+    /// window until it's brought forward. Terminal runs a `.command` script from behind with no
+    /// prompt, in a process that can't stall your terminals. `opened` gets Terminal's pid and the
+    /// script's name, which its window carries in its title, to claim it.
+    func newAgentTerminal(in dir: String?, command: String, opened: @escaping (pid_t, String) -> Void) -> Bool {
+        guard let terminal = NSWorkspace.shared.urlForApplication(withBundleIdentifier: TerminalChoice.terminal) else { return false }
+        let folder = Wire.supportDir.appendingPathComponent("agent-runs")
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let name = "agent-\(UUID().uuidString.prefix(8).lowercased()).command"
+        let script = folder.appendingPathComponent(name)
+        let cd = dir.map { "cd '\($0.replacingOccurrences(of: "'", with: "'\\''"))' || exit 1\n" } ?? "cd ~\n"
+        // A login shell, so it gets your PATH; a shell stays open when the command is done.
+        let body = "#!/bin/zsh -l\n\(cd)\(command)\nexec \"${SHELL:-/bin/zsh}\" -l\n"
+        guard FileManager.default.createFile(atPath: script.path, contents: Data(body.utf8), attributes: [.posixPermissions: 0o700]) else { return false }
+        let running = NSWorkspace.shared.runningApplications.first { $0.bundleIdentifier == TerminalChoice.terminal }
+        if let running { opened(running.processIdentifier, name) }
         let cfg = NSWorkspace.OpenConfiguration()
         cfg.activates = false
-        cfg.createsNewApplicationInstance = true
         cfg.addsToRecentItems = false
-        var args = ["--quit-after-last-window-closed=true", "--window-save-state=never"]
-        if let dir, !dir.isEmpty { args.append("--working-directory=\(dir)") }
-        // A login shell runs the command, so it gets your PATH; the shell stays when it's done.
-        args += ["-e", "/bin/zsh", "-lc", command + "; exec /bin/zsh -l"]
-        cfg.arguments = args
-        NSWorkspace.shared.openApplication(at: url, configuration: cfg) { app, _ in
-            guard let app else { return }
-            DispatchQueue.main.async { started(app.processIdentifier) }
+        NSWorkspace.shared.open([script], withApplicationAt: terminal, configuration: cfg) { app, _ in
+            guard let app, running == nil else { return }
+            DispatchQueue.main.async { opened(app.processIdentifier, name) }
         }
+        // Terminal has read it by then; the folder doesn't fill up.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 60) { try? FileManager.default.removeItem(at: script) }
         return true
     }
 

@@ -40,3 +40,31 @@ final class RemoteTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(Wire.Request.self, from: JSONEncoder().encode(r)).token, "abc")
     }
 }
+
+final class RemoteHardeningTests: XCTestCase {
+    func testTheTokenNeverLeavesTheTailnet() {
+        let start = Date()
+        XCTAssertNil(Wire.callRemote(host: "127.0.0.1", Wire.Request(op: .ping, token: "secret"), timeout: 1),
+                     "a non-tailnet address is refused before connecting")
+        XCTAssertLessThan(Date().timeIntervalSince(start), 0.5)
+    }
+
+    func testATricklingRequestHitsOneDeadline() {
+        var fds: [Int32] = [0, 0]
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds), 0)
+        defer { close(fds[0]); close(fds[1]) }
+        // A few bytes and no newline: the reader must give up at the deadline, not wait forever.
+        _ = "{\"op\":".withCString { write(fds[1], $0, 6) }
+        let start = Date()
+        XCTAssertNil(Wire.readLine(fds[0], limit: 64 << 10, deadline: Date().addingTimeInterval(0.3)))
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1)
+    }
+
+    func testAWholeLineArrivesBeforeTheDeadline() {
+        var fds: [Int32] = [0, 0]
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds), 0)
+        defer { close(fds[0]); close(fds[1]) }
+        _ = "{\"op\":\"ping\"}\n".withCString { write(fds[1], $0, 14) }
+        XCTAssertEqual(Wire.readLine(fds[0], limit: 64 << 10, deadline: Date().addingTimeInterval(1)), Data("{\"op\":\"ping\"}".utf8))
+    }
+}

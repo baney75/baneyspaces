@@ -30,7 +30,8 @@ public enum AgentWorkspace {
     /// with `baneyspaces agent open` or `agent run`. Nil leaves it where macOS put it.
     public static func homeForNewWindow(appFront: Bool, appWorkspaces: Set<Int>, claimed: Int?, current: Int, agent: Int?) -> Int? {
         if let claimed { return claimed }
-        guard let agent, current != agent, !appFront, appWorkspaces.contains(agent) else { return nil }
+        // An app with windows here too keeps opening them here, as it always has.
+        guard let agent, current != agent, !appFront, appWorkspaces.contains(agent), !appWorkspaces.contains(current) else { return nil }
         // Opened in the background by an app that lives on the agent workspace: an agent did it.
         return agent
     }

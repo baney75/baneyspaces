@@ -74,6 +74,9 @@ final class RemoteServer {
     private var source: DispatchSourceRead?
     private let io = DispatchQueue(label: "baneyspaces.deck.remote", attributes: .concurrent)
     private(set) var address: String?
+    /// At most this many remote requests at once; more are closed straight away, so slow or
+    /// endless connections can't use up the app's file descriptors.
+    private let slots = DispatchSemaphore(value: 8)
 
     static var tokenURL: URL { Wire.supportDir.appendingPathComponent("remote-token") }
 
@@ -94,7 +97,9 @@ final class RemoteServer {
         var p = list
         while let i = p {
             defer { p = i.pointee.ifa_next }
-            guard let a = i.pointee.ifa_addr, a.pointee.sa_family == UInt8(AF_INET) else { continue }
+            // Tailscale's tunnel only: some networks (Starlink, hotels) hand out 100.64/10 on Wi-Fi.
+            guard let a = i.pointee.ifa_addr, a.pointee.sa_family == UInt8(AF_INET),
+                  String(cString: i.pointee.ifa_name).hasPrefix("utun") else { continue }
             var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
             guard getnameinfo(a, socklen_t(a.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 else { continue }
             let ip = String(cString: host)
@@ -138,8 +143,19 @@ final class RemoteServer {
     private func accept() {
         while true {
             let client = Darwin.accept(fd, nil, nil)
-            guard client >= 0 else { return }
-            io.async { [weak self] in self?.serve(client) }
+            guard client >= 0 else {
+                // Out of descriptors: pause instead of spinning on a backlog that stays readable.
+                if errno == EMFILE || errno == ENFILE, let s = source {
+                    s.suspend()
+                    io.asyncAfter(deadline: .now() + 1) { s.resume() }
+                }
+                return
+            }
+            guard slots.wait(timeout: .now()) == .success else { close(client); continue }
+            io.async { [weak self] in
+                defer { self?.slots.signal() }
+                self?.serve(client)
+            }
         }
     }
 
@@ -152,10 +168,11 @@ final class RemoteServer {
         setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
         setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
         let reply: Wire.Reply
-        if let line = Wire.readLine(client, limit: 64 << 10), var req = try? JSONDecoder().decode(Wire.Request.self, from: line) {
+        // One deadline for the whole request, however slowly its bytes arrive.
+        if let line = Wire.readLine(client, limit: 64 << 10, deadline: Date().addingTimeInterval(5)),
+           var req = try? JSONDecoder().decode(Wire.Request.self, from: line) {
+            // 256 random bits: nothing to gain from guessing, so no delay that would hold a slot.
             if !Remote.tokensMatch(req.token ?? "", Self.token()) {
-                // A wrong token costs a second, so guessing gets nowhere.
-                Thread.sleep(forTimeInterval: 1)
                 reply = Wire.Reply(ok: false, error: "wrong token")
             } else if !Remote.allows(req) {
                 reply = Wire.Reply(ok: false, error: "not allowed from another machine")

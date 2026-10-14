@@ -310,7 +310,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         h.workspace = { Spaces.agentWorkspace }
         h.setWorkspace = { [weak self] n in Spaces.agentWorkspace = n; self?.run { $0.reapply() } }
         h.current = { [weak self] in self?.spaces.model.current ?? 1 }
-        h.claim = { [weak self] pid, n, fresh in self?.spaces.claimNextWindow(of: pid, for: n, newProcess: fresh) }
+        h.claim = { [weak self] pid, n, fresh, title in
+            // A process the agent started gets the full 8 s; your running app only 3, so a claim
+            // that comes to nothing can't sit waiting for your next window.
+            self?.spaces.claimNextWindow(of: pid, for: n, within: fresh ? 8 : 3, newProcess: fresh, title: title)
+        }
+        h.unclaim = { [weak self] pid in self?.spaces.cancelClaim(of: pid) }
         h.move = { [weak self] id, n in self?.run { $0.move(id, to: n) } }
         h.windows = { [weak self] in self?.spaces.agentWindows() ?? [] }
         deck.agentHost = h

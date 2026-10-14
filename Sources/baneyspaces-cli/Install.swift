@@ -13,8 +13,10 @@ enum Hooks {
     /// The installed command, via the stable symlink so app updates don't break the path.
     static func command(_ agent: String) -> String {
         let link = home.appendingPathComponent(".local/bin/baneyspaces").path
-        let path = FileManager.default.isExecutableFile(atPath: link) ? link : CommandLine.arguments[0]
-        return "'\(path)' hook \(agent) 2>/dev/null || true"
+        // Always an absolute path: a relative one would fail silently behind `|| true`.
+        let path = FileManager.default.isExecutableFile(atPath: link) ? link
+            : (Bundle.main.executableURL?.resolvingSymlinksInPath().path ?? link)
+        return "'\(path.replacingOccurrences(of: "'", with: "'\\''"))' hook \(agent) 2>/dev/null || true"
     }
 
     static func load(_ url: URL) -> [String: Any]? {

@@ -42,6 +42,12 @@ public enum Remote {
     }
 }
 
+func numericHost(_ sa: UnsafePointer<sockaddr>) -> String {
+    var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+    guard getnameinfo(sa, socklen_t(sa.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 else { return "" }
+    return String(cString: host)
+}
+
 extension Wire {
     /// Sends one request to a BaneySpaces on another machine over TCP.
     public static func callRemote(host: String, port: UInt16 = Remote.port, _ request: Request, timeout: Double = 5) -> Reply? {
@@ -50,6 +56,9 @@ extension Wire {
         var res: UnsafeMutablePointer<addrinfo>?
         guard getaddrinfo(host, String(port), &hints, &res) == 0, let info = res else { return nil }
         defer { freeaddrinfo(res) }
+        // The token only ever goes to a tailnet address, never wherever a typo or a fallen-back
+        // DNS search domain resolves.
+        guard let sa = info.pointee.ai_addr, Remote.isTailnet(numericHost(sa)) else { return nil }
         let fd = socket(info.pointee.ai_family, info.pointee.ai_socktype, info.pointee.ai_protocol)
         guard fd >= 0 else { return nil }
         defer { close(fd) }

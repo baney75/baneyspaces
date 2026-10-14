@@ -26,8 +26,10 @@ final class AgentWorkspaceTests: XCTestCase {
     func testNewWindows() {
         // An agent asked for this window.
         XCTAssertEqual(AgentWorkspace.homeForNewWindow(appFront: true, appWorkspaces: [], claimed: 9, current: 1, agent: 9), 9)
-        // A background window from an app that lives on the agent workspace: an agent opened it.
-        XCTAssertEqual(AgentWorkspace.homeForNewWindow(appFront: false, appWorkspaces: [1, 9], claimed: nil, current: 1, agent: 9), 9)
+        // A background window from an app that lives only on the agent workspace: an agent opened it.
+        XCTAssertEqual(AgentWorkspace.homeForNewWindow(appFront: false, appWorkspaces: [9], claimed: nil, current: 1, agent: 9), 9)
+        // An app with windows here too (Helium on 1 and 9) keeps opening them here.
+        XCTAssertNil(AgentWorkspace.homeForNewWindow(appFront: false, appWorkspaces: [1, 9], claimed: nil, current: 1, agent: 9))
         // You clicked a link: the app came forward, so the window is yours.
         XCTAssertNil(AgentWorkspace.homeForNewWindow(appFront: true, appWorkspaces: [1, 9], claimed: nil, current: 1, agent: 9))
         // Nothing to do with agents.

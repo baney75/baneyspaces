@@ -8,9 +8,10 @@ struct AgentHost {
     var workspace: () -> Int? = { nil }
     var setWorkspace: (Int?) -> Void = { _ in }
     var current: () -> Int = { 1 }
-    /// The next window of a process goes to a workspace; `true` when the agent just started that
-    /// process, so its windows so far go too.
-    var claim: (pid_t, Int, Bool) -> Void = { _, _, _ in }
+    /// The next window of a process goes to a workspace: `newProcess` when the agent started
+    /// that process itself (its windows so far go too), `title` to take only the window of a file.
+    var claim: (_ pid: pid_t, _ workspace: Int, _ newProcess: Bool, _ title: String?) -> Void = { _, _, _, _ in }
+    var unclaim: (pid_t) -> Void = { _ in }
     var move: (UInt32, Int) -> Void = { _, _ in }
     var windows: () -> [(id: WindowID, app: String, title: String)] = { [] }
 }
@@ -496,14 +497,16 @@ final class DeckController {
         }
     }
 
-    /// Listens for your other machines; while Tailscale isn't up, tries again every 30 seconds.
+    /// Listens for your other machines. Every 30 seconds it checks the tailnet address: it starts
+    /// once Tailscale is up, and moves when the address changes.
     private func startRemote() {
         _ = RemoteServer.token()
-        if remote.start() { remoteRetry?.invalidate(); return }
+        _ = remote.start()
         remoteRetry?.invalidate()
         remoteRetry = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] t in
             guard let self, Self.remoteEnabled, self.started else { return t.invalidate() }
-            if self.remote.start() { t.invalidate() }
+            if self.remote.address != RemoteServer.tailnetAddress() { self.remote.stop() }
+            _ = self.remote.start()
         }
     }
 
@@ -526,50 +529,62 @@ final class DeckController {
         case "open":
             guard let n = h.workspace() else { return .init(ok: false, error: "the agent workspace is off: baneyspaces agent on") }
             guard let name = args.first, let url = Self.appURL(name) else { return .init(ok: false, error: "no app called \(args.first ?? "")") }
+            let appName = url.deletingPathExtension().lastPathComponent
             let bundle = Bundle(url: url)?.bundleIdentifier
             let files = args.dropFirst().map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
             let running = NSWorkspace.shared.runningApplications.first { $0.bundleIdentifier == bundle && bundle != nil }
-            if !files.isEmpty {
-                // Files open in the app from behind; whatever window they open is claimed.
-                if let running { h.claim(running.processIdentifier, n, false) }
-                let cfg = NSWorkspace.OpenConfiguration()
-                cfg.activates = false
-                cfg.addsToRecentItems = false
-                NSWorkspace.shared.open(files, withApplicationAt: url, configuration: cfg) { app, _ in
-                    guard let app, running == nil else { return }
-                    DispatchQueue.main.async { h.claim(app.processIdentifier, n, true) }
-                }
-                return .init(ok: true, info: ["workspace": "\(n)", "app": url.deletingPathExtension().lastPathComponent, "files": "\(files.count)"])
-            }
-            if let running {
-                // Running: claim its next window, then ask for one from behind through its menu.
-                h.claim(running.processIdentifier, n, false)
-                guard let item = Windows.newWindowItem(running.processIdentifier),
-                      AXUIElementPerformAction(item, kAXPressAction as CFString) == .success else {
-                    return .init(ok: false, error: "\(running.localizedName ?? name) has no New Window command it would run from behind")
-                }
-                return .init(ok: true, info: ["workspace": "\(n)", "app": running.localizedName ?? name])
-            }
-            // Not running: launch it without bringing it forward, and claim what it opens.
             let cfg = NSWorkspace.OpenConfiguration()
             cfg.activates = false
             cfg.addsToRecentItems = false
+            if let file = files.first {
+                // The file's window, recognized by its name, goes there; nothing else of the app.
+                let title = file.lastPathComponent
+                if let running { h.claim(running.processIdentifier, n, false, title) }
+                NSWorkspace.shared.open(files, withApplicationAt: url, configuration: cfg) { app, _ in
+                    guard let app, running == nil else { return }
+                    DispatchQueue.main.async { h.claim(app.processIdentifier, n, false, title) }
+                }
+                return .init(ok: true, info: ["workspace": "\(n)", "app": appName, "files": "\(files.count)"])
+            }
+            /// A new window from behind through the app's own New Window command, claimed first.
+            func newWindow(_ app: NSRunningApplication) -> Bool {
+                h.claim(app.processIdentifier, n, false, nil)
+                guard let item = Windows.newWindowItem(app.processIdentifier),
+                      AXUIElementPerformAction(item, kAXPressAction as CFString) == .success else {
+                    h.unclaim(app.processIdentifier)
+                    return false
+                }
+                return true
+            }
+            if let running {
+                guard newWindow(running) else {
+                    return .init(ok: false, error: "\(running.localizedName ?? name) has no New Window command it would run from behind")
+                }
+                return .init(ok: true, info: ["workspace": "\(n)", "app": appName])
+            }
+            // Not running: start it from behind. Whatever it restores is yours and stays put;
+            // once it's up, a new window of its own goes to the agent workspace.
             NSWorkspace.shared.openApplication(at: url, configuration: cfg) { app, _ in
                 guard let app else { return }
-                DispatchQueue.main.async { h.claim(app.processIdentifier, n, true) }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { _ = newWindow(app) }
             }
-            return .init(ok: true, info: ["workspace": "\(n)", "app": url.deletingPathExtension().lastPathComponent])
+            return .init(ok: true, info: ["workspace": "\(n)", "app": appName, "note": "starting; its window opens there in a moment"])
         case "run":
             guard let n = h.workspace() else { return .init(ok: false, error: "the agent workspace is off: baneyspaces agent on") }
             let cmd = args.drop { $0 != "--" }.dropFirst().joined(separator: " ")
             guard !cmd.isEmpty else { return .init(ok: false, error: "usage: baneyspaces agent run [--dir DIR] -- <command>") }
             let dir = args.firstIndex(of: "--dir").flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil }
-            guard engine.newAgentTerminal(in: dir, command: cmd, started: { pid in h.claim(pid, n, true) }) else {
-                return .init(ok: false, error: "agent run needs Ghostty installed")
+            guard engine.newAgentTerminal(in: dir, command: cmd, opened: { pid, name in h.claim(pid, n, false, name) }) else {
+                return .init(ok: false, error: "couldn't start a terminal for it")
             }
             return .init(ok: true, info: ["workspace": "\(n)", "command": cmd])
         case "move":
             guard let n = h.workspace() else { return .init(ok: false, error: "the agent workspace is off: baneyspaces agent on") }
+            // A window number (what cua-driver and `agent status` show), or a row by ID or words.
+            if args.count == 1, let id = UInt32(args[0]) {
+                h.move(id, n)
+                return .init(ok: true, info: ["workspace": "\(n)", "moved": "window \(id)"])
+            }
             guard let q = args.first, let item = engine.find(args.joined(separator: " ")) ?? engine.find(q), item.windowNumber != 0 else {
                 return .init(ok: false, error: "nothing matches")
             }

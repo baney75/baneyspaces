@@ -103,12 +103,19 @@ public enum Wire {
         }
     }
 
-    /// Reads up to the first newline, at most `limit` bytes (4 MB unless a caller asks for less).
-    public static func readLine(_ fd: Int32, limit: Int = 4 << 20) -> Data? {
+    /// Reads up to the first newline, at most `limit` bytes (4 MB unless a caller asks for less),
+    /// giving up at `deadline` however slowly the bytes trickle in.
+    public static func readLine(_ fd: Int32, limit: Int = 4 << 20, deadline: Date = .distantFuture) -> Data? {
         var out = Data()
         var buf = [UInt8](repeating: 0, count: 65536)
         while out.count < limit {
-            let n = read(fd, &buf, buf.count)
+            let left = deadline.timeIntervalSinceNow
+            guard left > 0 else { return nil }
+            if deadline != .distantFuture {
+                var p = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+                guard poll(&p, 1, Int32(min(left, 60) * 1000)) > 0 else { return nil }
+            }
+            let n = read(fd, &buf, min(buf.count, limit - out.count))
             if n <= 0 { return out.isEmpty ? nil : out }
             if let nl = buf[0..<n].firstIndex(of: 0x0A) {
                 out.append(contentsOf: buf[0..<nl])

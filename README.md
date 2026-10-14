@@ -109,6 +109,39 @@ On an app with more than one window, **hold Tab** to open its window bar (the hi
 (a browser's tab, a player's video) and workspace. Tab through it and let go to land on that
 window; hold Tab again to go back to the apps.
 
+## The Deck
+
+<img src="docs/shots/deck.png" alt="The Deck: a sidebar listing Ghostty terminals with one Claude session working and one done, Claude, ChatGPT, T3 Code and Grok Bot windows, Helium tabs, and two phones" width="264" align="right">
+
+The Deck is a sidebar for everything you work in on this workspace: each terminal split, each
+browser tab, and each coding agent's window, in one list. It works with the apps you already
+use. Ghostty, Terminal and iTerm show their tabs and splits; your default browser (Helium,
+Chrome, Arc, Brave, Edge or Vivaldi) shows its tabs; Claude, ChatGPT, T3 Code, Cursor and Grok
+Bot show their windows; any other app can be added by bundle ID. Phones are on it too.
+
+In a terminal, browser or agent app, rest the pointer on the left edge of the screen, or press
+**⌃⌘B**. Click a row to go there: the window comes forward at once, then the tab or split
+inside it. It hides when you leave it. Pin it and it stays, docked beside your windows:
+
+- **Stack** puts every wrapped window in the same frame beside the sidebar, so picking a row
+  works like picking a tab.
+- **Split** puts the row you pick on the right and the one before it on the left.
+- **Free** leaves your windows where they are.
+
+It knows what your agents are doing. A spinner means a Claude Code or Grok session is working,
+✱ means it's waiting for you, and an orange **done** means it finished while you were looking
+somewhere else. When that happens in another app, a small notice says so in the corner of the
+screen; click it, or press **⌃⌘U** from anywhere in the deck, to go there. The menu bar icon
+counts them, and each Workspace Dock tile shows an orange count for agents done there and a
+blue dot while one works. ⌃⌘[ and ⌃⌘] go back and forward through the rows you've visited.
+
+**⌃⌘K** finds anything by name: a split, a tab, an agent, a command. The launcher (⌘Space)
+finds them too, with finished agents listed first.
+
+Agents report their state through hooks. Turn them on once, from the sidebar's banner or with
+`baneyspaces hooks install`, which adds them beside your own in `~/.claude/settings.json` and
+in `~/.grok/hooks`. Without hooks the Deck reads Claude's terminal title instead.
+
 ## Launcher
 
 One box to open, find, install and remove apps. Open it from the menu bar menu or the Workspace
@@ -267,7 +300,58 @@ open baneyspaces://viewer       # show or hide the overview
 `~/Library/Application Support/BaneySpaces/state.json` always holds the current workspace and
 the apps on each one.
 
-### Agents and automation
+The `baneyspaces` command (installed in `~/.local/bin`) talks to the Deck in a few milliseconds:
+
+```sh
+baneyspaces ls                     # every split, tab, agent and phone, with IDs
+baneyspaces focus helium github    # go to the best match, or an ID from ls
+baneyspaces send <id> "npm test"   # type into a Ghostty terminal, as if pasted
+baneyspaces notify "Need a call"   # light up the terminal this runs in
+baneyspaces doctor                 # what's working and what isn't
+```
+
+`baneyspaces skill install` teaches Claude Code the same commands.
+
+## Agents work beside you
+
+Turn on the agent workspace and agents get a workspace of their own (9 unless you pick
+another) to drive real apps on while you work on yours:
+
+```sh
+baneyspaces agent on                              # workspace 9 becomes the agent workspace
+baneyspaces agent run --dir ~/Projects/atlas -- claude   # a Claude Code session there
+baneyspaces agent open TextEdit notes.txt         # an app, or files in it, there
+baneyspaces agent status                          # what's there, with window IDs
+```
+
+Three rules keep it from ever taking your screen. Its apps are parked out of view instead of
+hidden, so automation that works from behind (Cua's driver) can click and type in them. Nothing
+on it coming forward takes you there: you go with ⌘9, its Dock tile or a Deck row. And a window
+an agent opens in the background lands there, not on your workspace. `agent run` starts a
+Ghostty of its own for the agent, a separate process from yours, so nothing the agent does
+there can stall your terminals. `scripts/agent-workspace-probe.sh` proves it on your Mac: an
+agent's command runs there, cua-driver types into an app there, and only your own keyboard and
+mouse change what you see.
+
+The window IDs are the ones cua-driver uses, so an agent drives a window there with the usual
+`get_window_state` and an `element_token`, never the foreground. A [fork of Cua's
+driver](https://github.com/baney75/cua/tree/baneyspaces) goes one step further: it refuses
+foreground delivery to a window on the agent workspace while you're elsewhere.
+
+**Phones.** Android phones (USB debugging on) and iPhones show in the Deck the moment they're
+plugged in. A row opens the phone's screen: scrcpy for Android, iPhone Mirroring for an iPhone.
+Agents get `baneyspaces phone ui` (the screen's UI tree, to find a button by its text), `tap`,
+`swipe`, `type`, `key`, `shot` and `shell` for Android. An iPhone is driven through its iPhone
+Mirroring window: open it on the agent workspace and work it from behind like any other app.
+
+**Other machines.** `baneyspaces remote on` lets your other machines send work to this one's
+agent workspace over your tailnet: `baneyspaces --on <host> agent run -- claude`. It listens
+only on this Mac's Tailscale address, every request needs the token from `baneyspaces remote
+token`, and a remote machine can only look and start agent work. It can't focus, type into
+your terminals, open pages or move your windows. macOS's firewall has to allow BaneySpaces
+incoming connections first.
+
+### Keep apps usable by automation
 
 BaneySpaces hides an app whose windows all sit on other workspaces, the way ⌘H does. macOS
 refuses background clicks and keystrokes to a hidden app, so tools that drive apps from behind,
