@@ -9,6 +9,18 @@ import AppKit
 
 @_silgen_name("_AXUIElementGetWindow")
 func _AXUIElementGetWindow(_ element: AXUIElement, _ id: UnsafeMutablePointer<CGWindowID>) -> AXError
+@_silgen_name("CGSMainConnectionID") func CGSMainConnectionID() -> Int32
+@_silgen_name("CGSCopySpacesForWindows") func CGSCopySpacesForWindows(_ cid: Int32, _ mask: Int32, _ windows: CFArray) -> Unmanaged<CFArray>?
+@_silgen_name("CGSCopyManagedDisplaySpaces") func CGSCopyManagedDisplaySpaces(_ cid: Int32) -> CFArray
+/// Off screen and on no macOS desktop or one being shown: Accessibility can see it from here.
+func reachable(_ id: UInt32, offscreen: Bool) -> Bool {
+    guard offscreen else { return false }
+    let cid = CGSMainConnectionID()
+    let spaces = Set((CGSCopySpacesForWindows(cid, 0x7, [id] as CFArray)?.takeRetainedValue() as? [NSNumber] ?? []).map(\.intValue))
+    let shown = Set((CGSCopyManagedDisplaySpaces(cid) as? [[String: Any]] ?? [])
+        .compactMap { ($0["Current Space"] as? [String: Any])?["ManagedSpaceID"] as? Int })
+    return spaces.isEmpty || spaces.isSubset(of: shown)
+}
 
 guard let n = CommandLine.arguments.dropFirst().first.flatMap(Int.init), (1...9).contains(n) else {
     FileHandle.standardError.write("usage: swift scripts/closed-window-probe.swift <workspace 1-9>\n".data(using: .utf8)!)
@@ -104,10 +116,15 @@ let ws = workspaces()
 let stayed = ws[String(n)]?.contains(wid) == true
 // No workspace may hold a Ghostty window Ghostty doesn't list (an earlier ghost, too).
 let listed = Set(axWindows(app).compactMap(id))
-let server = Set((CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? [])
-    .filter { ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == ghostty.processIdentifier }
-    .compactMap { ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value })
-let ghosts = ws.flatMap { n, ids in ids.filter { server.contains($0) && !listed.contains($0) }.map { "\($0) on \(n)" } }
+// Off screen, by number, for Ghostty's windows the window server has.
+var server: [UInt32: Bool] = [:]
+for w in CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
+where (w[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == ghostty.processIdentifier {
+    if let id = (w[kCGWindowNumber as String] as? NSNumber)?.uint32Value { server[id] = (w[kCGWindowIsOnscreen as String] as? Bool) != true }
+}
+let ghosts = ws.flatMap { n, ids in
+    ids.filter { id in server[id].map { !listed.contains(id) && reachable(id, offscreen: $0) } ?? false }.map { "\($0) on \(n)" }
+}
 close(window)
 if let on = ws.first(where: { $0.value.contains(tid) })?.key {
     fail("closed tab \(tid) still on workspace \(on) (window server \(kept ? "keeps" : "dropped") it)")
