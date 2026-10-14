@@ -24,9 +24,9 @@ enum Hooks {
 
     static func save(_ obj: [String: Any], to url: URL, backup: Bool) throws {
         let fm = FileManager.default
-        if backup, fm.fileExists(atPath: url.path) {
-            let b = url.deletingLastPathComponent().appendingPathComponent(url.lastPathComponent + ".baneyspaces-backup")
-            try? fm.removeItem(at: b)
+        // The first backup is the settings from before BaneySpaces touched them; later runs keep it.
+        let b = url.deletingLastPathComponent().appendingPathComponent(url.lastPathComponent + ".baneyspaces-backup")
+        if backup, fm.fileExists(atPath: url.path), !fm.fileExists(atPath: b.path) {
             try fm.copyItem(at: url, to: b)
         }
         try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)

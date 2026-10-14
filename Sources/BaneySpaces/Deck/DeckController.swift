@@ -3,6 +3,16 @@ import BaneySpacesCore
 import Carbon.HIToolbox
 import SwiftUI
 
+/// What the agent workspace needs from BaneySpaces. The app delegate fills it in.
+struct AgentHost {
+    var workspace: () -> Int? = { nil }
+    var setWorkspace: (Int?) -> Void = { _ in }
+    var current: () -> Int = { 1 }
+    var claim: (pid_t, Int) -> Void = { _, _ in }
+    var move: (UInt32, Int) -> Void = { _, _ in }
+    var windows: () -> [(id: WindowID, app: String, title: String)] = { [] }
+}
+
 /// The Deck: every terminal split, browser tab and coding agent on this workspace in one sidebar,
 /// with a switcher, agent state from hooks, and a toast when an agent finishes while you're
 /// elsewhere. BaneySpaces' app delegate owns it and starts it once Accessibility is allowed.
@@ -29,6 +39,8 @@ final class DeckController {
     var trustTimer: Timer?
     private(set) var started = false
 
+    var agentHost = AgentHost()
+
     /// Set by the app delegate: the menu bar badge shows how many agents finished unseen.
     var onUnseenChange: (Int) -> Void = { _ in }
     /// Which rows are working changed, so the Workspace Dock's badges can follow.
@@ -51,6 +63,8 @@ final class DeckController {
     var effectiveLayout: Deck.Layout { visibility.pinned ? layout : .free }
     var unseenCount: Int { engine.attention.unseen.count }
 
+    private var keysAdded = false
+
     func start(workspaceOf: @escaping (UInt32) -> Int?, currentWorkspace: @escaping () -> Int) {
         guard !started else { return }
         started = true
@@ -64,21 +78,24 @@ final class DeckController {
         server.start()
 
         let ctrlCmd = controlKey | cmdKey, cmdShift = cmdKey | shiftKey
-        deckKeys.add(keyCode: kVK_ANSI_K, modifiers: ctrlCmd) { [weak self] in self?.togglePalette() }
-        deckKeys.add(keyCode: kVK_ANSI_B, modifiers: ctrlCmd) { [weak self] in self?.send(.toggleKey) }
-        deckKeys.add(keyCode: kVK_ANSI_U, modifiers: ctrlCmd) { [weak self] in self?.jumpToFinished() }
-        deckKeys.add(keyCode: kVK_ANSI_LeftBracket, modifiers: ctrlCmd) { [weak self] in self?.goBack() }
-        deckKeys.add(keyCode: kVK_ANSI_RightBracket, modifiers: ctrlCmd) { [weak self] in self?.goForward() }
-        terminalKeys.add(keyCode: kVK_ANSI_C, modifiers: cmdShift) { [weak self] in self?.tile() }
-        terminalKeys.add(keyCode: kVK_ANSI_B, modifiers: cmdShift) { [weak self] in self?.send(.toggleKey) }
-        terminalKeys.add(keyCode: kVK_ANSI_U, modifiers: cmdShift) { [weak self] in self?.jumpToFinished() }
-        escape.add(keyCode: kVK_Escape, modifiers: 0) { [weak self] in self?.send(.escape) }
+        if !keysAdded {
+            keysAdded = true
+            deckKeys.add(keyCode: kVK_ANSI_K, modifiers: ctrlCmd) { [weak self] in self?.togglePalette() }
+            deckKeys.add(keyCode: kVK_ANSI_B, modifiers: ctrlCmd) { [weak self] in self?.send(.toggleKey) }
+            deckKeys.add(keyCode: kVK_ANSI_U, modifiers: ctrlCmd) { [weak self] in self?.jumpToFinished() }
+            deckKeys.add(keyCode: kVK_ANSI_LeftBracket, modifiers: ctrlCmd) { [weak self] in self?.goBack() }
+            deckKeys.add(keyCode: kVK_ANSI_RightBracket, modifiers: ctrlCmd) { [weak self] in self?.goForward() }
+            terminalKeys.add(keyCode: kVK_ANSI_C, modifiers: cmdShift) { [weak self] in self?.tile() }
+            terminalKeys.add(keyCode: kVK_ANSI_B, modifiers: cmdShift) { [weak self] in self?.send(.toggleKey) }
+            terminalKeys.add(keyCode: kVK_ANSI_U, modifiers: cmdShift) { [weak self] in self?.jumpToFinished() }
+            escape.add(keyCode: kVK_Escape, modifiers: 0) { [weak self] in self?.send(.escape) }
+        }
 
         panel.onPointer = { [weak self] inside in self?.pointer(inside: inside) }
         edge.onRest = { [weak self] in self?.send(.edgeRest) }
         toast.onPick = { [weak self] id in if let i = self?.engine.item(id) { self?.focus(i) } }
-        NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
-            guard let self else { return }
+        screenObserver = screenObserver ?? NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+            guard let self, self.started else { return }
             if self.panel.shown { self.panel.place(on: DeckLayout.activeScreen(), animated: false) }
             self.apply()
         }
@@ -87,12 +104,19 @@ final class DeckController {
         appChanged()
     }
 
-    /// Everything off: keys released, panels gone. Windows stay where they are.
+    private var screenObserver: NSObjectProtocol?
+
+    /// Everything off: keys released, panels gone, no reads, no socket. Windows stay where they are.
     func stop() {
         guard started else { return }
         started = false
         deckKeys.deactivate(); terminalKeys.deactivate(); escape.deactivate()
         panel.orderOut(nil); edge.orderOut(nil); palette.dismiss(); toast.orderOut(nil)
+        trustTimer?.invalidate()
+        engine.stop()
+        server.stop()
+        lastUnseen = []
+        onUnseenChange(0)
     }
 
     func wireModel() {
@@ -120,6 +144,7 @@ final class DeckController {
     var lastState = ""
     var lastUnseen: [String] = []
     func engineUpdated() {
+        guard started else { return }
         if model.items != engine.items { model.items = engine.items }
         let unseen = engine.attention.unseen
         if model.unseen != unseen { model.unseen = unseen }
@@ -382,6 +407,7 @@ final class DeckController {
     // MARK: socket
 
     func handle(_ r: Wire.Request) -> Wire.Reply {
+        guard started else { return .init(ok: false, error: "the Deck is off") }
         switch r.op {
         case .ping:
             var info = engine.statusInfo
@@ -418,7 +444,102 @@ final class DeckController {
             return .init(ok: true)
         case .sidebar: send(.toggleKey); return .init(ok: true)
         case .palette: togglePalette(); return .init(ok: true)
+        case .agent: return agent(r.text ?? "status", r.args ?? [])
         }
+    }
+
+    // MARK: agent workspace
+
+    /// `baneyspaces agent …`: work for agents on a workspace you aren't looking at.
+    func agent(_ sub: String, _ args: [String]) -> Wire.Reply {
+        let h = agentHost
+        switch sub {
+        case "on":
+            let n = args.first.flatMap(Int.init) ?? h.workspace() ?? 9
+            guard Workspaces.range.contains(n) else { return .init(ok: false, error: "pick a workspace from 1 to 9") }
+            h.setWorkspace(n)
+            return agentStatus()
+        case "off":
+            h.setWorkspace(nil)
+            return .init(ok: true, info: ["workspace": "off"])
+        case "status":
+            return agentStatus()
+        case "open":
+            guard let n = h.workspace() else { return .init(ok: false, error: "the agent workspace is off: baneyspaces agent on") }
+            guard let name = args.first, let url = Self.appURL(name) else { return .init(ok: false, error: "no app called \(args.first ?? "")") }
+            let bundle = Bundle(url: url)?.bundleIdentifier
+            let files = args.dropFirst().map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
+            let running = NSWorkspace.shared.runningApplications.first { $0.bundleIdentifier == bundle && bundle != nil }
+            if !files.isEmpty {
+                // Files open in the app from behind; whatever window they open is claimed.
+                if let running { h.claim(running.processIdentifier, n) }
+                let cfg = NSWorkspace.OpenConfiguration()
+                cfg.activates = false
+                cfg.addsToRecentItems = false
+                NSWorkspace.shared.open(files, withApplicationAt: url, configuration: cfg) { app, _ in
+                    guard let app, running == nil else { return }
+                    DispatchQueue.main.async { h.claim(app.processIdentifier, n) }
+                }
+                return .init(ok: true, info: ["workspace": "\(n)", "app": url.deletingPathExtension().lastPathComponent, "files": "\(files.count)"])
+            }
+            if let running {
+                // Running: claim its next window, then ask for one from behind through its menu.
+                h.claim(running.processIdentifier, n)
+                guard let item = Windows.newWindowItem(running.processIdentifier),
+                      AXUIElementPerformAction(item, kAXPressAction as CFString) == .success else {
+                    return .init(ok: false, error: "\(running.localizedName ?? name) has no New Window command it would run from behind")
+                }
+                return .init(ok: true, info: ["workspace": "\(n)", "app": running.localizedName ?? name])
+            }
+            // Not running: launch it without bringing it forward, and claim what it opens.
+            let cfg = NSWorkspace.OpenConfiguration()
+            cfg.activates = false
+            cfg.addsToRecentItems = false
+            NSWorkspace.shared.openApplication(at: url, configuration: cfg) { app, _ in
+                guard let app else { return }
+                DispatchQueue.main.async { h.claim(app.processIdentifier, n) }
+            }
+            return .init(ok: true, info: ["workspace": "\(n)", "app": url.deletingPathExtension().lastPathComponent])
+        case "run":
+            guard let n = h.workspace() else { return .init(ok: false, error: "the agent workspace is off: baneyspaces agent on") }
+            let cmd = args.drop { $0 != "--" }.dropFirst().joined(separator: " ")
+            guard !cmd.isEmpty else { return .init(ok: false, error: "usage: baneyspaces agent run [--dir DIR] -- <command>") }
+            let dir = args.firstIndex(of: "--dir").flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil }
+            guard let ghostty = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == "com.mitchellh.ghostty" }) else {
+                return .init(ok: false, error: "open Ghostty first; agent run makes a Ghostty window")
+            }
+            h.claim(ghostty.processIdentifier, n)
+            guard engine.newBackgroundTerminal(in: dir, command: cmd) else { return .init(ok: false, error: "allow BaneySpaces to control Ghostty first") }
+            return .init(ok: true, info: ["workspace": "\(n)", "command": cmd])
+        case "move":
+            guard let n = h.workspace() else { return .init(ok: false, error: "the agent workspace is off: baneyspaces agent on") }
+            guard let q = args.first, let item = engine.find(args.joined(separator: " ")) ?? engine.find(q), item.windowNumber != 0 else {
+                return .init(ok: false, error: "nothing matches")
+            }
+            h.move(item.windowNumber, n)
+            return .init(ok: true, info: ["workspace": "\(n)", "moved": item.label])
+        default:
+            return .init(ok: false, error: "usage: baneyspaces agent status|on [N]|off|open <app> [file…]|run [--dir D] -- <cmd>|move <row>")
+        }
+    }
+
+    func agentStatus() -> Wire.Reply {
+        guard let n = agentHost.workspace() else { return .init(ok: true, info: ["workspace": "off"]) }
+        var info = ["workspace": "\(n)", "current": "\(agentHost.current())"]
+        for (i, w) in agentHost.windows().enumerated() { info["window.\(i)"] = "\(w.id)\t\(w.app)\t\(w.title)" }
+        return .init(ok: true, items: engine.items.filter { $0.workspace == n }, info: info)
+    }
+
+    /// An app by bundle ID, path, or name ("Helium", "helium").
+    static func appURL(_ name: String) -> URL? {
+        if let u = NSWorkspace.shared.urlForApplication(withBundleIdentifier: name) { return u }
+        if name.hasSuffix(".app"), FileManager.default.fileExists(atPath: name) { return URL(fileURLWithPath: name) }
+        let dirs = ["/Applications", NSHomeDirectory() + "/Applications", "/System/Applications", "/System/Applications/Utilities"]
+        for d in dirs {
+            guard let names = try? FileManager.default.contentsOfDirectory(atPath: d) else { continue }
+            if let hit = names.first(where: { $0.lowercased() == name.lowercased() + ".app" }) { return URL(fileURLWithPath: d).appendingPathComponent(hit) }
+        }
+        return nil
     }
 
     // MARK: menu

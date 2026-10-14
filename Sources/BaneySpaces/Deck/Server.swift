@@ -9,7 +9,15 @@ final class Server {
     private var source: DispatchSourceRead?
     private let io = DispatchQueue(label: "deck.socket", attributes: .concurrent)
 
+    func stop() {
+        source?.cancel()
+        source = nil
+        if fd >= 0 { close(fd); fd = -1 }
+        unlink(Wire.socketPath)
+    }
+
     func start() {
+        guard source == nil else { return }
         let path = Wire.socketPath
         try? FileManager.default.createDirectory(at: Wire.supportDir, withIntermediateDirectories: true)
         unlink(path)

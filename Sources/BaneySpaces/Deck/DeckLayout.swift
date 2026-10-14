@@ -5,14 +5,25 @@ import BaneySpacesCore
 /// leaves alone windows that are off screen (BaneySpaces parks other workspaces' windows there),
 /// minimized, or full screen.
 enum DeckLayout {
+    private static var cachedScreen: (pid: pid_t, screen: NSScreen, at: Date)?
+
     /// The screen showing the front app's focused window, else the one with the menu bar in use.
+    /// Asked on every activation, so it's cheap: a short timeout, and one answer per app for half a second.
     static func activeScreen() -> NSScreen {
         if let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier {
-            let ax = AX.app(pid)
-            if let w: AXUIElement = ax.value(kAXFocusedWindowAttribute), let f = w.frame {
-                let center = CGPoint(x: f.midX, y: f.midY)
-                if let s = NSScreen.screens.first(where: { AX.flip($0.frame).contains(center) }) { return s }
-            }
+            if let c = cachedScreen, c.pid == pid, Date().timeIntervalSince(c.at) < 0.5, NSScreen.screens.contains(c.screen) { return c.screen }
+            let s = lookUpScreen(pid)
+            cachedScreen = (pid, s, Date())
+            return s
+        }
+        return NSScreen.main ?? NSScreen.screens[0]
+    }
+
+    private static func lookUpScreen(_ pid: pid_t) -> NSScreen {
+        let ax = AX.app(pid, timeout: 0.1)
+        if let w: AXUIElement = ax.value(kAXFocusedWindowAttribute), let f = w.frame {
+            let center = CGPoint(x: f.midX, y: f.midY)
+            if let s = NSScreen.screens.first(where: { AX.flip($0.frame).contains(center) }) { return s }
         }
         return NSScreen.main ?? NSScreen.screens[0]
     }
@@ -47,17 +58,23 @@ enum DeckLayout {
     }
 
     /// Split: `right` on the right half, `left` on the left.
+    /// Only windows on this workspace and on screen take part: one parked for another workspace
+    /// pulled into a half would show here while BaneySpaces files it there.
     static func split(_ engine: Engine, left: Item?, right: Item, reserve: CGFloat) {
         guard AX.isTrusted else { AX.askForTrust(); return }
         let (l, r) = Deck.halves(content(on: activeScreen(), reserve: reserve))
-        if let w = engine.nativeWindow(for: right), let pid = engine.trackedApp(for: right)?.app.processIdentifier { move(pid, w, to: r) }
-        if let left, left.windowNumber != right.windowNumber,
-           let w = engine.nativeWindow(for: left), let pid = engine.trackedApp(for: left)?.app.processIdentifier { move(pid, w, to: l) }
+        func here(_ i: Item) -> (pid_t, NativeWindow)? {
+            guard i.workspace == 0, let w = engine.nativeWindow(for: i), w.onScreen, !w.fullScreen,
+                  let pid = engine.trackedApp(for: i)?.app.processIdentifier else { return nil }
+            return (pid, w)
+        }
+        if let (pid, w) = here(right) { move(pid, w, to: r) }
+        if let left, left.windowNumber != right.windowNumber, let (pid, w) = here(left) { move(pid, w, to: l) }
     }
 
     /// Puts one window into the deck frame, used when a window appears or is picked while stacked.
     static func place(_ engine: Engine, item: Item, reserve: CGFloat) {
-        guard AX.isTrusted, let w = engine.nativeWindow(for: item), w.onScreen, !w.fullScreen,
+        guard AX.isTrusted, item.workspace == 0, let w = engine.nativeWindow(for: item), w.onScreen, !w.fullScreen,
               let pid = engine.trackedApp(for: item)?.app.processIdentifier else { return }
         move(pid, w, to: content(on: activeScreen(), reserve: reserve))
     }

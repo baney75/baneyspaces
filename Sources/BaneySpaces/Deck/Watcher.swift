@@ -8,7 +8,7 @@ final class Watcher {
     enum Change { case windows, title, focus, frame }
 
     /// Called on the main thread with the app's pid and what changed.
-    var onChange: (pid_t, Change) -> Void = { _, _ in }
+    var onChange: (pid_t, Change, AXUIElement) -> Void = { _, _, _ in }
 
     private var observers: [pid_t: AXObserver] = [:]
     private var watchedWindows: [pid_t: [AXUIElement]] = [:]
@@ -69,6 +69,6 @@ final class Watcher {
         case kAXWindowMovedNotification, kAXWindowResizedNotification: change = .frame
         default: change = .focus
         }
-        onChange(pid, change)
+        onChange(pid, change, element)
     }
 }

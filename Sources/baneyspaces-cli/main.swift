@@ -19,6 +19,10 @@ usage: \(me) <command>
   layout free|stack|split     how wrapped windows sit beside the docked sidebar
   tile | sidebar | palette    tile windows, toggle the sidebar, open the switcher
   state                       the Deck's live state as JSON
+  agent status|on [N]|off     the agent workspace: agents drive apps there while you work here
+  agent open <app> [file…]    open an app (or files in it) there, without switching you
+  agent run [--dir D] -- CMD  run a command (claude, grok…) in a Ghostty window there
+  agent move <id | words>     send a row's window there
   hook claude|grok            for agent hooks: reads the hook JSON on stdin
   event --state S [--agent A] [--session ID] [--cwd DIR] [--message M]
                               report any agent's state (working, waiting, idle, end)
@@ -111,6 +115,25 @@ case "palette": _ = call(Wire.Request(op: .palette))
 case "state":
     guard let d = FileManager.default.contents(atPath: Wire.statePath) else { fail("no state yet: is the Deck on?") }
     out(String(data: d, encoding: .utf8) ?? "")
+
+case "agent":
+    // The agent workspace: agents work there while you work here.
+    let sub = rest.first ?? "status"
+    let r = call(Wire.Request(op: .agent, text: sub, args: Array(rest.dropFirst())))
+    let info = r.info ?? [:]
+    if rest.contains("--json") {
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+        struct Out: Encodable { let info: [String: String]; let items: [Item] }
+        out(String(data: try! enc.encode(Out(info: info, items: r.items ?? [])), encoding: .utf8)!)
+    } else if sub == "status" || sub == "on" {
+        guard let ws = info["workspace"], ws != "off" else { out("agent workspace: off (baneyspaces agent on [N])"); break }
+        out("agent workspace: \(ws) (you're on \(info["current"] ?? "?"))")
+        let wins = info.filter { $0.key.hasPrefix("window.") }.sorted { $0.key < $1.key }.map(\.value)
+        out(wins.isEmpty ? "  no windows there yet" : wins.map { "  " + $0 }.joined(separator: "\n"))
+    } else {
+        out(info.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value)" }.joined(separator: "\n"))
+    }
 
 case "hook":
     // Never slow an agent down or fail its turn: short timeout, no output, always exit 0.

@@ -306,9 +306,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func startDeck() {
         guard DeckController.enabled else { return }
         deck.onUnseenChange = { [weak self] _ in self?.updateIcon(); self?.dock.reload() }
+        var h = AgentHost()
+        h.workspace = { Spaces.agentWorkspace }
+        h.setWorkspace = { [weak self] n in Spaces.agentWorkspace = n; self?.run { $0.reapply() } }
+        h.current = { [weak self] in self?.spaces.model.current ?? 1 }
+        h.claim = { [weak self] pid, n in self?.spaces.claimNextWindow(of: pid, for: n) }
+        h.move = { [weak self] id, n in self?.run { $0.move(id, to: n) } }
+        h.windows = { [weak self] in self?.spaces.agentWindows() ?? [] }
+        deck.agentHost = h
         deck.onWorkingChange = { [weak self] in self?.dock.reload() }
-        deck.start(workspaceOf: { [weak self] in self?.spaces.model.workspace(of: $0) },
-                   currentWorkspace: { [weak self] in self?.spaces.model.current ?? 1 })
+        // A moment after launch: setting up an observer per app costs the main thread a few
+        // hundred milliseconds, which would otherwise land on your first workspace switch.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self, self.started, DeckController.enabled else { return }
+            self.deck.start(workspaceOf: { [weak self] in self?.spaces.model.workspace(of: $0) },
+                            currentWorkspace: { [weak self] in self?.spaces.model.current ?? 1 })
+        }
     }
 
     @objc private func toggleDeck() {

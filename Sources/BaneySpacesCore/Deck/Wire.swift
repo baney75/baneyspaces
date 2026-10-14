@@ -29,14 +29,17 @@ public enum Wire {
             case sidebar
             case palette
             case ping
+            /// The agent workspace: `text` is status, on, off, open, run or move; `args` the rest.
+            case agent
         }
         public var op: Op
         public var target: String?
         public var text: String?
         public var event: AgentEvent?
+        public var args: [String]?
 
-        public init(op: Op, target: String? = nil, text: String? = nil, event: AgentEvent? = nil) {
-            self.op = op; self.target = target; self.text = text; self.event = event
+        public init(op: Op, target: String? = nil, text: String? = nil, event: AgentEvent? = nil, args: [String]? = nil) {
+            self.op = op; self.target = target; self.text = text; self.event = event; self.args = args
         }
     }
 

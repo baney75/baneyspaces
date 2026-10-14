@@ -40,31 +40,50 @@ final class Engine {
 
     // MARK: lifecycle
 
+    private var observers: [NSObjectProtocol] = []
+    private(set) var running = false
+
     func start() {
+        guard !running else { return }
+        running = true
         defaultBrowser = NSWorkspace.shared.urlForApplication(toOpen: URL(string: "https://example.com")!)
             .flatMap { Bundle(url: $0)?.bundleIdentifier }
         let config = Config.load()
         specs = Catalog.wrapped(defaultBrowser: defaultBrowser, extra: config.extra, excluded: config.excluded)
-        watcher.onChange = { [weak self] pid, change in self?.changed(pid, change) }
+        watcher.onChange = { [weak self] pid, change, element in self?.changed(pid, change, element) }
         let nc = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
-            nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.syncApps() }
+            observers.append(nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.syncApps() })
         }
         for name in [NSWorkspace.didActivateApplicationNotification, NSWorkspace.didHideApplicationNotification,
                      NSWorkspace.didUnhideApplicationNotification] {
-            nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+            observers.append(nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
                 guard let self, let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
                 // Activation changes which row is focused in the app losing focus too.
                 if self.tracked[app.processIdentifier] != nil { self.refresh(app.processIdentifier) }
                 for (pid, t) in self.tracked where pid != app.processIdentifier && t.items.contains(where: \.focused) { self.refresh(pid) }
-            }
+            })
         }
         syncApps()
         scheduleSweep(visible: false)
     }
 
+    /// Everything off: no timer, no observers, no reads. Rows are forgotten.
+    func stop() {
+        guard running else { return }
+        running = false
+        observers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
+        observers.removeAll()
+        sweep?.invalidate()
+        sweep = nil
+        for pid in tracked.keys { watcher.unwatch(pid) }
+        tracked.removeAll()
+        items.removeAll()
+    }
+
     /// Starts tracking wrapped apps that launched, forgets ones that quit.
     func syncApps() {
+        guard self.running else { return }
         let running = NSWorkspace.shared.runningApplications
         let wanted = Dictionary(specs.map { ($0.bundleID, $0) }, uniquingKeysWith: { a, _ in a })
         var alive = Set<pid_t>()
@@ -103,8 +122,18 @@ final class Engine {
 
     func refreshAll() { for pid in tracked.keys { refresh(pid) } }
 
-    private func changed(_ pid: pid_t, _ change: Watcher.Change) {
+    /// The status and label each window's title last showed, so a spinner frame (◐ to ◓) isn't news.
+    private var titleSeen: [UInt32: String] = [:]
+
+    private func changed(_ pid: pid_t, _ change: Watcher.Change, _ element: AXUIElement) {
         if change == .frame { return }
+        if change == .title {
+            let title = element.string(kAXTitleAttribute) ?? ""
+            let key = "\(Activity.of(title: title)) \(Activity.label(of: title))"
+            let n = element.windowNumber
+            if n != 0, titleSeen[n] == key { return }
+            if n != 0 { titleSeen[n] = key }
+        }
         if change == .windows { onNewWindow(pid) }
         refresh(pid)
     }
@@ -128,7 +157,7 @@ final class Engine {
     /// Reads one app again. Coalesced: a burst of title changes (Claude's spinner retitles several
     /// times a second) becomes one read, and a scripted app is read at most every 250 ms.
     func refresh(_ pid: pid_t) {
-        guard var t = tracked[pid] else { return }
+        guard running, var t = tracked[pid] else { return }
         if t.refreshing { t.dirty = true; tracked[pid] = t; return }
         let minGap: TimeInterval = t.spec.adapter == .windows ? 0.03 : 0.25
         let wait = minGap - Date().timeIntervalSince(t.last)
@@ -250,10 +279,16 @@ final class Engine {
 
     /// `baneyspaces notify`: light up the row the command ran in.
     func notify(_ e: AgentEvent) -> Item? {
-        var probe = AgentSessions()
-        probe.apply(e)
-        let bound = probe.resolve(items)
-        guard let id = bound.keys.first ?? items.first(where: { $0.focused })?.id else { return nil }
+        // A session already bound to a row and run from this terminal (same tty, or same app and
+        // folder) says which row it is; else the one row whose tty or folder matches exactly.
+        // Nothing else: lighting up a guess would send you to the wrong terminal.
+        let bound = sessions.binding.first { key, itemID in
+            guard let s = sessions.sessions[key], item(itemID) != nil else { return false }
+            if !e.tty.isEmpty { return s.tty == e.tty }
+            return !e.app.isEmpty && s.app == e.app && !e.cwd.isEmpty && s.cwd == e.cwd
+        }?.value
+        let exact = items.filter { $0.kind == .terminal && (e.app.isEmpty || $0.bundleID == e.app) && AgentSessions.exact($0, e) }
+        guard let id = bound ?? (exact.count == 1 ? exact[0].id : nil) else { return nil }
         attention.flag(id)
         if !e.message.isEmpty { notices[id] = e.message }
         merge()
@@ -295,11 +330,16 @@ final class Engine {
         t.app.activate()
         focusToken += 1
         let token = focusToken
+        // A tab or split selected after you've moved on would pull the app forward over your new
+        // workspace: dropped if the workspace changed or it waited too long behind other scripts.
+        let ws = currentWorkspace()
+        let deadline = Date().addingTimeInterval(1.5)
         guard let script = script(for: t.spec), Automation.allowed(t.spec.bundleID) else { merge(); return }
         let parts = item.id.split(separator: ":", maxSplits: 3).map(String.init)
         let ref = t.scripted?.tabs.first { parts.count == 4 && $0.windowID == parts[2] && $0.id == parts[3] }
         OSA.queue.async { [weak self] in
-            guard DispatchQueue.main.sync(execute: { self?.focusToken == token }) else { return }
+            guard Date() < deadline,
+                  DispatchQueue.main.sync(execute: { self?.focusToken == token && self?.currentWorkspace() == ws }) else { return }
             switch t.spec.adapter {
             case .ghostty: _ = script.call("focusTerm", [String(item.id.dropFirst("ghostty:".count))])
             case .chromium, .terminalApp: if let ref { _ = script.call("focusTab", [ref.windowID, String(ref.index)]) }
@@ -332,6 +372,13 @@ final class Engine {
         guard item.id.hasPrefix("ghostty:"), let t = trackedApp(for: item), Automation.allowed(t.spec.bundleID),
               let script = script(for: t.spec) else { return false }
         OSA.queue.async { _ = script.call("sendText", [String(item.id.dropFirst("ghostty:".count)), text]) }
+        return true
+    }
+
+    /// A new Ghostty window that doesn't bring Ghostty forward, for the agent workspace.
+    func newBackgroundTerminal(in dir: String?, command: String) -> Bool {
+        guard let s = script(for: Catalog.known[0]), Automation.allowed("com.mitchellh.ghostty") else { return false }
+        OSA.queue.async { _ = s.call("newBackgroundWindow", [dir ?? "", command]) }
         return true
     }
 

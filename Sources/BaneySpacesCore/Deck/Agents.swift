@@ -144,7 +144,7 @@ public struct AgentSessions: Equatable, Sendable {
     }
 
     /// The row's own tty or folder says it's this session's.
-    static func exact(_ item: Item, _ e: AgentEvent) -> Bool {
+    public static func exact(_ item: Item, _ e: AgentEvent) -> Bool {
         if !e.tty.isEmpty && item.tty == e.tty { return true }
         return item.tty.isEmpty && !e.cwd.isEmpty && item.directory == e.cwd
     }

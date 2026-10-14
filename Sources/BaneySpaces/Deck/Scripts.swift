@@ -157,6 +157,16 @@ enum Scripts {
         	return "ok"
         end sendText
 
+        on newBackgroundWindow(dir, cmd)
+        	tell application id "com.mitchellh.ghostty"
+        		set cfg to new surface configuration
+        		if dir is not "" then set initial working directory of cfg to dir
+        		if cmd is not "" then set initial input of cfg to cmd & return
+        		new window with configuration cfg
+        	end tell
+        	return "ok"
+        end newBackgroundWindow
+
         on newWindow(dir, cmd)
         	tell application id "com.mitchellh.ghostty"
         		set cfg to new surface configuration
