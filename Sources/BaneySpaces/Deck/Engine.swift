@@ -218,7 +218,7 @@ final class Engine {
                 all.append(item)
             }
         }
-        let bound = sessions.resolve(all)
+        let bound = sessions.resolve(all, now: Date().timeIntervalSince1970)
         for i in all.indices {
             if let e = bound[all[i].id] {
                 all[i].activity = Activity(e.state)
@@ -239,8 +239,13 @@ final class Engine {
     func apply(_ e: AgentEvent) {
         sessions.apply(e)
         merge()
-        // A hook usually means the title changed too; read it now instead of at the next sweep.
+        // A hook usually means the title changed too: read it now, and again once the title has
+        // caught up, which is when an unbound session gets narrowed to its terminal.
         for (pid, t) in tracked where t.spec.adapter != .windows { refresh(pid) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + AgentSessions.settle + 0.15) { [weak self] in
+            guard let self else { return }
+            for (pid, t) in self.tracked where t.spec.adapter != .windows { self.refresh(pid) }
+        }
     }
 
     /// `baneyspaces notify`: light up the row the command ran in.

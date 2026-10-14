@@ -68,3 +68,41 @@ final class GrokTests: XCTestCase {
         XCTAssertFalse(HookSettings.isOurs(command: "python3 stop_gate.py"))
     }
 }
+
+final class CorrelationTests: XCTestCase {
+    func g(_ id: String, _ title: String) -> Item {
+        Item(id: id, bundleID: "com.mitchellh.ghostty", appName: "Ghostty", role: .terminal, kind: .terminal, group: "w", title: title,
+             activity: Activity.of(title: title))
+    }
+    func ev(_ state: AgentEvent.State, at: Double) -> AgentEvent {
+        AgentEvent(agent: "claude", session: "s", cwd: "/Users/me/p", tty: "/dev/ttys9", app: "com.mitchellh.ghostty", state: state, at: at)
+    }
+
+    func testGhosttyWithoutFoldersBindsByTitleOverEvents() {
+        var a = AgentSessions()
+        a.apply(ev(.working, at: 0))
+        XCTAssertTrue(a.resolve([g("A", "◐ one"), g("B", "◓ two"), g("C", "✳ three")], now: 0.1).isEmpty, "too soon: titles haven't caught up")
+        XCTAssertTrue(a.resolve([g("A", "◐ one"), g("B", "◓ two"), g("C", "✳ three")], now: 1).isEmpty, "A or B: don't guess")
+        a.apply(ev(.waiting, at: 2))
+        let r = a.resolve([g("A", "✳ one"), g("B", "◓ two"), g("C", "✳ three")], now: 3)
+        XCTAssertEqual(Array(r.keys), ["A"], "working then waiting: only A did both")
+        // Sticks while the row lives, whatever its title says next.
+        a.apply(ev(.working, at: 4))
+        XCTAssertEqual(a.resolve([g("A", "✳ one"), g("B", "◓ two")], now: 4.1)["A"]?.state, .working)
+    }
+
+    func testAShellNeverBindsByTitle() {
+        var a = AgentSessions()
+        a.apply(ev(.working, at: 0))
+        XCTAssertTrue(a.resolve([g("A", "zsh"), g("B", "vim notes")], now: 1).isEmpty)
+    }
+
+    func testAFreshAgreeingSetReplacesAStaleOne() {
+        var a = AgentSessions()
+        a.apply(ev(.working, at: 0))
+        _ = a.resolve([g("A", "◐ one"), g("B", "◓ two")], now: 1)
+        // Both closed and a new tab took over: an empty intersection starts over instead of sticking at nothing.
+        a.apply(ev(.waiting, at: 2))
+        XCTAssertEqual(Array(a.resolve([g("C", "✳ new")], now: 3).keys), ["C"])
+    }
+}

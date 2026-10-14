@@ -89,7 +89,8 @@ enum Skill {
 
     /// The copy in the app bundle, next to this binary (Contents/Resources/bin/baneyspaces).
     static var source: URL? {
-        let exe = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+        // The real binary, not argv[0]: run from PATH, argv[0] is just "baneyspaces".
+        guard let exe = Bundle.main.executableURL?.resolvingSymlinksInPath() else { return nil }
         let c = exe.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("skill/SKILL.md")
         return FileManager.default.fileExists(atPath: c.path) ? c : nil
     }
