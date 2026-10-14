@@ -23,6 +23,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         d.onShowLauncher = { [weak self] in self?.launcher.show() }
         d.onSetEdge = { [weak self] e in self?.setDockEdge(e) }
         d.onTurnOff = { [weak self] in self?.setWorkspaceDock(false) }
+        d.model.agentCounts = { [weak self] n in
+            guard let self, self.deck.started else { return (0, 0) }
+            return self.deck.agentCounts(on: n, current: self.spaces.model.current)
+        }
         return d
     }()
     private lazy var switcher = WorkspaceSwitcher(spaces: spaces)
@@ -47,6 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return out
         }
         a.showOverview = { [weak self] in self?.viewer.open() }
+        a.deckItems = { [weak self] q in self?.deck.launcherItems(q) ?? [] }
         a.bringBack = { [weak self] in self?.bringBack() }
         a.toggleDock = { [weak self] in self?.toggleWorkspaceDock() }
         a.dockOn = { WorkspaceDock.enabled }
@@ -300,7 +305,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func startDeck() {
         guard DeckController.enabled else { return }
-        deck.onUnseenChange = { [weak self] _ in self?.updateIcon() }
+        deck.onUnseenChange = { [weak self] _ in self?.updateIcon(); self?.dock.reload() }
+        deck.onWorkingChange = { [weak self] in self?.dock.reload() }
         deck.start(workspaceOf: { [weak self] in self?.spaces.model.workspace(of: $0) },
                    currentWorkspace: { [weak self] in self?.spaces.model.current ?? 1 })
     }

@@ -357,6 +357,9 @@ final class DockModel: ObservableObject {
         let id: Int
         let apps: [App]
         let isCurrent: Bool
+        /// Coding agents on this workspace that are working, and that finished without you looking.
+        var agentsWorking = 0
+        var agentsDone = 0
         var windowCount: Int { apps.reduce(0) { $0 + $1.windows } }
     }
     /// An app's windows on one workspace, or one window from the strip, being dragged to another
@@ -411,6 +414,8 @@ final class DockModel: ObservableObject {
     var onLayoutChange: () -> Void = {}
     var menuOpen = false
     var onPick: (Int) -> Void = { _ in }
+    /// The Deck's agent counts for a workspace: working, and finished unseen.
+    var agentCounts: (Int) -> (working: Int, done: Int) = { _ in (0, 0) }
     var onFocusApp: (pid_t, Int) -> Void = { _, _ in }
     var onSendHere: (Int) -> Void = { _ in }
     var onMove: ([WindowID], Int) -> Void = { _, _ in }
@@ -434,7 +439,8 @@ final class DockModel: ObservableObject {
         tiles = DockTiles.make(current: spaces.model.current, windows: windows).map { t in
             let entries = spaces.entries(on: t.workspace)
             let last = spaces.model.lastFocused[t.workspace]
-            return Tile(id: t.workspace, apps: t.apps.map { a in
+            let agents = agentCounts(t.workspace)
+            var tile = Tile(id: t.workspace, apps: t.apps.map { a in
                 let pid = pid_t(a.key) ?? 0
                 return App(id: a.key, pid: pid, name: byPid[a.key]?.app ?? "App",
                            icon: NSRunningApplication(processIdentifier: pid)?.icon ?? NSWorkspace.shared.icon(for: .application),
@@ -443,6 +449,9 @@ final class DockModel: ObservableObject {
                                Window(id: $0.id, title: WindowTitle.clean($0.title, app: $0.app), isLast: $0.id == last)
                            })
             }, isCurrent: t.isCurrent)
+            tile.agentsWorking = agents.working
+            tile.agentsDone = agents.done
+            return tile
         }
         // A strip for an app that's gone or down to one window closes.
         if let s = strip, (stripApp?.list.count ?? 0) < 2 || !tiles.contains(where: { $0.id == s.workspace }) { strip = nil }
@@ -782,6 +791,7 @@ struct DockView: View {
                     .onHover { model.setHover(.tile(tile.id), $0) }
                     .onTapGesture { model.onPick(tile.id) }
                 icons(tile).frame(width: tileSize, height: tileSize)
+                agentBadge(tile).frame(width: tileSize, height: tileSize, alignment: .topTrailing)
             }
             .frame(width: tileSize, height: tileSize)
             .modifier(CenterReport(key: "tile:\(tile.id)"))
@@ -797,8 +807,27 @@ struct DockView: View {
         .animation(.spring(response: 0.25, dampingFraction: 0.72), value: hovered)
         .contextMenu { tileMenu(tile) }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(title(tile) + (tile.isCurrent ? ", current" : ""))
+        .accessibilityLabel(title(tile) + (tile.isCurrent ? ", current" : "") + agentSummary(tile))
         .accessibilityAction { model.onPick(tile.id) }
+    }
+
+    /// A finished agent lights the tile's corner orange with a count; a working one shows a blue dot.
+    @ViewBuilder private func agentBadge(_ tile: DockModel.Tile) -> some View {
+        if tile.agentsDone > 0 {
+            Text("\(tile.agentsDone)")
+                .font(.system(size: 9.5, weight: .heavy, design: .rounded)).foregroundStyle(.white)
+                .frame(minWidth: 16, minHeight: 16).background(Circle().fill(Color.orange))
+                .offset(x: 4, y: -4).allowsHitTesting(false)
+        } else if tile.agentsWorking > 0 {
+            Circle().fill(Color.blue).frame(width: 8, height: 8).offset(x: -3, y: 3).allowsHitTesting(false)
+        }
+    }
+
+    private func agentSummary(_ tile: DockModel.Tile) -> String {
+        var parts: [String] = []
+        if tile.agentsDone > 0 { parts.append("\(tile.agentsDone) agent\(tile.agentsDone == 1 ? "" : "s") finished") }
+        if tile.agentsWorking > 0 { parts.append("\(tile.agentsWorking) working") }
+        return parts.isEmpty ? "" : ", " + parts.joined(separator: ", ")
     }
 
     @ViewBuilder private func tileMenu(_ tile: DockModel.Tile) -> some View {

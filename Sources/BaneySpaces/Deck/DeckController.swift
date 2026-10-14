@@ -31,6 +31,16 @@ final class DeckController {
 
     /// Set by the app delegate: the menu bar badge shows how many agents finished unseen.
     var onUnseenChange: (Int) -> Void = { _ in }
+    /// Which rows are working changed, so the Workspace Dock's badges can follow.
+    var onWorkingChange: () -> Void = {}
+    private var lastWorking: Set<String> = []
+
+    /// Agents working and finished unseen on workspace `n`.
+    func agentCounts(on n: Int, current: Int) -> (working: Int, done: Int) {
+        let here = engine.items.filter { $0.workspace == n || ($0.workspace == 0 && n == current) }
+        let unseen = Set(engine.attention.unseen)
+        return (here.filter { $0.activity == .working }.count, here.filter { unseen.contains($0.id) }.count)
+    }
 
     static var enabled: Bool {
         get { UserDefaults.standard.object(forKey: "deckEnabled") as? Bool ?? true }
@@ -120,6 +130,8 @@ final class DeckController {
             toast.show(item, more: fresh.count - 1, on: DeckLayout.activeScreen())
         }
         if unseen != lastUnseen { onUnseenChange(unseen.count) }
+        let working = Set(engine.items.filter { $0.activity == .working }.map(\.id))
+        if working != lastWorking { lastWorking = working; onWorkingChange() }
         lastUnseen = unseen
         if let f = engine.items.first(where: \.focused), f.id != currentFocus?.id {
             if let c = currentFocus, c.windowNumber != f.windowNumber { previousFocus = c }
@@ -338,6 +350,33 @@ final class DeckController {
         ]
         out += cmds.map { c in .init(id: "cmd:" + c.0, title: c.0, subtitle: "Command", bundleID: nil, symbol: c.1, badge: "", run: c.2) }
         return out
+    }
+
+    /// Rows for BaneySpaces' launcher (⌘Space), so one search finds apps, splits, tabs and agents.
+    func launcherItems(_ q: String) -> [LauncherItem] {
+        guard started else { return [] }
+        let unseen = engine.attention.unseen
+        let rows = q.isEmpty
+            ? unseen.compactMap { engine.item($0) }
+            : DeckRank.rank(q, engine.items) { [$0.label, "\($0.appName) \($0.label)", $0.detail] }
+        return rows.map { item in
+            let done = unseen.contains(item.id)
+            var sub = [item.appName]
+            if !item.notice.isEmpty { sub.append(item.notice) } else if !item.detail.isEmpty { sub.append(item.detail) }
+            return LauncherItem(id: "deck:" + item.id, section: done ? "Needs You" : "Terminals, Tabs and Agents",
+                                title: item.label, subtitle: sub.joined(separator: " · "), icon: .file(Self.appPath(item.bundleID)),
+                                badge: done ? "Done" : item.activity == .working ? "Working" : "",
+                                workspaces: item.workspace > 0 ? [item.workspace] : [],
+                                run: { [weak self] in self?.focus(item) })
+        }
+    }
+
+    private static var appPaths: [String: String] = [:]
+    static func appPath(_ bundleID: String) -> String {
+        if let p = appPaths[bundleID] { return p }
+        let p = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)?.path ?? ""
+        appPaths[bundleID] = p
+        return p
     }
 
     // MARK: socket
