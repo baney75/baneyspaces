@@ -888,6 +888,13 @@ struct DockView: View {
                     .onEnded { _ in model.endDrag() }
             )
             .simultaneousGesture(TapGesture().onEnded { if model.clickCounts { model.onFocusApp(app.pid, tile.id) } })
+            // Its own menu, in place of the tile's: an app that hangs can be force quit from here.
+            .contextMenu {
+                Button("Show \(app.name)") { model.onFocusApp(app.pid, tile.id) }
+                Divider()
+                Button("Quit \(app.name)") { NSRunningApplication(processIdentifier: app.pid)?.terminate() }
+                Button("Force Quit \(app.name)") { NSRunningApplication(processIdentifier: app.pid)?.forceTerminate() }
+            }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("\(app.name), workspace \(tile.id)")
             .accessibilityAddTraits(.isButton)

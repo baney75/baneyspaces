@@ -6,6 +6,14 @@ import BaneySpacesCore
 // Every window manager on the Mac relies on it; there is no public way to match the two.
 @_silgen_name("_AXUIElementGetWindow")
 private func _AXUIElementGetWindow(_ element: AXUIElement, _ id: UnsafeMutablePointer<CGWindowID>) -> AXError
+// Private but stable, as above: which macOS desktops a window is on, and the desktop each
+// display is showing. yabai and AltTab rely on the same calls.
+@_silgen_name("CGSMainConnectionID")
+private func CGSMainConnectionID() -> Int32
+@_silgen_name("CGSCopySpacesForWindows")
+private func CGSCopySpacesForWindows(_ cid: Int32, _ mask: Int32, _ windows: CFArray) -> Unmanaged<CFArray>?
+@_silgen_name("CGSCopyManagedDisplaySpaces")
+private func CGSCopyManagedDisplaySpaces(_ cid: Int32) -> CFArray
 
 /// One real window, reached through Accessibility.
 struct Window {
@@ -201,9 +209,11 @@ enum Windows {
     /// Every window number, plus the ordinary app windows (layer 0) among them. When the layer-0
     /// set hasn't changed since the last look, no window was opened or closed, and the full
     /// Accessibility scan can be skipped.
-    static func snapshot(apps: Set<pid_t>) -> (alive: Set<WindowID>, appWindows: Set<WindowID>, owners: Set<pid_t>) {
+    /// `offscreen` holds the app windows the window server isn't drawing (a hidden app's,
+    /// minimized ones, ones on another macOS desktop, and ones the app closed but kept), by owner.
+    static func snapshot(apps: Set<pid_t>) -> (alive: Set<WindowID>, appWindows: Set<WindowID>, owners: Set<pid_t>, offscreen: [WindowID: pid_t]) {
         let info = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
-        var alive = Set<WindowID>(), appWindows = Set<WindowID>(), owners = Set<pid_t>()
+        var alive = Set<WindowID>(), appWindows = Set<WindowID>(), owners = Set<pid_t>(), offscreen: [WindowID: pid_t] = [:]
         for w in info {
             guard let id = (w[kCGWindowNumber as String] as? NSNumber)?.uint32Value else { continue }
             alive.insert(id)
@@ -211,8 +221,23 @@ enum Windows {
                   let pid = (w[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value, apps.contains(pid) else { continue }
             appWindows.insert(id)
             owners.insert(pid)
+            if (w[kCGWindowIsOnscreen as String] as? Bool) != true { offscreen[id] = pid }
         }
-        return (alive, appWindows, owners)
+        return (alive, appWindows, owners, offscreen)
+    }
+
+    /// Whether a window is on no macOS desktop at all, or on one a display is showing. A window
+    /// the app closed but kept (Ghostty keeps every one; so does Music), or a tab behind
+    /// another tab, is one of these and off screen. A window on another desktop, or in full
+    /// screen on its own, is neither: Accessibility just can't see it from here.
+    static func onNoOtherDesktop(_ id: WindowID) -> Bool {
+        let cid = CGSMainConnectionID()
+        guard let raw = CGSCopySpacesForWindows(cid, 0x7, [id] as CFArray)?.takeRetainedValue() as? [NSNumber] else { return false }
+        let spaces = Set(raw.map(\.intValue))
+        if spaces.isEmpty { return true }
+        guard let displays = CGSCopyManagedDisplaySpaces(cid) as? [[String: Any]] else { return false }
+        let shown = Set(displays.compactMap { ($0["Current Space"] as? [String: Any])?["ManagedSpaceID"] as? Int })
+        return !shown.isEmpty && spaces.isSubset(of: shown)
     }
 
     /// The window that has keyboard focus, if it is one we manage.

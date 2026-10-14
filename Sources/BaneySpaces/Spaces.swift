@@ -33,7 +33,9 @@ final class Spaces {
     private var settleUntil = Date.distantPast
     /// Window layer-0 numbers and app pids at the last full Accessibility scan.
     /// `unsure` holds apps that scan couldn't read; once one is willing to answer again, scan again.
-    private var lastScan: (windows: Set<WindowID>, pids: Set<pid_t>, unsure: Set<pid_t>)?
+    /// `offscreen` is the known windows of shown apps that weren't on screen: one joining them
+    /// may have been closed (see `closedWindows`), so it's worth a scan.
+    private var lastScan: (windows: Set<WindowID>, pids: Set<pid_t>, unsure: Set<pid_t>, offscreen: Set<WindowID>)?
     /// Windows that ignored every request to leave macOS full screen. Asking again only stalls.
     private var refusedFullScreen = Set<WindowID>()
     private lazy var watcher = FocusWatcher { [weak self] pid in self?.focusMovedWithin(pid) }
@@ -119,7 +121,8 @@ final class Spaces {
         let pids = RunningApps.regular
         let snap = Windows.snapshot(apps: pids)
         clock.mark(.snap)
-        if !full, let last = lastScan, last.windows == snap.appWindows, last.pids == pids {
+        if !full, let last = lastScan, last.windows == snap.appWindows, last.pids == pids,
+           last.offscreen == offscreenKnown(snap.offscreen) {
             prune(alive: snap.alive)
             clock.scan = "skip"
             return
@@ -129,16 +132,19 @@ final class Spaces {
         RunningApps.invalidate()
         let pidsNow = RunningApps.regular
         let (list, unsure) = Windows.all(owners: snap.owners)
+        // A window the app closed but kept isn't one any more, though the window server says it's alive.
+        let answered = pidsNow.intersection(snap.owners).subtracting(unsure)
+        let alive = snap.alive.subtracting(closedWindows(listed: Set(list.map(\.id)), answered: answered, offscreen: snap.offscreen))
         // Accessibility lists only the windows on the macOS desktop being shown. A window it
         // missed keeps the handle from an earlier listing; that handle still moves the window.
-        var next = windows.filter { snap.alive.contains($0.key) }
+        var next = windows.filter { alive.contains($0.key) }
         for w in list { next[w.id] = w }
         windows = next
-        let added = model.sync(seen: list.map(\.id), alive: snap.alive)
-        prune(alive: snap.alive)
+        let added = model.sync(seen: list.map(\.id), alive: alive)
+        prune(alive: alive)
         // A scan that skipped a busy app can't vouch for that app's windows. It's remembered, and
         // the next refresh scans again as soon as that app is willing to answer.
-        lastScan = (snap.appWindows, pidsNow, unsure)
+        lastScan = (snap.appWindows, pidsNow, unsure, offscreenKnown(snap.offscreen))
         watcher.sync(snap.owners)
         if !unsure.isEmpty || watcher.missing { scheduleRetry() }
         let screens = Windows.screens()
@@ -200,9 +206,36 @@ final class Spaces {
     }
 
     /// Why a full scan ran, for timing.log.
-    private func last(_ l: (windows: Set<WindowID>, pids: Set<pid_t>, unsure: Set<pid_t>), _ w: Set<WindowID>, _ p: Set<pid_t>) -> String {
+    private func last(_ l: (windows: Set<WindowID>, pids: Set<pid_t>, unsure: Set<pid_t>, offscreen: Set<WindowID>), _ w: Set<WindowID>, _ p: Set<pid_t>) -> String {
         if l.pids != p { return "apps" }
+        if l.windows == w { return "offscreen" }
         return "windows+\(w.subtracting(l.windows).count)-\(l.windows.subtracting(w).count)"
+    }
+
+    /// Known windows (and saved-layout ones still waiting) that their app closed but keeps:
+    /// Ghostty keeps every window it closes, and a tab behind another tab is one too. The window
+    /// server still counts them, so without this they stayed on their workspace for good, and
+    /// ⌘Tab, the docks and the launcher sent you there for a window that never came forward.
+    /// A window is closed only when its app answered and didn't list it, it isn't on screen, its
+    /// app isn't hidden, and it's on no macOS desktop or on one being shown. A minimized window
+    /// is still listed; one on another desktop, or in full screen, is on a desktop not shown.
+    private func closedWindows(listed: Set<WindowID>, answered: Set<pid_t>, offscreen: [WindowID: pid_t]) -> Set<WindowID> {
+        Set(Set(model.home.keys).union(pendingLayout.keys).filter { id in
+            guard !listed.contains(id), let pid = offscreen[id], answered.contains(pid),
+                  NSRunningApplication(processIdentifier: pid)?.isHidden == false else { return false }
+            return Windows.onNoOtherDesktop(id)
+        })
+    }
+
+    /// The known windows that are off screen while their app is shown, the ones `closedWindows`
+    /// looks at. A hidden app's windows don't count: they leave the screen on every switch.
+    private func offscreenKnown(_ offscreen: [WindowID: pid_t]) -> Set<WindowID> {
+        var shown: [pid_t: Bool] = [:]
+        return Set(offscreen.filter { id, pid in
+            guard model.workspace(of: id) != nil || pendingLayout[id] != nil else { return false }
+            if shown[pid] == nil { shown[pid] = NSRunningApplication(processIdentifier: pid)?.isHidden == false }
+            return shown[pid]!
+        }.keys)
     }
 
     /// Re-reads apps that a scan couldn't, once they're willing to answer again, in the
