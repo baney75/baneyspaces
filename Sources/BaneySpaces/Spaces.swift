@@ -165,12 +165,14 @@ final class Spaces {
         for id in added {
             if let d = dormant.removeValue(forKey: id), windows[id]?.pid == d.pid,
                snap.offscreen[id] != nil || windows[id]?.frame.map({ Geometry.isStranded($0, screens: screens) }) == true {
-                model.assign(id, to: d.workspace, focus: false)
-                // A tab parked with its window: the parked frame may sit on the tab that closed.
-                let frame = d.frame ?? dormant.values.first { $0.pid == d.pid && $0.workspace == d.workspace && $0.frame != nil }?.frame
-                if d.workspace != model.current, let frame { saved.frames[id] = frame }
+                // A tab came back because the tab in front of it just closed: that one knows where
+                // the window lives now (it may have been moved since) and holds its parked frame.
+                let sibling = closed.compactMap { dormant[$0] }.first { $0.pid == d.pid }
+                let home = sibling?.workspace ?? d.workspace
+                model.assign(id, to: home, focus: false)
+                if home != model.current, let frame = sibling?.frame ?? d.frame { saved.frames[id] = frame }
                 fromLayout.insert(id)
-                returned = returned || d.workspace != model.current
+                returned = returned || home != model.current
                 continue
             }
             guard let entry = pendingLayout.removeValue(forKey: id), windows[id]?.pid == entry.pid else { continue }
