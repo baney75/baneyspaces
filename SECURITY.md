@@ -17,7 +17,9 @@ not a public issue.
 - **A local socket.** `deck.sock` in `~/Library/Application Support/BaneySpaces` takes commands
   from the `baneyspaces` tool and agent hooks. Any program running as you can use it, the same
   as any program running as you can already script your apps. Other users can't.
-- **Network: off unless you turn it on.** No analytics and no account. `baneyspaces remote on`
+- **Network.** No analytics and no account. The only request it makes on its own is the daily
+  update check, which reads GitHub's public release list and can be turned off. Nothing listens
+  for connections unless you turn it on: `baneyspaces remote on`
   listens on your Tailscale address only (100.64.0.0/10 on a tunnel interface), needs a 256-bit
   token stored with mode 0600, and allows only looking (ping, list, agent status) and giving the
   agent workspace work (agent open, agent run). A remote caller can't focus, type, move windows

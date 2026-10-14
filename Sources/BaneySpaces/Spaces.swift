@@ -268,10 +268,18 @@ final class Spaces {
     /// `title`: only a window whose title contains it (the file an agent opened), so a window
     /// you open in the same app meanwhile stays yours.
     func claimNextWindow(of pid: pid_t, for n: Int, within: TimeInterval = 8, newProcess: Bool = false, title: String? = nil) {
-        // Mid-switch the window list is in flux: claim once the switch is done.
-        if switching { return enqueue { [weak self] in self?.claimNextWindow(of: pid, for: n, within: within, newProcess: newProcess, title: title) } }
+        // Added now, so `cancelClaim` right after always finds it.
         let claim = Claim(workspace: n, until: Date().addingTimeInterval(within), title: title)
         claims[pid, default: []].append(claim)
+        look(for: claim, of: pid, within: within, newProcess: newProcess)
+    }
+
+    /// Finds a claimed window that's already open, or opens with its title a moment late.
+    private func look(for claim: Claim, of pid: pid_t, within: TimeInterval, newProcess: Bool) {
+        // Mid-switch the window list is in flux: look once the switch is done.
+        if switching { return enqueue { [weak self] in self?.look(for: claim, of: pid, within: within, newProcess: newProcess) } }
+        guard has(claim, of: pid) else { return }
+        let n = claim.workspace, title = claim.title
         // A window with the file's name, not in front, is the agent's. It may show its name only a
         // moment after it opens (Terminal titles a window once its script starts): keep looking
         // until then. Only a window that wasn't there before the claim, and only one: your own
