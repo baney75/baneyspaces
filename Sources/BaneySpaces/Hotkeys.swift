@@ -19,6 +19,8 @@ final class Hotkeys {
             var id = EventHotKeyID()
             GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
                               nil, MemoryLayout<EventHotKeyID>.size, nil, &id)
+            // The Deck registers its own shortcuts under other signatures; those aren't ours.
+            guard id.signature == OSType(0x42414E59) else { return OSStatus(eventNotHandledErr) }
             DispatchQueue.main.async { Hotkeys.shared?.actions[id.id]?() }
             return noErr
         }, 1, &spec, nil, &handler)

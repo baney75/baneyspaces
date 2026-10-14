@@ -6,6 +6,8 @@ import ServiceManagement
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let spaces = Spaces()
+    /// Terminal splits, browser tabs and agents in one sidebar, plus the `baneyspaces` command.
+    private let deck = DeckController()
     private let hotkeys = Hotkeys()
     private let updater = Updater()
     private var statusItem: NSStatusItem!
@@ -131,6 +133,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.switcher.noteActivated(app.processIdentifier)
             guard self.started else { return }
             self.spaces.appActivated(app)
+            self.deck.appChanged()
         }
         // Once another app is in front, the viewer and the empty-workspace holder step aside.
         NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification,
@@ -222,6 +225,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         missionControlKeys.start()
         spaces.start()
         if WorkspaceDock.enabled { dock.start() }
+        startDeck()
         updateIcon()
         watchdog?.invalidate()
         watchdog = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
@@ -243,6 +247,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         missionControlKeys.stop()
         viewer.close()
         dock.stop(restoreSystemDock: true)
+        deck.stop()
         spaces.suspend()
         started = false
         registerShortcuts()
@@ -287,6 +292,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             ? "BaneySpaces, workspace \(spaces.model.current)" : "BaneySpaces needs Accessibility access")
         image?.isTemplate = true
         statusItem.button?.image = image
+        // Agents that finished while you were elsewhere, counted beside the workspace number.
+        let n = started && deck.started ? deck.unseenCount : 0
+        statusItem.button?.title = n > 0 ? " \(n)" : ""
+        statusItem.button?.imagePosition = .imageLeading
+    }
+
+    private func startDeck() {
+        guard DeckController.enabled else { return }
+        deck.onUnseenChange = { [weak self] _ in self?.updateIcon() }
+        deck.start(workspaceOf: { [weak self] in self?.spaces.model.workspace(of: $0) },
+                   currentWorkspace: { [weak self] in self?.spaces.model.current ?? 1 })
+    }
+
+    @objc private func toggleDeck() {
+        DeckController.enabled.toggle()
+        if DeckController.enabled { startDeck() } else { deck.stop() }
+        updateIcon()
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -322,6 +344,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if Launcher.onCmdSpace { find.keyEquivalent = " "; find.keyEquivalentModifierMask = [.command] }
         menu.addItem(find)
         menu.addItem(item("Show All Workspaces", #selector(showViewer)))
+        if deck.started { deck.menuItems(target: self).forEach(menu.addItem) }
+        let deckItem = item("Terminal and Agent Deck", #selector(toggleDeck))
+        deckItem.state = DeckController.enabled ? .on : .off
+        deckItem.toolTip = "A sidebar of every terminal, browser tab and coding agent here. Rest the pointer on the left edge in a terminal, browser or agent app, or press ⌃⌘B."
+        menu.addItem(deckItem)
         menu.addItem(item("Bring Every Window Back", #selector(bringBack)))
         menu.addItem(parkedAppsItem())
         let dockItem = item("Workspace Dock", #selector(toggleWorkspaceDock))
