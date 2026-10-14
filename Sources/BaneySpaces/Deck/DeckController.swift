@@ -22,6 +22,13 @@ final class DeckController {
     let engine = Engine()
     let server = Server()
     let phones = PhoneWatcher()
+    let remote = RemoteServer()
+    private var remoteRetry: Timer?
+
+    static var remoteEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: "remoteEnabled") }
+        set { UserDefaults.standard.set(newValue, forKey: "remoteEnabled") }
+    }
     let model = DeckModel()
     lazy var panel = SidebarPanel(model: model)
     lazy var palette = PalettePanel()
@@ -82,6 +89,8 @@ final class DeckController {
         phones.start()
         server.handle = { [weak self] in self?.handle($0) ?? Wire.Reply(ok: false) }
         server.start()
+        remote.handle = { [weak self] in self?.handle($0) ?? Wire.Reply(ok: false) }
+        if Self.remoteEnabled { startRemote() }
 
         let ctrlCmd = controlKey | cmdKey, cmdShift = cmdKey | shiftKey
         if !keysAdded {
@@ -122,6 +131,8 @@ final class DeckController {
         engine.stop()
         phones.stop()
         server.stop()
+        remote.stop()
+        remoteRetry?.invalidate()
         lastUnseen = []
         onUnseenChange(0)
     }
@@ -465,6 +476,34 @@ final class DeckController {
         case .sidebar: send(.toggleKey); return .init(ok: true)
         case .palette: togglePalette(); return .init(ok: true)
         case .agent: return agent(r.text ?? "status", r.args ?? [])
+        case .remote:
+            switch r.text ?? "status" {
+            case "on":
+                Self.remoteEnabled = true
+                startRemote()
+            case "off":
+                Self.remoteEnabled = false
+                remoteRetry?.invalidate()
+                remote.stop()
+            case "token":
+                return .init(ok: true, info: ["token": RemoteServer.token()])
+            default: break
+            }
+            var info = ["remote": Self.remoteEnabled ? "on" : "off"]
+            if let a = remote.address { info["listening"] = "\(a):\(Remote.port)" }
+            else if Self.remoteEnabled { info["listening"] = "waiting for Tailscale" }
+            return .init(ok: true, info: info)
+        }
+    }
+
+    /// Listens for your other machines; while Tailscale isn't up, tries again every 30 seconds.
+    private func startRemote() {
+        _ = RemoteServer.token()
+        if remote.start() { remoteRetry?.invalidate(); return }
+        remoteRetry?.invalidate()
+        remoteRetry = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] t in
+            guard let self, Self.remoteEnabled, self.started else { return t.invalidate() }
+            if self.remote.start() { t.invalidate() }
         }
     }
 

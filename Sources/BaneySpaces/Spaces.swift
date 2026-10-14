@@ -1297,6 +1297,9 @@ final class Spaces {
         // state.json is for scripts and checks: the current workspace and where each window lives.
         let state: [String: Any] = [
             "current": model.current,
+            // The agent workspace (0 when off). Cua's driver reads it and refuses foreground
+            // delivery to a window there, which would pull you onto it.
+            "agentWorkspace": Self.agentWorkspace ?? 0,
             "parked": saved.frames.keys.sorted(),
             "hiddenApps": saved.hiddenApps.sorted(),
             // Apps the last scan couldn't read, and windows from the saved layout still waiting

@@ -31,15 +31,19 @@ public enum Wire {
             case ping
             /// The agent workspace: `text` is status, on, off, open, run or move; `args` the rest.
             case agent
+            /// Remote machines (local callers only): `text` is on, off or status.
+            case remote
         }
         public var op: Op
         public var target: String?
         public var text: String?
         public var event: AgentEvent?
         public var args: [String]?
+        /// Required from remote machines; ignored on the local socket.
+        public var token: String?
 
-        public init(op: Op, target: String? = nil, text: String? = nil, event: AgentEvent? = nil, args: [String]? = nil) {
-            self.op = op; self.target = target; self.text = text; self.event = event; self.args = args
+        public init(op: Op, target: String? = nil, text: String? = nil, event: AgentEvent? = nil, args: [String]? = nil, token: String? = nil) {
+            self.op = op; self.target = target; self.text = text; self.event = event; self.args = args; self.token = token
         }
     }
 
@@ -99,11 +103,11 @@ public enum Wire {
         }
     }
 
-    /// Reads up to the first newline, at most 4 MB.
-    public static func readLine(_ fd: Int32) -> Data? {
+    /// Reads up to the first newline, at most `limit` bytes (4 MB unless a caller asks for less).
+    public static func readLine(_ fd: Int32, limit: Int = 4 << 20) -> Data? {
         var out = Data()
         var buf = [UInt8](repeating: 0, count: 65536)
-        while out.count < 4 << 20 {
+        while out.count < limit {
             let n = read(fd, &buf, buf.count)
             if n <= 0 { return out.isEmpty ? nil : out }
             if let nl = buf[0..<n].firstIndex(of: 0x0A) {

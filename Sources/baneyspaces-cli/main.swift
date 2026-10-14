@@ -24,6 +24,8 @@ usage: \(me) <command>
   agent run [--dir D] -- CMD  run a command (claude, grok…) in a Ghostty window there
   agent move <id | words>     send a row's window there
   phone ls|ui|shot|tap|swipe|type|key|shell|mirror   phones for agents (phone help)
+  remote on|off|status|token  let your other machines (tailnet only) send agent work here
+  --on HOST <command>         run ls or agent status|open|run on another machine
   hook claude|grok            for agent hooks: reads the hook JSON on stdin
   event --state S [--agent A] [--session ID] [--cwd DIR] [--message M]
                               report any agent's state (working, waiting, idle, end)
@@ -53,7 +55,29 @@ func controllingTTY() -> String {
 /// The app this runs under: macOS sets it for every process an app starts (Ghostty, Grok Bot…).
 var launchingApp: String { ProcessInfo.processInfo.environment["__CFBundleIdentifier"] ?? "" }
 
+/// `--on HOST`: send the command to BaneySpaces on another machine on your tailnet.
+var remoteHost: String?
+
+/// The token for `host`: $BANEYSPACES_TOKEN, or ~/.config/baneyspaces/remotes.json ({"host": "token"}).
+func remoteToken(_ host: String) -> String? {
+    if let t = ProcessInfo.processInfo.environment["BANEYSPACES_TOKEN"], !t.isEmpty { return t }
+    let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/baneyspaces/remotes.json")
+    guard let d = FileManager.default.contents(atPath: url.path),
+          let map = (try? JSONSerialization.jsonObject(with: d)) as? [String: String] else { return nil }
+    return map[host]
+}
+
 func call(_ r: Wire.Request, timeout: Double = 2) -> Wire.Reply {
+    if let host = remoteHost {
+        guard let token = remoteToken(host) else {
+            fail("no token for \(host): run `baneyspaces remote token` there, then put it in ~/.config/baneyspaces/remotes.json as {\"\(host)\": \"…\"} or in $BANEYSPACES_TOKEN")
+        }
+        var r = r
+        r.token = token
+        guard let reply = Wire.callRemote(host: host, r, timeout: max(timeout, 5)) else { fail("\(host) didn't answer: is BaneySpaces running there with `baneyspaces remote on`?") }
+        if !reply.ok { fail(reply.error ?? "failed") }
+        return reply
+    }
     guard let reply = Wire.call(r, timeout: timeout) else { fail("BaneySpaces isn't running, or its Deck is off.") }
     if !reply.ok { fail(reply.error ?? "failed") }
     return reply
@@ -64,7 +88,12 @@ func flag(_ name: String, in args: [String]) -> String? {
     return args[i + 1]
 }
 
-let args = Array(CommandLine.arguments.dropFirst())
+var argv = Array(CommandLine.arguments.dropFirst())
+if let i = argv.firstIndex(of: "--on"), i + 1 < argv.count {
+    remoteHost = argv[i + 1]
+    argv.removeSubrange(i...i + 1)
+}
+let args = argv
 guard let cmd = args.first else { out(usage); exit(0) }
 let rest = Array(args.dropFirst())
 
@@ -116,6 +145,16 @@ case "palette": _ = call(Wire.Request(op: .palette))
 case "state":
     guard let d = FileManager.default.contents(atPath: Wire.statePath) else { fail("no state yet: is the Deck on?") }
     out(String(data: d, encoding: .utf8) ?? "")
+
+case "remote":
+    // Local only: whether other machines on your tailnet can send work here.
+    guard remoteHost == nil else { fail("remote is set on each machine itself", code: 2) }
+    let sub = rest.first ?? "status"
+    guard ["on", "off", "status", "token"].contains(sub) else { fail("usage: \(me) remote on|off|status|token", code: 2) }
+    let r = call(Wire.Request(op: .remote, text: sub))
+    let info = r.info ?? [:]
+    if sub == "token" { out(info["token"] ?? ""); break }
+    out("remote: \(info["remote"] ?? "?")" + (info["listening"].map { " (\($0))" } ?? ""))
 
 case "phone", "phones":
     PhoneCommand.run(rest)
