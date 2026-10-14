@@ -256,8 +256,17 @@ final class Spaces {
 
     /// The next window `pid` opens goes to workspace `n` instead of the one you're on, for an
     /// agent that's about to open it. Unclaimed after `within` seconds, the claim lapses.
-    func claimNextWindow(of pid: pid_t, for n: Int, within: TimeInterval = 8) {
+    /// `newProcess`: the agent just started this process, so every window it already has is the
+    /// agent's too (it may have opened one before its pid reached us). Never for an app you were
+    /// already using: that would take your windows.
+    func claimNextWindow(of pid: pid_t, for n: Int, within: TimeInterval = 8, newProcess: Bool = false) {
         claims[pid] = (n, Date().addingTimeInterval(within))
+        guard newProcess else { return }
+        refresh()
+        let early = windows.values.filter { $0.pid == pid && model.workspace(of: $0.id) != n }.map(\.id)
+        guard !early.isEmpty else { return }
+        claims[pid] = nil
+        move(early, to: n)
     }
 
     /// Claimed windows go straight to their workspace, before the next switch would show them.

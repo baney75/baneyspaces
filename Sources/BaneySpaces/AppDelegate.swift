@@ -310,7 +310,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         h.workspace = { Spaces.agentWorkspace }
         h.setWorkspace = { [weak self] n in Spaces.agentWorkspace = n; self?.run { $0.reapply() } }
         h.current = { [weak self] in self?.spaces.model.current ?? 1 }
-        h.claim = { [weak self] pid, n in self?.spaces.claimNextWindow(of: pid, for: n) }
+        h.claim = { [weak self] pid, n, fresh in self?.spaces.claimNextWindow(of: pid, for: n, newProcess: fresh) }
         h.move = { [weak self] id, n in self?.run { $0.move(id, to: n) } }
         h.windows = { [weak self] in self?.spaces.agentWindows() ?? [] }
         deck.agentHost = h

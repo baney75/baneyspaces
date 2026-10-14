@@ -8,7 +8,9 @@ struct AgentHost {
     var workspace: () -> Int? = { nil }
     var setWorkspace: (Int?) -> Void = { _ in }
     var current: () -> Int = { 1 }
-    var claim: (pid_t, Int) -> Void = { _, _ in }
+    /// The next window of a process goes to a workspace; `true` when the agent just started that
+    /// process, so its windows so far go too.
+    var claim: (pid_t, Int, Bool) -> Void = { _, _, _ in }
     var move: (UInt32, Int) -> Void = { _, _ in }
     var windows: () -> [(id: WindowID, app: String, title: String)] = { [] }
 }
@@ -472,19 +474,19 @@ final class DeckController {
             let running = NSWorkspace.shared.runningApplications.first { $0.bundleIdentifier == bundle && bundle != nil }
             if !files.isEmpty {
                 // Files open in the app from behind; whatever window they open is claimed.
-                if let running { h.claim(running.processIdentifier, n) }
+                if let running { h.claim(running.processIdentifier, n, false) }
                 let cfg = NSWorkspace.OpenConfiguration()
                 cfg.activates = false
                 cfg.addsToRecentItems = false
                 NSWorkspace.shared.open(files, withApplicationAt: url, configuration: cfg) { app, _ in
                     guard let app, running == nil else { return }
-                    DispatchQueue.main.async { h.claim(app.processIdentifier, n) }
+                    DispatchQueue.main.async { h.claim(app.processIdentifier, n, true) }
                 }
                 return .init(ok: true, info: ["workspace": "\(n)", "app": url.deletingPathExtension().lastPathComponent, "files": "\(files.count)"])
             }
             if let running {
                 // Running: claim its next window, then ask for one from behind through its menu.
-                h.claim(running.processIdentifier, n)
+                h.claim(running.processIdentifier, n, false)
                 guard let item = Windows.newWindowItem(running.processIdentifier),
                       AXUIElementPerformAction(item, kAXPressAction as CFString) == .success else {
                     return .init(ok: false, error: "\(running.localizedName ?? name) has no New Window command it would run from behind")
@@ -497,7 +499,7 @@ final class DeckController {
             cfg.addsToRecentItems = false
             NSWorkspace.shared.openApplication(at: url, configuration: cfg) { app, _ in
                 guard let app else { return }
-                DispatchQueue.main.async { h.claim(app.processIdentifier, n) }
+                DispatchQueue.main.async { h.claim(app.processIdentifier, n, true) }
             }
             return .init(ok: true, info: ["workspace": "\(n)", "app": url.deletingPathExtension().lastPathComponent])
         case "run":
@@ -505,11 +507,9 @@ final class DeckController {
             let cmd = args.drop { $0 != "--" }.dropFirst().joined(separator: " ")
             guard !cmd.isEmpty else { return .init(ok: false, error: "usage: baneyspaces agent run [--dir DIR] -- <command>") }
             let dir = args.firstIndex(of: "--dir").flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil }
-            guard let ghostty = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == "com.mitchellh.ghostty" }) else {
-                return .init(ok: false, error: "open Ghostty first; agent run makes a Ghostty window")
+            guard engine.newAgentTerminal(in: dir, command: cmd, started: { pid in h.claim(pid, n, true) }) else {
+                return .init(ok: false, error: "agent run needs Ghostty installed")
             }
-            h.claim(ghostty.processIdentifier, n)
-            guard engine.newBackgroundTerminal(in: dir, command: cmd) else { return .init(ok: false, error: "allow BaneySpaces to control Ghostty first") }
             return .init(ok: true, info: ["workspace": "\(n)", "command": cmd])
         case "move":
             guard let n = h.workspace() else { return .init(ok: false, error: "the agent workspace is off: baneyspaces agent on") }

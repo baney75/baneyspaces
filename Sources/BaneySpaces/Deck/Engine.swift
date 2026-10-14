@@ -91,6 +91,14 @@ final class Engine {
             guard let b = app.bundleIdentifier, let spec = wanted[b], !app.isTerminated else { continue }
             alive.insert(app.processIdentifier)
             if tracked[app.processIdentifier] == nil {
+                // A second copy of a scripted app (an agent's own Ghostty): AppleScript would answer
+                // for the first copy, listing your terminals twice. Its windows stand in.
+                var spec = spec
+                let firstCopy = running.filter { $0.bundleIdentifier == b && !$0.isTerminated }
+                    .min { ($0.launchDate ?? .distantPast) < ($1.launchDate ?? .distantPast) }
+                if spec.adapter != .windows, let firstCopy, firstCopy.processIdentifier != app.processIdentifier {
+                    spec = AppSpec(bundleID: spec.bundleID, name: spec.name + " (agent)", role: spec.role, adapter: .windows)
+                }
                 tracked[app.processIdentifier] = Tracked(spec: spec, app: app)
                 watcher.watch(app.processIdentifier)
                 refresh(app.processIdentifier)
@@ -307,7 +315,10 @@ final class Engine {
         return DeckRank.rank(query, items) { [$0.label, "\($0.appName) \($0.label)", $0.detail] }.first
     }
 
-    func trackedApp(for item: Item) -> Tracked? { tracked.values.first { $0.spec.bundleID == item.bundleID } }
+    /// The copy of the app the row came from: two Ghostty processes share a bundle ID.
+    func trackedApp(for item: Item) -> Tracked? {
+        tracked.values.first { $0.items.contains { $0.id == item.id } } ?? tracked.values.first { $0.spec.bundleID == item.bundleID }
+    }
 
     func nativeWindow(for item: Item) -> NativeWindow? {
         guard let t = trackedApp(for: item) else { return nil }
@@ -375,10 +386,25 @@ final class Engine {
         return true
     }
 
-    /// A new Ghostty window that doesn't bring Ghostty forward, for the agent workspace.
-    func newBackgroundTerminal(in dir: String?, command: String) -> Bool {
-        guard let s = script(for: Catalog.known[0]), Automation.allowed("com.mitchellh.ghostty") else { return false }
-        OSA.queue.async { _ = s.call("newBackgroundWindow", [dir ?? "", command]) }
+    /// A Ghostty of its own for agent work: a separate process, started without coming forward,
+    /// that quits when its window closes. Scripting your Ghostty to open a window from behind made
+    /// AppKit fold it into your tab group and froze every terminal for minutes (2026-10-14); a
+    /// separate process can't touch yours. `started` gets its pid, to claim the window.
+    func newAgentTerminal(in dir: String?, command: String, started: @escaping (pid_t) -> Void) -> Bool {
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.mitchellh.ghostty") else { return false }
+        let cfg = NSWorkspace.OpenConfiguration()
+        cfg.activates = false
+        cfg.createsNewApplicationInstance = true
+        cfg.addsToRecentItems = false
+        var args = ["--quit-after-last-window-closed=true", "--window-save-state=never"]
+        if let dir, !dir.isEmpty { args.append("--working-directory=\(dir)") }
+        // A login shell runs the command, so it gets your PATH; the shell stays when it's done.
+        args += ["-e", "/bin/zsh", "-lc", command + "; exec /bin/zsh -l"]
+        cfg.arguments = args
+        NSWorkspace.shared.openApplication(at: url, configuration: cfg) { app, _ in
+            guard let app else { return }
+            DispatchQueue.main.async { started(app.processIdentifier) }
+        }
         return true
     }
 
