@@ -14,6 +14,7 @@
 <p align="center">
   <b>Nine workspaces. One row of keys. Nothing to configure.</b><br>
   ⌘1 through ⌘9 takes you there. Add ⇧ and the window comes with you.<br>
+  The Deck lists every terminal, tab and coding agent, and agents get a workspace of their own.<br>
   <sub><a href="https://dbaney.com/baneyspaces/">dbaney.com/baneyspaces</a> · Made by <a href="https://dbaney.com">Donovan Baney</a> · <a href="https://x.com/baney75">@baney75</a> · macOS 13 or later</sub>
 </p>
 

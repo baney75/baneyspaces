@@ -1,11 +1,11 @@
 #!/bin/bash
 # Proves agents can work on the agent workspace without touching yours. While it runs, it watches
 # what you'd notice: which workspace you're on, which app is in front, where the pointer is.
-#   1. A command runs in a Ghostty window that `baneyspaces agent run` opens there.
+#   1. A command runs in a Terminal window that `baneyspaces agent run` opens there.
 #   2. TextEdit opens a scratch file there, and cua-driver types into it from behind, through
 #      the text view's own element, then reads the text back.
 # It fails if either piece of work doesn't land, or if anything you'd see changed.
-# Run with BaneySpaces installed, Ghostty open, and cua-driver on the PATH.
+# Run with BaneySpaces installed and cua-driver on the PATH.
 #   scripts/agent-workspace-probe.sh
 set -euo pipefail
 DIR="$HOME/Library/Application Support/BaneySpaces"
@@ -57,10 +57,16 @@ WATCH=$!
 sleep 0.5
 
 fail=0
-# 1. A command in Ghostty, there. It leaves a file and closes its own window.
-baneyspaces agent run --dir "$WORK" -- "touch ghostty-ran && exit" >/dev/null
-for _ in $(seq 1 50); do [ -f "$WORK/ghostty-ran" ] && break; sleep 0.1; done
-if [ -f "$WORK/ghostty-ran" ]; then echo "ok   Ghostty ran a command on workspace $AGENT"; else echo "FAIL Ghostty's command never ran"; fail=1; fi
+# 1. A command in a Terminal window of its own, there. It leaves a file.
+terminal_ids() { pgrep -xq Terminal && osascript -e 'tell application "Terminal" to get id of every window' 2>/dev/null | tr -d ','; }
+before=$(terminal_ids)
+baneyspaces agent run --dir "$WORK" -- "touch agent-ran && exit" >/dev/null
+for _ in $(seq 1 50); do [ -f "$WORK/agent-ran" ] && break; sleep 0.1; done
+if [ -f "$WORK/agent-ran" ]; then echo "ok   a command ran in Terminal on workspace $AGENT"; else echo "FAIL the command never ran"; fail=1; fi
+# An agent's Terminal window stays open by design; close the probe's, from behind.
+for id in $(terminal_ids); do
+  case " $before " in *" $id "*) ;; *) osascript -e "tell application \"Terminal\" to close window id $id" >/dev/null 2>&1 || true ;; esac
+done
 
 # 2. TextEdit there, typed into by cua-driver from behind.
 printf 'agent probe\n' > "$WORK/bs-agent-probe.txt"
