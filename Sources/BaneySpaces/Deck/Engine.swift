@@ -26,6 +26,8 @@ final class Engine {
     /// BaneySpaces' answer to "which workspace is this window on", and which one is showing.
     var workspaceOf: (UInt32) -> Int? = { _ in nil }
     var currentWorkspace: () -> Int = { 1 }
+    /// Rows that don't come from an app's windows: phones.
+    var extraItems: () -> [Item] = { [] }
     private(set) var defaultBrowser: String?
     let watcher = Watcher()
     private var scripts: [String: OSA] = [:]
@@ -255,6 +257,7 @@ final class Engine {
                 all.append(item)
             }
         }
+        all += extraItems()
         let bound = sessions.resolve(all, now: Date().timeIntervalSince1970)
         for i in all.indices {
             if let e = bound[all[i].id] {

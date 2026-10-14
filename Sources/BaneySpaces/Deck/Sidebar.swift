@@ -23,6 +23,8 @@ final class DeckModel: ObservableObject {
     var onAllow: () -> Void = {}
     var onSearch: () -> Void = {}
     var onInstallHooks: () -> Void = {}
+    enum PhoneAction { case mirror, shell, screenshot }
+    var onPhone: (Item, PhoneAction) -> Void = { _, _ in }
 
     var working: Int { items.filter { $0.activity == .working }.count }
     var here: [Item] { items.filter { $0.workspace == 0 } }
@@ -158,7 +160,9 @@ struct RoleSection: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(role.title.uppercased()).font(.system(size: 9, weight: .bold)).foregroundStyle(.tertiary).padding(.leading, 6)
             ForEach(groups, id: \.id) { g in
-                if g.items.count == 1 && g.items[0].kind == .window {
+                if g.items.allSatisfy({ $0.kind == .device }) {
+                    ForEach(g.items) { ItemRow(item: $0, model: model, showIcon: false) }
+                } else if g.items.count == 1 && g.items[0].kind == .window {
                     ItemRow(item: g.items[0], model: model, showIcon: true)
                 } else {
                     GroupBlock(groupID: g.id, items: g.items, model: model)
@@ -268,7 +272,7 @@ struct ItemRow: View {
                 }
             }
             Spacer(minLength: 0)
-            if hover {
+            if hover && item.kind != .device {
                 IconButton(symbol: "xmark", help: closeHelp, id: "deck.close.\(item.id)") { model.onClose(item, defaultClose) }
             } else if unseen {
                 Pill(text: "done", color: .orange)
@@ -291,7 +295,13 @@ struct ItemRow: View {
         .contextMenu {
             Button("Go To") { model.onFocus(item) }
             Divider()
-            if item.bundleID == "com.mitchellh.ghostty" {
+            if item.kind == .device {
+                Button(item.id.hasPrefix("ios:") ? "Open iPhone Mirroring" : "Mirror the Screen") { model.onPhone(item, .mirror) }
+                if item.id.hasPrefix("android:") {
+                    Button("Open a Shell on It") { model.onPhone(item, .shell) }
+                    Button("Save a Screenshot to the Desktop") { model.onPhone(item, .screenshot) }
+                }
+            } else if item.bundleID == "com.mitchellh.ghostty" {
                 if item.nested { Button("Close Split") { model.onClose(item, .terminal) } }
                 Button("Close Tab") { model.onClose(item, .tab) }
                 Button("Close Window") { model.onClose(item, .window) }
@@ -318,7 +328,7 @@ struct ItemRow: View {
         switch item.kind {
         case .terminal: return item.nested ? .terminal : .tab
         case .tab: return .tab
-        case .window: return .window
+        case .window, .device: return .window
         }
     }
     var closeHelp: String {
@@ -357,7 +367,9 @@ struct ItemRow: View {
         case .waiting: Image(systemName: "asterisk").font(.system(size: 11, weight: .bold))
             .foregroundStyle(unseen ? Color.orange : Color.secondary)
         case .shell:
-            if showIcon || item.kind == .window {
+            if item.kind == .device {
+                Image(systemName: item.id.hasPrefix("ios:") ? "iphone" : "candybarphone").font(.system(size: 12)).foregroundStyle(.secondary)
+            } else if showIcon || item.kind == .window {
                 Image(nsImage: Icons.app(item.bundleID)).resizable().frame(width: 15, height: 15)
             } else if item.kind == .tab {
                 Image(systemName: "globe").font(.system(size: 11)).foregroundStyle(.tertiary)

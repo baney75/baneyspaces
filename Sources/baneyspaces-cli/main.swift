@@ -23,6 +23,7 @@ usage: \(me) <command>
   agent open <app> [file…]    open an app (or files in it) there, without switching you
   agent run [--dir D] -- CMD  run a command (claude, grok…) in a Ghostty window there
   agent move <id | words>     send a row's window there
+  phone ls|ui|shot|tap|swipe|type|key|shell|mirror   phones for agents (phone help)
   hook claude|grok            for agent hooks: reads the hook JSON on stdin
   event --state S [--agent A] [--session ID] [--cwd DIR] [--message M]
                               report any agent's state (working, waiting, idle, end)
@@ -115,6 +116,9 @@ case "palette": _ = call(Wire.Request(op: .palette))
 case "state":
     guard let d = FileManager.default.contents(atPath: Wire.statePath) else { fail("no state yet: is the Deck on?") }
     out(String(data: d, encoding: .utf8) ?? "")
+
+case "phone", "phones":
+    PhoneCommand.run(rest)
 
 case "agent":
     // The agent workspace: agents work there while you work here.

@@ -21,6 +21,7 @@ struct AgentHost {
 final class DeckController {
     let engine = Engine()
     let server = Server()
+    let phones = PhoneWatcher()
     let model = DeckModel()
     lazy var panel = SidebarPanel(model: model)
     lazy var palette = PalettePanel()
@@ -75,7 +76,10 @@ final class DeckController {
         engine.currentWorkspace = currentWorkspace
         engine.onUpdate = { [weak self] in self?.engineUpdated() }
         engine.onNewWindow = { [weak self] pid in self?.windowAppeared(pid) }
+        engine.extraItems = { [weak self] in self?.phones.phones.map(\.item) ?? [] }
+        phones.onChange = { [weak self] in self?.engine.merge() }
         engine.start()
+        phones.start()
         server.handle = { [weak self] in self?.handle($0) ?? Wire.Reply(ok: false) }
         server.start()
 
@@ -116,6 +120,7 @@ final class DeckController {
         panel.orderOut(nil); edge.orderOut(nil); palette.dismiss(); toast.orderOut(nil)
         trustTimer?.invalidate()
         engine.stop()
+        phones.stop()
         server.stop()
         lastUnseen = []
         onUnseenChange(0)
@@ -125,6 +130,14 @@ final class DeckController {
         model.pinned = visibility.pinned
         model.layout = layout
         model.onFocus = { [weak self] in self?.focus($0); self?.send(.picked) }
+        model.onPhone = { [weak self] item, action in
+            guard let self, let p = self.phones.phone(item.id) else { return }
+            switch action {
+            case .mirror: self.phones.open(p)
+            case .shell: self.phones.shell(p)
+            case .screenshot: self.phones.screenshot(p)
+            }
+        }
         model.onClose = { [weak self] item, what in self?.engine.close(item, what) }
         model.onNewHere = { [weak self] in self?.engine.newTerminal(in: $0.directory) }
         model.onTile = { [weak self] in self?.tile() }
@@ -279,6 +292,11 @@ final class DeckController {
     // MARK: actions
 
     func focus(_ item: Item) {
+        if item.kind == .device {
+            engine.seen(item.id)
+            if let p = phones.phone(item.id) { phones.open(p) }
+            return
+        }
         if effectiveLayout == .split {
             DeckLayout.split(engine, left: currentFocus?.id == item.id ? previousFocus : currentFocus, right: item, reserve: reserve)
         } else if effectiveLayout == .stack {

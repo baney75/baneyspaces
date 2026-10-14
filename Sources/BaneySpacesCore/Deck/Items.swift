@@ -3,13 +3,14 @@ import Foundation
 /// What an app is to Ghostdeck. The role picks the sidebar section; the adapter picks how deep
 /// Ghostdeck can see into it.
 public enum Role: String, Codable, Sendable, CaseIterable {
-    case terminal, agent, browser, other
+    case terminal, agent, browser, device, other
 
     public var title: String {
         switch self {
         case .terminal: return "Terminals"
         case .agent: return "Agents"
         case .browser: return "Browser"
+        case .device: return "Phones"
         case .other: return "Apps"
         }
     }
@@ -58,6 +59,7 @@ public enum Catalog {
         AppSpec(bundleID: "com.openai.chat", name: "ChatGPT", role: .agent, adapter: .windows),
         AppSpec(bundleID: "com.t3tools.t3code", name: "T3 Code", role: .agent, adapter: .windows),
         AppSpec(bundleID: "com.anysphere.sand", name: "Grok Bot", role: .agent, adapter: .windows),
+        AppSpec(bundleID: "com.apple.ScreenContinuity", name: "iPhone Mirroring", role: .device, adapter: .windows),
         AppSpec(bundleID: "com.todesktop.230313mzl4w4u92", name: "Cursor", role: .agent, adapter: .windows),
         AppSpec(bundleID: "com.microsoft.VSCode", name: "VS Code", role: .agent, adapter: .windows),
         AppSpec(bundleID: "dev.zed.Zed", name: "Zed", role: .agent, adapter: .windows),
@@ -88,7 +90,7 @@ public enum Catalog {
 
 /// One thing the sidebar lists: a terminal split, a browser tab, or a whole window.
 public struct Item: Identifiable, Equatable, Codable, Sendable {
-    public enum Kind: String, Codable, Sendable { case terminal, tab, window }
+    public enum Kind: String, Codable, Sendable { case terminal, tab, window, device }
 
     /// Stable while the thing exists: `ghostty:<terminal>`, `tab:<bundle>:<tab id>`, `win:<CGWindowID>`.
     public var id: String
