@@ -26,6 +26,24 @@ public enum Remote {
         return parts[0] == 100 && (64...127).contains(parts[1])
     }
 
+    /// This Mac's addresses on Tailscale's tunnel. Only a tunnel interface counts: some networks
+    /// (Starlink, hotels) hand out 100.64/10 on Wi-Fi too.
+    public static func tunnelAddresses() -> [String] {
+        var list: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&list) == 0 else { return [] }
+        defer { freeifaddrs(list) }
+        var found: [String] = []
+        var p = list
+        while let i = p {
+            defer { p = i.pointee.ifa_next }
+            guard let a = i.pointee.ifa_addr, a.pointee.sa_family == UInt8(AF_INET),
+                  String(cString: i.pointee.ifa_name).hasPrefix("utun") else { continue }
+            let ip = numericHost(a)
+            if isTailnet(ip) { found.append(ip) }
+        }
+        return found
+    }
+
     /// Compares tokens in time that doesn't depend on where they differ.
     public static func tokensMatch(_ a: String, _ b: String) -> Bool {
         let x = Array(a.utf8), y = Array(b.utf8)
@@ -68,6 +86,14 @@ extension Wire {
         var noSigPipe: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
         guard connect(fd, info.pointee.ai_addr, info.pointee.ai_addrlen) == 0, var data = try? JSONEncoder().encode(request) else { return nil }
+        // And only through the tunnel: with Tailscale off, a 100.64/10 address routes out over
+        // Wi-Fi to whoever holds it on that network.
+        var local = sockaddr_storage()
+        var len = socklen_t(MemoryLayout<sockaddr_storage>.size)
+        let mine = withUnsafeMutablePointer(to: &local) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &len) == 0 ? numericHost($0) : "" }
+        }
+        guard !mine.isEmpty, Remote.tunnelAddresses().contains(mine) else { return nil }
         data.append(0x0A)
         guard writeAll(fd, data), let line = readLine(fd) else { return nil }
         return try? JSONDecoder().decode(Reply.self, from: line)

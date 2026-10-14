@@ -89,9 +89,10 @@ func flag(_ name: String, in args: [String]) -> String? {
 }
 
 var argv = Array(CommandLine.arguments.dropFirst())
-if let i = argv.firstIndex(of: "--on"), i + 1 < argv.count {
-    remoteHost = argv[i + 1]
-    argv.removeSubrange(i...i + 1)
+// Only in front of the command: `agent run -- tool --on staging` is the tool's own flag.
+if argv.first == "--on", argv.count > 1 {
+    remoteHost = argv[1]
+    argv.removeFirst(2)
 }
 let args = argv
 guard let cmd = args.first else { out(usage); exit(0) }

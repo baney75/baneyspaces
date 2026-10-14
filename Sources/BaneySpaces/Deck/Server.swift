@@ -90,23 +90,7 @@ final class RemoteServer {
     }
 
     /// This Mac's tailnet address, if Tailscale is connected.
-    static func tailnetAddress() -> String? {
-        var list: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&list) == 0 else { return nil }
-        defer { freeifaddrs(list) }
-        var p = list
-        while let i = p {
-            defer { p = i.pointee.ifa_next }
-            // Tailscale's tunnel only: some networks (Starlink, hotels) hand out 100.64/10 on Wi-Fi.
-            guard let a = i.pointee.ifa_addr, a.pointee.sa_family == UInt8(AF_INET),
-                  String(cString: i.pointee.ifa_name).hasPrefix("utun") else { continue }
-            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-            guard getnameinfo(a, socklen_t(a.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 else { continue }
-            let ip = String(cString: host)
-            if Remote.isTailnet(ip) { return ip }
-        }
-        return nil
-    }
+    static func tailnetAddress() -> String? { Remote.tunnelAddresses().first }
 
     /// Starts listening on the tailnet address; false when Tailscale isn't connected.
     func start() -> Bool {

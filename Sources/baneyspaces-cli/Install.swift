@@ -29,11 +29,16 @@ enum Hooks {
         // The first backup is the settings from before BaneySpaces touched them; later runs keep it.
         let b = url.deletingLastPathComponent().appendingPathComponent(url.lastPathComponent + ".baneyspaces-backup")
         if backup, fm.fileExists(atPath: url.path), !fm.fileExists(atPath: b.path) {
-            try fm.copyItem(at: url, to: b)
+            try fm.copyItem(at: url.resolvingSymlinksInPath(), to: b)
         }
         try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let data = try JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
-        try data.write(to: url, options: .atomic)
+        // Through a symlink (settings kept in a dotfiles repo) to the file it points at, keeping
+        // that file's permissions: an atomic write would replace the link with a new file.
+        let target = url.resolvingSymlinksInPath()
+        let mode = (try? fm.attributesOfItem(atPath: target.path)[.posixPermissions]) as? NSNumber
+        try data.write(to: target, options: .atomic)
+        try fm.setAttributes([.posixPermissions: mode ?? NSNumber(value: 0o600)], ofItemAtPath: target.path)
     }
 
     static func install() -> String {

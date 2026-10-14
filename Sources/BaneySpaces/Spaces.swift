@@ -53,7 +53,13 @@ final class Spaces {
     private(set) var recent: [Int] = [1]
     /// Windows agents asked for with `baneyspaces agent open` or `agent run`: the next window
     /// each app opens goes to that workspace, until the time runs out.
-    private var claims: [pid_t: (workspace: Int, until: Date, title: String?)] = [:]
+    private var claims: [pid_t: [Claim]] = [:]
+    private struct Claim {
+        let id = UUID()
+        let workspace: Int
+        let until: Date
+        let title: String?
+    }
 
     /// The agent workspace (see `AgentWorkspace`), or nil when it's off.
     static var agentWorkspace: Int? {
@@ -264,50 +270,74 @@ final class Spaces {
     func claimNextWindow(of pid: pid_t, for n: Int, within: TimeInterval = 8, newProcess: Bool = false, title: String? = nil) {
         // Mid-switch the window list is in flux: claim once the switch is done.
         if switching { return enqueue { [weak self] in self?.claimNextWindow(of: pid, for: n, within: within, newProcess: newProcess, title: title) } }
-        claims[pid] = (n, Date().addingTimeInterval(within), title)
-        // A window with the file's name, not in front, is the agent's. It may have opened a moment
-        // before the claim arrived (an app still launching), or show its name only a moment after
-        // it opens (Terminal titles a window once its script starts): keep looking until then.
+        let claim = Claim(workspace: n, until: Date().addingTimeInterval(within), title: title)
+        claims[pid, default: []].append(claim)
+        // A window with the file's name, not in front, is the agent's. It may show its name only a
+        // moment after it opens (Terminal titles a window once its script starts): keep looking
+        // until then. Only a window that wasn't there before the claim, and only one: your own
+        // window of the same file, or one whose title merely contains the name, stays yours.
         if let title, !title.isEmpty {
-            var found: [WindowID] = []
+            // An app the agent just started has only the agent's windows (the claim comes once it's up).
+            let launched = NSRunningApplication(processIdentifier: pid)?.launchDate.map { -$0.timeIntervalSinceNow < 10 } ?? false
+            let before = newProcess || launched ? [] : Set(windows.values.filter { $0.pid == pid }.map(\.id))
+            var found: WindowID?
             waitUntil(timeout: within, interval: 0.15, { [weak self] in
-                guard let self, self.claims[pid] != nil else { return true }
+                guard let self, self.has(claim, of: pid) else { return true }
+                // Mid-switch the window list is in flux, and a scan would hold up the switch.
+                if self.switching { return false }
                 self.refresh()
                 let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
-                found = self.windows.values.filter {
-                    $0.pid == pid && $0.pid != front && self.model.workspace(of: $0.id) != n && $0.title.localizedCaseInsensitiveContains(title)
-                }.map(\.id)
-                return !found.isEmpty
+                found = self.windows.values.first {
+                    $0.pid == pid && $0.pid != front && !before.contains($0.id)
+                        && self.model.workspace(of: $0.id) != n && $0.title.localizedCaseInsensitiveContains(title)
+                }?.id
+                return found != nil
             }) { [weak self] in
-                guard let self, !found.isEmpty, self.claims[pid] != nil else { return }
-                self.claims[pid] = nil
-                Trace.log("claimed window \(found) for workspace \(n) by its title")
-                self.move(found, to: n)
+                guard let self, let id = found, self.has(claim, of: pid) else { return }
+                self.drop(claim, of: pid)
+                Trace.log("claimed window \(id) for workspace \(n) by its title")
+                self.move([id], to: n)
             }
         }
         guard newProcess else { return }
         refresh()
         let early = windows.values.filter { $0.pid == pid && model.workspace(of: $0.id) != n }.map(\.id)
         guard !early.isEmpty else { return }
-        claims[pid] = nil
+        drop(claim, of: pid)
         move(early, to: n)
     }
 
     /// An agent's request that came to nothing: its claim goes, so it can't take your next window.
-    func cancelClaim(of pid: pid_t) { claims[pid] = nil }
+    func cancelClaim(of pid: pid_t) {
+        guard let last = claims[pid]?.last(where: { $0.title == nil }) else { return }
+        drop(last, of: pid)
+    }
+
+    private func has(_ c: Claim, of pid: pid_t) -> Bool { claims[pid]?.contains { $0.id == c.id } ?? false }
+
+    private func drop(_ c: Claim, of pid: pid_t) {
+        claims[pid]?.removeAll { $0.id == c.id }
+        if claims[pid]?.isEmpty == true { claims[pid] = nil }
+    }
 
     /// Claimed windows go straight to their workspace, before the next switch would show them.
     /// A window of the app you're in is yours (⌘N), whatever was claimed. True when one went
     /// somewhere other than here.
     private func placeClaimed(_ added: [WindowID]) -> Bool {
-        claims = claims.filter { $0.value.until > Date() }
+        let now = Date()
+        claims = claims.compactMapValues { l in
+            let live = l.filter { $0.until > now }
+            return live.isEmpty ? nil : live
+        }
         let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
         var away = false
         for id in added {
-            guard let w = windows[id], w.pid != front, let c = claims[w.pid] else { continue }
-            // A brand-new window may not have its title yet.
-            if let t = c.title, !w.title.isEmpty, !w.title.localizedCaseInsensitiveContains(t) { continue }
-            claims[w.pid] = nil
+            guard let w = windows[id], w.pid != front,
+                  // A brand-new window may not have its title yet.
+                  let c = claims[w.pid]?.first(where: { c in
+                      c.title.map { w.title.isEmpty || w.title.localizedCaseInsensitiveContains($0) } ?? true
+                  }) else { continue }
+            drop(c, of: w.pid)
             model.assign(id, to: c.workspace, focus: false)
             Trace.log("claimed window \(id) of \(windows[id]?.appName ?? "?") for workspace \(c.workspace)")
             away = away || c.workspace != model.current
@@ -634,10 +664,16 @@ final class Spaces {
                 return Trace.log("followFocus stayed: \(w.appName) opened a window here")
             }
             // Something on the agent workspace came forward on its own (an agent's click fell
-            // back to the foreground, an app took focus): you stay where you are. Its app keeps
-            // the focus it took; only the workspace doesn't change.
+            // back to the foreground, an app took focus): you stay where you are, and so does your
+            // typing, which must never go into a window out of sight.
             if !AgentWorkspace.mayFollow(to: n, current: model.current, agent: Self.agentWorkspace) {
-                return Trace.log("followFocus stayed: \(w.appName) is on the agent workspace")
+                Trace.log("followFocus stayed: \(w.appName) is on the agent workspace")
+                if let id = model.lastFocused[model.current], let t = windows[id], saved.frames[id] == nil, t.pid != pid {
+                    stay(on: t)
+                } else {
+                    takeFocus()
+                }
+                return
             }
             Trace.log("followFocus \(w.appName) to \(n)")
             lastKey[pid] = w.id
