@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Apps come forward again.** Ghostty, and some other apps, keep a window alive after you
+  close it, and a tab behind another tab looks the same. BaneySpaces kept those on their
+  workspace for good, so ⌘Tab, the Dock and the launcher sent you to a workspace (Ghostty "on
+  workspace 2") and picked a window that couldn't come forward. They leave the workspaces now,
+  and a tab that comes forward again lands where its window is.
+- **Quit and Force Quit from the Workspace Dock.** Right-click an app's icon.
 - **Windows no longer slide to the corner.** An app split across workspaces (Ghostty with
   windows on two) had its other windows glide across the screen on every switch, because apps
   with the accessibility setting AXEnhancedUserInterface on animate every move. It's off for

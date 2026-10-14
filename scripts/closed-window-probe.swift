@@ -1,8 +1,11 @@
-// Fails if a window an app closed stays on a workspace. Ghostty keeps windows it closed alive
-// in the window server; BaneySpaces kept them too, so ⌘Tab, the docks and the launcher sent you
-// to a workspace for a window that never came forward. This opens a Ghostty window with two tabs
-// on workspace <n>, closes the front tab, and reads state.json. It also fails if the window left
-// open is dropped with it. Run it with BaneySpaces installed and running and Ghostty open.
+// Fails if a window that can't come forward stays on a workspace. Ghostty keeps windows it closed
+// alive in the window server (no script makes one on demand), and a tab behind another tab looks
+// the same: alive, off screen, not listed by the app. BaneySpaces kept them, so ⌘Tab, the docks
+// and the launcher sent you to a workspace for a window that never came forward. This opens a
+// Ghostty window with a second tab on workspace <n>: the tab behind must leave the workspaces.
+// Then it closes the front tab: the one behind must come back to workspace <n>. Last, no
+// workspace may hold a Ghostty window Ghostty doesn't list. Run it with BaneySpaces installed
+// and running and Ghostty open.
 //   swift scripts/closed-window-probe.swift 4
 // It switches your screen to workspace <n> and leaves you there.
 import AppKit
@@ -101,22 +104,25 @@ func rescan() {
     Thread.sleep(forTimeInterval: 0.8)
 }
 
-// A window with a second tab. Closing the tab in front leaves its window alive in the window
-// server, on no macOS desktop: the ghost this guards against.
+// A window with a second tab: the window's first tab goes behind.
 let window = press("New Window")
 let tab = press("New Tab")
 guard let wid = id(window), let tid = id(tab) else { fail("no window numbers") }
 rescan()
-guard workspaces()[String(n)]?.contains(tid) == true else { fail("tab \(tid) never joined workspace \(n)") }
+var ws = workspaces()
+guard ws[String(n)]?.contains(tid) == true else { close(tab); fail("tab \(tid) never joined workspace \(n)") }
+if let on = ws.first(where: { $0.value.contains(wid) })?.key {
+    close(tab); Thread.sleep(forTimeInterval: 0.5); close(window)
+    fail("tab \(wid), behind another tab, is still on workspace \(on)")
+}
+// The tab in front closes; the one behind comes forward and must be back where it was.
 close(tab)
 rescan()
-let kept = alive(tid)
-let ws = workspaces()
-// The window that stayed open must stay where it is.
-let stayed = ws[String(n)]?.contains(wid) == true
+ws = workspaces()
+let back = ws[String(n)]?.contains(wid) == true
+let closedStays = ws.first(where: { $0.value.contains(tid) })?.key
 // No workspace may hold a Ghostty window Ghostty doesn't list (an earlier ghost, too).
 let listed = Set(axWindows(app).compactMap(id))
-// Off screen, by number, for Ghostty's windows the window server has.
 var server: [UInt32: Bool] = [:]
 for w in CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
 where (w[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == ghostty.processIdentifier {
@@ -126,13 +132,7 @@ let ghosts = ws.flatMap { n, ids in
     ids.filter { id in server[id].map { !listed.contains(id) && reachable(id, offscreen: $0) } ?? false }.map { "\($0) on \(n)" }
 }
 close(window)
-if let on = ws.first(where: { $0.value.contains(tid) })?.key {
-    fail("closed tab \(tid) still on workspace \(on) (window server \(kept ? "keeps" : "dropped") it)")
-}
-guard stayed else { fail("open window \(wid) left workspace \(n) along with the closed tab") }
+if let on = closedStays { fail("closed tab \(tid) still on workspace \(on)") }
+guard back else { fail("tab \(wid) came forward but isn't back on workspace \(n): \(ws)") }
 guard ghosts.isEmpty else { fail("Ghostty windows it doesn't list are on workspaces: \(ghosts.joined(separator: ", "))") }
-guard kept else {
-    print("INCONCLUSIVE: Ghostty freed the closed tab \(tid), so there was no ghost to drop. Run it again.")
-    exit(3)
-}
-print("closed tab \(tid) left the workspaces though the window server keeps it; open window \(wid) stayed")
+print("tab behind another tab left the workspaces and came back to \(n) when it came forward; no ghosts")
