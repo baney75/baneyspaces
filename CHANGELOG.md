@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **BaneySpaces stops crashing while the Workspace Dock is up.** When the dock's label or window
+  strip made it wider, SwiftUI and the dock both resized its window inside one layout pass, and
+  macOS gave up and quit the app. The dock now resizes itself just after the layout settles.
 - **The Deck: every terminal, browser tab and agent window in one sidebar.** Ghostdeck is now
   part of BaneySpaces. Ghostty splits and tabs, Helium and other Chromium tabs, Terminal and
   iTerm2 sessions, and the Claude, ChatGPT, T3 Code and Grok Bot windows each get a row with
