@@ -693,7 +693,7 @@ final class LauncherModel: ObservableObject {
             ("Show All Workspaces", "square.grid.3x3", "", { [weak self] in self?.actions.showOverview() }),
             ("Bring Every Window Back", "arrow.uturn.backward.circle", "Gathers every window onto workspace 1", { [weak self] in self?.actions.bringBack() }),
             (dockOn ? "Turn Off Workspace Dock" : "Turn On Workspace Dock", "dock.rectangle", "", { [weak self] in self?.actions.toggleDock() }),
-            ("Set Up BaneySpaces", "slider.horizontal.3", "", { [weak self] in self?.actions.showSetup() }),
+            ("BaneySpaces Settings", "slider.horizontal.3", "", { [weak self] in self?.actions.showSetup() }),
         ]
         return all.filter { q.isEmpty || Fuzzy.score(q, $0.0) != nil }.map { c in
             LauncherItem(id: "cmd:\(c.0)", section: "System", title: c.0, subtitle: c.2, icon: .symbol(c.1),

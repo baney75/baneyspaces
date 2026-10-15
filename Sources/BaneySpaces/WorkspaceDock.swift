@@ -405,6 +405,8 @@ final class DockModel: ObservableObject {
         case tile(Int)
         case app(Int, String)
         case newWorkspace, launcher, overview
+        /// The "+N" in a tile with more apps than fit.
+        case more(Int)
     }
 
     @Published var tiles: [Tile] = []
@@ -423,10 +425,28 @@ final class DockModel: ObservableObject {
     @Published var strip: (workspace: Int, app: String)? {
         didSet {
             // Removed from under the pointer, it never hears the pointer leave.
-            if strip == nil { onStrip = false }
+            if strip == nil, more == nil { onStrip = false }
+            if strip != nil { more = nil }
             if (strip == nil) != (oldValue == nil) || strip?.app != oldValue?.app { onLayoutChange() }
         }
     }
+    /// The apps a tile had no room for, listed over it: opened by resting on its "+N".
+    @Published var more: Int? {
+        didSet {
+            if strip == nil, more == nil { onStrip = false }
+            if more != nil, strip != nil { strip = nil }
+            if more != oldValue { onLayoutChange() }
+        }
+    }
+
+    /// The apps a tile shows as "+N", and its tile.
+    var moreApps: (tile: Tile, apps: [App])? {
+        guard let n = more, let t = tiles.first(where: { $0.id == n }), t.apps.count > DockModel.iconsShown + 1 else { return nil }
+        return (t, Array(t.apps.dropFirst(DockModel.iconsShown)))
+    }
+
+    /// A tile shows up to four icons; past that, three and a "+N".
+    static let iconsShown = 3
     @Published var drag: Drag?
     /// Each tile's and button's frame in the dock, keyed as `CenterReport` reports them, to find
     /// the tile under a drag.
@@ -483,6 +503,7 @@ final class DockModel: ObservableObject {
         }
         // A strip for an app that's gone or down to one window closes.
         if let s = strip, (stripApp?.list.count ?? 0) < 2 || !tiles.contains(where: { $0.id == s.workspace }) { strip = nil }
+        if more != nil, moreApps == nil { more = nil }
     }
 
     var stripApp: App? {
@@ -502,6 +523,7 @@ final class DockModel: ObservableObject {
             // Crossing another icon in the same tile on the way up to the strip keeps it; resting
             // there opens that app's strip instead. Another tile's app closes it.
             if let s = strip, s.workspace != n, !onStrip { strip = nil }
+            if let m = more, m != n, !onStrip { more = nil }
             guard let app = tiles.first(where: { $0.id == n })?.apps.first(where: { $0.id == id }), app.list.count > 1 else { return }
             let work = DispatchWorkItem { [weak self] in
                 guard let self, self.shown, self.hover == .app(n, id) else { return }
@@ -510,9 +532,19 @@ final class DockModel: ObservableObject {
             dwell = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: work)
         case .newWorkspace, .launcher, .overview:
-            if !onStrip { strip = nil }
+            if !onStrip { strip = nil; more = nil }
         case .tile(let n):
             if let s = strip, s.workspace != n, !onStrip { strip = nil }
+            if let m = more, m != n, !onStrip { more = nil }
+        case .more(let n):
+            if more == n { return }
+            if !onStrip { strip = nil }
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, self.shown, self.hover == .more(n) else { return }
+                self.more = n
+            }
+            dwell = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
         case nil:
             break
         }
@@ -574,6 +606,7 @@ final class DockModel: ObservableObject {
         hover = nil
         onStrip = false
         strip = nil
+        more = nil
     }
 
     func setHover(_ h: Hover, _ inside: Bool) {
@@ -667,8 +700,7 @@ struct DockView: View {
             Capsule().fill(Color.white.opacity(0.14))
                 .frame(width: vertical ? 44 : 1, height: vertical ? 1 : 44)
                 .padding(vertical ? .vertical : .horizontal, 4).padding(.bottom, vertical ? 0 : 14)
-            squareButton(.launcher, "magnifyingglass", "Find or Install an App") { model.onShowLauncher() }
-            squareButton(.overview, "square.grid.3x3", "Show All Workspaces") { model.onShowOverview() }
+            utilityButtons
         }
         .padding(.horizontal, 10)
         .padding(.top, 10)
@@ -684,6 +716,10 @@ struct DockView: View {
             windowStrip(app, workspace: n)
                 .modifier(SizeReport(size: $sideSize))
                 .offset(sideOffset("\(n):\(app.id)"))
+        } else if let m = model.moreApps {
+            moreList(m.apps, in: m.tile)
+                .modifier(SizeReport(size: $sideSize))
+                .offset(sideOffset("more:\(m.tile.id)"))
         } else if vertical {
             // As wide as the label, and nothing when there's none, so the panel (and the area that
             // keeps the dock up) never reaches far into the screen. The panel resizes with it, and
@@ -703,6 +739,7 @@ struct DockView: View {
         case .newWorkspace: return "btn:new"
         case .launcher: return "btn:launcher"
         case .overview: return "btn:overview"
+        case .more(let n): return "more:\(n)"
         case nil: return ""
         }
     }
@@ -744,15 +781,39 @@ struct DockView: View {
         case .app(let n, let id):
             guard let app = model.tiles.first(where: { $0.id == n })?.apps.first(where: { $0.id == id }) else { return nil }
             let elsewhere = model.tiles.filter { $0.id != n && $0.apps.contains { $0.pid == app.pid } }.map { String($0.id) }
-            var parts = ["\(app.name) · Workspace \(n)"]
-            if app.windows > 1 { parts.append("\(app.windows) windows, click again for the next") }
-            if !elsewhere.isEmpty { parts.append("also on \(elsewhere.joined(separator: ", "))") }
+            // The tile already says which workspace; the label adds only what the icon can't.
+            var parts = [app.name]
+            if app.windows > 1 { parts.append("\(app.windows) windows") }
+            if !elsewhere.isEmpty { parts.append("also on \(elsewhere.count == 1 ? "Workspace" : "Workspaces") \(elsewhere.joined(separator: ", "))") }
             return parts.joined(separator: " · ")
         case .newWorkspace: return model.firstEmpty.map { "Go to Empty Workspace \($0)" }
         case .launcher: return "Find or Install an App"
         case .overview: return "Show All Workspaces"
+        case .more(let n):
+            guard let t = model.tiles.first(where: { $0.id == n }) else { return nil }
+            return t.apps.dropFirst(DockModel.iconsShown).map(\.name).joined(separator: ", ")
         case nil: return nil
         }
+    }
+
+    /// The apps behind a tile's "+N", a row each. Click one to go straight to it.
+    private func moreList(_ apps: [DockModel.App], in tile: DockModel.Tile) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 7) {
+                Text("\(apps.count) more").font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+                Spacer(minLength: 8)
+                WorkspaceBadge(n: tile.id, size: 17)
+            }
+            .padding(.horizontal, 8).padding(.bottom, 4)
+            ForEach(apps) { app in
+                MoreRow(app: app, tint: Chrome.workspace(tile.id)) { model.onFocusApp(app.pid, tile.id) }
+                    .contextMenu { appMenu(app, in: tile) }
+            }
+        }
+        .padding(6).padding(.top, 4)
+        .frame(width: 240)
+        .background(Chrome.panel(cornerRadius: 14))
+        .onHover { inside in model.onStrip = inside }
     }
 
     /// An app's windows on one workspace, a row each with its title (a browser's tab, a player's
@@ -801,7 +862,7 @@ struct DockView: View {
 
     private func isHovered(_ tile: DockModel.Tile) -> Bool {
         switch model.hover {
-        case .tile(let n), .app(let n, _): return n == tile.id
+        case .tile(let n), .app(let n, _), .more(let n): return n == tile.id
         default: return false
         }
     }
@@ -858,19 +919,53 @@ struct DockView: View {
         return parts.isEmpty ? "" : ", " + parts.joined(separator: ", ")
     }
 
+    // MARK: Right-click menus
+    // Short on purpose (Donovan, 2026-10-14: "way too cluttered"). The dock's own buttons find
+    // apps and show every workspace, so the menus hold only what a click can't do.
+
+    /// Another workspace's tile: go there or bring the front window over. The tile you're on has
+    /// nothing a click doesn't do, so it shows the dock's own settings.
     @ViewBuilder private func tileMenu(_ tile: DockModel.Tile) -> some View {
-        Button("Go to Workspace \(tile.id)") { model.onPick(tile.id) }
-        Button("Send Front Window to Workspace \(tile.id)") { model.onSendHere(tile.id) }
+        if tile.isCurrent {
+            dockOptions
+        } else {
+            Button("Go to Workspace \(tile.id)") { model.onPick(tile.id) }
+            Button("Move Front Window Here") { model.onSendHere(tile.id) }
+            Divider()
+            Menu("Dock") { dockOptions }
+        }
+    }
+
+    /// Show and Quit; holding ⌥ turns Quit into Force Quit, as in the macOS Dock.
+    @ViewBuilder private func appMenu(_ app: DockModel.App, in tile: DockModel.Tile) -> some View {
+        Button("Show \(app.name)") { model.onFocusApp(app.pid, tile.id) }
         Divider()
-        Button("Find or Install an App") { model.onShowLauncher() }
-        Button("Show All Workspaces") { model.onShowOverview() }
-        Menu("Position on Screen") {
+        let quit = Button("Quit \(app.name)") { NSRunningApplication(processIdentifier: app.pid)?.terminate() }
+        let force = Button("Force Quit \(app.name)") { NSRunningApplication(processIdentifier: app.pid)?.forceTerminate() }
+        if #available(macOS 15, *) {
+            quit.modifierKeyAlternate(.option) { force }
+        } else {
+            quit
+            force
+        }
+        // Icons cover most of a tile, so the tile's own action is here too.
+        if !tile.isCurrent {
+            Divider()
+            Button("Move Front Window Here") { model.onSendHere(tile.id) }
+        }
+        Divider()
+        Menu("Dock") { dockOptions }
+    }
+
+    @ViewBuilder private var dockOptions: some View {
+        Section("Position on Screen") {
             ForEach(DockEdge.allCases, id: \.self) { e in
                 Button { model.onSetEdge(e) } label: {
                     if e == model.edge { Label(e.title, systemImage: "checkmark") } else { Text(e.title) }
                 }
             }
         }
+        Divider()
         Button("Turn Off Workspace Dock") { model.onTurnOff() }
     }
 
@@ -886,16 +981,24 @@ struct DockView: View {
         } else if apps.count == 2 {
             HStack(spacing: 2) { ForEach(apps) { appIcon($0, in: tile, size: 28) } }
         } else {
-            let shown = apps.count > 4 ? Array(apps.prefix(3)) : apps
+            let shown = apps.count > 4 ? Array(apps.prefix(DockModel.iconsShown)) : apps
             LazyVGrid(columns: [GridItem(.fixed(24), spacing: 3), GridItem(.fixed(24), spacing: 3)], spacing: 3) {
                 ForEach(shown) { appIcon($0, in: tile, size: 24) }
                 if apps.count > 4 {
-                    Text("+\(apps.count - 3)")
-                        .font(.system(size: 10, weight: .bold, design: .rounded)).foregroundStyle(.white.opacity(0.85))
+                    // Rest on it (or click it) to list the apps it stands for, each one clickable.
+                    let open = model.hover == .more(tile.id) || model.more == tile.id
+                    Text("+\(apps.count - DockModel.iconsShown)")
+                        .font(.system(size: 10, weight: .bold, design: .rounded)).foregroundStyle(.white.opacity(open ? 1 : 0.85))
                         .frame(width: 24, height: 24)
-                        .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.white.opacity(0.12)))
-                        .onHover { model.setHover(.tile(tile.id), $0) }
-                        .onTapGesture { model.onPick(tile.id) }
+                        .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.white.opacity(open ? 0.24 : 0.12)))
+                        .modifier(CenterReport(key: "more:\(tile.id)"))
+                        .contentShape(Rectangle())
+                        .onHover { model.setHover(.more(tile.id), $0) }
+                        .onTapGesture { model.more = tile.id }
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("\(apps.count - DockModel.iconsShown) more apps on workspace \(tile.id)")
+                        .accessibilityAddTraits(.isButton)
+                        .accessibilityAction { model.more = tile.id }
                 }
             }
             .frame(width: 51)
@@ -947,15 +1050,7 @@ struct DockView: View {
                     .onEnded { _ in model.endDrag() }
             )
             .simultaneousGesture(TapGesture().onEnded { if model.clickCounts { model.onFocusApp(app.pid, tile.id) } })
-            // The app's own items above the tile's: an app that hangs can be force quit from here.
-            .contextMenu {
-                Button("Show \(app.name)") { model.onFocusApp(app.pid, tile.id) }
-                Button("Quit \(app.name)") { NSRunningApplication(processIdentifier: app.pid)?.terminate() }
-                Divider()
-                Button("Force Quit \(app.name)") { NSRunningApplication(processIdentifier: app.pid)?.forceTerminate() }
-                Divider()
-                tileMenu(tile)
-            }
+            .contextMenu { appMenu(app, in: tile) }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("\(app.name), workspace \(tile.id)")
             .accessibilityAddTraits(.isButton)
@@ -982,23 +1077,68 @@ struct DockView: View {
         .accessibilityAction { model.onPick(n) }
     }
 
-    private func squareButton(_ which: DockModel.Hover, _ symbol: String, _ name: String, _ action: @escaping () -> Void) -> some View {
-        let hovered = model.hover == which
+    /// Find an app and show every workspace: two small buttons sharing one tile's room, so the
+    /// workspaces carry the dock. Stacked on a bottom or top dock, side by side on a side one.
+    private var utilityButtons: some View {
+        let vertical = model.edge.isVertical
+        let pair = vertical ? AnyLayout(HStackLayout(spacing: 4)) : AnyLayout(VStackLayout(spacing: 4))
+        let size = vertical ? CGSize(width: (tileSize - 4) / 2, height: 44) : CGSize(width: 44, height: (tileSize - 4) / 2)
         return VStack(spacing: 5) {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color.white.opacity(hovered ? 0.14 : 0.05))
-                .overlay(Image(systemName: symbol).font(.system(size: 19, weight: .medium)).foregroundStyle(.white.opacity(hovered ? 0.95 : 0.7)))
-                .frame(width: tileSize, height: tileSize)
-                .modifier(CenterReport(key: which == .launcher ? "btn:launcher" : "btn:overview"))
-            Color.clear.frame(width: 18, height: 15)
+            pair {
+                smallButton(.launcher, "magnifyingglass", "Find or Install an App", size: size) { model.onShowLauncher() }
+                smallButton(.overview, "square.grid.3x3", "Show All Workspaces", size: size) { model.onShowOverview() }
+            }
+            .frame(height: tileSize)
+            // Lines up with the tiles' number row.
+            if !vertical { Color.clear.frame(width: 18, height: 15) }
         }
-        .scaleEffect(hovered ? 1.06 : 1, anchor: .bottom)
-        .animation(.spring(response: 0.25, dampingFraction: 0.72), value: hovered)
+    }
+
+    private func smallButton(_ which: DockModel.Hover, _ symbol: String, _ name: String, size: CGSize, _ action: @escaping () -> Void) -> some View {
+        let hovered = model.hover == which
+        return RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(Color.white.opacity(hovered ? 0.16 : 0.05))
+            .overlay(Image(systemName: symbol).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white.opacity(hovered ? 0.95 : 0.6)))
+            .frame(width: size.width, height: size.height)
+            .modifier(CenterReport(key: which == .launcher ? "btn:launcher" : "btn:overview"))
+            .scaleEffect(hovered ? 1.06 : 1)
+            .animation(.spring(response: 0.25, dampingFraction: 0.72), value: hovered)
+            .contentShape(Rectangle())
+            .onHover { model.setHover(which, $0) }
+            .onTapGesture(perform: action)
+            .contextMenu { dockOptions }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(name)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { action() }
+    }
+}
+
+/// One app behind a tile's "+N": its icon, name and window count.
+private struct MoreRow: View {
+    let app: DockModel.App
+    let tint: Color
+    let action: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(nsImage: app.icon).resizable().interpolation(.high).frame(width: 18, height: 18)
+            Text(app.name).font(.system(size: 12.5, weight: hovered ? .semibold : .regular))
+                .foregroundStyle(.white.opacity(hovered ? 1 : 0.85)).lineLimit(1).truncationMode(.tail)
+            Spacer(minLength: 6)
+            if app.windows > 1 {
+                Text("\(app.windows) windows").font(.system(size: 10, weight: .medium)).foregroundStyle(.white.opacity(0.4))
+            }
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 28)
+        .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(hovered ? tint.opacity(0.85) : .clear))
         .contentShape(Rectangle())
-        .onHover { model.setHover(which, $0) }
+        .onHover { hovered = $0 }
         .onTapGesture(perform: action)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(name)
+        .accessibilityLabel(app.name)
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { action() }
     }

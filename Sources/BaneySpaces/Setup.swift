@@ -465,7 +465,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     convenience init() {
         let window = NSWindow(contentRect: .zero, styleMask: [.titled, .closable], backing: .buffered, defer: false)
         self.init(window: window)
-        window.title = "Set Up BaneySpaces"
+        window.title = "BaneySpaces Settings"
         window.delegate = self
         let host = NSHostingView(rootView: SetupView(model: model) { [weak window] in window?.close() })
         // The window grows and shrinks with the steps shown.

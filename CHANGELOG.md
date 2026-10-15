@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Shorter menus.** The menu bar menu lists only the workspaces in use, the one you're on and
+  one empty workspace, and shortens a long app list ("Helium, Ghostty, Obsidian +2"). The
+  switches, Keep Usable by Automation and Bring Every Window Back moved under **Options**;
+  **Check for Updates** lives in the **Updates** submenu unless an update is waiting. The Deck's
+  submenu shows its real shortcuts and groups its layouts.
+- **Shorter dock menus.** Right-click an app in the Workspace Dock for Show and Quit; hold ⌥ and
+  Quit becomes Force Quit, as in the macOS Dock. A tile offers Go to and Move Front Window Here.
+  Position and Turn Off sit in one **Dock** submenu, and the menu no longer repeats the dock's
+  own buttons.
+- **See every app on a full tile.** Rest on a tile's "+2" (or click it) and the apps it stands
+  for open in a list over the tile; click one to go straight to it.
+- **A lighter dock.** The launcher and overview buttons share one tile's room, so the workspaces
+  carry the bar, and the hover label says only what the icon can't.
 - **BaneySpaces stops crashing while the Workspace Dock is up.** When the dock's label or window
   strip made it wider, SwiftUI and the dock both resized its window inside one layout pass, and
   macOS gave up and quit the app. The dock now resizes itself just after the layout settles.

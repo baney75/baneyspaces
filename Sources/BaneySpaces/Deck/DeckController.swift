@@ -617,40 +617,51 @@ final class DeckController {
     // MARK: menu
 
     /// The Deck's part of BaneySpaces' menu bar menu.
-    func menuItems(target: AnyObject) -> [NSMenuItem] {
+    func menuItems() -> [NSMenuItem] {
         var out: [NSMenuItem] = []
         let unseen = engine.attention.unseen.compactMap { engine.item($0) }
         if !unseen.isEmpty {
+            out.append(.separator())
             let h = NSMenuItem(title: "Finished While You Were Away", action: nil, keyEquivalent: "")
             h.isEnabled = false
             out.append(h)
             for t in unseen {
-                let i = NSMenuItem(title: "  " + t.label, action: #selector(DeckMenuTarget.focusRow(_:)), keyEquivalent: "")
+                let i = NSMenuItem(title: t.label, action: #selector(DeckMenuTarget.focusRow(_:)), keyEquivalent: "")
+                i.indentationLevel = 1
                 i.representedObject = t.id
                 i.target = menuTarget
                 out.append(i)
             }
-            out.append(.separator())
         }
-        let sub = NSMenu()
-        func add(_ title: String, _ action: @escaping () -> Void, on: Bool? = nil) {
-            let i = NSMenuItem(title: title, action: #selector(DeckMenuTarget.run(_:)), keyEquivalent: "")
+        func item(_ title: String, key: String = "", _ action: @escaping () -> Void, on: Bool? = nil) -> NSMenuItem {
+            let i = NSMenuItem(title: title, action: #selector(DeckMenuTarget.run(_:)), keyEquivalent: key)
+            // The Deck's own shortcuts, shown the way macOS shows them.
+            if !key.isEmpty { i.keyEquivalentModifierMask = [.control, .command] }
             i.representedObject = DeckMenuTarget.Action(action)
             i.target = menuTarget
             if let on { i.state = on ? .on : .off }
-            sub.addItem(i)
+            return i
         }
-        add("Go to Anything…  ⌃⌘K", { [weak self] in self?.togglePalette() })
-        add("Dock the Sidebar", { [weak self] in guard let self else { return }; self.send(.pin(!self.visibility.pinned)) }, on: visibility.pinned)
+        let sub = NSMenu()
+        sub.addItem(item("Go to Anything…", key: "k", { [weak self] in self?.togglePalette() }))
+        sub.addItem(item("Jump to Finished Agent", key: "u", { [weak self] in self?.jumpToFinished() }))
+        sub.addItem(.separator())
+        sub.addItem(item("Dock the Sidebar", { [weak self] in guard let self else { return }; self.send(.pin(!self.visibility.pinned)) }, on: visibility.pinned))
+        let layouts = NSMenu()
         for l in Deck.Layout.allCases {
-            add("Layout: \(l.rawValue.capitalized)", { [weak self] in self?.setLayout(l) }, on: layout == l)
+            layouts.addItem(item(l.rawValue.capitalized, { [weak self] in self?.setLayout(l) }, on: layout == l))
         }
-        add("Tile Windows", { [weak self] in self?.tile() })
-        add("Jump to Finished Agent  ⌃⌘U", { [weak self] in self?.jumpToFinished() })
-        if !model.hooksInstalled { add("Install Claude Code and Grok Hooks", { [weak self] in self?.installHooks() }) }
+        let layoutItem = NSMenuItem(title: "Layout", action: nil, keyEquivalent: "")
+        layoutItem.submenu = layouts
+        sub.addItem(layoutItem)
+        sub.addItem(item("Tile Windows", { [weak self] in self?.tile() }))
+        if !model.hooksInstalled {
+            sub.addItem(.separator())
+            sub.addItem(item("Install Claude Code and Grok Hooks", { [weak self] in self?.installHooks() }))
+        }
         let deck = NSMenuItem(title: "Deck", action: nil, keyEquivalent: "")
         deck.submenu = sub
-        out.append(deck)
+        out.insert(deck, at: 0)
         return out
     }
 
