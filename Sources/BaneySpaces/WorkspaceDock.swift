@@ -248,6 +248,7 @@ final class WorkspaceDock {
         shownOn = screen
         spanLength = edge.isVertical ? size.height : size.width
         p.setFrame(up.offsetBy(dx: edge.away.dx, dy: edge.away.dy), display: false)
+        slidingIn = true
         p.alphaValue = 0
         p.orderFrontRegardless()
         NSAnimationContext.runAnimationGroup({ ctx in
@@ -256,6 +257,7 @@ final class WorkspaceDock {
             p.animator().setFrame(up, display: true)
             p.animator().alphaValue = 1
         }, completionHandler: { [weak self] in
+            self?.slidingIn = false
             // The first layout may not have measured itself yet (a dock shrunk to fit settles a
             // pass later); size to what it really is now.
             self?.resize()
@@ -320,8 +322,28 @@ final class WorkspaceDock {
         p.allowsToolTipsWhenApplicationIsInactive = true
         // Not over full-screen apps: a video's controls or a game sit along that edge.
         p.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
-        p.contentView = FirstClickHostingView(rootView: DockView(model: model).environment(\.colorScheme, .dark))
+        let host = FirstClickHostingView(rootView: DockView(model: model).environment(\.colorScheme, .dark))
+        // The dock sizes and places its own panel (resize). Left to SwiftUI, the window's min and
+        // max size were also set from inside a layout pass, which re-framed the window mid-pass;
+        // while the label and strip measured themselves, AppKit ran out of passes and threw
+        // (two crashes, 2026-10-14). SwiftUI now only reports its size, and the dock follows it.
+        host.sizingOptions = [.intrinsicContentSize]
+        host.onSizeChange = { [weak self] in self?.scheduleResize() }
+        p.contentView = host
         return p
+    }
+
+    private var resizeQueued = false
+    /// The slide-in animation would overwrite a resize mid-way; its completion resizes instead.
+    private var slidingIn = false
+    /// One resize on the next turn of the run loop, outside the layout pass that changed the size.
+    private func scheduleResize() {
+        guard !resizeQueued, !slidingIn else { return }
+        resizeQueued = true
+        DispatchQueue.main.async { [weak self] in
+            self?.resizeQueued = false
+            self?.resize()
+        }
     }
 }
 
@@ -333,7 +355,13 @@ final class DockPanel: NSPanel {
 
 /// A click on a dock tile acts at once, without first bringing BaneySpaces forward.
 private final class FirstClickHostingView<Content: View>: NSHostingView<Content> {
+    /// SwiftUI's size for the dock changed.
+    var onSizeChange: () -> Void = {}
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func invalidateIntrinsicContentSize() {
+        super.invalidateIntrinsicContentSize()
+        onSizeChange()
+    }
 }
 
 final class DockModel: ObservableObject {
