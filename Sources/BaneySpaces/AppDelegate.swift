@@ -345,62 +345,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 menu.addItem(withTitle: "BaneySpaces needs permission to arrange windows", action: nil, keyEquivalent: "")
                 menu.addItem(item("Allow BaneySpaces…", #selector(showSetup)))
             } else {
-                menu.addItem(item("Set Up BaneySpaces…", #selector(showSetup)))
+                menu.addItem(item("Settings…", #selector(showSetup)))
             }
             menu.addItem(.separator())
             menu.addItem(item("Quit BaneySpaces", #selector(quit), key: "q"))
             return
         }
         spaces.refresh()
-        for n in Workspaces.range {
-            let apps = spaces.apps(on: n)
-            let title = apps.isEmpty ? "Workspace \(n)" : "Workspace \(n)  ·  \(apps.joined(separator: ", "))"
-            let it = item(title, #selector(pick(_:)), key: "\(n)")
+        var apps: [Int: [String]] = [:]
+        for n in Workspaces.range { apps[n] = spaces.apps(on: n) }
+        for row in MenuLayout.rows(current: spaces.model.current, apps: apps) {
+            let it = item(row.title, #selector(pick(_:)), key: "\(row.workspace)")
             it.keyEquivalentModifierMask = Modifier.current.menuFlags
-            it.tag = n
-            it.state = n == spaces.model.current ? .on : .off
+            it.tag = row.workspace
+            it.state = row.isCurrent ? .on : .off
+            it.toolTip = row.fullList
             menu.addItem(it)
         }
-        menu.addItem(.separator())
-        menu.addItem(withTitle: "Add ⇧ to send the front window there", action: nil, keyEquivalent: "")
         menu.addItem(.separator())
         let find = item("Find or Install an App…", #selector(showLauncher))
         if Launcher.onCmdSpace { find.keyEquivalent = " "; find.keyEquivalentModifierMask = [.command] }
         menu.addItem(find)
         menu.addItem(item("Show All Workspaces", #selector(showViewer)))
-        if deck.started { deck.menuItems(target: self).forEach(menu.addItem) }
-        let deckItem = item("Terminal and Agent Deck", #selector(toggleDeck))
-        deckItem.state = DeckController.enabled ? .on : .off
-        deckItem.toolTip = "A sidebar of every terminal, browser tab and coding agent here. Rest the pointer on the left edge in a terminal, browser or agent app, or press ⌃⌘B."
-        menu.addItem(deckItem)
-        menu.addItem(item("Bring Every Window Back", #selector(bringBack)))
-        menu.addItem(parkedAppsItem())
+        if deck.started { deck.menuItems().forEach(menu.addItem) }
+        menu.addItem(.separator())
+        menu.addItem(optionsItem())
+        menu.addItem(item("Settings…", #selector(showSetup), key: ","))
+        menu.addItem(.separator())
+        // A waiting update gets its own line; the rest of updates live in the submenu.
+        if let update = updateItem() { menu.addItem(update) }
+        menu.addItem(channelItem())
+        menu.addItem(item("About BaneySpaces", #selector(about)))
+        menu.addItem(item("Quit BaneySpaces", #selector(quit), key: "q"))
+    }
+
+    /// The switches and the rarely needed tools, one level down so the menu stays short.
+    private func optionsItem() -> NSMenuItem {
+        let parent = NSMenuItem(title: "Options", action: nil, keyEquivalent: "")
+        let sub = NSMenu()
         let dockItem = item("Workspace Dock", #selector(toggleWorkspaceDock))
         dockItem.state = WorkspaceDock.enabled ? .on : .off
         dockItem.toolTip = "A dock of your workspaces in place of the macOS Dock. Rest the pointer on the \(WorkspaceDock.edge.title.lowercased()) edge of the screen to show it."
-        menu.addItem(dockItem)
+        sub.addItem(dockItem)
         if WorkspaceDock.enabled {
-            let pos = NSMenuItem(title: "Workspace Dock Position", action: nil, keyEquivalent: "")
-            let sub = NSMenu()
+            let pos = NSMenuItem(title: "Dock Position", action: nil, keyEquivalent: "")
+            let edges = NSMenu()
             for e in DockEdge.allCases {
                 let it = item(e.title, #selector(pickDockEdge(_:)))
                 it.representedObject = e.rawValue
                 it.state = WorkspaceDock.edge == e ? .on : .off
-                sub.addItem(it)
+                edges.addItem(it)
             }
-            pos.submenu = sub
-            menu.addItem(pos)
+            pos.submenu = edges
+            sub.addItem(pos)
         }
+        let deckItem = item("Terminal and Agent Deck", #selector(toggleDeck))
+        deckItem.state = DeckController.enabled ? .on : .off
+        deckItem.toolTip = "A sidebar of every terminal, browser tab and coding agent here. Rest the pointer on the left edge in a terminal, browser or agent app, or press ⌃⌘B."
+        sub.addItem(deckItem)
         let spaceItem = item("Launcher on ⌘Space", #selector(toggleLauncherKey))
         spaceItem.state = Launcher.onCmdSpace ? .on : .off
         spaceItem.toolTip = "⌘Space opens the BaneySpaces launcher instead of Spotlight. Turning it off gives ⌘Space back to Spotlight."
-        menu.addItem(spaceItem)
-        menu.addItem(item("Set Up BaneySpaces…", #selector(showSetup), key: ","))
-        menu.addItem(.separator())
-        menu.addItem(updateItem())
-        menu.addItem(channelItem())
-        menu.addItem(item("About BaneySpaces", #selector(about)))
-        menu.addItem(item("Quit BaneySpaces", #selector(quit), key: "q"))
+        sub.addItem(spaceItem)
+        sub.addItem(.separator())
+        sub.addItem(parkedAppsItem())
+        let back = item("Bring Every Window Back", #selector(bringBack))
+        back.toolTip = "Gathers every window onto workspace 1, all visible."
+        sub.addItem(back)
+        parent.submenu = sub
+        return parent
     }
 
     private func item(_ title: String, _ action: Selector, key: String = "") -> NSMenuItem {
@@ -480,15 +493,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: Updates
 
-    /// "Update to …" when a newer build is waiting, "Updating to …" while it installs,
-    /// otherwise a manual check.
-    private func updateItem() -> NSMenuItem {
+    /// "Update to …" when a newer build is waiting, "Updating to …" while it installs, otherwise
+    /// nothing: the manual check is in the Updates submenu.
+    private func updateItem() -> NSMenuItem? {
         if let r = updater.installing {
             let it = NSMenuItem(title: "Updating to \(r.isNightly ? "the nightly build" : r.name)…", action: nil, keyEquivalent: "")
             it.isEnabled = false
             return it
         }
-        guard let r = updater.available else { return item("Check for Updates…", #selector(checkForUpdates)) }
+        guard let r = updater.available else { return nil }
         let it = item("Update to \(r.isNightly ? "the Nightly Build" : r.name)…", #selector(offerUpdate))
         it.attributedTitle = NSAttributedString(string: it.title, attributes: [.font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)])
         return it
@@ -513,7 +526,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let auto = item("Check for Updates Daily", #selector(toggleAutoCheck))
         auto.state = updater.checksAutomatically ? .on : .off
         sub.addItem(auto)
-        sub.addItem(item("Check Now", #selector(checkForUpdates)))
+        sub.addItem(item("Check for Updates Now…", #selector(checkForUpdates)))
         parent.submenu = sub
         return parent
     }
@@ -563,14 +576,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Opening it changes nothing on its own, so a web page may: every action inside needs a key press.
         case "launcher": launcher.show(scope: LauncherModel.Scope(rawValue: url.lastPathComponent) ?? .root, takeKeys: false)
         case "dock":
-            // Turning it off is always allowed. Showing it or turning it on (which hides the
-            // macOS Dock) is for checks, only when `defaults write com.baney.baneyspaces
-            // dockURLCommands -bool true` says so, so a web page can't do either.
+            // Turning it off or hiding it is always allowed: a pinned dock must never outlive
+            // its check (2026-10-14, a hide that raced the setting going off left it stuck up).
+            // Showing it or turning it on (which hides the macOS Dock) is for checks, only when
+            // `defaults write com.baney.baneyspaces dockURLCommands -bool true` says so, so a
+            // web page can't do either.
             let checks = UserDefaults.standard.bool(forKey: "dockURLCommands")
             switch url.lastPathComponent {
             case "off": run { _ in setWorkspaceDock(false) }
             case "show" where checks: run { _ in dock.pin(true) }
-            case "hide" where checks: run { _ in dock.pin(false) }
+            case "hide": run { _ in dock.pin(false) }
             case "on" where checks: run { _ in setWorkspaceDock(true) }
             default: NSLog("BaneySpaces: dock command refused or unknown %@", text)
             }

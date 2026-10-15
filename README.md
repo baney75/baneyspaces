@@ -72,25 +72,29 @@ workspaces in the same 3×3 grid as the number keys, with every window's app and
   <img src="docs/shots/overview-drag.jpg" alt="Dragging a Mail window card onto workspace 6 in the overview; the target tile is outlined" width="760">
 </p>
 
-The menu bar icon shows the number of the workspace you're on, and its menu has the same view.
+The menu bar icon shows the number of the workspace you're on. Its menu lists the workspaces in
+use and one empty one to start fresh on; the switches and **Bring Every Window Back** sit under
+**Options**.
 
 ## Workspace Dock
 
-Turn on **Workspace Dock** in setup or the menu bar menu and the Dock shows your workspaces
+Turn on **Workspace Dock** in setup or under **Options** in the menu bar menu and the Dock shows your workspaces
 instead of your apps. Rest the pointer on the bottom edge of the screen and it slides up: a
 tile for each workspace in use, plus the one you're on, each with its apps and its number.
 Click an app's icon to go straight to that app (again for its next window), or the tile around
 it to go to the workspace. Rest on an app with several windows and a strip of them opens over
 it, each labeled with its title, to pick one;
-hover to see what's there; right-click to send the front window there. Drag an app's icon onto
+hover to see what's there. Right-click a tile to move the front window there, or an app to show
+or quit it (hold ⌥ for **Force Quit**). Drag an app's icon onto
 another tile to move its windows on that workspace there, or drag one window out of the strip to
-move just that one; drop it on the dashed tile to start a new workspace with it. You stay where
+move just that one; drop it on the dashed tile to start a new workspace with it. A tile with more than four apps shows three
+and a "+N"; rest on the "+N" to list the rest and click one. You stay where
 you are. The dashed tile goes to
-the first empty workspace, the search button opens the launcher, and the last button opens the
+the first empty workspace, and the two small buttons at the end open the launcher and the
 overview of all nine.
 
 It can sit on any side of the screen: choose **Bottom**, **Left**, **Right** or **Top** in setup,
-in the menu bar menu under **Workspace Dock Position**, or from a tile's right-click menu. At the
+in the menu bar menu under **Options › Dock Position**, or from the dock's right-click menu. At the
 top it sits under the menu bar and waits half a second before opening, so reaching for a menu
 doesn't bring it up. A dock with more tiles than the screen has room for shrinks to fit.
 
@@ -200,7 +204,7 @@ steps just off screen and comes back to the exact spot it left.
 - **Quit BaneySpaces** and every window comes back to where it was.
 - **If BaneySpaces crashes,** the next launch shows every app it hid and puts back any window it
   moved.
-- **Bring Every Window Back** in the menu gathers every window onto workspace 1, all visible.
+- **Bring Every Window Back** (menu bar menu › **Options**) gathers every window onto workspace 1, all visible.
   It gets you out of any tangle.
 
 ## Install
@@ -271,7 +275,7 @@ Pick what you follow under **Updates** in the menu:
   backwards.
 
 The daily check asks GitHub's public release list and sends nothing about your Mac. Turn it off
-under **Updates › Check for Updates Daily** and use **Check Now** instead.
+under **Updates › Check for Updates Daily** and use **Check for Updates Now…** instead.
 
 ### If the permission won't take
 
@@ -357,7 +361,7 @@ incoming connections first.
 BaneySpaces hides an app whose windows all sit on other workspaces, the way ⌘H does. macOS
 refuses background clicks and keystrokes to a hidden app, so tools that drive apps from behind,
 such as [Cua](https://github.com/trycua/cua), can't use it until you switch back. Put the app
-under **Keep Usable by Automation** in the menu bar menu and its windows are parked just out of
+under **Options › Keep Usable by Automation** in the menu bar menu and its windows are parked just out of
 view instead, where those tools can still click and type. Cua Spaces is on the list from the
 start, so its picture-in-picture window stays put.
 
