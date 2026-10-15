@@ -9,7 +9,9 @@ final class DockSizingTests: XCTestCase {
         let source = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Sources/BaneySpaces/WorkspaceDock.swift")
+        // Code only: a commented-out line must not pass.
         let text = try String(contentsOf: source, encoding: .utf8)
+            .split(separator: "\n").map { $0.components(separatedBy: "//")[0] }.joined(separator: "\n")
         XCTAssertTrue(text.contains("host.sizingOptions = [.intrinsicContentSize]"),
                       "the dock's NSHostingView must not size the panel (no .minSize/.maxSize)")
         XCTAssertTrue(text.contains("host.onSizeChange"), "the dock must re-frame itself when SwiftUI's size changes")

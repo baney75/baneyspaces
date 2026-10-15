@@ -248,6 +248,7 @@ final class WorkspaceDock {
         shownOn = screen
         spanLength = edge.isVertical ? size.height : size.width
         p.setFrame(up.offsetBy(dx: edge.away.dx, dy: edge.away.dy), display: false)
+        slidingIn = true
         p.alphaValue = 0
         p.orderFrontRegardless()
         NSAnimationContext.runAnimationGroup({ ctx in
@@ -256,6 +257,7 @@ final class WorkspaceDock {
             p.animator().setFrame(up, display: true)
             p.animator().alphaValue = 1
         }, completionHandler: { [weak self] in
+            self?.slidingIn = false
             // The first layout may not have measured itself yet (a dock shrunk to fit settles a
             // pass later); size to what it really is now.
             self?.resize()
@@ -332,9 +334,11 @@ final class WorkspaceDock {
     }
 
     private var resizeQueued = false
+    /// The slide-in animation would overwrite a resize mid-way; its completion resizes instead.
+    private var slidingIn = false
     /// One resize on the next turn of the run loop, outside the layout pass that changed the size.
     private func scheduleResize() {
-        guard !resizeQueued else { return }
+        guard !resizeQueued, !slidingIn else { return }
         resizeQueued = true
         DispatchQueue.main.async { [weak self] in
             self?.resizeQueued = false
