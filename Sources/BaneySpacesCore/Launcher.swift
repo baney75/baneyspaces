@@ -29,7 +29,7 @@ public enum Fuzzy {
     }
 
     /// Lowercased, accents dropped: "Café" matches "cafe".
-    static func fold(_ s: String) -> String {
+    public static func fold(_ s: String) -> String {
         s.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil).trimmingCharacters(in: .whitespaces)
     }
 }

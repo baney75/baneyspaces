@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- **The Deck: every terminal, browser tab and agent window in one sidebar.** Ghostdeck is now
+  part of BaneySpaces. Ghostty splits and tabs, Helium and other Chromium tabs, Terminal and
+  iTerm2 sessions, and the Claude, ChatGPT, T3 Code and Grok Bot windows each get a row with
+  their folder and whether an agent there is working, waiting or done. ⌃⌘K finds any of them,
+  ⌃⌘[ and ⌃⌘] go back and forth, and Deck rows show up in the launcher. Stack, Split and Free
+  arrange the window you pick next to the sidebar. Ghostdeck.app goes to the Trash on install.
+- **Agents tell you when they're done.** `baneyspaces hooks install` adds Claude Code and Grok
+  hooks. A finished or waiting agent gets a toast and a badge on its Workspace Dock tile, and
+  the row it ran in lights up.
+- **An agent workspace.** `baneyspaces agent on 9` gives agents and Cua a workspace of their own.
+  Its apps are parked instead of hidden so background clicks still land, nothing on it ever pulls
+  you there, and a window an agent opens from behind joins it instead of yours. `agent run`
+  starts a command there in a Terminal window of its own; `agent open` opens a file or app there.
+- **Phones in the Deck.** Android over adb (`baneyspaces phone tap|type|swipe|ui|shot`) and
+  iPhones through devicectl and iPhone Mirroring.
+- **Remote machines, off by default.** `baneyspaces remote on` lets another Mac on your tailnet
+  give this one's agent workspace work, with a token. It listens only on the tailnet address and
+  can't focus, type into or move anything you see.
+- `baneyspaces` is a command-line tool too (`ls`, `focus`, `send`, `notify`, `agent`, `phone`,
+  `remote`, `doctor`), and a Claude Code skill teaches agents to use it.
+
 - **Apps come forward again.** Ghostty, and some other apps, keep a window alive after you
   close it, and a tab behind another tab looks the same. BaneySpaces kept those on their
   workspace for good, so ⌘Tab, the Dock and the launcher sent you to a workspace (Ghostty "on

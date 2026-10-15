@@ -51,6 +51,21 @@ final class Spaces {
     private var dormant: [WindowID: (pid: pid_t, workspace: Int, frame: CGRect?)] = [:]
     /// Workspaces from most to least recently visited, for the ⌘Tab switcher.
     private(set) var recent: [Int] = [1]
+    /// Windows agents asked for with `baneyspaces agent open` or `agent run`: the next window
+    /// each app opens goes to that workspace, until the time runs out.
+    private var claims: [pid_t: [Claim]] = [:]
+    private struct Claim {
+        let id = UUID()
+        let workspace: Int
+        let until: Date
+        let title: String?
+    }
+
+    /// The agent workspace (see `AgentWorkspace`), or nil when it's off.
+    static var agentWorkspace: Int? {
+        get { AgentWorkspace.number(setting: UserDefaults.standard.integer(forKey: "agentWorkspace")) }
+        set { UserDefaults.standard.set(newValue ?? 0, forKey: "agentWorkspace") }
+    }
     private var screensWork: DispatchWorkItem?
     var onChange: (() -> Void)?
 
@@ -181,7 +196,11 @@ final class Spaces {
             returned = returned || entry.workspace != model.current
         }
         // At launch every window is new; the saved layout decides where they go.
-        if !firstScan { adoptBackgroundWindows(added.filter { !fromLayout.contains($0) }) }
+        if !firstScan {
+            let fresh = added.filter { !fromLayout.contains($0) }
+            returned = placeClaimed(fresh) || returned
+            adoptBackgroundWindows(fresh)
+        }
         if returned, !switching {
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.active, !self.switching else { return }
@@ -210,9 +229,12 @@ final class Spaces {
     /// click (which brings the app forward) still opens the window where you are.
     private func adoptBackgroundWindows(_ added: [WindowID]) {
         let ids = ParkedApps.bundleIDs
+        let agent = Self.agentWorkspace
         let candidates = added.filter { id in
             guard let w = windows[id] else { return false }
-            return NSRunningApplication(processIdentifier: w.pid)?.bundleIdentifier.map(ids.contains) == true
+            if NSRunningApplication(processIdentifier: w.pid)?.bundleIdentifier.map(ids.contains) == true { return true }
+            // An app that lives on the agent workspace, too.
+            return agent != nil && windows.values.contains { $0.pid == w.pid && $0.id != id && model.workspace(of: $0.id) == agent }
         }
         guard !candidates.isEmpty else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
@@ -222,6 +244,13 @@ final class Spaces {
             for id in candidates {
                 guard let w = self.windows[id], w.pid != front, self.model.workspace(of: id) == self.model.current else { continue }
                 let others = self.windows.values.filter { $0.pid == w.pid && $0.id != id }.compactMap { self.model.workspace(of: $0.id) }
+                if let to = AgentWorkspace.homeForNewWindow(appFront: false, appWorkspaces: Set(others), claimed: nil,
+                                                            current: self.model.current, agent: agent) {
+                    Trace.log("agent window \(id) of \(w.appName) joins workspace \(to)")
+                    self.model.assign(id, to: to, focus: false)
+                    moved = true
+                    continue
+                }
                 guard !others.contains(self.model.current),
                       let home = self.recent.first(where: others.contains) ?? others.min() else { continue }
                 self.model.assign(id, to: home, focus: false)
@@ -229,6 +258,105 @@ final class Spaces {
             }
             if moved { self.reapply() }
         }
+    }
+
+    /// The next window `pid` opens goes to workspace `n` instead of the one you're on, for an
+    /// agent that's about to open it. Unclaimed after `within` seconds, the claim lapses.
+    /// `newProcess`: the agent just started this process, so every window it already has is the
+    /// agent's too (it may have opened one before its pid reached us). Never for an app you were
+    /// already using: that would take your windows.
+    /// `title`: only a window whose title contains it (the file an agent opened), so a window
+    /// you open in the same app meanwhile stays yours.
+    func claimNextWindow(of pid: pid_t, for n: Int, within: TimeInterval = 8, newProcess: Bool = false, title: String? = nil) {
+        // Added now, so `cancelClaim` right after always finds it.
+        let claim = Claim(workspace: n, until: Date().addingTimeInterval(within), title: title)
+        claims[pid, default: []].append(claim)
+        look(for: claim, of: pid, within: within, newProcess: newProcess)
+    }
+
+    /// Finds a claimed window that's already open, or opens with its title a moment late.
+    private func look(for claim: Claim, of pid: pid_t, within: TimeInterval, newProcess: Bool) {
+        // Mid-switch the window list is in flux: look once the switch is done.
+        if switching { return enqueue { [weak self] in self?.look(for: claim, of: pid, within: within, newProcess: newProcess) } }
+        guard has(claim, of: pid) else { return }
+        let n = claim.workspace, title = claim.title
+        // A window with the file's name, not in front, is the agent's. It may show its name only a
+        // moment after it opens (Terminal titles a window once its script starts): keep looking
+        // until then. Only a window that wasn't there before the claim, and only one: your own
+        // window of the same file, or one whose title merely contains the name, stays yours.
+        if let title, !title.isEmpty {
+            // An app the agent just started has only the agent's windows (the claim comes once it's up).
+            let launched = NSRunningApplication(processIdentifier: pid)?.launchDate.map { -$0.timeIntervalSinceNow < 10 } ?? false
+            let before = newProcess || launched ? [] : Set(windows.values.filter { $0.pid == pid }.map(\.id))
+            var found: WindowID?
+            waitUntil(timeout: within, interval: 0.15, { [weak self] in
+                guard let self, self.has(claim, of: pid) else { return true }
+                // Mid-switch the window list is in flux, and a scan would hold up the switch.
+                if self.switching { return false }
+                self.refresh()
+                let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
+                found = self.windows.values.first {
+                    $0.pid == pid && $0.pid != front && !before.contains($0.id)
+                        && self.model.workspace(of: $0.id) != n && $0.title.localizedCaseInsensitiveContains(title)
+                }?.id
+                return found != nil
+            }) { [weak self] in
+                guard let self, let id = found, self.has(claim, of: pid) else { return }
+                self.drop(claim, of: pid)
+                Trace.log("claimed window \(id) for workspace \(n) by its title")
+                self.move([id], to: n)
+            }
+        }
+        guard newProcess else { return }
+        refresh()
+        let early = windows.values.filter { $0.pid == pid && model.workspace(of: $0.id) != n }.map(\.id)
+        guard !early.isEmpty else { return }
+        drop(claim, of: pid)
+        move(early, to: n)
+    }
+
+    /// An agent's request that came to nothing: its claim goes, so it can't take your next window.
+    func cancelClaim(of pid: pid_t) {
+        guard let last = claims[pid]?.last(where: { $0.title == nil }) else { return }
+        drop(last, of: pid)
+    }
+
+    private func has(_ c: Claim, of pid: pid_t) -> Bool { claims[pid]?.contains { $0.id == c.id } ?? false }
+
+    private func drop(_ c: Claim, of pid: pid_t) {
+        claims[pid]?.removeAll { $0.id == c.id }
+        if claims[pid]?.isEmpty == true { claims[pid] = nil }
+    }
+
+    /// Claimed windows go straight to their workspace, before the next switch would show them.
+    /// A window of the app you're in is yours (⌘N), whatever was claimed. True when one went
+    /// somewhere other than here.
+    private func placeClaimed(_ added: [WindowID]) -> Bool {
+        let now = Date()
+        claims = claims.compactMapValues { l in
+            let live = l.filter { $0.until > now }
+            return live.isEmpty ? nil : live
+        }
+        let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        var away = false
+        for id in added {
+            guard let w = windows[id], w.pid != front,
+                  // A brand-new window may not have its title yet.
+                  let c = claims[w.pid]?.first(where: { c in
+                      c.title.map { w.title.isEmpty || w.title.localizedCaseInsensitiveContains($0) } ?? true
+                  }) else { continue }
+            drop(c, of: w.pid)
+            model.assign(id, to: c.workspace, focus: false)
+            Trace.log("claimed window \(id) of \(windows[id]?.appName ?? "?") for workspace \(c.workspace)")
+            away = away || c.workspace != model.current
+        }
+        return away
+    }
+
+    /// Windows on the agent workspace, for `baneyspaces agent status`.
+    func agentWindows() -> [(id: WindowID, app: String, title: String)] {
+        guard let n = Self.agentWorkspace else { return [] }
+        return model.windows(on: n).compactMap { id in windows[id].map { (id, $0.appName, $0.title) } }
     }
 
     /// Why a full scan ran, for timing.log.
@@ -509,7 +637,7 @@ final class Spaces {
         // put away, parked or hidden. That isn't you picking it: stay here, and an app the
         // activation unhid goes back into hiding. Following it pulled you off the workspace you
         // had just gone to, Finder or Ghostty a moment after you arrived.
-        let putAway = (saved.frames[w.id] != nil && ParkedApps.contains(pid)) || saved.hiddenApps.contains(pid)
+        let putAway = (saved.frames[w.id] != nil && parkedPids().contains(pid)) || saved.hiddenApps.contains(pid)
         // Timed from when the activation arrived: one that came mid-switch is only looked at once
         // the switch, parking included, is over.
         if putAway, activatedAt.timeIntervalSince(max(leftAt, handedOffAt)) < 0.5 {
@@ -542,6 +670,18 @@ final class Spaces {
                   NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
             if showNewWindow(of: pid, besides: known) {
                 return Trace.log("followFocus stayed: \(w.appName) opened a window here")
+            }
+            // Something on the agent workspace came forward on its own (an agent's click fell
+            // back to the foreground, an app took focus): you stay where you are, and so does your
+            // typing, which must never go into a window out of sight.
+            if !AgentWorkspace.mayFollow(to: n, current: model.current, agent: Self.agentWorkspace) {
+                Trace.log("followFocus stayed: \(w.appName) is on the agent workspace")
+                if let id = model.lastFocused[model.current], let t = windows[id], saved.frames[id] == nil, t.pid != pid {
+                    stay(on: t)
+                } else {
+                    takeFocus()
+                }
+                return
             }
             Trace.log("followFocus \(w.appName) to \(n)")
             lastKey[pid] = w.id
@@ -638,11 +778,13 @@ final class Spaces {
     /// app is hidden as before: parking needs it to answer, hiding doesn't.
     private func parkedPids() -> Set<pid_t> {
         let ids = ParkedApps.bundleIDs
-        guard !ids.isEmpty else { return [] }
+        // Apps with a window on the agent workspace stay drivable from behind, like the list's.
+        let agents = AgentWorkspace.parkedApps(owners: windows.mapValues(\.pid), home: model.home, agent: Self.agentWorkspace)
+        guard !ids.isEmpty || !agents.isEmpty else { return [] }
         let unsure = lastScan?.unsure ?? []
         return Set(windows.values.map(\.pid)).filter { pid in
             Windows.isResponsive(pid) && !unsure.contains(pid) && !SlowMovers.contains(pid)
-                && NSRunningApplication(processIdentifier: pid)?.bundleIdentifier.map(ids.contains) == true
+                && (agents.contains(pid) || NSRunningApplication(processIdentifier: pid)?.bundleIdentifier.map(ids.contains) == true)
         }
     }
 
@@ -1226,6 +1368,9 @@ final class Spaces {
         // state.json is for scripts and checks: the current workspace and where each window lives.
         let state: [String: Any] = [
             "current": model.current,
+            // The agent workspace (0 when off). Cua's driver reads it and refuses foreground
+            // delivery to a window there, which would pull you onto it.
+            "agentWorkspace": Self.agentWorkspace ?? 0,
             "parked": saved.frames.keys.sorted(),
             "hiddenApps": saved.hiddenApps.sorted(),
             // Apps the last scan couldn't read, and windows from the saved layout still waiting

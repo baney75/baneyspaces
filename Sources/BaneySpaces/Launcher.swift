@@ -157,6 +157,9 @@ struct LauncherActions {
     var dockOn: () -> Bool = { false }
     var checkForUpdates: () -> Void = {}
     var showSetup: () -> Void = {}
+    /// The Deck's rows (terminal splits, browser tabs, agents) that answer a query; with nothing
+    /// typed, only the agents that finished or need you.
+    var deckItems: (String) -> [LauncherItem] = { _ in [] }
 }
 
 final class LauncherController: NSObject, NSWindowDelegate {
@@ -430,10 +433,12 @@ final class LauncherModel: ObservableObject {
         case .web: out = q.isEmpty ? bangDirectory() : searchEverywhere(q)
         case .root:
             if q.isEmpty {
+                out += actions.deckItems("")
                 out += recentApps().prefix(5)
                 out += menuItems()
             } else {
                 out += appItems(q, limit: 8)
+                out += actions.deckItems(q).prefix(8)
                 out += agentItems(q)
                 out += workspaceItems(q)
                 out += commandItems(q)
