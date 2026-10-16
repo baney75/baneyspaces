@@ -176,7 +176,9 @@ enum Windows {
     /// missing from the result. `listed` is every window number the apps gave, of any kind, and
     /// `partial` the apps that gave an element whose number couldn't be read: only an app that
     /// answered in full can say a window it didn't list is closed.
-    static func all(owners: Set<pid_t>? = nil) -> (windows: [Window], unsure: Set<pid_t>, listed: Set<WindowID>, partial: Set<pid_t>) {
+    /// `notWindows` are listed elements whose subrole was read and isn't a standard window's
+    /// (sheets, panels); an element whose subrole couldn't be read makes its app `partial`.
+    static func all(owners: Set<pid_t>? = nil) -> (windows: [Window], unsure: Set<pid_t>, listed: Set<WindowID>, partial: Set<pid_t>, notWindows: Set<WindowID>) {
         // Only apps that own a window are asked. A running app with no windows is often frozen by
         // macOS and never answers, which would cost a full timeout on every scan.
         let candidates = owners.map { RunningApps.regular.intersection($0) } ?? RunningApps.regular
@@ -186,7 +188,7 @@ enum Windows {
             return (pid, app.localizedName ?? "App")
         }
         var results = [[Window]](repeating: [], count: apps.count)
-        var listedIDs = Set<WindowID>(), partial = Set<pid_t>()
+        var listedIDs = Set<WindowID>(), partial = Set<pid_t>(), notWindows = Set<WindowID>()
         let lock = NSLock()
         DispatchQueue.concurrentPerform(iterations: apps.count) { i in
             let (pid, name) = apps[i]
@@ -199,17 +201,20 @@ enum Windows {
             if listed == nil { lock.lock(); unsure.insert(pid); lock.unlock(); markUnresponsive(pid) } else { markResponsive(pid) }
             let elements = listed ?? []
             let ids = elements.map(\.windowID)
-            let found = zip(elements, ids).compactMap { el, id -> Window? in
-                guard let id, el.string(kAXSubroleAttribute) == kAXStandardWindowSubrole as String else { return nil }
-                return Window(id: id, element: el, pid: pid, appName: name)
+            var found: [Window] = [], other: [WindowID] = [], unread = false
+            for (el, id) in zip(elements, ids) {
+                guard let id else { continue }
+                guard let subrole = el.string(kAXSubroleAttribute) else { unread = true; continue }
+                if subrole == kAXStandardWindowSubrole as String { found.append(Window(id: id, element: el, pid: pid, appName: name)) } else { other.append(id) }
             }
             lock.lock()
             results[i] = found
             listedIDs.formUnion(ids.compactMap { $0 })
-            if ids.contains(nil) { partial.insert(pid) }
+            notWindows.formUnion(other)
+            if ids.contains(nil) || unread { partial.insert(pid) }
             lock.unlock()
         }
-        return (results.flatMap { $0 }, unsure, listedIDs, partial)
+        return (results.flatMap { $0 }, unsure, listedIDs, partial, notWindows)
     }
 
     static func alive() -> Set<WindowID> { snapshot(apps: RunningApps.regular).alive }

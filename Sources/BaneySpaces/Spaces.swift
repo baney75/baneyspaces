@@ -40,6 +40,11 @@ final class Spaces {
     /// a skipped refresh can tell a window the scan missed (see `ScanCheck`) from a sheet or panel.
     private var lastFullScan = Date.distantPast
     private var notWindows = Set<WindowID>()
+    private var lastPartial = Set<pid_t>()
+    private var healPending = false
+    /// Heal scans in a row that placed nothing. A window Accessibility never lists (an overlay)
+    /// stops the background scans after a few; a window opening or closing starts them again.
+    private var healMisses = 0
     /// Windows that ignored every request to leave macOS full screen. Asking again only stalls.
     private var refusedFullScreen = Set<WindowID>()
     private lazy var watcher = FocusWatcher { [weak self] pid in self?.focusMovedWithin(pid) }
@@ -149,7 +154,7 @@ final class Spaces {
         if !full, let last = lastScan, last.windows == snap.appWindows, last.pids == pids,
            last.offscreen == offKnown,
            !ScanCheck.shouldRescan(unplaced: ScanCheck.unplaced(onScreen: snap.onScreen, placed: Set(model.home.keys),
-                                                                notWindows: notWindows, unsure: last.unsure),
+                                                                notWindows: notWindows, unsure: last.unsure.union(lastPartial)),
                                    lastScan: lastFullScan, now: Date()) {
             prune(alive: snap.alive)
             clock.scan = "skip"
@@ -158,10 +163,12 @@ final class Spaces {
         let firstScan = lastScan == nil
         clock.scan = firstScan ? "first" : full ? "full" : last(lastScan!, snap.appWindows, pids, offKnown)
         lastFullScan = Date()
+        if clock.scan.hasPrefix("windows") || clock.scan == "apps" { healMisses = 0 }
         RunningApps.invalidate()
         let pidsNow = RunningApps.regular
-        let (list, unsure, listed, partial) = Windows.all(owners: snap.owners)
-        notWindows = listed.subtracting(list.map(\.id))
+        let (list, unsure, listed, partial, nonStandard) = Windows.all(owners: snap.owners)
+        notWindows = nonStandard
+        lastPartial = partial
         // A window the app closed but kept isn't one any more, though the window server says it's alive.
         let answered = pidsNow.intersection(snap.owners).subtracting(unsure).subtracting(partial)
         let closed = closedWindows(listed: listed, answered: answered, offscreen: snap.offscreen)
@@ -183,6 +190,10 @@ final class Spaces {
         lastScan = (snap.appWindows, pidsNow, unsure, offscreenKnown(snap.offscreen))
         watcher.sync(snap.owners)
         if !unsure.isEmpty || watcher.missing { scheduleRetry() }
+        // Windows still unplaced get another look once the throttle allows, without waiting
+        // for a switch or the dock to ask.
+        if !ScanCheck.unplaced(onScreen: snap.onScreen, placed: Set(model.home.keys), notWindows: notWindows,
+                               unsure: unsure.union(partial)).isEmpty { scheduleHeal() }
         let screens = Windows.screens()
         // A window from the saved layout that only now answered goes back to its workspace.
         var returned = false
@@ -205,8 +216,10 @@ final class Spaces {
             fromLayout.insert(id)
             returned = returned || entry.workspace != model.current
         }
-        // At launch every window is new; the saved layout decides where they go.
-        if !firstScan {
+        // At launch every window is new; the saved layout decides where they go. A scan that ran
+        // only for unplaced windows finds ones that sat in plain sight all along, not new ones,
+        // so new-window rules don't move them either.
+        if !firstScan, clock.scan != "unplaced" {
             let fresh = added.filter { !fromLayout.contains($0) }
             returned = placeClaimed(fresh) || returned
             adoptBackgroundWindows(fresh)
@@ -419,6 +432,23 @@ final class Spaces {
             if self.switching { return self.scheduleRetry() }
             self.refresh(full: true)
             self.persist()
+        }
+    }
+
+    private func scheduleHeal() {
+        guard !healPending, healMisses < 3 else { return }
+        healPending = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.1) { [weak self] in
+            guard let self else { return }
+            self.healPending = false
+            guard self.active else { return }
+            if self.switching { return self.scheduleHeal() }
+            let before = self.model
+            self.refresh()
+            guard self.model != before else { self.healMisses += 1; return }
+            self.healMisses = 0
+            self.persist()
+            self.onChange?()
         }
     }
 
