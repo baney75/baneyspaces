@@ -30,3 +30,57 @@ public enum DockTiles {
         }
     }
 }
+
+/// A coding agent the Workspace Dock shows on a tile: one at work, or one that finished while
+/// you weren't looking.
+public struct DockAgent: Equatable, Sendable {
+    public enum State: Equatable, Sendable { case working, done }
+
+    /// The macOS window it runs in, 0 when the Deck doesn't know it yet.
+    public let window: WindowID
+    /// The Deck's workspace for it; 0 means the one you're on.
+    public let workspace: Int
+    public let state: State
+    /// "Claude", or the app's name when no hook has named the agent.
+    public let name: String
+    /// What it's on: the terminal's title without Claude's spinner glyph.
+    public let task: String
+
+    public init(window: WindowID, workspace: Int, state: State, name: String, task: String) {
+        self.window = window; self.workspace = workspace; self.state = state; self.name = name; self.task = task
+    }
+
+    /// "Claude working: Fix the flaky upload test", for the dock's label.
+    public var summary: String {
+        let verb = state == .working ? "working" : "finished"
+        return task.isEmpty ? "\(name) \(verb)" : "\(name) \(verb): \(task)"
+    }
+}
+
+extension DockTiles {
+    /// Each agent's workspace: the one holding its window, else the Deck's own (0 being the one
+    /// you're on). `windows[n]` is every window on workspace `n`.
+    public static func place(_ agents: [DockAgent], windows: [Int: [WindowID]], current: Int) -> [Int: [DockAgent]] {
+        var home: [WindowID: Int] = [:]
+        for (n, ids) in windows { for id in ids { home[id] = n } }
+        var out: [Int: [DockAgent]] = [:]
+        for a in agents {
+            let n = (a.window != 0 ? home[a.window] : nil) ?? (a.workspace == 0 ? current : a.workspace)
+            out[n, default: []].append(a)
+        }
+        return out
+    }
+
+    /// A tile with more apps than it has room for shows the first `shown` and a "+N". An app
+    /// with an agent on it takes the place of the last plain app in view, so the agent's badge
+    /// is never hidden behind the "+N". The rest keep their order.
+    public static func agentsInView(_ keys: [String], flagged: Set<String>, shown: Int) -> [String] {
+        guard keys.count > shown + 1 else { return keys }
+        var visible = Array(keys.prefix(shown))
+        for key in keys.dropFirst(shown) where flagged.contains(key) {
+            guard let i = visible.lastIndex(where: { !flagged.contains($0) }) else { break }
+            visible[i] = key
+        }
+        return visible + keys.filter { !visible.contains($0) }
+    }
+}

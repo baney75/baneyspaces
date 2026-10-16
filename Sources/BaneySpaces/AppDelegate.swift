@@ -23,9 +23,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         d.onShowLauncher = { [weak self] in self?.launcher.show() }
         d.onSetEdge = { [weak self] e in self?.setDockEdge(e) }
         d.onTurnOff = { [weak self] in self?.setWorkspaceDock(false) }
-        d.model.agentCounts = { [weak self] n in
-            guard let self, self.deck.started else { return (0, 0) }
-            return self.deck.agentCounts(on: n, current: self.spaces.model.current)
+        d.model.agents = { [weak self] in
+            guard let self, self.deck.started else { return [] }
+            return self.deck.dockAgents()
         }
         return d
     }()

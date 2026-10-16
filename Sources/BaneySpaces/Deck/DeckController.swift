@@ -58,11 +58,17 @@ final class DeckController {
     var onWorkingChange: () -> Void = {}
     private var lastWorking: Set<String> = []
 
-    /// Agents working and finished unseen on workspace `n`.
-    func agentCounts(on n: Int, current: Int) -> (working: Int, done: Int) {
-        let here = engine.items.filter { $0.workspace == n || ($0.workspace == 0 && n == current) }
+    /// Agents working or finished unseen, for the Workspace Dock: each with its window, so the
+    /// dock can badge the app it runs in and go straight to it.
+    func dockAgents() -> [DockAgent] {
         let unseen = Set(engine.attention.unseen)
-        return (here.filter { $0.activity == .working }.count, here.filter { unseen.contains($0.id) }.count)
+        return engine.items.compactMap { item in
+            let state: DockAgent.State
+            if unseen.contains(item.id) { state = .done } else if item.activity == .working { state = .working } else { return nil }
+            let name = item.agent.isEmpty ? item.appName : item.agent.prefix(1).uppercased() + item.agent.dropFirst()
+            return DockAgent(window: item.windowNumber, workspace: item.workspace, state: state, name: name,
+                             task: Activity.label(of: item.title))
+        }
     }
 
     static var enabled: Bool {
