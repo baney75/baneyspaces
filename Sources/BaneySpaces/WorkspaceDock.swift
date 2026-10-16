@@ -374,20 +374,25 @@ final class DockModel: ObservableObject {
         /// This app's windows on the tile's workspace, with their titles (a browser's front tab,
         /// a player's video), for the window strip.
         var list: [Window] = []
+        /// A coding agent in one of those windows: a finished one before one still working.
+        var agent: DockAgent?
     }
     struct Window: Identifiable {
         let id: WindowID
         let title: String
         /// The window used last on its workspace: where a plain click on the app goes.
         var isLast = false
+        /// The agent working or finished in this window.
+        var agent: DockAgent?
     }
     struct Tile: Identifiable {
         let id: Int
         let apps: [App]
         let isCurrent: Bool
         /// Coding agents on this workspace that are working, and that finished without you looking.
-        var agentsWorking = 0
-        var agentsDone = 0
+        var agents: [DockAgent] = []
+        var agentsWorking: Int { agents.filter { $0.state == .working }.count }
+        var agentsDone: Int { agents.filter { $0.state == .done }.count }
         var windowCount: Int { apps.reduce(0) { $0 + $1.windows } }
     }
     /// An app's windows on one workspace, or one window from the strip, being dragged to another
@@ -462,9 +467,11 @@ final class DockModel: ObservableObject {
     var onLayoutChange: () -> Void = {}
     var menuOpen = false
     var onPick: (Int) -> Void = { _ in }
-    /// The Deck's agent counts for a workspace: working, and finished unseen.
-    var agentCounts: (Int) -> (working: Int, done: Int) = { _ in (0, 0) }
+    /// The Deck's agents that are working or finished unseen, on every workspace.
+    var agents: () -> [DockAgent] = { [] }
     var onFocusApp: (pid_t, Int) -> Void = { _, _ in }
+    /// An agent's own tab or window, through the Deck, which also marks a finished one seen.
+    var onFocusAgent: (DockAgent, Int) -> Void = { _, _ in }
     var onSendHere: (Int) -> Void = { _ in }
     var onMove: ([WindowID], Int) -> Void = { _, _ in }
     var onDragDone: () -> Void = {}
@@ -478,32 +485,51 @@ final class DockModel: ObservableObject {
     func load(from spaces: Spaces) {
         spaces.refresh()
         var byPid: [String: Spaces.Entry] = [:]
-        var windows: [Int: [String]] = [:]
+        var entries: [Int: [Spaces.Entry]] = [:]
         for n in Workspaces.range {
-            let entries = spaces.entries(on: n)
-            for e in entries { byPid["\(e.pid)"] = e }
-            windows[n] = entries.map { "\($0.pid)" }
+            entries[n] = spaces.entries(on: n)
+            for e in entries[n]! { byPid["\(e.pid)"] = e }
         }
-        tiles = DockTiles.make(current: spaces.model.current, windows: windows).map { t in
-            let entries = spaces.entries(on: t.workspace)
-            let last = spaces.model.lastFocused[t.workspace]
-            let agents = agentCounts(t.workspace)
-            var tile = Tile(id: t.workspace, apps: t.apps.map { a in
+        let current = spaces.model.current
+        // Each agent sits on the tile that holds its window, so its badge marks the app it runs in.
+        let placed = DockTiles.place(agents(), windows: entries.mapValues { $0.map(\.id) }, current: current)
+        let last = spaces.model.lastFocused
+        tiles = DockTiles.make(current: current, windows: entries.mapValues { $0.map { "\($0.pid)" } }).map { t in
+            let here = entries[t.workspace] ?? []
+            let agents = placed[t.workspace] ?? []
+            // A finished agent is what you came for, so it wins over one still working.
+            let byWindow = Dictionary(agents.map { ($0.window, $0) }) { a, b in a.state == .done ? a : b }
+            var apps = t.apps.map { a in
                 let pid = pid_t(a.key) ?? 0
+                let list = here.filter { "\($0.pid)" == a.key }.map {
+                    Window(id: $0.id, title: WindowTitle.clean($0.title, app: $0.app), isLast: $0.id == last[t.workspace], agent: byWindow[$0.id])
+                }
                 return App(id: a.key, pid: pid, name: byPid[a.key]?.app ?? "App",
                            icon: NSRunningApplication(processIdentifier: pid)?.icon ?? NSWorkspace.shared.icon(for: .application),
-                           windows: a.windows,
-                           list: entries.filter { "\($0.pid)" == a.key }.map {
-                               Window(id: $0.id, title: WindowTitle.clean($0.title, app: $0.app), isLast: $0.id == last)
-                           })
-            }, isCurrent: t.isCurrent)
-            tile.agentsWorking = agents.working
-            tile.agentsDone = agents.done
+                           windows: a.windows, list: list,
+                           agent: list.compactMap(\.agent).first { $0.state == .done } ?? list.compactMap(\.agent).first)
+            }
+            var order = DockTiles.agentsInView(apps.map(\.id), flagged: Set(apps.filter { $0.agent != nil }.map(\.id)), shown: DockModel.iconsShown)
+            // Under the pointer, icons hold still: an agent starting elsewhere mustn't swap
+            // another app into the slot you're about to click.
+            if hoveredTile == t.workspace, let before = tiles.first(where: { $0.id == t.workspace })?.apps.map(\.id),
+               Set(before) == Set(order) { order = before }
+            apps.sort { order.firstIndex(of: $0.id)! < order.firstIndex(of: $1.id)! }
+            var tile = Tile(id: t.workspace, apps: apps, isCurrent: t.isCurrent)
+            tile.agents = agents
             return tile
         }
         // A strip for an app that's gone or down to one window closes.
         if let s = strip, (stripApp?.list.count ?? 0) < 2 || !tiles.contains(where: { $0.id == s.workspace }) { strip = nil }
         if more != nil, moreApps == nil { more = nil }
+    }
+
+    /// The tile the pointer is on, by itself or one of its icons.
+    private var hoveredTile: Int? {
+        switch hover {
+        case .tile(let n), .app(let n, _), .more(let n): return n
+        default: return nil
+        }
     }
 
     var stripApp: App? {
@@ -785,6 +811,7 @@ struct DockView: View {
             var parts = [app.name]
             if app.windows > 1 { parts.append("\(app.windows) windows") }
             if !elsewhere.isEmpty { parts.append("also on \(elsewhere.count == 1 ? "Workspace" : "Workspaces") \(elsewhere.joined(separator: ", "))") }
+            if let agent = app.agent { parts.append(agent.summary) }
             return parts.joined(separator: " · ")
         case .newWorkspace: return model.firstEmpty.map { "Go to Empty Workspace \($0)" }
         case .launcher: return "Find or Install an App"
@@ -841,7 +868,8 @@ struct DockView: View {
                         StripRow(window: w, icon: app.icon, tint: Chrome.workspace(n), dragging: model.drag?.ids == [w.id],
                                  onDrag: { model.dragged([w.id], from: n, icon: app.icon, name: w.title.isEmpty ? app.name : "“\(w.title)”", to: $0) },
                                  onDragEnd: { model.endDrag() }) {
-                            if model.clickCounts { model.onFocusWindow(w.id, n) }
+                            guard model.clickCounts else { return }
+                            if let a = w.agent { model.onFocusAgent(a, n) } else { model.onFocusWindow(w.id, n) }
                         }
                     }
                 }
@@ -857,7 +885,7 @@ struct DockView: View {
     private func title(_ tile: DockModel.Tile) -> String {
         guard !tile.apps.isEmpty else { return "Workspace \(tile.id) · empty" }
         let apps = tile.apps.map { $0.windows > 1 ? "\($0.name) (\($0.windows))" : $0.name }
-        return "Workspace \(tile.id) · \(apps.joined(separator: ", "))"
+        return (["Workspace \(tile.id)", apps.joined(separator: ", ")] + tile.agents.prefix(1).map(\.summary)).joined(separator: " · ")
     }
 
     private func isHovered(_ tile: DockModel.Tile) -> Bool {
@@ -896,27 +924,30 @@ struct DockView: View {
         .animation(.spring(response: 0.25, dampingFraction: 0.72), value: hovered)
         .contextMenu { tileMenu(tile) }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(title(tile) + (tile.isCurrent ? ", current" : "") + agentSummary(tile))
+        .accessibilityLabel(title(tile) + (tile.isCurrent ? ", current" : ""))
         .accessibilityAction { model.onPick(tile.id) }
     }
 
-    /// A finished agent lights the tile's corner orange with a count; a working one shows a blue dot.
+    /// A finished agent lights the tile's corner orange with a count; clicking it goes to the
+    /// agent. One still working turns a ring on its app's icon instead (`appIcon`): a plain
+    /// dot on the tile read as an unread badge and didn't say which app (Donovan, 2026-10-16).
     @ViewBuilder private func agentBadge(_ tile: DockModel.Tile) -> some View {
-        if tile.agentsDone > 0 {
+        if let done = tile.agents.first(where: { $0.state == .done }) {
             Text("\(tile.agentsDone)")
                 .font(.system(size: 9.5, weight: .heavy, design: .rounded)).foregroundStyle(.white)
                 .frame(minWidth: 16, minHeight: 16).background(Circle().fill(Color.orange))
-                .offset(x: 4, y: -4).allowsHitTesting(false)
-        } else if tile.agentsWorking > 0 {
-            Circle().fill(Color.blue).frame(width: 8, height: 8).offset(x: -3, y: 3).allowsHitTesting(false)
+                .contentShape(Circle())
+                .onTapGesture { if model.clickCounts { model.onFocusAgent(done, tile.id) } }
+                .help(done.summary)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(tile.agentsDone == 1 ? done.summary : "\(tile.agentsDone) agents finished, go to \(done.name)")
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction { model.onFocusAgent(done, tile.id) }
+                .offset(x: 4, y: -4)
+        } else if tile.agents.contains(where: { a in a.state == .working && !tile.apps.contains { $0.agent == a } }) {
+            // Working somewhere the dock can't pin to an app (its window isn't known yet).
+            AgentSpinner(size: 12).offset(x: 3, y: -3)
         }
-    }
-
-    private func agentSummary(_ tile: DockModel.Tile) -> String {
-        var parts: [String] = []
-        if tile.agentsDone > 0 { parts.append("\(tile.agentsDone) agent\(tile.agentsDone == 1 ? "" : "s") finished") }
-        if tile.agentsWorking > 0 { parts.append("\(tile.agentsWorking) working") }
-        return parts.isEmpty ? "" : ", " + parts.joined(separator: ", ")
     }
 
     // MARK: Right-click menus
@@ -1037,6 +1068,11 @@ struct DockView: View {
                     .offset(y: 5)
                 }
             }
+            .overlay(alignment: .topTrailing) {
+                if app.agent?.state == .working {
+                    AgentSpinner(size: max(10, size * 0.42)).offset(x: 3, y: -3)
+                }
+            }
             .modifier(CenterReport(key: "\(tile.id):\(app.id)"))
             .scaleEffect(hovered ? 1.18 : 1)
             .animation(.spring(response: 0.22, dampingFraction: 0.65), value: hovered)
@@ -1049,12 +1085,20 @@ struct DockView: View {
                     .onChanged { v in model.dragged(app.list.map(\.id), from: tile.id, icon: app.icon, name: app.name, to: v.location) }
                     .onEnded { _ in model.endDrag() }
             )
-            .simultaneousGesture(TapGesture().onEnded { if model.clickCounts { model.onFocusApp(app.pid, tile.id) } })
+            .simultaneousGesture(TapGesture().onEnded {
+                guard model.clickCounts else { return }
+                tapApp(app, in: tile)
+            })
             .contextMenu { appMenu(app, in: tile) }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("\(app.name), workspace \(tile.id)")
+            .accessibilityLabel("\(app.name), workspace \(tile.id)" + (app.agent.map { ", " + $0.summary } ?? ""))
             .accessibilityAddTraits(.isButton)
-            .accessibilityAction { model.onFocusApp(app.pid, tile.id) }
+            .accessibilityAction { tapApp(app, in: tile) }
+    }
+
+    /// A finished agent is why you'd click: go to its tab, not the app's last window.
+    private func tapApp(_ app: DockModel.App, in tile: DockModel.Tile) {
+        if let a = app.agent, a.state == .done { model.onFocusAgent(a, tile.id) } else { model.onFocusApp(app.pid, tile.id) }
     }
 
     private func newWorkspaceButton(_ n: Int) -> some View {
@@ -1162,7 +1206,11 @@ private struct StripRow: View {
             Text(title).font(.system(size: 12.5, weight: hovered ? .semibold : .regular))
                 .foregroundStyle(.white.opacity(hovered ? 1 : 0.85)).lineLimit(1).truncationMode(.tail)
             Spacer(minLength: 6)
-            if window.isLast {
+            if window.agent?.state == .working {
+                AgentSpinner(size: 12)
+            } else if window.agent?.state == .done {
+                Text("Finished").font(.system(size: 10, weight: .semibold)).foregroundStyle(Color.orange)
+            } else if window.isLast {
                 Text("Last used").font(.system(size: 10, weight: .medium)).foregroundStyle(.white.opacity(0.4))
             }
         }
@@ -1181,8 +1229,30 @@ private struct StripRow: View {
         )
         .simultaneousGesture(TapGesture().onEnded(action))
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(title + (window.isLast ? ", last used" : ""))
+        .accessibilityLabel(title + (window.agent.map { ", " + $0.summary } ?? (window.isLast ? ", last used" : "")))
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { action() }
+    }
+}
+
+/// An agent at work: a short arc that turns, so it reads as "in progress", not "unread". With
+/// Reduce Motion on, it holds still.
+private struct AgentSpinner: View {
+    let size: CGFloat
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var turning = false
+
+    var body: some View {
+        Circle().trim(from: 0, to: 0.7)
+            .stroke(Color.white, style: StrokeStyle(lineWidth: max(1.5, size * 0.16), lineCap: .round))
+            .rotationEffect(.degrees(turning ? 360 : 0))
+            .animation(reduceMotion ? nil : .linear(duration: 1).repeatForever(autoreverses: false), value: turning)
+            .padding(size * 0.22)
+            .frame(width: size, height: size)
+            .background(Circle().fill(Color.blue))
+            .overlay(Circle().strokeBorder(Color.black.opacity(0.35), lineWidth: 0.75))
+            .onAppear { turning = !reduceMotion }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 }

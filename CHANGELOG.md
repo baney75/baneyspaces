@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **The dock says which app an agent is working in.** The blue dot on a tile meant a coding
+  agent was at work on that workspace, but it looked like an unread badge and didn't say where.
+  Now a small turning ring sits on the icon of the app the agent runs in (Ghostty, T3 Code), the
+  hover label names it ("Claude working: Fix the flaky upload test"), and its window is marked
+  in the window strip. An app with an agent is never hidden behind a tile's "+N".
+- **A finished agent is one click away.** Click the orange count on a tile, or the app's icon,
+  and you land on the agent's own window instead of the app's last one.
 - **Shorter menus.** The menu bar menu lists only the workspaces in use, the one you're on and
   one empty workspace, and shortens a long app list ("Helium, Ghostty, Obsidian +2"). The
   switches, Keep Usable by Automation and Bring Every Window Back moved under **Options**;
