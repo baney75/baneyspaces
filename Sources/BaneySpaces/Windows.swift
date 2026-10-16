@@ -177,7 +177,8 @@ enum Windows {
     /// `partial` the apps that gave an element whose number couldn't be read: only an app that
     /// answered in full can say a window it didn't list is closed.
     /// `notWindows` are listed elements whose subrole was read and isn't a standard window's
-    /// (sheets, panels); an element whose subrole couldn't be read makes its app `partial`.
+    /// (sheets, panels). One whose subrole couldn't be read is neither: it stays unplaced, so
+    /// `UnplacedWindows` looks at it again.
     static func all(owners: Set<pid_t>? = nil) -> (windows: [Window], unsure: Set<pid_t>, listed: Set<WindowID>, partial: Set<pid_t>, notWindows: Set<WindowID>) {
         // Only apps that own a window are asked. A running app with no windows is often frozen by
         // macOS and never answers, which would cost a full timeout on every scan.
@@ -201,17 +202,16 @@ enum Windows {
             if listed == nil { lock.lock(); unsure.insert(pid); lock.unlock(); markUnresponsive(pid) } else { markResponsive(pid) }
             let elements = listed ?? []
             let ids = elements.map(\.windowID)
-            var found: [Window] = [], other: [WindowID] = [], unread = false
+            var found: [Window] = [], other: [WindowID] = []
             for (el, id) in zip(elements, ids) {
-                guard let id else { continue }
-                guard let subrole = el.string(kAXSubroleAttribute) else { unread = true; continue }
+                guard let id, let subrole = el.string(kAXSubroleAttribute) else { continue }
                 if subrole == kAXStandardWindowSubrole as String { found.append(Window(id: id, element: el, pid: pid, appName: name)) } else { other.append(id) }
             }
             lock.lock()
             results[i] = found
             listedIDs.formUnion(ids.compactMap { $0 })
             notWindows.formUnion(other)
-            if ids.contains(nil) || unread { partial.insert(pid) }
+            if ids.contains(nil) { partial.insert(pid) }
             lock.unlock()
         }
         return (results.flatMap { $0 }, unsure, listedIDs, partial, notWindows)
