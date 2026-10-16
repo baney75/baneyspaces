@@ -218,10 +218,11 @@ enum Windows {
     /// set hasn't changed since the last look, no window was opened or closed, and the full
     /// Accessibility scan can be skipped.
     /// `offscreen` holds the app windows the window server isn't drawing (a hidden app's,
-    /// minimized ones, ones on another macOS desktop, and ones the app closed but kept), by owner.
-    static func snapshot(apps: Set<pid_t>) -> (alive: Set<WindowID>, appWindows: Set<WindowID>, owners: Set<pid_t>, offscreen: [WindowID: pid_t]) {
+    /// minimized ones, ones on another macOS desktop, and ones the app closed but kept), by owner;
+    /// `onScreen` the rest.
+    static func snapshot(apps: Set<pid_t>) -> (alive: Set<WindowID>, appWindows: Set<WindowID>, owners: Set<pid_t>, offscreen: [WindowID: pid_t], onScreen: [WindowID: pid_t]) {
         let info = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
-        var alive = Set<WindowID>(), appWindows = Set<WindowID>(), owners = Set<pid_t>(), offscreen: [WindowID: pid_t] = [:]
+        var alive = Set<WindowID>(), appWindows = Set<WindowID>(), owners = Set<pid_t>(), offscreen: [WindowID: pid_t] = [:], onScreen: [WindowID: pid_t] = [:]
         for w in info {
             guard let id = (w[kCGWindowNumber as String] as? NSNumber)?.uint32Value else { continue }
             alive.insert(id)
@@ -229,9 +230,9 @@ enum Windows {
                   let pid = (w[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value, apps.contains(pid) else { continue }
             appWindows.insert(id)
             owners.insert(pid)
-            if (w[kCGWindowIsOnscreen as String] as? Bool) != true { offscreen[id] = pid }
+            if (w[kCGWindowIsOnscreen as String] as? Bool) != true { offscreen[id] = pid } else { onScreen[id] = pid }
         }
-        return (alive, appWindows, owners, offscreen)
+        return (alive, appWindows, owners, offscreen, onScreen)
     }
 
     /// Whether a window is on no macOS desktop at all, or on one a display is showing. A window

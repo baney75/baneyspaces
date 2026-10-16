@@ -36,6 +36,10 @@ final class Spaces {
     /// `offscreen` is the known windows of shown apps that weren't on screen: one joining them
     /// may have been closed (see `closedWindows`), so it's worth a scan.
     private var lastScan: (windows: Set<WindowID>, pids: Set<pid_t>, unsure: Set<pid_t>, offscreen: Set<WindowID>)?
+    /// When the Accessibility scan last ran, and what it listed that isn't a standard window, so
+    /// a skipped refresh can tell a window the scan missed (see `ScanCheck`) from a sheet or panel.
+    private var lastFullScan = Date.distantPast
+    private var notWindows = Set<WindowID>()
     /// Windows that ignored every request to leave macOS full screen. Asking again only stalls.
     private var refusedFullScreen = Set<WindowID>()
     private lazy var watcher = FocusWatcher { [weak self] pid in self?.focusMovedWithin(pid) }
@@ -141,17 +145,23 @@ final class Spaces {
         let pids = RunningApps.regular
         let snap = Windows.snapshot(apps: pids)
         clock.mark(.snap)
+        let offKnown = offscreenKnown(snap.offscreen)
         if !full, let last = lastScan, last.windows == snap.appWindows, last.pids == pids,
-           last.offscreen == offscreenKnown(snap.offscreen) {
+           last.offscreen == offKnown,
+           !ScanCheck.shouldRescan(unplaced: ScanCheck.unplaced(onScreen: snap.onScreen, placed: Set(model.home.keys),
+                                                                notWindows: notWindows, unsure: last.unsure),
+                                   lastScan: lastFullScan, now: Date()) {
             prune(alive: snap.alive)
             clock.scan = "skip"
             return
         }
         let firstScan = lastScan == nil
-        clock.scan = firstScan ? "first" : last(lastScan!, snap.appWindows, pids)
+        clock.scan = firstScan ? "first" : full ? "full" : last(lastScan!, snap.appWindows, pids, offKnown)
+        lastFullScan = Date()
         RunningApps.invalidate()
         let pidsNow = RunningApps.regular
         let (list, unsure, listed, partial) = Windows.all(owners: snap.owners)
+        notWindows = listed.subtracting(list.map(\.id))
         // A window the app closed but kept isn't one any more, though the window server says it's alive.
         let answered = pidsNow.intersection(snap.owners).subtracting(unsure).subtracting(partial)
         let closed = closedWindows(listed: listed, answered: answered, offscreen: snap.offscreen)
@@ -360,9 +370,9 @@ final class Spaces {
     }
 
     /// Why a full scan ran, for timing.log.
-    private func last(_ l: (windows: Set<WindowID>, pids: Set<pid_t>, unsure: Set<pid_t>, offscreen: Set<WindowID>), _ w: Set<WindowID>, _ p: Set<pid_t>) -> String {
+    private func last(_ l: (windows: Set<WindowID>, pids: Set<pid_t>, unsure: Set<pid_t>, offscreen: Set<WindowID>), _ w: Set<WindowID>, _ p: Set<pid_t>, _ off: Set<WindowID>) -> String {
         if l.pids != p { return "apps" }
-        if l.windows == w { return "offscreen" }
+        if l.windows == w { return l.offscreen == off ? "unplaced" : "offscreen" }
         return "windows+\(w.subtracting(l.windows).count)-\(l.windows.subtracting(w).count)"
     }
 
