@@ -36,6 +36,8 @@ public enum DockTiles {
 public struct DockAgent: Equatable, Sendable {
     public enum State: Equatable, Sendable { case working, done }
 
+    /// The Deck row it runs in, so a click can go to its very tab or split.
+    public let id: String
     /// The macOS window it runs in, 0 when the Deck doesn't know it yet.
     public let window: WindowID
     /// The Deck's workspace for it; 0 means the one you're on.
@@ -46,14 +48,19 @@ public struct DockAgent: Equatable, Sendable {
     /// What it's on: the terminal's title without Claude's spinner glyph.
     public let task: String
 
-    public init(window: WindowID, workspace: Int, state: State, name: String, task: String) {
-        self.window = window; self.workspace = workspace; self.state = state; self.name = name; self.task = task
+    public init(id: String = "", window: WindowID, workspace: Int, state: State, name: String, task: String) {
+        self.id = id; self.window = window; self.workspace = workspace; self.state = state; self.name = name; self.task = task
     }
+
+    /// The longest task the label shows; a terminal title can run on, and the label doesn't wrap.
+    public static let taskLimit = 48
 
     /// "Claude working: Fix the flaky upload test", for the dock's label.
     public var summary: String {
         let verb = state == .working ? "working" : "finished"
-        return task.isEmpty ? "\(name) \(verb)" : "\(name) \(verb): \(task)"
+        guard !task.isEmpty else { return "\(name) \(verb)" }
+        let short = task.count > Self.taskLimit ? task.prefix(Self.taskLimit - 1).trimmingCharacters(in: .whitespaces) + "…" : task
+        return "\(name) \(verb): \(short)"
     }
 }
 

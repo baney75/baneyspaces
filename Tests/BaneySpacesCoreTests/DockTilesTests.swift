@@ -41,6 +41,10 @@ final class DockAgentTests: XCTestCase {
     func testSummarySaysWhoIsDoingWhat() {
         XCTAssertEqual(agent(1, task: "Ghostty to t3code migration").summary, "Claude working: Ghostty to t3code migration")
         XCTAssertEqual(agent(1, .done, task: "").summary, "Claude finished")
+        // A long title is cut short: the label is one line.
+        let long = agent(1, task: String(repeating: "word ", count: 30)).summary
+        XCTAssertLessThanOrEqual(long.count, "Claude working: ".count + DockAgent.taskLimit)
+        XCTAssertTrue(long.hasSuffix("…"))
     }
 
     func testAnAgentsAppIsNeverHiddenBehindPlusN() {

@@ -60,15 +60,26 @@ final class DeckController {
 
     /// Agents working or finished unseen, for the Workspace Dock: each with its window, so the
     /// dock can badge the app it runs in and go straight to it.
+    /// Finished ones come in the order ⌘⇧U visits them, so a tile's badge goes to the same one.
     func dockAgents() -> [DockAgent] {
-        let unseen = Set(engine.attention.unseen)
-        return engine.items.compactMap { item in
+        let unseen = engine.attention.unseen
+        let agents = engine.items.compactMap { item -> DockAgent? in
             let state: DockAgent.State
             if unseen.contains(item.id) { state = .done } else if item.activity == .working { state = .working } else { return nil }
             let name = item.agent.isEmpty ? item.appName : item.agent.prefix(1).uppercased() + item.agent.dropFirst()
-            return DockAgent(window: item.windowNumber, workspace: item.workspace, state: state, name: name,
+            return DockAgent(id: item.id, window: item.windowNumber, workspace: item.workspace, state: state, name: name,
                              task: Activity.label(of: item.title))
         }
+        let rank = { (a: DockAgent) in unseen.firstIndex(of: a.id) ?? unseen.count }
+        return agents.sorted { rank($0) < rank($1) }
+    }
+
+    /// Goes to an agent's own row: its tab or split selected, and a finished one marked seen.
+    /// False when the Deck no longer has it.
+    func focusAgent(_ id: String) -> Bool {
+        guard started, let item = engine.item(id) else { return false }
+        focus(item)
+        return true
     }
 
     static var enabled: Bool {

@@ -27,6 +27,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self, self.deck.started else { return [] }
             return self.deck.dockAgents()
         }
+        d.model.onFocusAgent = { [weak self] a, n in
+            guard let self, !self.deck.focusAgent(a.id) else { return }
+            if a.window != 0 { self.spaces.focus(a.window, on: n) } else { self.spaces.switchTo(n, announce: false) }
+        }
         return d
     }()
     private lazy var switcher = WorkspaceSwitcher(spaces: spaces)
