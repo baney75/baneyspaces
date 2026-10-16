@@ -148,11 +148,13 @@ final class Spaces {
         let snap = Windows.snapshot(apps: pids)
         clock.mark(.snap)
         let offKnown = offscreenKnown(snap.offscreen)
+        let stray = ScanCheck.unplaced(onScreen: snap.onScreen, placed: Set(model.home.keys),
+                                       notWindows: notWindows, unsure: lastScan?.unsure ?? [])
         if !full, let last = lastScan, last.windows == snap.appWindows, last.pids == pids,
-           last.offscreen == offKnown,
-           !unplaced.due(ScanCheck.unplaced(onScreen: snap.onScreen, placed: Set(model.home.keys),
-                                            notWindows: notWindows, unsure: last.unsure), now: Date()) {
+           last.offscreen == offKnown, !unplaced.due(stray, now: Date()) {
             prune(alive: snap.alive)
+            unplaced.keep(stray)
+            scheduleHeal()
             clock.scan = "skip"
             return
         }
@@ -445,7 +447,8 @@ final class Spaces {
             self.scheduleHeal()
         }
         heal = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + max(0.1, due.timeIntervalSinceNow + 0.1), execute: work)
+        // Never sooner than a second: a look that's overdue yet not taken mustn't spin the timer.
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(1, due.timeIntervalSinceNow + 0.1), execute: work)
     }
 
     private func prune(alive: Set<WindowID>) {

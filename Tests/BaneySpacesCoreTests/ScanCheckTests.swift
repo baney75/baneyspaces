@@ -26,7 +26,7 @@ final class UnplacedWindowsTests: XCTestCase {
     func testBacksOffAfterEachMissAndNeverStops() {
         var u = UnplacedWindows()
         var now = t0
-        for wait in [3.0, 6, 12, 30, 60, 60, 60] {
+        for wait in [3.0, 6, 12, 12, 12] {
             u.scanned(unplaced: [7], now: now)
             XCTAssertFalse(u.due([7], now: now.addingTimeInterval(wait - 0.1)))
             XCTAssertTrue(u.due([7], now: now.addingTimeInterval(wait)))
@@ -35,14 +35,25 @@ final class UnplacedWindowsTests: XCTestCase {
         }
     }
 
-    /// r2 F1: a scan landing before the heal timer fires moves the window's next look, and the
-    /// timer must follow it rather than give up.
-    func testAnotherScanMovesTheNextLook() {
+    /// r3 S1: scans that run early for other reasons (a burst at login) don't push the next look
+    /// out; only the due look counts as a miss.
+    func testEarlyScansLeaveTheNextLookAlone() {
         var u = UnplacedWindows()
         u.scanned(unplaced: [7], now: t0)
-        u.scanned(unplaced: [7], now: t0.addingTimeInterval(2))
-        XCTAssertFalse(u.due([7], now: t0.addingTimeInterval(3.1)))
-        XCTAssertEqual(u.nextDue, t0.addingTimeInterval(8))
+        for s in [0.5, 1, 1.5, 2, 2.5] { u.scanned(unplaced: [7], now: t0.addingTimeInterval(s)) }
+        XCTAssertEqual(u.nextDue, t0.addingTimeInterval(3))
+        XCTAssertTrue(u.due([7], now: t0.addingTimeInterval(3)))
+    }
+
+    /// r3 F1: a window hidden or minimized stops counting without a scan. Its entry must go, or
+    /// the timer waits on an overdue look that never comes.
+    func testKeepDropsWindowsThatStoppedCounting() {
+        var u = UnplacedWindows()
+        u.scanned(unplaced: [7, 8], now: t0)
+        u.keep([8])
+        XCTAssertFalse(u.due([], now: t0.addingTimeInterval(10)))
+        u.keep([])
+        XCTAssertNil(u.nextDue)
     }
 
     func testPlacedWindowsAreForgottenAndANewOneIsDueRegardless() {
