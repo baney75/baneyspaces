@@ -296,7 +296,9 @@ struct ItemRow: View {
             Button("Go To") { model.onFocus(item) }
             Divider()
             if item.kind == .device {
-                Button(item.id.hasPrefix("ios:") ? "Open iPhone Mirroring" : "Mirror the Screen") { model.onPhone(item, .mirror) }
+                if item.appName != "iPad" {
+                    Button(item.id.hasPrefix("ios:") ? "Open iPhone Mirroring" : "Mirror the Screen") { model.onPhone(item, .mirror) }
+                }
                 if item.id.hasPrefix("android:") {
                     Button("Open a Shell on It") { model.onPhone(item, .shell) }
                     Button("Save a Screenshot to the Desktop") { model.onPhone(item, .screenshot) }
@@ -368,7 +370,7 @@ struct ItemRow: View {
             .foregroundStyle(unseen ? Color.orange : Color.secondary)
         case .shell:
             if item.kind == .device {
-                Image(systemName: item.id.hasPrefix("ios:") ? "iphone" : "candybarphone").font(.system(size: 12)).foregroundStyle(.secondary)
+                Image(systemName: item.appName == "iPad" ? "ipad" : item.id.hasPrefix("ios:") ? "iphone" : "candybarphone").font(.system(size: 12)).foregroundStyle(.secondary)
             } else if showIcon || item.kind == .window {
                 Image(nsImage: Icons.app(item.bundleID)).resizable().frame(width: 15, height: 15)
             } else if item.kind == .tab {

@@ -44,6 +44,32 @@ final class PhonesTests: XCTestCase {
         XCTAssertEqual(p[0].item.role, .device)
         XCTAssertEqual(DeviceCtl.phones(Data("garbage".utf8)), [])
     }
+
+    /// Donovan's Deck on 2026-10-16: wayside1 sat on the same Wi-Fi with its tunnel idle and read
+    /// "not connected", though devicectl reached it in 3 s. The iPad was off the network.
+    func testIdleWiFiTunnelIsReadyAndAnIPadIsAnIPad() {
+        let json = #"""
+        {"result":{"devices":[
+          {"identifier":"B946","deviceProperties":{"name":"iPad"},"hardwareProperties":{"marketingName":"iPad Pro (12.9-inch) (5th generation)","deviceType":"iPad","reality":"physical"},
+           "connectionProperties":{"pairingState":"paired","tunnelState":"unavailable"}},
+          {"identifier":"3F42","deviceProperties":{"name":"wayside1"},"hardwareProperties":{"marketingName":"iPhone 15 Plus","deviceType":"iPhone","reality":"physical"},
+           "connectionProperties":{"pairingState":"paired","tunnelState":"disconnected","transportType":"localNetwork"}},
+          {"identifier":"C0DE","deviceProperties":{"name":"Loaner"},"hardwareProperties":{"marketingName":"iPhone 16","deviceType":"iPhone","reality":"physical"},
+           "connectionProperties":{"pairingState":"unpaired","tunnelState":"disconnected","transportType":"wired"}}
+        ]}}
+        """#
+        let p = DeviceCtl.phones(Data(json.utf8))
+        XCTAssertFalse(p[0].ready)
+        XCTAssertEqual(p[0].status, "out of reach")
+        XCTAssertTrue(p[0].tablet)
+        XCTAssertEqual(p[0].item.appName, "iPad")
+        XCTAssertTrue(p[1].ready, "an idle tunnel on Wi-Fi opens on first use")
+        XCTAssertEqual(p[1].status, "Wi-Fi")
+        XCTAssertEqual(p[1].item.detail, "iPhone 15 Plus")
+        XCTAssertEqual(p[1].item.appName, "iPhone")
+        XCTAssertFalse(p[2].ready)
+        XCTAssertEqual(p[2].status, "not paired")
+    }
 }
 
 final class AdbInputTests: XCTestCase {

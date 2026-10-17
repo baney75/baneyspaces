@@ -16,14 +16,16 @@ public struct Phone: Equatable, Sendable {
     /// Why it isn't ready, in words for the sidebar.
     public var status: String
     public var simulator: Bool
+    /// An iPad. iPhone Mirroring can't show one, so it gets its own icon and no Mirroring item.
+    public var tablet: Bool
 
-    public init(platform: Platform, id: String, name: String, model: String, ready: Bool, status: String, simulator: Bool = false) {
+    public init(platform: Platform, id: String, name: String, model: String, ready: Bool, status: String, simulator: Bool = false, tablet: Bool = false) {
         self.platform = platform; self.id = id; self.name = name; self.model = model
-        self.ready = ready; self.status = status; self.simulator = simulator
+        self.ready = ready; self.status = status; self.simulator = simulator; self.tablet = tablet
     }
 
     public var item: Item {
-        Item(id: "\(platform.rawValue):\(id)", bundleID: platform == .ios ? "com.apple.ScreenContinuity" : "", appName: platform == .ios ? "iPhone" : "Android",
+        Item(id: "\(platform.rawValue):\(id)", bundleID: platform == .ios ? "com.apple.ScreenContinuity" : "", appName: platform == .android ? "Android" : tablet ? "iPad" : "iPhone",
              role: .device, kind: .device, group: "phones", title: name, detail: ready ? model : "\(model) · \(status)")
     }
 }
@@ -71,7 +73,10 @@ public enum AdbTrack {
 }
 
 /// `xcrun devicectl list devices --json-output <file>`: real iPhones and iPads that are paired,
-/// and simulators only while booted.
+/// and simulators only while booted. A paired device with a transport (USB or Wi-Fi) is ready even
+/// while its tunnel is "disconnected": devicectl opens the tunnel on first use, in about 3 s.
+/// "unavailable" with no transport means the Mac can't see it at all (asleep, off, or on another
+/// network).
 public enum DeviceCtl {
     public static func phones(_ data: Data) -> [Phone] {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -85,12 +90,16 @@ public enum DeviceCtl {
             if simulator && (props["bootState"] as? String) != "booted" { return nil }
             let tunnel = conn["tunnelState"] as? String ?? ""
             let transport = conn["transportType"] as? String ?? ""
-            let ready = simulator || tunnel == "connected"
+            let paired = (conn["pairingState"] as? String ?? "paired") == "paired"
+            let reachable = paired && (transport == "wired" || transport == "localNetwork")
+            let ready = simulator || tunnel == "connected" || (reachable && tunnel != "unavailable")
             let status = ready ? (transport == "wired" ? "USB" : transport == "localNetwork" ? "Wi-Fi" : "ready")
-                : tunnel == "unavailable" ? "out of reach" : "not connected"
-            return Phone(platform: .ios, id: id, name: props["name"] as? String ?? hw["marketingName"] as? String ?? "iPhone",
-                         model: (hw["marketingName"] as? String ?? "iPhone") + (simulator ? " Simulator" : ""),
-                         ready: ready, status: status, simulator: simulator)
+                : !paired ? "not paired" : tunnel == "unavailable" ? "out of reach" : "not connected"
+            let tablet = (hw["deviceType"] as? String) == "iPad"
+            let fallback = tablet ? "iPad" : "iPhone"
+            return Phone(platform: .ios, id: id, name: props["name"] as? String ?? hw["marketingName"] as? String ?? fallback,
+                         model: (hw["marketingName"] as? String ?? fallback) + (simulator ? " Simulator" : ""),
+                         ready: ready, status: status, simulator: simulator, tablet: tablet)
         }
     }
 }
