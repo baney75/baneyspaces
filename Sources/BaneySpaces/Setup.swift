@@ -23,11 +23,14 @@ final class SetupModel: ObservableObject {
     var onDockAgentStatusChange: ((Bool) -> Void)?
     @Published var deck = DeckController.enabled
     var onDeckChange: ((Bool) -> Void)?
-    /// Whether Claude Code and Grok report to BaneySpaces; agent badges need it.
-    var hooksInstalled: () -> Bool = { true }
+    /// Whether Claude Code and Grok report to BaneySpaces; agent badges need it. Nil: Claude Code
+    /// isn't set up on this Mac.
+    var hooksInstalled: () -> Bool? = { true }
     var onInstallHooks: (() -> Void)?
-    @Published var hooksOK = true
+    @Published var hooks: Bool? = true
+    var hooksOK: Bool { hooks != false }
     @Published var tab: SettingsTab = .general
+    var onUninstall: (() -> Void)?
     @Published var launcherOnCmdSpace = Launcher.onCmdSpace
     @Published var searchEngine = Launcher.searchEngine { didSet { Launcher.searchEngine = searchEngine } }
     @Published var agent = Launcher.agent { didSet { Launcher.agent = agent } }
@@ -102,7 +105,7 @@ final class SetupModel: ObservableObject {
         openAtLogin = status == .enabled
         loginNeedsApproval = status == .requiresApproval
         viewerKeysFailed = trusted && viewerKeys && !viewerKeysActive()
-        hooksOK = hooksInstalled()
+        hooks = hooksInstalled()
     }
 
     private func becameReady() {
@@ -198,7 +201,7 @@ final class SetupModel: ObservableObject {
 
     func installHooks() {
         onInstallHooks?()
-        hooksOK = hooksInstalled()
+        hooks = hooksInstalled()
     }
 
     func setLauncher(_ on: Bool) {
@@ -297,6 +300,15 @@ struct SetupView: View {
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)
             .padding(24)
+            Divider()
+            HStack {
+                Text("Full screen works as usual; switching workspaces takes a window out of it first. Change anything later from the menu bar icon.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                Button("Done", action: close).keyboardShortcut(.defaultAction)
+            }
+            .padding(.horizontal, 24).padding(.vertical, 14)
         }
         .frame(width: 560)
     }
@@ -378,12 +390,14 @@ struct SetupView: View {
             }
         }
 
-        Divider()
-        HStack {
-            Text("Full screen works as usual; switching workspaces takes a window out of it first.")
-                .font(.footnote).foregroundStyle(.secondary)
-            Spacer()
-            Button("Done", action: close).keyboardShortcut(.defaultAction)
+        step(done: true, title: "Uninstall", symbol: "trash") {
+            HStack(alignment: .top, spacing: 12) {
+                Text("Puts back your windows, the macOS Dock, the screenshot and Spotlight shortcuts and your Claude Code settings as they were, then removes BaneySpaces.")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                Button("Uninstall BaneySpaces…") { model.onUninstall?() }
+            }
         }
     }
 
@@ -470,7 +484,7 @@ struct SetupView: View {
                     Text("Claude Code and Grok don't report to BaneySpaces yet, so only their terminal titles show.")
                         .font(.callout).foregroundStyle(.orange)
                     Spacer()
-                    Button("Install Hooks", action: model.installHooks)
+                    Button("Install Hooks", action: model.installHooks).disabled(!model.deck)
                 }
             }
         }
@@ -517,7 +531,11 @@ struct SetupView: View {
                 .font(.callout).foregroundStyle(.secondary)
         }
         section("Agent hooks") {
-            if model.hooksOK {
+            if model.hooks == nil {
+                Text("Claude Code isn't set up on this Mac (there's no ~/.claude/settings.json). Once it is, install the hooks here.")
+                    .font(.callout).foregroundStyle(.secondary)
+                Button("Install Claude Code and Grok Hooks", action: model.installHooks).disabled(!model.deck)
+            } else if model.hooks == true {
                 Label("Claude Code and Grok report to BaneySpaces.", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
             } else {
@@ -541,16 +559,22 @@ struct SetupView: View {
     /// Your own bangs: each a trigger, a name and an address with {q} where the words go.
     private var bangEditor: some View {
         VStack(alignment: .leading, spacing: 6) {
-            ForEach(model.customBangs, id: \.trigger) { b in
-                HStack {
-                    Text("!\(b.trigger)").monospaced().frame(width: 70, alignment: .leading)
-                    Text(b.name + (b.isAgent ? " (agent)" : "")).lineLimit(1)
-                    Text(b.url).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                    Spacer()
-                    Button { model.removeBang(b.trigger) } label: { Image(systemName: "minus.circle") }
-                        .buttonStyle(.borderless).help("Remove !\(b.trigger)")
+            // Past six, the list scrolls, so the window never runs off a laptop screen.
+            ScrollView {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(model.customBangs, id: \.trigger) { b in
+                        HStack {
+                            Text("!\(b.trigger)").monospaced().frame(width: 70, alignment: .leading)
+                            Text(b.name + (b.isAgent ? " (agent)" : "")).lineLimit(1)
+                            Text(b.url).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                            Spacer()
+                            Button { model.removeBang(b.trigger) } label: { Image(systemName: "minus.circle") }
+                                .buttonStyle(.borderless).help("Remove !\(b.trigger)")
+                        }
+                    }
                 }
             }
+            .frame(height: model.customBangs.isEmpty ? 0 : CGFloat(min(model.customBangs.count, 6)) * 22)
             HStack {
                 TextField("trigger", text: $model.newTrigger).frame(width: 70)
                 TextField("Name", text: $model.newName).frame(width: 100)
@@ -581,11 +605,12 @@ struct SetupView: View {
         }
     }
 
-    private func step<Content: View>(done: Bool, title: String, @ViewBuilder content: () -> Content) -> some View {
+    private func step<Content: View>(done: Bool, title: String, symbol: String? = nil, @ViewBuilder content: () -> Content) -> some View {
         HStack(alignment: .top, spacing: 12) {
-            Image(systemName: done ? "checkmark.circle.fill" : "circle")
+            Image(systemName: symbol ?? (done ? "checkmark.circle.fill" : "circle"))
                 .font(.title3)
-                .foregroundStyle(done ? Color.green : Color.secondary)
+                .foregroundStyle(symbol != nil ? Color.secondary : done ? Color.green : Color.secondary)
+                .frame(width: 22)
             VStack(alignment: .leading, spacing: 8) {
                 Text(title).font(.headline)
                 content()

@@ -135,10 +135,13 @@ enum Render {
             t.agents = [ag]
             return t
         }
+        // Two agents in one app: its icon shows the one asking, and nothing doubles up in the corner.
+        var both = agent(5, .asking, "Terminal", "/System/Applications/Utilities/Terminal.app")
+        both.agents.append(DockAgent(id: "5b", window: 55, workspace: 5, state: .working, name: "Claude", task: "Run the tests"))
         agentDock.tiles = [agent(1, .working, "Terminal", "/System/Applications/Utilities/Terminal.app"),
                            agent(2, .asking, "Terminal", "/System/Applications/Utilities/Terminal.app"),
                            agent(3, .failed, "Terminal", "/System/Applications/Utilities/Terminal.app"),
-                           agent(4, .done, "Terminal", "/System/Applications/Utilities/Terminal.app")]
+                           agent(4, .done, "Terminal", "/System/Applications/Utilities/Terminal.app"), both]
         guard save(DockView(model: agentDock).padding(.vertical, 20).background(Color(white: 0.35)), "dock-agents.png", CGSize(width: 820, height: 0)) else { return 1 }
 
         // The switch HUD, landing on workspace 4.

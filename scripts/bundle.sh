@@ -17,6 +17,8 @@ cp "$BIN" "$APP/Contents/MacOS/BaneySpaces"
 # beside "BaneySpaces" in MacOS.
 cp "$(dirname "$BIN")/baneyspaces-cli" "$APP/Contents/Resources/bin/baneyspaces"
 cp skill/SKILL.md "$APP/Contents/Resources/skill/SKILL.md"
+# Settings' Uninstall runs the same script as the README.
+cp uninstall.sh "$APP/Contents/Resources/uninstall.sh"
 
 swift scripts/make-icon.swift build/BaneySpaces.iconset
 iconutil -c icns build/BaneySpaces.iconset -o "$APP/Contents/Resources/BaneySpaces.icns"

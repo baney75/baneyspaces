@@ -82,6 +82,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private lazy var setup: SetupWindowController = {
         let c = SetupWindowController()
         c.model.onModifierChange = { [weak self] _ in self?.registerShortcuts() }
+        c.model.onUninstall = { [weak self] in self?.uninstall() }
         c.model.viewerKeysActive = { [weak self] in self?.missionControlKeys.isActive ?? false }
         c.model.onViewerKeysChange = { [weak self] on in
             MissionControlKeys.enabled = on
@@ -92,7 +93,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         c.model.onDockEdgeChange = { [weak self] e in self?.setDockEdge(e) }
         c.model.onDockAgentStatusChange = { [weak self] on in self?.setDockAgentStatus(on) }
         c.model.onDeckChange = { [weak self] on in if DeckController.enabled != on { self?.toggleDeck() } }
-        c.model.hooksInstalled = { DeckController.hooksInstalled() }
+        c.model.hooksInstalled = {
+            FileManager.default.fileExists(atPath: NSHomeDirectory() + "/.claude/settings.json") ? DeckController.hooksInstalled() : nil
+        }
         c.model.onInstallHooks = { [weak self] in self?.deck.installHooks() }
         c.model.onLauncherChange = { [weak self] on in self?.setLauncherOnCmdSpace(on) }
         c.model.onCmdTabChange = { [weak self] mode in
@@ -121,6 +124,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Workspace Dock had it out of sight.
         if CommandLine.arguments.contains("--restore-dock") {
             SystemDock.restore()
+            exit(0)
+        }
+        // `BaneySpaces --unregister-login`: the uninstaller's way to take it out of Login Items.
+        if CommandLine.arguments.contains("--unregister-login") {
+            try? SMAppService.mainApp.unregister()
             exit(0)
         }
         NSAppleEventManager.shared().setEventHandler(self, andSelector: #selector(handleURL(_:reply:)),
@@ -428,6 +436,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let back = item("Bring Every Window Back", #selector(bringBack))
         back.toolTip = "Gathers every window onto workspace 1, all visible."
         sub.addItem(back)
+        sub.addItem(.separator())
+        let remove = item("Uninstall BaneySpaces…", #selector(uninstall))
+        remove.toolTip = "Puts back your windows, Dock, shortcuts and agent settings, then removes BaneySpaces."
+        sub.addItem(remove)
         parent.submenu = sub
         return parent
     }
@@ -482,6 +494,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func setDockEdge(_ e: DockEdge) {
         dock.setEdge(e)
         if setup.model.dockEdge != e { setup.model.dockEdge = e }
+    }
+
+    /// Asks, then hands off to the bundled uninstall.sh and quits; quitting brings every window
+    /// back, and the script waits for that before it removes anything.
+    @objc private func uninstall() {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Uninstall BaneySpaces?"
+        alert.informativeText = Uninstaller.summary
+        alert.addButton(withTitle: "Uninstall")
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons[0].hasDestructiveAction = true
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        do {
+            try Uninstaller.start()
+            NSApp.terminate(nil)
+        } catch {
+            let fail = NSAlert()
+            fail.messageText = "BaneySpaces couldn't start the uninstaller"
+            fail.informativeText = "\(error.localizedDescription)\n\nRun this in Terminal instead:\n\(Uninstaller.command)"
+            fail.runModal()
+        }
     }
 
     @objc private func toggleDockAgentStatus() { setDockAgentStatus(!WorkspaceDock.agentStatus) }

@@ -401,6 +401,8 @@ final class DockModel: ObservableObject {
         let isCurrent: Bool
         /// Coding agents on this workspace that are working, and that finished without you looking.
         var agents: [DockAgent] = []
+        /// Those whose window isn't one of this tile's (not known yet): the tile's corner shows them.
+        var unpinned: [DockAgent] = []
         var agentsWorking: Int { agents.filter { $0.state == .working }.count }
         var agentsDone: Int { agents.filter { $0.state == .done }.count }
         var windowCount: Int { apps.reduce(0) { $0 + $1.windows } }
@@ -529,6 +531,8 @@ final class DockModel: ObservableObject {
             apps.sort { order.firstIndex(of: $0.id)! < order.firstIndex(of: $1.id)! }
             var tile = Tile(id: t.workspace, apps: apps, isCurrent: t.isCurrent)
             tile.agents = agents
+            let windows = Set(here.map(\.id))
+            tile.unpinned = agents.filter { !windows.contains($0.window) }
             return tile
         }
         // A strip for an app that's gone or down to one window closes.
@@ -957,11 +961,17 @@ struct DockView: View {
                 .accessibilityAddTraits(.isButton)
                 .accessibilityAction { model.onFocusAgent(done, tile.id) }
                 .offset(x: 4, y: -4)
-        } else if let a = tile.agents.filter({ a in !tile.apps.contains { $0.agent == a } }).max(by: { $0.state.urgency < $1.state.urgency }) {
+        } else if let a = tile.unpinned.max(by: { $0.state.urgency < $1.state.urgency }) {
             // Somewhere the dock can't pin to an app (its window isn't known yet).
-            AgentStatusBadge(state: a.state, size: 12).offset(x: 3, y: -3)
-                .onTapGesture { if a.state.needsYou, model.clickCounts { model.onFocusAgent(a, tile.id) } }
+            AgentStatusBadge(state: a.state, size: 12)
+                .contentShape(Circle())
+                .onTapGesture { if model.clickCounts { model.onFocusAgent(a, tile.id) } }
                 .help(a.summary)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(a.summary)
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction { model.onFocusAgent(a, tile.id) }
+                .offset(x: 3, y: -3)
         }
     }
 
@@ -1088,8 +1098,10 @@ struct DockView: View {
                 }
             }
             .overlay(alignment: .topTrailing) {
+                // The icon's own click and label already cover it.
                 if let a = app.agent, a.state != .done {
                     AgentStatusBadge(state: a.state, size: max(10, size * 0.42)).offset(x: 3, y: -3)
+                        .allowsHitTesting(false).accessibilityHidden(true)
                 }
             }
             .modifier(CenterReport(key: "\(tile.id):\(app.id)"))
@@ -1226,7 +1238,7 @@ private struct StripRow: View {
                 .foregroundStyle(.white.opacity(hovered ? 1 : 0.85)).lineLimit(1).truncationMode(.tail)
             Spacer(minLength: 6)
             if let a = window.agent, a.state == .working {
-                AgentStatusBadge(state: a.state, size: 12)
+                AgentStatusBadge(state: a.state, size: 12).allowsHitTesting(false).accessibilityHidden(true)
             } else if let a = window.agent {
                 Text(a.state.word).font(.system(size: 10, weight: .semibold)).foregroundStyle(a.state.color)
             } else if window.isLast {
@@ -1271,8 +1283,6 @@ struct AgentStatusBadge: View {
                 .frame(width: size, height: size)
                 .background(Circle().fill(state.color))
                 .overlay(Circle().strokeBorder(Color.black.opacity(0.35), lineWidth: 0.75))
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
         }
     }
 }
@@ -1324,7 +1334,5 @@ private struct AgentSpinner: View {
             .background(Circle().fill(Color.blue))
             .overlay(Circle().strokeBorder(Color.black.opacity(0.35), lineWidth: 0.75))
             .onAppear { turning = !reduceMotion }
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
     }
 }

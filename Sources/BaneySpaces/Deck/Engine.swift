@@ -34,6 +34,7 @@ final class Engine {
     private var sweep: Timer?
     /// Rows a hook or `notify` attached a message to.
     private var notices: [String: String] = [:]
+    private var answered = AnsweredQuestions()
 
     /// Called on the main thread after every merge.
     var onUpdate: () -> Void = {}
@@ -263,10 +264,11 @@ final class Engine {
             if let e = bound[all[i].id] {
                 all[i].activity = Activity(e.state)
                 all[i].agent = e.agent
-                all[i].notice = e.state == .waiting ? e.message : ""
+                all[i].notice = answered.notice(for: all[i].id, e, focused: all[i].focused)
             }
             if let n = notices[all[i].id] { all[i].notice = n }
         }
+        answered.keep(Set(bound.keys))
         let focused = all.first { $0.focused }?.id
         attention.update(all.map { ($0.id, $0.activity) }, focused: focused)
         notices = notices.filter { k, _ in attention.unseen.contains(k) }
