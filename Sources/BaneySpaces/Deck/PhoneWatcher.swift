@@ -134,6 +134,8 @@ final class PhoneWatcher {
     func open(_ phone: Phone) {
         switch phone.platform {
         case .ios:
+            // iPhone Mirroring has no iPad mode; opening it for one would show the wrong device.
+            guard !phone.tablet else { return NSSound.beep() }
             let app = phone.simulator ? "com.apple.iphonesimulator" : "com.apple.ScreenContinuity"
             if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: app) {
                 NSWorkspace.shared.openApplication(at: url, configuration: .init())
