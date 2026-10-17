@@ -53,12 +53,17 @@ final class Spaces {
     /// Windows dropped as closed (see `closedWindows`), with their workspace and parked frame. A
     /// tab behind another tab looks closed too. When its app lists it again out of sight (the
     /// tab in front of a parked window closed), it goes back to its workspace. One that comes back
-    /// in sight was opened or picked here, and joins the workspace you're on like any new window.
+    /// in sight was opened or picked here, and joins the workspace you're on; it had a workspace
+    /// before, so new-window rules leave it alone (`placedBefore`).
     private var dormant: [WindowID: (pid: pid_t, workspace: Int, frame: CGRect?)] = [:]
     /// Every window that has had a workspace, until the window server says it's gone. One coming
     /// back after Accessibility dropped it is never treated as new: new-window rules could send
     /// it to another workspace and hide it.
     private var placedBefore = Set<WindowID>()
+    /// Windows that had a workspace, or will once they answer: placed before, waiting in the saved
+    /// layout at launch, or dormant. Each heals on the fast back-off (r5: a launch during an outage
+    /// left saved-layout windows on the 60 s one).
+    private var knownWindows: Set<WindowID> { placedBefore.union(pendingLayout.keys).union(dormant.keys) }
     /// Workspaces from most to least recently visited, for the ⌘Tab switcher.
     private(set) var recent: [Int] = [1]
     /// Windows agents asked for with `baneyspaces agent open` or `agent run`: the next window
@@ -216,7 +221,7 @@ final class Spaces {
         // unplaced in plain sight while Accessibility was out isn't new either.
         let now = Date()
         if !firstScan {
-            let fresh = added.filter { !fromLayout.contains($0) && unplaced.isNew($0, known: placedBefore, now: now) }
+            let fresh = added.filter { !fromLayout.contains($0) && unplaced.isNew($0, known: knownWindows, now: now) }
             returned = placeClaimed(fresh) || returned
             adoptBackgroundWindows(fresh)
         }
@@ -241,7 +246,8 @@ final class Spaces {
             if let f = windows[id]?.frame, !Geometry.isStranded(f, screens: screens) { saved.frames[id] = nil }
         }
         unplaced.scanned(unplaced: ScanCheck.unplaced(onScreen: snap.onScreen, placed: Set(model.home.keys),
-                                                      notWindows: notWindows, unsure: unsure), known: placedBefore, now: now)
+                                                      notWindows: notWindows, unsure: unsure),
+                         known: knownWindows, now: now)
         placedBefore.formUnion(model.home.keys)
         scheduleHeal()
     }
