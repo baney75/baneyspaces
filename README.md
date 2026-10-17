@@ -414,6 +414,9 @@ BaneySpaces changed:
   `settings.json.baneyspaces-backup`.
 - AeroSpace opening at login, if the installer turned that off
 
+Ghostdeck, which BaneySpaces replaced, isn't put back: the installer moved Ghostdeck.app to the
+Trash and its hooks became BaneySpaces' own, so both come out here.
+
 And it removes the app, its login item, its Accessibility entry, its settings and local signing
 key, the `baneyspaces` and `ghostdeck` commands in `~/.local/bin`, its Grok hook file and its
 agent skill. Running it twice is safe. If something can't be put back (say the app was already

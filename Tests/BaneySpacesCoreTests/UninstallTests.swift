@@ -144,6 +144,35 @@ final class UninstallTests: XCTestCase {
         XCTAssertTrue(try String(contentsOf: path(".aerospace.toml"), encoding: .utf8).contains("start-at-login = false"))
     }
 
+    /// r3: a hook whose path is in double quotes, which JSON writes as \".
+    func testRemovesAHookWithADoubleQuotedPath() throws {
+        let settings: [String: Any] = ["hooks": ["Stop": [["hooks": [["type": "command", "command": "\"/Users/x/.local/bin/baneyspaces\" hook claude"]]]]]]
+        try write(".claude/settings.json", String(decoding: try JSONSerialization.data(withJSONObject: settings), as: UTF8.self))
+        _ = try uninstall()
+        let after = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: path(".claude/settings.json"))) as? [String: Any])
+        XCTAssertNil(after["hooks"])
+    }
+
+    /// r3: a step that fails partway doesn't stop the rest or get called "stopped before
+    /// removing anything": everything else goes, and the exit is 2.
+    func testAFailedStepIsListedAndTheRestStillGoes() throws {
+        try write(".aerospace.toml", "start-at-login = false\n")
+        try write("Library/Application Support/BaneySpaces/aerospace-start-at-login", "")
+        try fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: path(".aerospace.toml").path)
+        defer { try? fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: path(".aerospace.toml").path) }
+        try write(".claude/skills/baneyspaces/SKILL.md", "skill")
+        let out = try uninstall(status: 2)
+        XCTAssertTrue(out.contains("A step failed"), out)
+        XCTAssertFalse(fm.fileExists(atPath: path(".claude/skills/baneyspaces").path))
+        XCTAssertFalse(fm.fileExists(atPath: path("Library/Application Support/BaneySpaces").path))
+    }
+
+    /// r3: an empty record (nothing was ever turned off) isn't "still off".
+    func testAnEmptyShortcutRecordIsNothingToRestore() throws {
+        let out = try uninstall(prefs: ["freedShortcuts": [Int]()])
+        XCTAssertTrue(out.contains("defaults delete com.baney.baneyspaces"), out)
+    }
+
     /// Nothing installed at all: it still finishes cleanly, so running it twice is safe.
     func testRunsOnAnEmptyHome() throws {
         let out = try uninstall()

@@ -126,10 +126,10 @@ enum SystemShortcuts {
     /// Switches back on every shortcut `free(for:)` switched off.
     static func restore() {
         let ids = UserDefaults.standard.array(forKey: freedKey) as? [Int] ?? []
-        guard !ids.isEmpty else { return }
         let defaults = screenshots.map { ($0.id, $0.key, $0.code, 1179648) }
             + desktopSwitch.enumerated().map { ($0.element, 65535, Hotkeys.digitKeyCodes[$0.offset], 262144) }
-        write(defaults.filter { ids.contains($0.0) }.map { (id: $0.0, key: $0.1, code: $0.2, mods: $0.3) }, enabled: true)
+        // The record goes only once they're back on, so a failed write can be tried again.
+        guard write(defaults.filter { ids.contains($0.0) }.map { (id: $0.0, key: $0.1, code: $0.2, mods: $0.3) }, enabled: true) else { return }
         UserDefaults.standard.removeObject(forKey: freedKey)
     }
 
@@ -168,13 +168,15 @@ enum SystemShortcuts {
 
     /// Gives ⌘Space back to Spotlight, if `freeSpotlight()` took it. Run it on `spotlightQueue`.
     static func restoreSpotlight() {
-        guard spotlightFreed else { return }
-        write([spotlight], enabled: true)
+        guard spotlightFreed, write([spotlight], enabled: true) else { return }
         UserDefaults.standard.removeObject(forKey: spotlightFreedKey)
     }
 
-    private static func write(_ targets: [(id: Int, key: Int, code: Int, mods: Int)], enabled on: Bool) {
-        guard !targets.isEmpty else { return }
+    /// Whether every shortcut was written; nothing to write counts as done.
+    @discardableResult
+    private static func write(_ targets: [(id: Int, key: Int, code: Int, mods: Int)], enabled on: Bool) -> Bool {
+        guard !targets.isEmpty else { return true }
+        var ok = true
         CFPreferencesAppSynchronize(domain)
         let all = CFPreferencesCopyAppValue("AppleSymbolicHotKeys" as CFString, domain) as? [String: Any] ?? [:]
         for t in targets {
@@ -183,19 +185,23 @@ enum SystemShortcuts {
             let params = (value?["parameters"] as? [Int]) ?? [t.key, t.code, t.mods]
             let type = (value?["type"] as? String) ?? "standard"
             let ints = params.map { "<integer>\($0)</integer>" }.joined()
-            run("/usr/bin/defaults", ["write", "com.apple.symbolichotkeys", "AppleSymbolicHotKeys", "-dict-add", String(t.id),
-                "<dict><key>enabled</key><\(on)/><key>value</key><dict><key>parameters</key><array>\(ints)</array><key>type</key><string>\(type)</string></dict></dict>"])
+            ok = run("/usr/bin/defaults", ["write", "com.apple.symbolichotkeys", "AppleSymbolicHotKeys", "-dict-add", String(t.id),
+                "<dict><key>enabled</key><\(on)/><key>value</key><dict><key>parameters</key><array>\(ints)</array><key>type</key><string>\(type)</string></dict></dict>"]) && ok
         }
         // Applies the change without logging out.
         run("/System/Library/PrivateFrameworks/SystemAdministration.framework/Resources/activateSettings", ["-u"])
+        return ok
     }
 
-    private static func run(_ path: String, _ args: [String]) {
+    /// Whether it ran and exited 0.
+    @discardableResult
+    private static func run(_ path: String, _ args: [String]) -> Bool {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: path)
         p.arguments = args
-        try? p.run()
+        guard (try? p.run()) != nil else { return false }
         p.waitUntilExit()
+        return p.terminationStatus == 0
     }
 }
 

@@ -44,10 +44,18 @@ if running; then
   echo "BaneySpaces is still running. Quit it from its menu bar icon, then run this again." >&2
   exit 1
 fi
+# From here on a failed step doesn't stop the rest: it's listed at the end, and the exit is 2.
+set +e
+trap 'problem "A step failed (line $LINENO of the uninstaller); the output above says which."' ERR
+# Its record of shortcuts it turned off: a list with an id in it, or Spotlight's flag.
+shortcuts_off() { pref freedShortcuts | grep -q '[0-9]' || [ "$(pref freedSpotlight)" = 1 ]; }
 
 # The app knows how to undo its own changes to macOS. Already in the Trash still counts.
 BIN=""
-for app in "$APP" "$HOME/Applications/BaneySpaces.app" "/Applications/BaneySpaces.app" "$HOME/.Trash/BaneySpaces"*.app; do
+# The places it's installed; the test stays inside its made-up home.
+INSTALLED=("$APP" "$HOME/Applications/BaneySpaces.app")
+[ -z "$TEST" ] && INSTALLED+=("/Applications/BaneySpaces.app")
+for app in "${INSTALLED[@]}" "$HOME/.Trash/BaneySpaces"*.app; do
   if [ -x "$app/Contents/MacOS/BaneySpaces" ]; then BIN="$app/Contents/MacOS/BaneySpaces"; break; fi
 done
 
@@ -58,8 +66,9 @@ if [ -n "$BIN" ]; then
   # Quitting already brings the macOS Dock back; this covers a crash that didn't.
   sys "$BIN" --restore-dock >/dev/null 2>&1 || true
   step "Removing it from Login Items"
-  sys "$BIN" --unregister-login >/dev/null 2>&1 || true
-elif [ -n "$(pref freedShortcuts)$(pref freedSpotlight)" ]; then
+  sys "$BIN" --unregister-login >/dev/null 2>&1 \
+    || problem "BaneySpaces may still be in Login Items: remove it in System Settings › General › Login Items."
+elif shortcuts_off; then
   # Without the app the shortcuts can't be written back the way it turned them off, so its
   # record of them stays for the next install to finish the job.
   problem "macOS's screenshot or Spotlight shortcuts are still off (the app was already gone): turn them on in System Settings › Keyboard › Keyboard Shortcuts."
@@ -87,19 +96,24 @@ if [ -f "$DATA/aerospace-start-at-login" ] && [ -f "$HOME/.aerospace.toml" ]; th
 fi
 if [ -s "$DATA/aerospace-login-item" ]; then
   item=$(cat "$DATA/aerospace-login-item")
-  sys osascript -e 'on run argv' -e 'tell application "System Events" to make login item at end with properties {path:(item 1 of argv), hidden:false}' -e 'end run' "$item" >/dev/null 2>&1 \
-    || problem "AeroSpace isn't back in Login Items: add it in System Settings › General › Login Items."
+  # Only if AeroSpace is still where it was; moved or deleted since, that was the person's call.
+  if [ -e "$item" ] || [ -n "$TEST" ]; then
+    sys osascript -e 'on run argv' -e 'tell application "System Events" to make login item at end with properties {path:(item 1 of argv), hidden:false}' -e 'end run' "$item" >/dev/null 2>&1 \
+      || problem "AeroSpace isn't back in Login Items: add $item in System Settings › General › Login Items."
+  fi
 fi
 
 # The agent hooks the Deck added. Only BaneySpaces' own entries go; every other hook and
 # setting stays as it is. With the app gone, the same rule runs here in JavaScript.
 CLAUDE="$HOME/.claude/settings.json"
-ours="(ghostdeck|baneyspaces)'?\"? +hook +(claude|grok)"
+# As the file has it: a double quote around the path is written \" in JSON.
+ours="(ghostdeck|baneyspaces)(\\\\?['\"])? +hook +(claude|grok)"
 if [ -f "$CLAUDE" ] && grep -Eq "$ours" "$CLAUDE"; then
   step "Removing its hooks from Claude Code's settings (your own hooks stay)"
   had_backup=""; [ -f "$CLAUDE.baneyspaces-backup" ] && had_backup=1
   CLI=""; [ -n "$BIN" ] && CLI="$(dirname "$(dirname "$BIN")")/Resources/bin/baneyspaces"
-  if [ -n "$CLI" ] && [ -x "$CLI" ]; then "$CLI" hooks uninstall >/dev/null 2>&1 || true; fi
+  # The real CLI edits the real home, so the test uses the JavaScript below.
+  if [ -z "$TEST" ] && [ -n "$CLI" ] && [ -x "$CLI" ]; then "$CLI" hooks uninstall >/dev/null 2>&1 || true; fi
   if grep -Eq "$ours" "$CLAUDE"; then
     osascript -l JavaScript - "$CLAUDE" >/dev/null 2>&1 <<'JS' || true
 ObjC.import('Foundation')
@@ -139,7 +153,7 @@ rm -f "$HOME/.grok/hooks/baneyspaces.json"
 
 step "Removing the baneyspaces command and its agent skill"
 for link in "$HOME/.local/bin/baneyspaces" "$HOME/.local/bin/ghostdeck"; do
-  # Only the links BaneySpaces made: into a BaneySpaces.app, or left pointing at nothing.
+  # Only the links BaneySpaces made: ones into a BaneySpaces.app, even if it's gone already.
   if [ -L "$link" ]; then
     case "$(readlink "$link")" in *BaneySpaces.app/*) rm -f "$link" ;; esac
   fi
@@ -153,18 +167,20 @@ fi
 rm -rf "$DATA" "$HOME/Library/Caches/$ID" "$HOME/Library/HTTPStorages/$ID" \
   "$HOME/Library/Saved Application State/$ID.savedState"
 # Its record of shortcuts it turned off stays while they're still off, so a reinstall can finish.
-if [ ${#problems[@]} -eq 0 ] || [ -z "$(pref freedShortcuts)$(pref freedSpotlight)" ]; then
+if ! shortcuts_off; then
   sys defaults delete "$ID" >/dev/null 2>&1 || true
 fi
 
 step "Removing its Accessibility permission"
 # A fresh install gets a new signature; an old entry left here would show "on" but not work.
-sys tccutil reset Accessibility "$ID" >/dev/null 2>&1 || true
+sys tccutil reset Accessibility "$ID" >/dev/null 2>&1 \
+  || problem "BaneySpaces may still be listed in System Settings › Privacy & Security › Accessibility: remove it there."
 
 step "Removing the app"
 # Last, so a failure here leaves nothing else half done. Open at Login goes with it.
-for app in "$APP" "$HOME/Applications/BaneySpaces.app"; do
-  rm -rf "$app" || problem "Couldn't remove $app: move it to the Trash yourself."
+for app in "${INSTALLED[@]}"; do
+  rm -rf "$app" 2>/dev/null
+  [ -e "$app" ] && problem "Couldn't remove $app: move it to the Trash yourself."
 done
 
 echo

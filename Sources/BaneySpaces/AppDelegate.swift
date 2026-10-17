@@ -95,9 +95,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         c.model.onDeckChange = { [weak self] on in if DeckController.enabled != on { self?.toggleDeck() } }
         // Every event, not just any: an older install lacks StopFailure, which the red badge needs.
         c.model.hooksInstalled = {
-            guard let d = FileManager.default.contents(atPath: NSHomeDirectory() + "/.claude/settings.json") else { return nil }
-            let settings = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] ?? [:]
-            return HookSettings.installed(settings).count == HookSettings.events.count
+            guard let d = FileManager.default.contents(atPath: NSHomeDirectory() + "/.claude/settings.json") else { return .noClaudeCode }
+            guard let settings = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else { return .unreadable }
+            return HookSettings.installed(settings).count == HookSettings.events.count ? .on : .off
         }
         c.model.onInstallHooks = { [weak self] in self?.deck.installHooks() }
         c.model.onLauncherChange = { [weak self] on in self?.setLauncherOnCmdSpace(on) }
@@ -121,7 +121,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if CommandLine.arguments.contains("--restore-shortcuts") {
             SystemShortcuts.restore()
             SystemShortcuts.spotlightQueue.sync { SystemShortcuts.restoreSpotlight() }
-            exit(0)
+            // Still recorded means still off: the uninstaller says so instead of claiming success.
+            let left = !(UserDefaults.standard.array(forKey: "freedShortcuts") ?? []).isEmpty || SystemShortcuts.spotlightFreed
+            exit(left ? 1 : 0)
         }
         // `BaneySpaces --restore-dock`: the uninstaller's way to put the macOS Dock back if the
         // Workspace Dock had it out of sight.
@@ -131,8 +133,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         // `BaneySpaces --unregister-login`: the uninstaller's way to take it out of Login Items.
         if CommandLine.arguments.contains("--unregister-login") {
-            try? SMAppService.mainApp.unregister()
-            exit(0)
+            // Never registered is as good as removed.
+            let app = SMAppService.mainApp
+            if app.status == .notRegistered || app.status == .notFound { exit(0) }
+            exit((try? app.unregister()) != nil ? 0 : 1)
         }
         NSAppleEventManager.shared().setEventHandler(self, andSelector: #selector(handleURL(_:reply:)),
                                                      forEventClass: AEEventClass(kInternetEventClass),

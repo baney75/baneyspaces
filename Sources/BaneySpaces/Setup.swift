@@ -23,12 +23,12 @@ final class SetupModel: ObservableObject {
     var onDockAgentStatusChange: ((Bool) -> Void)?
     @Published var deck = DeckController.enabled
     var onDeckChange: ((Bool) -> Void)?
-    /// Whether Claude Code and Grok report to BaneySpaces; agent badges need it. Nil: Claude Code
-    /// isn't set up on this Mac.
-    var hooksInstalled: () -> Bool? = { true }
+    /// Whether Claude Code and Grok report to BaneySpaces; agent badges need it.
+    enum HookState { case on, off, noClaudeCode, unreadable }
+    var hooksInstalled: () -> HookState = { .on }
     var onInstallHooks: (() -> Void)?
-    @Published var hooks: Bool? = true
-    var hooksOK: Bool { hooks != false }
+    @Published var hooks: HookState = .on
+    var hooksOK: Bool { hooks != .off }
     @Published var tab: SettingsTab = .general
     var onUninstall: (() -> Void)?
     @Published var launcherOnCmdSpace = Launcher.onCmdSpace
@@ -531,11 +531,14 @@ struct SetupView: View {
                 .font(.callout).foregroundStyle(.secondary)
         }
         section("Agent hooks") {
-            if model.hooks == nil {
+            if model.hooks == .noClaudeCode {
                 Text("Claude Code isn't set up on this Mac (there's no ~/.claude/settings.json). Once it is, install the hooks here.")
                     .font(.callout).foregroundStyle(.secondary)
                 Button("Install Claude Code and Grok Hooks", action: model.installHooks).disabled(!model.deck)
-            } else if model.hooks == true {
+            } else if model.hooks == .unreadable {
+                Text("~/.claude/settings.json isn't valid JSON, so BaneySpaces leaves it alone. Fix it, then come back here.")
+                    .font(.callout).foregroundStyle(.orange)
+            } else if model.hooks == .on {
                 Label("Claude Code and Grok report to BaneySpaces.", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
             } else {
