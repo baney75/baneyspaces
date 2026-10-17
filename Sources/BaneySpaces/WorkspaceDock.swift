@@ -384,7 +384,7 @@ final class DockModel: ObservableObject {
         /// This app's windows on the tile's workspace, with their titles (a browser's front tab,
         /// a player's video), for the window strip.
         var list: [Window] = []
-        /// A coding agent in one of those windows: a finished one before one still working.
+        /// A coding agent in one of those windows: the one that needs you most.
         var agent: DockAgent?
     }
     struct Window: Identifiable {
@@ -392,7 +392,7 @@ final class DockModel: ObservableObject {
         let title: String
         /// The window used last on its workspace: where a plain click on the app goes.
         var isLast = false
-        /// The agent working or finished in this window.
+        /// The agent in this window, whatever it's doing.
         var agent: DockAgent?
     }
     struct Tile: Identifiable {

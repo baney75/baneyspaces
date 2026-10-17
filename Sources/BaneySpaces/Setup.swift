@@ -534,6 +534,8 @@ struct SetupView: View {
             content()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        // Notes wrap instead of trailing off.
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     /// Your own bangs: each a trigger, a name and an address with {q} where the words go.
