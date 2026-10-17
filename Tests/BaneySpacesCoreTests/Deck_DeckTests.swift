@@ -40,6 +40,14 @@ final class AgentEventTests: XCTestCase {
         XCTAssertEqual(ev("Notification", ["message": "Claude needs your permission to use Bash"])?.message,
                        "Claude needs your permission to use Bash")
         XCTAssertEqual(ev("Stop", ["message": "ignored"])?.message, "")
+        // A minute after it finishes, Claude says it's waiting for input: nothing new, so no event,
+        // which would otherwise wipe a permission question it's reminding you of (r1 F2).
+        XCTAssertNil(ev("Notification", ["message": "Claude is waiting for your input", "notification_type": "idle_prompt"]))
+        XCTAssertNil(ev("Notification", ["message": "Claude is waiting for your input"]))
+        XCTAssertNil(ev("Notification", ["message": "Signed in", "notification_type": "auth_success"]))
+        XCTAssertEqual(ev("Notification", ["message": "Claude needs your permission to use Bash", "notification_type": "permission_prompt"])?.state, .waiting)
+        XCTAssertEqual(ev("Notification", ["message": "Pick one", "notification_type": "elicitation_dialog"])?.message, "Pick one")
+        XCTAssertEqual(ev("StopFailure")?.message, AgentEvent.failedMessage)
         XCTAssertNil(ev("PreCompact"))
         XCTAssertNil(AgentEvent.claude(["session_id": "x"], tty: "", at: 0))
     }
@@ -255,5 +263,32 @@ final class ItemCodingTests: XCTestCase {
         i.activity = .working
         let r = Wire.Reply(ok: true, items: [i])
         XCTAssertEqual(try JSONDecoder().decode(Wire.Reply.self, from: JSONEncoder().encode(r)), r)
+    }
+}
+
+final class AnsweredQuestionsTests: XCTestCase {
+    private func ev(_ state: AgentEvent.State, _ message: String, at: Double) -> AgentEvent {
+        AgentEvent(agent: "claude", session: "s", cwd: "/p", tty: "", state: state, message: message, at: at)
+    }
+
+    func testAQuestionShowsUntilYouLookAtItThenStaysGone() {
+        var a = AnsweredQuestions()
+        let ask = ev(.waiting, "Claude needs your permission to use Bash", at: 10)
+        XCTAssertEqual(a.notice(for: "t1", ask, focused: false), ask.message)
+        XCTAssertEqual(a.notice(for: "t1", ask, focused: true), "")
+        // You looked and left without answering (or pressed Esc, which sends no hook): still gone.
+        XCTAssertEqual(a.notice(for: "t1", ask, focused: false), "")
+        // A new question asks again.
+        let next = ev(.waiting, "Claude needs your permission to use Edit", at: 20)
+        XCTAssertEqual(a.notice(for: "t1", next, focused: false), next.message)
+        XCTAssertEqual(a.notice(for: "t1", ev(.working, "", at: 30), focused: false), "")
+    }
+
+    func testForgetsRowsThatAreGone() {
+        var a = AnsweredQuestions()
+        let ask = ev(.waiting, "?", at: 1)
+        _ = a.notice(for: "t1", ask, focused: true)
+        a.keep([])
+        XCTAssertEqual(a.notice(for: "t1", ask, focused: false), "?")
     }
 }

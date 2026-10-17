@@ -35,10 +35,15 @@ public struct AgentEvent: Codable, Equatable, Sendable {
         case "Stop", "StopCancelled", "stop", "stop_cancelled": state = .waiting
         case "StopFailure", "stop_failure":
             state = .waiting
-            message = "Stopped on an API error"
+            message = failedMessage
         case "Notification", "notification":
-            state = .waiting
             message = json["message"] as? String ?? ""
+            // Only a question waits on you. The rest (Claude's "waiting for your input" a minute
+            // after it finished, a sign-in that worked) say nothing new, and passing one on would
+            // wipe the question it may be reminding you of.
+            let type = json["notification_type"] as? String ?? json["notificationType"] as? String ?? ""
+            guard type.isEmpty ? !message.localizedCaseInsensitiveContains("waiting for your input") : asking.contains(type) else { return nil }
+            state = .waiting
         case "SessionStart", "session_start": state = .idle
         case "SessionEnd", "session_end":
             // A Grok subagent's own teardown isn't the session ending.
@@ -50,6 +55,12 @@ public struct AgentEvent: Codable, Equatable, Sendable {
         return AgentEvent(agent: agent, session: session, cwd: json["cwd"] as? String ?? "", tty: tty, app: app,
                           state: state, message: message, at: at)
     }
+
+    /// Notification types that ask you something; an older Claude sends none.
+    public static let asking: Set<String> = ["permission_prompt", "elicitation_dialog"]
+
+    /// The notice a session that stopped on an API error carries.
+    public static let failedMessage = "Stopped on an API error"
 
     public static func claude(_ json: [String: Any], tty: String, at: Double) -> AgentEvent? {
         hook(json, agent: "claude", tty: tty, at: at)
@@ -169,4 +180,23 @@ extension Activity {
         case .end: self = .shell
         }
     }
+}
+
+/// What a row's agent is asking, until you've looked at it. Looking means you answered, or chose
+/// not to; either way the dock stops asking. An interrupted turn sends no hook, so without this a
+/// "?" could stay up for good (r1 F3).
+public struct AnsweredQuestions: Equatable, Sendable {
+    private var seen: [String: Double] = [:]
+
+    public init() {}
+
+    /// The notice row `id` shows for its session's latest event `e`.
+    public mutating func notice(for id: String, _ e: AgentEvent, focused: Bool) -> String {
+        guard e.state == .waiting, !e.message.isEmpty else { return "" }
+        if focused { seen[id] = e.at }
+        return seen[id] == e.at ? "" : e.message
+    }
+
+    /// Forgets rows no session is bound to any more.
+    public mutating func keep(_ ids: Set<String>) { seen = seen.filter { ids.contains($0.key) } }
 }

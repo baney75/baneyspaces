@@ -47,6 +47,22 @@ final class DockAgentTests: XCTestCase {
         XCTAssertTrue(long.hasSuffix("…"))
     }
 
+    /// 10-16: the dock showed only working and finished. A permission prompt looked like a
+    /// finish, and an API error looked like nothing.
+    func testEachStateTheDeckKnowsGetsItsOwnBadge() {
+        typealias S = DockAgent.State
+        XCTAssertEqual(S.of(activity: .working, unseen: false, notice: ""), .working)
+        XCTAssertEqual(S.of(activity: .waiting, unseen: true, notice: "Claude needs your permission to use Bash"), .asking)
+        // Asking waits on you even after you've looked.
+        XCTAssertEqual(S.of(activity: .waiting, unseen: false, notice: "Claude needs your permission to use Bash"), .asking)
+        XCTAssertEqual(S.of(activity: .waiting, unseen: false, notice: AgentEvent.failedMessage), .failed)
+        XCTAssertEqual(S.of(activity: .waiting, unseen: true, notice: ""), .done)
+        XCTAssertNil(S.of(activity: .waiting, unseen: false, notice: ""))
+        XCTAssertNil(S.of(activity: .shell, unseen: false, notice: ""))
+        XCTAssertEqual([S.working, .done, .failed, .asking].max { $0.urgency < $1.urgency }, .asking)
+        XCTAssertEqual(agent(1, .asking, task: "").summary, "Claude needs you")
+    }
+
     func testAnAgentsAppIsNeverHiddenBehindPlusN() {
         // Workspace 1 on 2026-10-16: five apps, Claude working in Helium's spot past the third.
         let keys = ["tailscale", "silas", "ghostty", "obsidian", "helium"]

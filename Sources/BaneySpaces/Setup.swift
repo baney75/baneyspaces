@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import BaneySpacesCore
 import ApplicationServices
 import ServiceManagement
@@ -19,6 +20,18 @@ final class SetupModel: ObservableObject {
     var onWorkspaceDockChange: ((Bool) -> Void)?
     @Published var dockEdge = WorkspaceDock.edge
     var onDockEdgeChange: ((DockEdge) -> Void)?
+    @Published var dockAgentStatus = WorkspaceDock.agentStatus
+    var onDockAgentStatusChange: ((Bool) -> Void)?
+    @Published var deck = DeckController.enabled
+    var onDeckChange: ((Bool) -> Void)?
+    /// Whether Claude Code and Grok report to BaneySpaces; agent badges need it.
+    enum HookState { case on, off, noClaudeCode, unreadable }
+    var hooksInstalled: () -> HookState = { .on }
+    var onInstallHooks: (() -> Void)?
+    @Published var hooks: HookState = .on
+    var hooksOK: Bool { hooks != .off }
+    @Published var tab: SettingsTab = .general
+    var onUninstall: (() -> Void)?
     @Published var launcherOnCmdSpace = Launcher.onCmdSpace
     @Published var searchEngine = Launcher.searchEngine { didSet { Launcher.searchEngine = searchEngine } }
     @Published var agent = Launcher.agent { didSet { Launcher.agent = agent } }
@@ -93,6 +106,7 @@ final class SetupModel: ObservableObject {
         openAtLogin = status == .enabled
         loginNeedsApproval = status == .requiresApproval
         viewerKeysFailed = trusted && viewerKeys && !viewerKeysActive()
+        hooks = hooksInstalled()
     }
 
     private func becameReady() {
@@ -176,6 +190,21 @@ final class SetupModel: ObservableObject {
         onWorkspaceDockChange?(on)
     }
 
+    func setDockAgentStatus(_ on: Bool) {
+        dockAgentStatus = on
+        onDockAgentStatusChange?(on)
+    }
+
+    func setDeck(_ on: Bool) {
+        deck = on
+        onDeckChange?(on)
+    }
+
+    func installHooks() {
+        onInstallHooks?()
+        hooks = hooksInstalled()
+    }
+
     func setLauncher(_ on: Bool) {
         launcherOnCmdSpace = on
         onLauncherChange?(on)
@@ -231,190 +260,325 @@ final class SetupModel: ObservableObject {
     }
 }
 
+/// The settings window's tabs. General comes first: it's where a new Mac starts.
+enum SettingsTab: String, CaseIterable, Identifiable {
+    case general = "General", keys = "Keys", dock = "Dock", launcher = "Launcher", deck = "Deck"
+    var id: Self { self }
+
+    var symbol: String {
+        switch self {
+        case .general: "gearshape"
+        case .keys: "keyboard"
+        case .dock: "dock.rectangle"
+        case .launcher: "magnifyingglass"
+        case .deck: "sidebar.left"
+        }
+    }
+}
+
+/// BaneySpaces' settings: a tab for each part, so nothing sits below the bottom of a laptop
+/// screen. It opens on General until BaneySpaces has what it needs to run.
 struct SetupView: View {
     @ObservedObject var model: SetupModel
     var close: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 14) {
-                Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 56, height: 56)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("BaneySpaces").font(.title2.bold())
-                    Text("Nine workspaces. One row of keys.").foregroundStyle(.secondary)
+        VStack(spacing: 0) {
+            Picker("", selection: $model.tab) {
+                ForEach(SettingsTab.allCases) { t in Label(t.rawValue, systemImage: t.symbol).tag(t) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 24).padding(.top, 16).padding(.bottom, 4)
+            VStack(alignment: .leading, spacing: 18) {
+                switch model.tab {
+                case .general: general
+                case .keys: keys
+                case .dock: dock
+                case .launcher: launcher
+                case .deck: deckTab
                 }
             }
-
-            if model.justEnabled && model.ready {
-                HStack(spacing: 10) {
-                    Image(systemName: "checkmark.seal.fill").font(.title2).foregroundStyle(.green)
-                    Text("BaneySpaces is on. Try \(model.modifier.symbol)2.").font(.title3.bold())
-                }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(RoundedRectangle(cornerRadius: 10).fill(Color.green.opacity(0.12)))
-            }
-
-            step(done: model.trusted, title: "Let BaneySpaces arrange windows") {
-                if model.trusted {
-                    Text("Allowed.").foregroundStyle(.secondary)
-                } else {
-                    Text("Accessibility lets BaneySpaces show, hide and move other apps' windows. It can't read what you type.")
-                        .foregroundStyle(.secondary)
-                    Button(action: model.allow) {
-                        Text("Allow BaneySpaces").frame(minWidth: 160)
-                    }
-                    .controlSize(.large)
-                    .buttonStyle(.borderedProminent)
-                    Text("macOS opens its settings. Turn on BaneySpaces in the list and come back; this window updates by itself.")
-                        .font(.callout).foregroundStyle(.secondary)
-                    if model.staleGrant {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("Already switched on and still not working?").font(.callout.bold())
-                            Text("macOS kept an old permission from an earlier copy of BaneySpaces. Fixing it removes the old entry and asks again.")
-                                .font(.callout).foregroundStyle(.secondary)
-                            Button(model.fixing ? "Fixing…" : "Fix Permission", action: model.fixPermission)
-                                .disabled(model.fixing)
-                        }
-                        .padding(10)
-                        .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.12)))
-                    }
-                }
-            }
-
-            if model.aeroSpaceRunning {
-                step(done: false, title: "Quit AeroSpace") {
-                    Text("AeroSpace is running and uses the same keys. BaneySpaces starts as soon as it quits.")
-                        .foregroundStyle(.secondary)
-                    Button("Quit AeroSpace", action: model.quitAeroSpace)
-                }
-            }
-
-            step(done: true, title: "Your keys") {
-                Picker("", selection: Binding(get: { model.modifier }, set: { model.pick($0) })) {
-                    ForEach(Modifier.allCases) { Text($0.symbol).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 220)
-                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
-                    GridRow { Text("\(model.modifier.symbol)1 – \(model.modifier.symbol)9").monospaced(); Text("go to a workspace") }
-                    GridRow { Text("\(model.modifier.symbol)⇧1 – \(model.modifier.symbol)⇧9").monospaced(); Text("send the front window there") }
-                }
-                Text(model.modifier.tradeoff).font(.callout).foregroundStyle(.secondary)
-                ForEach(model.conflicts, id: \.self) { c in
-                    HStack {
-                        Text(c).font(.callout).foregroundStyle(.secondary)
-                        Spacer()
-                        Button(model.freeing ? "Working…" : "Free Them", action: model.freeShortcuts).disabled(model.freeing)
-                    }
-                }
-                if model.screenshotsFreed && model.conflicts.isEmpty {
-                    HStack {
-                        Text("macOS's own shortcuts for these keys are off.").font(.callout).foregroundStyle(.secondary)
-                        Spacer()
-                        Button(model.freeing ? "Working…" : "Turn Them Back On", action: model.restoreShortcuts).disabled(model.freeing)
-                    }
-                }
-            }
-
-            step(done: !model.viewerKeysFailed, title: "See every workspace at once") {
-                Toggle("The Mission Control key and ⌃↑ open BaneySpaces' overview", isOn: Binding(get: { model.viewerKeys }, set: { model.setViewerKeys($0) }))
-                if model.viewerKeysFailed {
-                    Text("macOS didn't let BaneySpaces watch those keys, so they still open Mission Control. Turn the switch off and on to try again. The overview is always in the menu bar menu.")
-                        .font(.callout).foregroundStyle(.orange)
-                } else {
-                    Text("Turn this off to give both keys back to Mission Control and to apps that use ⌃↑. The overview stays in the menu bar menu.")
-                        .font(.callout).foregroundStyle(.secondary)
-                }
-                HStack {
-                    Text("⌘Tab switches")
-                    Picker("", selection: Binding(get: { model.cmdTab }, set: { model.setCmdTab($0) })) {
-                        ForEach(MissionControlKeys.CmdTabMode.allCases) { Text($0.title).tag($0) }
-                    }
-                    .labelsHidden()
-                    .fixedSize()
-                }
-                Text(cmdTabNote).font(.callout).foregroundStyle(.secondary)
-                HStack {
-                    Toggle("Workspace Dock in place of the macOS Dock", isOn: Binding(get: { model.workspaceDock }, set: { model.setWorkspaceDock($0) }))
-                    Spacer()
-                    Picker("", selection: Binding(get: { model.dockEdge }, set: { model.dockEdge = $0; model.onDockEdgeChange?($0) })) {
-                        ForEach(DockEdge.allCases, id: \.self) { Text($0.title).tag($0) }
-                    }
-                    .labelsHidden().fixedSize().disabled(!model.workspaceDock)
-                }
-                Text("Rest the pointer on the dock's edge of the screen to see your workspaces, each with its apps; click one to go there. At the top it waits a moment longer, so reaching for the menu bar doesn't bring it up. The macOS Dock stays out of sight while this is on and comes back as it was when you turn it off or quit BaneySpaces.")
-                    .font(.callout).foregroundStyle(.secondary)
-            }
-
-            step(done: true, title: "Find and install apps") {
-                Toggle("⌘Space opens the BaneySpaces launcher instead of Spotlight", isOn: Binding(get: { model.launcherOnCmdSpace }, set: { model.setLauncher($0) }))
-                Text("Open apps, install and remove them, search the web and ask an agent, from one box. Off gives ⌘Space back to Spotlight; the launcher stays in the menu bar and the Workspace Dock.")
-                    .font(.callout).foregroundStyle(.secondary)
-                Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 6) {
-                    GridRow {
-                        Text("Search the web with")
-                        Picker("", selection: $model.searchEngine) { ForEach(Bangs.engines, id: \.trigger) { Text($0.name).tag($0.trigger) } }
-                            .labelsHidden().fixedSize()
-                    }
-                    GridRow {
-                        Text("Ask questions (?) with")
-                        Picker("", selection: $model.agent) { ForEach(Bangs.agents, id: \.trigger) { Text($0.name).tag($0.trigger) } }
-                            .labelsHidden().fixedSize()
-                    }
-                }
-                Text("Type !yt cats, !i sunsets or ? a question. Type ! to see every bang.")
-                    .font(.callout).foregroundStyle(.secondary)
-                DisclosureGroup("Your bangs\(model.customBangs.isEmpty ? "" : " (\(model.customBangs.count))")") { bangEditor.padding(.top, 6) }
-            }
-
-            if model.desktops > 1 {
-                step(done: false, title: "Optional: keep one macOS desktop") {
-                    Text("You have \(model.desktops) desktops in Mission Control. Windows on the others are out of reach. Open Mission Control, hover each extra desktop at the top, and click its close button.")
-                        .foregroundStyle(.secondary)
-                    Button("Open Mission Control") {
-                        NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Mission Control.app"))
-                    }
-                }
-            }
-
-            step(done: model.openAtLogin, title: "Start with your Mac") {
-                Toggle("Open BaneySpaces at login", isOn: Binding(get: { model.openAtLogin }, set: { model.setOpenAtLogin($0) }))
-                if model.loginNeedsApproval {
-                    HStack {
-                        Text("macOS needs you to approve it in Login Items.").font(.callout).foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Approve in Login Items") { SMAppService.openSystemSettingsLoginItems() }
-                    }
-                }
-            }
-
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .padding(24)
             Divider()
             HStack {
                 Text("Full screen works as usual; switching workspaces takes a window out of it first. Change anything later from the menu bar icon.")
                     .font(.footnote).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 Spacer()
                 Button("Done", action: close).keyboardShortcut(.defaultAction)
             }
+            .padding(.horizontal, 24).padding(.vertical, 14)
         }
-        .padding(24)
-        .frame(width: 520)
+        .frame(width: 560)
+    }
+
+    // MARK: General
+
+    @ViewBuilder private var general: some View {
+        HStack(spacing: 14) {
+            Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 56, height: 56)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("BaneySpaces").font(.title2.bold())
+                Text("Nine workspaces. One row of keys.").foregroundStyle(.secondary)
+            }
+        }
+
+        if model.justEnabled && model.ready {
+            HStack(spacing: 10) {
+                Image(systemName: "checkmark.seal.fill").font(.title2).foregroundStyle(.green)
+                Text("BaneySpaces is on. Try \(model.modifier.symbol)2.").font(.title3.bold())
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Color.green.opacity(0.12)))
+        }
+
+        step(done: model.trusted, title: "Let BaneySpaces arrange windows") {
+            if model.trusted {
+                Text("Allowed.").foregroundStyle(.secondary)
+            } else {
+                Text("Accessibility lets BaneySpaces show, hide and move other apps' windows. It can't read what you type.")
+                    .foregroundStyle(.secondary)
+                Button(action: model.allow) {
+                    Text("Allow BaneySpaces").frame(minWidth: 160)
+                }
+                .controlSize(.large)
+                .buttonStyle(.borderedProminent)
+                Text("macOS opens its settings. Turn on BaneySpaces in the list and come back; this window updates by itself.")
+                    .font(.callout).foregroundStyle(.secondary)
+                if model.staleGrant {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Already switched on and still not working?").font(.callout.bold())
+                        Text("macOS kept an old permission from an earlier copy of BaneySpaces. Fixing it removes the old entry and asks again.")
+                            .font(.callout).foregroundStyle(.secondary)
+                        Button(model.fixing ? "Fixing…" : "Fix Permission", action: model.fixPermission)
+                            .disabled(model.fixing)
+                    }
+                    .padding(10)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.12)))
+                }
+            }
+        }
+
+        if model.aeroSpaceRunning {
+            step(done: false, title: "Quit AeroSpace") {
+                Text("AeroSpace is running and uses the same keys. BaneySpaces starts as soon as it quits.")
+                    .foregroundStyle(.secondary)
+                Button("Quit AeroSpace", action: model.quitAeroSpace)
+            }
+        }
+
+        if model.desktops > 1 {
+            step(done: false, title: "Optional: keep one macOS desktop") {
+                Text("You have \(model.desktops) desktops in Mission Control. Windows on the others are out of reach. Open Mission Control, hover each extra desktop at the top, and click its close button.")
+                    .foregroundStyle(.secondary)
+                Button("Open Mission Control") {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Mission Control.app"))
+                }
+            }
+        }
+
+        step(done: model.openAtLogin, title: "Start with your Mac") {
+            Toggle("Open BaneySpaces at login", isOn: Binding(get: { model.openAtLogin }, set: { model.setOpenAtLogin($0) }))
+            if model.loginNeedsApproval {
+                HStack {
+                    Text("macOS needs you to approve it in Login Items.").font(.callout).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Approve in Login Items") { SMAppService.openSystemSettingsLoginItems() }
+                }
+            }
+        }
+
+        step(done: true, title: "Uninstall", symbol: "trash") {
+            HStack(alignment: .top, spacing: 12) {
+                Text("Puts back your windows, the macOS Dock, the screenshot and Spotlight shortcuts and your Claude Code settings as they were, then removes BaneySpaces.")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                Button("Uninstall BaneySpaces…") { model.onUninstall?() }
+            }
+        }
+    }
+
+    // MARK: Keys
+
+    @ViewBuilder private var keys: some View {
+        section("Workspace keys") {
+            Picker("", selection: Binding(get: { model.modifier }, set: { model.pick($0) })) {
+                ForEach(Modifier.allCases) { Text($0.symbol).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 220)
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
+                GridRow { Text("\(model.modifier.symbol)1 – \(model.modifier.symbol)9").monospaced(); Text("go to a workspace") }
+                GridRow { Text("\(model.modifier.symbol)⇧1 – \(model.modifier.symbol)⇧9").monospaced(); Text("send the front window there") }
+            }
+            Text(model.modifier.tradeoff).font(.callout).foregroundStyle(.secondary)
+            ForEach(model.conflicts, id: \.self) { c in
+                HStack {
+                    Text(c).font(.callout).foregroundStyle(.secondary)
+                    Spacer()
+                    Button(model.freeing ? "Working…" : "Free Them", action: model.freeShortcuts).disabled(model.freeing)
+                }
+            }
+            if model.screenshotsFreed && model.conflicts.isEmpty {
+                HStack {
+                    Text("macOS's own shortcuts for these keys are off.").font(.callout).foregroundStyle(.secondary)
+                    Spacer()
+                    Button(model.freeing ? "Working…" : "Turn Them Back On", action: model.restoreShortcuts).disabled(model.freeing)
+                }
+            }
+        }
+
+        section("See every workspace at once") {
+            Toggle("The Mission Control key and ⌃↑ open BaneySpaces' overview", isOn: Binding(get: { model.viewerKeys }, set: { model.setViewerKeys($0) }))
+            if model.viewerKeysFailed {
+                Text("macOS didn't let BaneySpaces watch those keys, so they still open Mission Control. Turn the switch off and on to try again. The overview is always in the menu bar menu.")
+                    .font(.callout).foregroundStyle(.orange)
+            } else {
+                Text("Turn this off to give both keys back to Mission Control and to apps that use ⌃↑. The overview stays in the menu bar menu.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+        }
+
+        section("⌘Tab") {
+            Picker("⌘Tab switches", selection: Binding(get: { model.cmdTab }, set: { model.setCmdTab($0) })) {
+                ForEach(MissionControlKeys.CmdTabMode.allCases) { Text($0.title).tag($0) }
+            }
+            .fixedSize()
+            Text(cmdTabNote).font(.callout).foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: Dock
+
+    @ViewBuilder private var dock: some View {
+        section("Workspace Dock") {
+            Toggle("Workspace Dock in place of the macOS Dock", isOn: Binding(get: { model.workspaceDock }, set: { model.setWorkspaceDock($0) }))
+            Text("Rest the pointer on the dock's edge of the screen to see your workspaces, each with its apps; click one to go there. At the top it waits a moment longer, so reaching for the menu bar doesn't bring it up. The macOS Dock stays out of sight while this is on and comes back as it was when you turn it off or quit BaneySpaces.")
+                .font(.callout).foregroundStyle(.secondary)
+            Picker("Position on screen", selection: Binding(get: { model.dockEdge }, set: { model.dockEdge = $0; model.onDockEdgeChange?($0) })) {
+                ForEach(DockEdge.allCases, id: \.self) { Text($0.title).tag($0) }
+            }
+            .fixedSize().disabled(!model.workspaceDock)
+        }
+
+        section("Agent status") {
+            Toggle("Show what coding agents are doing on their app icons", isOn: Binding(get: { model.dockAgentStatus }, set: { model.setDockAgentStatus($0) }))
+                .disabled(!model.workspaceDock)
+            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 7) {
+                legend(AgentStatusBadge(state: .working, size: 16), "Working")
+                legend(AgentStatusBadge(state: .asking, size: 16), "Asking you something, such as a permission")
+                legend(AgentStatusBadge(state: .failed, size: 16), "Stopped on an error")
+                legend(Text("1").font(.system(size: 10, weight: .heavy, design: .rounded)).foregroundStyle(.white)
+                        .frame(width: 16, height: 16).background(Circle().fill(Color.orange)),
+                       "Finished while you were away (on the workspace's corner)")
+            }
+            .opacity(model.dockAgentStatus && model.workspaceDock ? 1 : 0.4)
+            Text("Click an app with a badge to go straight to that agent's tab. Off, the dock shows apps only.")
+                .font(.callout).foregroundStyle(.secondary)
+            if !model.hooksOK {
+                HStack {
+                    Text("Claude Code and Grok don't report to BaneySpaces yet, so only their terminal titles show.")
+                        .font(.callout).foregroundStyle(.orange)
+                    Spacer()
+                    Button("Install Hooks", action: model.installHooks).disabled(!model.deck)
+                }
+            }
+        }
+    }
+
+    private func legend<Badge: View>(_ badge: Badge, _ text: String) -> some View {
+        GridRow {
+            badge.frame(width: 18, alignment: .center)
+            Text(text).font(.callout)
+        }
+    }
+
+    // MARK: Launcher
+
+    @ViewBuilder private var launcher: some View {
+        section("Find and install apps") {
+            Toggle("⌘Space opens the BaneySpaces launcher instead of Spotlight", isOn: Binding(get: { model.launcherOnCmdSpace }, set: { model.setLauncher($0) }))
+            Text("Open apps, install and remove them, search the web and ask an agent, from one box. Off gives ⌘Space back to Spotlight; the launcher stays in the menu bar and the Workspace Dock.")
+                .font(.callout).foregroundStyle(.secondary)
+            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 6) {
+                GridRow {
+                    Text("Search the web with")
+                    Picker("", selection: $model.searchEngine) { ForEach(Bangs.engines, id: \.trigger) { Text($0.name).tag($0.trigger) } }
+                        .labelsHidden().fixedSize()
+                }
+                GridRow {
+                    Text("Ask questions (?) with")
+                    Picker("", selection: $model.agent) { ForEach(Bangs.agents, id: \.trigger) { Text($0.name).tag($0.trigger) } }
+                        .labelsHidden().fixedSize()
+                }
+            }
+            Text("Type !yt cats, !i sunsets or ? a question. Type ! to see every bang.")
+                .font(.callout).foregroundStyle(.secondary)
+        }
+        section("Your bangs\(model.customBangs.isEmpty ? "" : " (\(model.customBangs.count))")") { bangEditor }
+    }
+
+    // MARK: Deck
+
+    @ViewBuilder private var deckTab: some View {
+        section("Terminal and Agent Deck") {
+            Toggle("A sidebar of every terminal, browser tab and coding agent", isOn: Binding(get: { model.deck }, set: { model.setDeck($0) }))
+            Text("Rest the pointer on the left edge in a terminal, browser or agent app, or press ⌃⌘B. ⌃⌘K goes to anything in it; ⌃⌘U jumps to the agent that finished last. The Workspace Dock's agent badges come from here.")
+                .font(.callout).foregroundStyle(.secondary)
+        }
+        section("Agent hooks") {
+            if model.hooks == .noClaudeCode {
+                Text("Claude Code isn't set up on this Mac (there's no ~/.claude/settings.json). Once it is, install the hooks here.")
+                    .font(.callout).foregroundStyle(.secondary)
+                Button("Install Claude Code and Grok Hooks", action: model.installHooks).disabled(!model.deck)
+            } else if model.hooks == .unreadable {
+                Text("~/.claude/settings.json isn't valid JSON, so BaneySpaces leaves it alone. Fix it, then come back here.")
+                    .font(.callout).foregroundStyle(.orange)
+            } else if model.hooks == .on {
+                Label("Claude Code and Grok report to BaneySpaces.", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            } else {
+                Text("Hooks let Claude Code and Grok say when they start, finish, ask for permission or hit an error. Without them BaneySpaces reads only terminal titles.")
+                    .font(.callout).foregroundStyle(.secondary)
+                Button("Install Claude Code and Grok Hooks", action: model.installHooks).disabled(!model.deck)
+            }
+        }
+    }
+
+    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.headline)
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // Notes wrap instead of trailing off.
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     /// Your own bangs: each a trigger, a name and an address with {q} where the words go.
     private var bangEditor: some View {
         VStack(alignment: .leading, spacing: 6) {
-            ForEach(model.customBangs, id: \.trigger) { b in
-                HStack {
-                    Text("!\(b.trigger)").monospaced().frame(width: 70, alignment: .leading)
-                    Text(b.name + (b.isAgent ? " (agent)" : "")).lineLimit(1)
-                    Text(b.url).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                    Spacer()
-                    Button { model.removeBang(b.trigger) } label: { Image(systemName: "minus.circle") }
-                        .buttonStyle(.borderless).help("Remove !\(b.trigger)")
+            // Past six, the list scrolls, so the window never runs off a laptop screen.
+            ScrollView {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(model.customBangs, id: \.trigger) { b in
+                        HStack {
+                            Text("!\(b.trigger)").monospaced().frame(width: 70, alignment: .leading)
+                            Text(b.name + (b.isAgent ? " (agent)" : "")).lineLimit(1)
+                            Text(b.url).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                            Spacer()
+                            Button { model.removeBang(b.trigger) } label: { Image(systemName: "minus.circle") }
+                                .buttonStyle(.borderless).help("Remove !\(b.trigger)")
+                        }
+                    }
                 }
             }
+            .frame(height: model.customBangs.isEmpty ? 0 : CGFloat(min(model.customBangs.count, 6)) * 22)
             HStack {
                 TextField("trigger", text: $model.newTrigger).frame(width: 70)
                 TextField("Name", text: $model.newName).frame(width: 100)
@@ -445,11 +609,12 @@ struct SetupView: View {
         }
     }
 
-    private func step<Content: View>(done: Bool, title: String, @ViewBuilder content: () -> Content) -> some View {
+    private func step<Content: View>(done: Bool, title: String, symbol: String? = nil, @ViewBuilder content: () -> Content) -> some View {
         HStack(alignment: .top, spacing: 12) {
-            Image(systemName: done ? "checkmark.circle.fill" : "circle")
+            Image(systemName: symbol ?? (done ? "checkmark.circle.fill" : "circle"))
                 .font(.title3)
-                .foregroundStyle(done ? Color.green : Color.secondary)
+                .foregroundStyle(symbol != nil ? Color.secondary : done ? Color.green : Color.secondary)
+                .frame(width: 22)
             VStack(alignment: .leading, spacing: 8) {
                 Text(title).font(.headline)
                 content()
@@ -461,6 +626,7 @@ struct SetupView: View {
 final class SetupWindowController: NSWindowController, NSWindowDelegate {
     let model = SetupModel()
     private var activeObserver: NSObjectProtocol?
+    private var sizing: AnyCancellable?
 
     convenience init() {
         let window = NSWindow(contentRect: .zero, styleMask: [.titled, .closable], backing: .buffered, defer: false)
@@ -468,11 +634,30 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         window.title = "BaneySpaces Settings"
         window.delegate = self
         let host = NSHostingView(rootView: SetupView(model: model) { [weak window] in window?.close() })
-        // The window grows and shrinks with the steps shown.
-        host.sizingOptions = [.preferredContentSize]
+        // Its size comes from the content. With .preferredContentSize the hosting view reported
+        // 0×0 on macOS 27 and the window opened invisible (2026-10-16, on main too).
+        host.sizingOptions = [.intrinsicContentSize]
         window.contentView = host
         window.setContentSize(host.fittingSize)
         window.center()
+        // The window grows and shrinks with the tab and the steps shown, its top edge holding still.
+        // Many changes land at once (the 0.25 s permission check reassigns several), so they're
+        // folded into one refit per pass of the main loop.
+        var pending = false
+        sizing = model.objectWillChange.sink { [weak window, weak host] _ in
+            guard !pending else { return }
+            pending = true
+            DispatchQueue.main.async {
+                pending = false
+                guard let window, let host else { return }
+                host.layoutSubtreeIfNeeded()
+                let size = host.fittingSize
+                guard size.height > 0, size != window.contentRect(forFrameRect: window.frame).size else { return }
+                let frame = window.frameRect(forContentRect: NSRect(origin: .zero, size: size))
+                window.setFrame(NSRect(x: window.frame.minX, y: window.frame.maxY - frame.height, width: frame.width, height: frame.height),
+                                display: true, animate: window.isVisible)
+            }
+        }
         // On grant: come forward, celebrate, then get out of the way.
         model.onReady = { [weak self] in
             NSApp.activate(ignoringOtherApps: true)
@@ -494,6 +679,9 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
 
     func show() {
         model.justEnabled = false
+        if !model.ready { model.tab = .general }
+        model.deck = DeckController.enabled
+        model.dockAgentStatus = WorkspaceDock.agentStatus
         model.reload()
         model.reloadBangs()
         model.startWatching()

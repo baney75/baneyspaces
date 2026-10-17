@@ -396,14 +396,32 @@ build says so, since a new key means allowing BaneySpaces again (setup's Fix Per
 
 ## Uninstall
 
+In BaneySpaces: **Settings > General > Uninstall BaneySpaces…** (also in the menu bar icon's
+Options). Or in Terminal:
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/baney75/baneyspaces/main/uninstall.sh | bash
 ```
 
-BaneySpaces quits first, which brings every hidden window and app back; if it won't quit, the
-uninstaller stops without deleting anything. Then it turns the screenshot shortcuts back on if
-setup turned them off, and removes the app, its settings, its local signing key and its
-Accessibility entry.
+Both run the same script. BaneySpaces quits first, which brings every hidden window and app
+back; if it won't quit, the uninstaller stops without deleting anything. Then it puts back what
+BaneySpaces changed:
+
+- the macOS Dock's own hide settings, if the Workspace Dock had it out of sight
+- macOS's screenshot and Spotlight shortcuts, if setup or the launcher turned them off
+- Claude Code's `~/.claude/settings.json`: only BaneySpaces' hooks come out; your own hooks and
+  settings stay. Its first backup, from before BaneySpaces touched the file, stays beside it as
+  `settings.json.baneyspaces-backup`.
+- AeroSpace opening at login, if the installer turned that off
+
+Ghostdeck, which BaneySpaces replaced, isn't put back: the installer moved Ghostdeck.app to the
+Trash and its hooks became BaneySpaces' own, so both come out here.
+
+And it removes the app, its login item, its Accessibility entry, its settings and local signing
+key, the `baneyspaces` and `ghostdeck` commands in `~/.local/bin`, its Grok hook file and its
+agent skill. Running it twice is safe. If something can't be put back (say the app was already
+emptied from the Trash, so the shortcuts can't be turned back on), it still removes the rest,
+lists what needs a hand, and keeps its record of it.
 
 ## License
 

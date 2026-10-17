@@ -54,18 +54,17 @@ final class DeckController {
 
     /// Set by the app delegate: the menu bar badge shows how many agents finished unseen.
     var onUnseenChange: (Int) -> Void = { _ in }
-    /// Which rows are working changed, so the Workspace Dock's badges can follow.
+    /// Which rows are working, asking or stopped changed, so the Workspace Dock's badges can follow.
     var onWorkingChange: () -> Void = {}
-    private var lastWorking: Set<String> = []
+    private var lastWorking: [String: String] = [:]
 
-    /// Agents working or finished unseen, for the Workspace Dock: each with its window, so the
+    /// Agents working, asking, stopped on an error or finished unseen, for the Workspace Dock: each with its window, so the
     /// dock can badge the app it runs in and go straight to it.
     /// Finished ones come in the order ⌘⇧U visits them, so a tile's badge goes to the same one.
     func dockAgents() -> [DockAgent] {
         let unseen = engine.attention.unseen
         let agents = engine.items.compactMap { item -> DockAgent? in
-            let state: DockAgent.State
-            if unseen.contains(item.id) { state = .done } else if item.activity == .working { state = .working } else { return nil }
+            guard let state = DockAgent.State.of(activity: item.activity, unseen: unseen.contains(item.id), notice: item.notice) else { return nil }
             let name = item.agent.isEmpty ? item.appName : item.agent.prefix(1).uppercased() + item.agent.dropFirst()
             return DockAgent(id: item.id, window: item.windowNumber, workspace: item.workspace, state: state, name: name,
                              task: Activity.label(of: item.title))
@@ -199,7 +198,8 @@ final class DeckController {
             toast.show(item, more: fresh.count - 1, on: DeckLayout.activeScreen())
         }
         if unseen != lastUnseen { onUnseenChange(unseen.count) }
-        let working = Set(engine.items.filter { $0.activity == .working }.map(\.id))
+        let working = Dictionary(engine.items.filter { $0.activity == .working || !$0.notice.isEmpty }
+            .map { ($0.id, $0.activity == .working ? "" : $0.notice) }) { a, _ in a }
         if working != lastWorking { lastWorking = working; onWorkingChange() }
         lastUnseen = unseen
         if let f = engine.items.first(where: \.focused), f.id != currentFocus?.id {

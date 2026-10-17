@@ -64,7 +64,8 @@ enum Hooks {
         var lines: [String] = []
         if let settings = load(claudeURL) {
             do {
-                try save(HookSettings.removing(settings), to: claudeURL, backup: true)
+                // No backup: the one worth keeping is from before BaneySpaces, made when it installed.
+                try save(HookSettings.removing(settings), to: claudeURL, backup: false)
                 lines.append("removed the Deck's hooks from ~/.claude/settings.json")
             } catch { lines.append("couldn't write settings: \(error.localizedDescription)") }
         }

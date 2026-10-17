@@ -31,10 +31,44 @@ public enum DockTiles {
     }
 }
 
-/// A coding agent the Workspace Dock shows on a tile: one at work, or one that finished while
-/// you weren't looking.
+/// A coding agent the Workspace Dock shows on a tile: one at work, one asking you something or
+/// stopped on an error, or one that finished while you weren't looking.
 public struct DockAgent: Equatable, Sendable {
-    public enum State: Equatable, Sendable { case working, done }
+    public enum State: Equatable, Sendable {
+        case working
+        /// Finished while you weren't looking.
+        case done
+        /// Stopped to ask you something: a permission, a question, `baneyspaces notify`.
+        case asking
+        /// Stopped on an error.
+        case failed
+
+        /// What a Deck row shows on the dock: `unseen` is the Deck's "finished while you were
+        /// away", `notice` what the agent last said. Asking and failed stay while you're elsewhere,
+        /// since they wait on you, and go once you've looked at the row (`AnsweredQuestions`) or
+        /// the agent moves on; a plain finish goes once you've looked. Nil for none.
+        public static func of(activity: Activity, unseen: Bool, notice: String) -> State? {
+            if activity == .working { return .working }
+            if notice == AgentEvent.failedMessage { return .failed }
+            // A notice only outlives the wait it came with when it's `baneyspaces notify`'s,
+            // which also needs you.
+            if !notice.isEmpty { return .asking }
+            return unseen ? .done : nil
+        }
+
+        /// Which one an app or tile shows when it has several: what needs you most comes first.
+        public var urgency: Int {
+            switch self {
+            case .asking: 3
+            case .failed: 2
+            case .done: 1
+            case .working: 0
+            }
+        }
+
+        /// Not working: it's stopped and waiting on you, so a click goes to it.
+        public var needsYou: Bool { self != .working }
+    }
 
     /// The Deck row it runs in, so a click can go to its very tab or split.
     public let id: String
@@ -57,7 +91,12 @@ public struct DockAgent: Equatable, Sendable {
 
     /// "Claude working: Fix the flaky upload test", for the dock's label.
     public var summary: String {
-        let verb = state == .working ? "working" : "finished"
+        let verb = switch state {
+        case .working: "working"
+        case .done: "finished"
+        case .asking: "needs you"
+        case .failed: "stopped on an error"
+        }
         guard !task.isEmpty else { return "\(name) \(verb)" }
         let short = task.count > Self.taskLimit ? task.prefix(Self.taskLimit - 1).trimmingCharacters(in: .whitespaces) + "…" : task
         return "\(name) \(verb): \(short)"

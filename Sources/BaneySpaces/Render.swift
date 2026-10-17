@@ -77,7 +77,14 @@ enum Render {
         setup.openAtLogin = true
         setup.viewerKeys = true
         guard save(SetupView(model: setup, close: {}).background(Color(nsColor: .windowBackgroundColor)),
-                   "setup.png", CGSize(width: 520, height: 0)) else { return 1 }
+                   "setup.png", CGSize(width: 560, height: 0)) else { return 1 }
+        // Each settings tab, for checks.
+        for tab in SettingsTab.allCases.dropFirst() {
+            setup.tab = tab
+            guard save(SetupView(model: setup, close: {}).background(Color(nsColor: .windowBackgroundColor)),
+                       "setup-\(tab.rawValue.lowercased()).png", CGSize(width: 560, height: 0)) else { return 1 }
+        }
+        setup.tab = .general
         // The ⌘Tab workspace switcher, second tile selected.
         let switcher = SwitcherModel()
         let icon = { (path: String) in NSWorkspace.shared.icon(forFile: path) }
@@ -117,6 +124,25 @@ enum Render {
         ]
         dock.hover = .app(1, "1Terminal")
         guard save(DockView(model: dock).padding(.vertical, 20).background(Color(white: 0.35)), "dock.png", CGSize(width: 820, height: 0)) else { return 1 }
+
+        // Every agent badge: working on 1, asking on 2, an error on 3, a finish on 4.
+        let agentDock = DockModel()
+        func agent(_ n: Int, _ state: DockAgent.State, _ name: String, _ path: String) -> DockModel.Tile {
+            var a = app(n, name, path)
+            let ag = DockAgent(id: "\(n)", window: WindowID(n), workspace: n, state: state, name: "Claude", task: "Fix the build")
+            a.agent = ag
+            var t = DockModel.Tile(id: n, apps: [a, app(n, "Notes", "/System/Applications/Notes.app")], isCurrent: n == 1)
+            t.agents = [ag]
+            return t
+        }
+        // Two agents in one app: its icon shows the one asking, and nothing doubles up in the corner.
+        var both = agent(5, .asking, "Terminal", "/System/Applications/Utilities/Terminal.app")
+        both.agents.append(DockAgent(id: "5b", window: 55, workspace: 5, state: .working, name: "Claude", task: "Run the tests"))
+        agentDock.tiles = [agent(1, .working, "Terminal", "/System/Applications/Utilities/Terminal.app"),
+                           agent(2, .asking, "Terminal", "/System/Applications/Utilities/Terminal.app"),
+                           agent(3, .failed, "Terminal", "/System/Applications/Utilities/Terminal.app"),
+                           agent(4, .done, "Terminal", "/System/Applications/Utilities/Terminal.app"), both]
+        guard save(DockView(model: agentDock).padding(.vertical, 20).background(Color(white: 0.35)), "dock-agents.png", CGSize(width: 820, height: 0)) else { return 1 }
 
         // The switch HUD, landing on workspace 4.
         let hud = HUDModel()

@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         d.onShowLauncher = { [weak self] in self?.launcher.show() }
         d.onSetEdge = { [weak self] e in self?.setDockEdge(e) }
         d.onTurnOff = { [weak self] in self?.setWorkspaceDock(false) }
+        d.onSetAgentStatus = { [weak self] on in self?.setDockAgentStatus(on) }
         d.model.agents = { [weak self] in
             guard let self, self.deck.started else { return [] }
             return self.deck.dockAgents()
@@ -81,6 +82,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private lazy var setup: SetupWindowController = {
         let c = SetupWindowController()
         c.model.onModifierChange = { [weak self] _ in self?.registerShortcuts() }
+        c.model.onUninstall = { [weak self] in self?.uninstall() }
         c.model.viewerKeysActive = { [weak self] in self?.missionControlKeys.isActive ?? false }
         c.model.onViewerKeysChange = { [weak self] on in
             MissionControlKeys.enabled = on
@@ -89,6 +91,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         c.model.onWorkspaceDockChange = { [weak self] on in self?.setWorkspaceDock(on) }
         c.model.onDockEdgeChange = { [weak self] e in self?.setDockEdge(e) }
+        c.model.onDockAgentStatusChange = { [weak self] on in self?.setDockAgentStatus(on) }
+        c.model.onDeckChange = { [weak self] on in if DeckController.enabled != on { self?.toggleDeck() } }
+        // Every event, not just any: an older install lacks StopFailure, which the red badge needs.
+        c.model.hooksInstalled = {
+            guard let d = FileManager.default.contents(atPath: NSHomeDirectory() + "/.claude/settings.json") else { return .noClaudeCode }
+            guard let settings = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else { return .unreadable }
+            return HookSettings.installed(settings).count == HookSettings.events.count ? .on : .off
+        }
+        c.model.onInstallHooks = { [weak self] in self?.deck.installHooks() }
         c.model.onLauncherChange = { [weak self] on in self?.setLauncherOnCmdSpace(on) }
         c.model.onCmdTabChange = { [weak self] mode in
             MissionControlKeys.cmdTabMode = mode
@@ -110,13 +121,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if CommandLine.arguments.contains("--restore-shortcuts") {
             SystemShortcuts.restore()
             SystemShortcuts.spotlightQueue.sync { SystemShortcuts.restoreSpotlight() }
-            exit(0)
+            // Still recorded means still off: the uninstaller says so instead of claiming success.
+            let left = !(UserDefaults.standard.array(forKey: "freedShortcuts") ?? []).isEmpty || SystemShortcuts.spotlightFreed
+            exit(left ? 1 : 0)
         }
         // `BaneySpaces --restore-dock`: the uninstaller's way to put the macOS Dock back if the
         // Workspace Dock had it out of sight.
         if CommandLine.arguments.contains("--restore-dock") {
             SystemDock.restore()
             exit(0)
+        }
+        // `BaneySpaces --check-settings`: opens the settings window on each tab and exits 1 if any
+        // comes up empty or taller than the screen. It opened 0×0, invisible, on macOS 27.
+        if CommandLine.arguments.contains("--check-settings") {
+            // The app's own controller, wired as the app wires it.
+            let c = setup
+            c.show()
+            let screen = NSScreen.main?.visibleFrame.height ?? 800
+            var ok = true
+            var heights = Set<Int>()
+            for t in SettingsTab.allCases {
+                c.model.tab = t
+                RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+                let f = c.window!.frame
+                let fits = f.width >= 400 && f.height >= 200 && f.height <= screen
+                print("\(t.rawValue): \(Int(f.width))×\(Int(f.height))\(fits ? "" : "  FAIL")")
+                ok = ok && fits
+                heights.insert(Int(f.height))
+            }
+            // Every tab the same height means the window never refit to its tab.
+            if heights.count < 2 { print("FAIL: every tab is \(heights.first ?? 0) tall; the window didn't refit"); ok = false }
+            exit(ok ? 0 : 1)
+        }
+        // `BaneySpaces --unregister-login`: the uninstaller's way to take it out of Login Items.
+        if CommandLine.arguments.contains("--unregister-login") {
+            // Never registered is as good as removed.
+            let app = SMAppService.mainApp
+            if app.status == .notRegistered || app.status == .notFound { exit(0) }
+            exit((try? app.unregister()) != nil ? 0 : 1)
         }
         NSAppleEventManager.shared().setEventHandler(self, andSelector: #selector(handleURL(_:reply:)),
                                                      forEventClass: AEEventClass(kInternetEventClass),
@@ -336,7 +378,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleDeck() {
         DeckController.enabled.toggle()
         if DeckController.enabled { startDeck() } else { deck.stop() }
+        if setup.model.deck != DeckController.enabled { setup.model.deck = DeckController.enabled }
         updateIcon()
+        dock.reload()
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -402,6 +446,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             pos.submenu = edges
             sub.addItem(pos)
+            let status = item("Agent Status on the Dock", #selector(toggleDockAgentStatus))
+            status.state = WorkspaceDock.agentStatus ? .on : .off
+            status.indentationLevel = 1
+            status.toolTip = "Badges on app icons: a turning ring while an agent works, a yellow ? when it asks you something, a red ! when it stops on an error, an orange count when it finishes."
+            sub.addItem(status)
         }
         let deckItem = item("Terminal and Agent Deck", #selector(toggleDeck))
         deckItem.state = DeckController.enabled ? .on : .off
@@ -416,6 +465,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let back = item("Bring Every Window Back", #selector(bringBack))
         back.toolTip = "Gathers every window onto workspace 1, all visible."
         sub.addItem(back)
+        sub.addItem(.separator())
+        let remove = item("Uninstall BaneySpaces…", #selector(uninstall))
+        remove.toolTip = "Puts back your windows, Dock, shortcuts and agent settings, then removes BaneySpaces."
+        sub.addItem(remove)
         parent.submenu = sub
         return parent
     }
@@ -470,6 +523,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func setDockEdge(_ e: DockEdge) {
         dock.setEdge(e)
         if setup.model.dockEdge != e { setup.model.dockEdge = e }
+    }
+
+    /// Asks, then hands off to the bundled uninstall.sh and quits; quitting brings every window
+    /// back, and the script waits for that before it removes anything.
+    @objc private func uninstall() {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Uninstall BaneySpaces?"
+        alert.informativeText = Uninstaller.summary
+        alert.addButton(withTitle: "Uninstall")
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons[0].hasDestructiveAction = true
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        do {
+            try Uninstaller.start()
+            NSApp.terminate(nil)
+        } catch {
+            let fail = NSAlert()
+            fail.messageText = "BaneySpaces couldn't start the uninstaller"
+            fail.informativeText = "\(error.localizedDescription)\n\nRun this in Terminal instead:\n\(Uninstaller.command)"
+            fail.runModal()
+        }
+    }
+
+    @objc private func toggleDockAgentStatus() { setDockAgentStatus(!WorkspaceDock.agentStatus) }
+
+    /// Shows or hides agent badges on the Workspace Dock; settings and the menu follow.
+    func setDockAgentStatus(_ on: Bool) {
+        WorkspaceDock.agentStatus = on
+        dock.model.agentStatus = on
+        if setup.model.dockAgentStatus != on { setup.model.dockAgentStatus = on }
+        dock.reload()
     }
 
     /// Turns the Workspace Dock on or off; off brings the macOS Dock back as it was.

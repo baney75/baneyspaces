@@ -17,6 +17,8 @@ cp "$BIN" "$APP/Contents/MacOS/BaneySpaces"
 # beside "BaneySpaces" in MacOS.
 cp "$(dirname "$BIN")/baneyspaces-cli" "$APP/Contents/Resources/bin/baneyspaces"
 cp skill/SKILL.md "$APP/Contents/Resources/skill/SKILL.md"
+# Settings' Uninstall runs the same script as the README.
+cp uninstall.sh "$APP/Contents/Resources/uninstall.sh"
 
 swift scripts/make-icon.swift build/BaneySpaces.iconset
 iconutil -c icns build/BaneySpaces.iconset -o "$APP/Contents/Resources/BaneySpaces.icns"
@@ -49,7 +51,11 @@ if [ "${1:-}" = "--install" ]; then
   fi
   # Two workspace managers on the same keys fight, so AeroSpace steps aside: it quits, it stops
   # opening at login, and its config stops re-adding it. The app itself stays installed.
+  # Each change is written down first, so uninstall.sh can put it back.
+  STATE="$HOME/Library/Application Support/BaneySpaces"
+  mkdir -p "$STATE"
   if [ -f "$HOME/.aerospace.toml" ] && grep -q '^start-at-login *= *true' "$HOME/.aerospace.toml"; then
+    touch "$STATE/aerospace-start-at-login"
     sed -i '' 's/^start-at-login *= *true/start-at-login = false/' "$HOME/.aerospace.toml"
   fi
   if pgrep -xq AeroSpace; then
@@ -60,6 +66,8 @@ if [ "${1:-}" = "--install" ]; then
       exit 1
     fi
   fi
+  aero=$(osascript -e 'tell application "System Events" to get the path of login item "AeroSpace"' 2>/dev/null || true)
+  [ -n "$aero" ] && printf '%s' "$aero" > "$STATE/aerospace-login-item"
   osascript -e 'tell application "System Events" to delete login item "AeroSpace"' >/dev/null 2>&1 || true
   if osascript -e 'tell application "System Events" to get the name of every login item' 2>/dev/null | grep -q AeroSpace; then
     echo "warning: AeroSpace is still a login item; remove it in System Settings › General › Login Items." >&2
