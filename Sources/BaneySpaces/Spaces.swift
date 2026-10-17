@@ -36,6 +36,12 @@ final class Spaces {
     /// `offscreen` is the known windows of shown apps that weren't on screen: one joining them
     /// may have been closed (see `closedWindows`), so it's worth a scan.
     private var lastScan: (windows: Set<WindowID>, pids: Set<pid_t>, unsure: Set<pid_t>, offscreen: Set<WindowID>)?
+    /// What the last scan listed that isn't a standard window, so a skipped refresh can tell a
+    /// window the scan missed (see `ScanCheck`) from a sheet or panel; and the on-screen windows
+    /// scans couldn't place, each with its next look.
+    private var notWindows = Set<WindowID>()
+    private var unplaced = UnplacedWindows()
+    private var heal: DispatchWorkItem?
     /// Windows that ignored every request to leave macOS full screen. Asking again only stalls.
     private var refusedFullScreen = Set<WindowID>()
     private lazy var watcher = FocusWatcher { [weak self] pid in self?.focusMovedWithin(pid) }
@@ -47,8 +53,17 @@ final class Spaces {
     /// Windows dropped as closed (see `closedWindows`), with their workspace and parked frame. A
     /// tab behind another tab looks closed too. When its app lists it again out of sight (the
     /// tab in front of a parked window closed), it goes back to its workspace. One that comes back
-    /// in sight was opened or picked here, and joins the workspace you're on like any new window.
+    /// in sight was opened or picked here, and joins the workspace you're on; it had a workspace
+    /// before, so new-window rules leave it alone (`placedBefore`).
     private var dormant: [WindowID: (pid: pid_t, workspace: Int, frame: CGRect?)] = [:]
+    /// Every window that has had a workspace, until the window server says it's gone. One coming
+    /// back after Accessibility dropped it is never treated as new: new-window rules could send
+    /// it to another workspace and hide it.
+    private var placedBefore = Set<WindowID>()
+    /// Windows that had a workspace, or will once they answer: placed before, waiting in the saved
+    /// layout at launch, or dormant. Each heals on the fast back-off (r5: a launch during an outage
+    /// left saved-layout windows on the 60 s one).
+    private var knownWindows: Set<WindowID> { placedBefore.union(pendingLayout.keys).union(dormant.keys) }
     /// Workspaces from most to least recently visited, for the ⌘Tab switcher.
     private(set) var recent: [Int] = [1]
     /// Windows agents asked for with `baneyspaces agent open` or `agent run`: the next window
@@ -141,17 +156,23 @@ final class Spaces {
         let pids = RunningApps.regular
         let snap = Windows.snapshot(apps: pids)
         clock.mark(.snap)
+        let offKnown = offscreenKnown(snap.offscreen)
+        let stray = ScanCheck.unplaced(onScreen: snap.onScreen, placed: Set(model.home.keys),
+                                       notWindows: notWindows, unsure: lastScan?.unsure ?? [])
         if !full, let last = lastScan, last.windows == snap.appWindows, last.pids == pids,
-           last.offscreen == offscreenKnown(snap.offscreen) {
+           last.offscreen == offKnown, !unplaced.due(stray, now: Date()) {
             prune(alive: snap.alive)
+            unplaced.keep(stray)
+            scheduleHeal()
             clock.scan = "skip"
             return
         }
         let firstScan = lastScan == nil
-        clock.scan = firstScan ? "first" : last(lastScan!, snap.appWindows, pids)
+        clock.scan = firstScan ? "first" : full ? "full" : last(lastScan!, snap.appWindows, pids, offKnown)
         RunningApps.invalidate()
         let pidsNow = RunningApps.regular
-        let (list, unsure, listed, partial) = Windows.all(owners: snap.owners)
+        let (list, unsure, listed, partial, nonStandard) = Windows.all(owners: snap.owners)
+        notWindows = nonStandard
         // A window the app closed but kept isn't one any more, though the window server says it's alive.
         let answered = pidsNow.intersection(snap.owners).subtracting(unsure).subtracting(partial)
         let closed = closedWindows(listed: listed, answered: answered, offscreen: snap.offscreen)
@@ -166,6 +187,7 @@ final class Spaces {
         var next = windows.filter { alive.contains($0.key) }
         for w in list { next[w.id] = w }
         windows = next
+        placedBefore.formIntersection(snap.alive)
         let added = model.sync(seen: list.map(\.id), alive: alive)
         prune(alive: alive)
         // A scan that skipped a busy app can't vouch for that app's windows. It's remembered, and
@@ -195,9 +217,11 @@ final class Spaces {
             fromLayout.insert(id)
             returned = returned || entry.workspace != model.current
         }
-        // At launch every window is new; the saved layout decides where they go.
+        // At launch every window is new; the saved layout decides where they go. A window that sat
+        // unplaced in plain sight while Accessibility was out isn't new either.
+        let now = Date()
         if !firstScan {
-            let fresh = added.filter { !fromLayout.contains($0) }
+            let fresh = added.filter { !fromLayout.contains($0) && unplaced.isNew($0, known: knownWindows, now: now) }
             returned = placeClaimed(fresh) || returned
             adoptBackgroundWindows(fresh)
         }
@@ -221,6 +245,11 @@ final class Spaces {
         for id in saved.frames.keys where model.workspace(of: id) == model.current {
             if let f = windows[id]?.frame, !Geometry.isStranded(f, screens: screens) { saved.frames[id] = nil }
         }
+        unplaced.scanned(unplaced: ScanCheck.unplaced(onScreen: snap.onScreen, placed: Set(model.home.keys),
+                                                      notWindows: notWindows, unsure: unsure),
+                         known: knownWindows, now: now)
+        placedBefore.formUnion(model.home.keys)
+        scheduleHeal()
     }
 
     /// A window that opens in a parked app (see `ParkedApps`) while that app stays in the
@@ -360,9 +389,9 @@ final class Spaces {
     }
 
     /// Why a full scan ran, for timing.log.
-    private func last(_ l: (windows: Set<WindowID>, pids: Set<pid_t>, unsure: Set<pid_t>, offscreen: Set<WindowID>), _ w: Set<WindowID>, _ p: Set<pid_t>) -> String {
+    private func last(_ l: (windows: Set<WindowID>, pids: Set<pid_t>, unsure: Set<pid_t>, offscreen: Set<WindowID>), _ w: Set<WindowID>, _ p: Set<pid_t>, _ off: Set<WindowID>) -> String {
         if l.pids != p { return "apps" }
-        if l.windows == w { return "offscreen" }
+        if l.windows == w { return l.offscreen == off ? "unplaced" : "offscreen" }
         return "windows+\(w.subtracting(l.windows).count)-\(l.windows.subtracting(w).count)"
     }
 
@@ -410,6 +439,28 @@ final class Spaces {
             self.refresh(full: true)
             self.persist()
         }
+    }
+
+    /// Looks again at unplaced windows when the first is due, without waiting for a switch or the
+    /// dock to ask. Each scan moves the time, so the timer follows the latest one.
+    private func scheduleHeal() {
+        heal?.cancel()
+        heal = nil
+        guard let due = unplaced.nextDue else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.active else { return }
+            if self.switching { return self.scheduleHeal() }
+            let before = self.model
+            self.refresh()
+            if self.model != before {
+                self.persist()
+                self.onChange?()
+            }
+            self.scheduleHeal()
+        }
+        heal = work
+        // Never sooner than a second: a look that's overdue yet not taken mustn't spin the timer.
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(1, due.timeIntervalSinceNow + 0.1), execute: work)
     }
 
     private func prune(alive: Set<WindowID>) {
