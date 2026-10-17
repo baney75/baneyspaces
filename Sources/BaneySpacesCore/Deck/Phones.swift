@@ -95,7 +95,7 @@ public enum DeviceCtl {
             let ready = simulator || tunnel == "connected" || (reachable && tunnel != "unavailable")
             let status = ready ? (transport == "wired" ? "USB" : transport == "localNetwork" ? "Wi-Fi" : "ready")
                 : !paired ? "not paired" : tunnel == "unavailable" ? "out of reach" : "not connected"
-            let tablet = (hw["deviceType"] as? String) == "iPad"
+            let tablet = (hw["deviceType"] as? String) == "iPad" && !simulator
             let fallback = tablet ? "iPad" : "iPhone"
             return Phone(platform: .ios, id: id, name: props["name"] as? String ?? hw["marketingName"] as? String ?? fallback,
                          model: (hw["marketingName"] as? String ?? fallback) + (simulator ? " Simulator" : ""),
