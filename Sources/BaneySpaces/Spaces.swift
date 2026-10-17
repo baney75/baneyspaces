@@ -55,6 +55,10 @@ final class Spaces {
     /// tab in front of a parked window closed), it goes back to its workspace. One that comes back
     /// in sight was opened or picked here, and joins the workspace you're on like any new window.
     private var dormant: [WindowID: (pid: pid_t, workspace: Int, frame: CGRect?)] = [:]
+    /// Every window that has had a workspace, until the window server says it's gone. One coming
+    /// back after Accessibility dropped it is never treated as new: new-window rules could send
+    /// it to another workspace and hide it.
+    private var placedBefore = Set<WindowID>()
     /// Workspaces from most to least recently visited, for the ⌘Tab switcher.
     private(set) var recent: [Int] = [1]
     /// Windows agents asked for with `baneyspaces agent open` or `agent run`: the next window
@@ -178,6 +182,7 @@ final class Spaces {
         var next = windows.filter { alive.contains($0.key) }
         for w in list { next[w.id] = w }
         windows = next
+        placedBefore.formIntersection(snap.alive)
         let added = model.sync(seen: list.map(\.id), alive: alive)
         prune(alive: alive)
         // A scan that skipped a busy app can't vouch for that app's windows. It's remembered, and
@@ -211,7 +216,7 @@ final class Spaces {
         // unplaced in plain sight while Accessibility was out isn't new either.
         let now = Date()
         if !firstScan {
-            let fresh = added.filter { !fromLayout.contains($0) && unplaced.isNew($0, now: now) }
+            let fresh = added.filter { !fromLayout.contains($0) && unplaced.isNew($0, known: placedBefore, now: now) }
             returned = placeClaimed(fresh) || returned
             adoptBackgroundWindows(fresh)
         }
@@ -236,7 +241,8 @@ final class Spaces {
             if let f = windows[id]?.frame, !Geometry.isStranded(f, screens: screens) { saved.frames[id] = nil }
         }
         unplaced.scanned(unplaced: ScanCheck.unplaced(onScreen: snap.onScreen, placed: Set(model.home.keys),
-                                                      notWindows: notWindows, unsure: unsure), now: now)
+                                                      notWindows: notWindows, unsure: unsure), known: placedBefore, now: now)
+        placedBefore.formUnion(model.home.keys)
         scheduleHeal()
     }
 

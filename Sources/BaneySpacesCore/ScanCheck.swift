@@ -16,12 +16,15 @@ public enum ScanCheck {
     }
 }
 
-/// On-screen windows that a scan looked at and couldn't place, each with its own back-off, so
-/// the model heals within 12 s of Accessibility coming back, while a window it never lists (an
-/// overlay) costs one background scan every 12 s instead of one on every switch.
+/// On-screen windows that a scan looked at and couldn't place, each with its own back-off. One
+/// that had a workspace before (Accessibility dropped it) is looked at again within 12 s, so the
+/// model heals soon after Accessibility comes back; one that never had a workspace (an overlay
+/// Accessibility never lists) settles to a look a minute instead of one on every switch.
 public struct UnplacedWindows: Equatable {
-    /// Seconds to the next look after each miss; the last repeats.
+    /// Seconds to the next look after each miss, for a window that had a workspace; the last repeats.
     public static let backoff: [TimeInterval] = [3, 6, 12]
+    /// The same for a window that never had one (r4 F3: an overlay cost a full scan every 12 s).
+    public static let backoffUnknown: [TimeInterval] = [3, 6, 12, 30, 60]
     /// A window first found unplaced this recently is still a new window, not one that sat in
     /// plain sight while Accessibility was out: Ghostty's appear before Accessibility lists them.
     public static let newFor: TimeInterval = 5
@@ -30,6 +33,7 @@ public struct UnplacedWindows: Equatable {
         var firstSeen: Date
         var misses: Int
         var next: Date
+        var known: Bool
     }
 
     private var entries: [WindowID: Entry] = [:]
@@ -37,19 +41,22 @@ public struct UnplacedWindows: Equatable {
     public init() {}
 
     /// Records a scan. `unplaced` is what it left on screen with no workspace; everything else is
-    /// forgotten. Only a window's due look counts as a miss: a scan that ran early for another
-    /// reason (an app launching, a window opening) leaves its next look where it was, so a burst
-    /// of scans during a short outage doesn't push it out.
-    public mutating func scanned(unplaced: Set<WindowID>, now: Date) {
+    /// forgotten. `known` are windows that had a workspace before. Only a window's due look counts
+    /// as a miss: a scan that ran early for another reason (an app launching, a window opening)
+    /// leaves its next look where it was, so a burst of scans during a short outage doesn't push it out.
+    public mutating func scanned(unplaced: Set<WindowID>, known: Set<WindowID> = [], now: Date) {
         keep(unplaced)
         for id in unplaced {
+            let isKnown = known.contains(id)
             guard var e = entries[id] else {
-                entries[id] = Entry(firstSeen: now, misses: 0, next: now.addingTimeInterval(Self.backoff[0]))
+                entries[id] = Entry(firstSeen: now, misses: 0, next: now.addingTimeInterval(Self.backoff[0]), known: isKnown)
                 continue
             }
-            guard e.next <= now else { continue }
+            e.known = e.known || isKnown
+            guard e.next <= now else { entries[id] = e; continue }
             e.misses += 1
-            e.next = now.addingTimeInterval(Self.backoff[min(e.misses, Self.backoff.count - 1)])
+            let steps = e.known ? Self.backoff : Self.backoffUnknown
+            e.next = now.addingTimeInterval(steps[min(e.misses, steps.count - 1)])
             entries[id] = e
         }
     }
@@ -69,8 +76,11 @@ public struct UnplacedWindows: Equatable {
     /// When the next one is due, for the background timer.
     public var nextDue: Date? { entries.values.map(\.next).min() }
 
-    /// Whether a window a scan just placed should get new-window rules.
-    public func isNew(_ id: WindowID, now: Date) -> Bool {
-        entries[id].map { now.timeIntervalSince($0.firstSeen) < Self.newFor } ?? true
+    /// Whether a window a scan just placed should get new-window rules. One that had a workspace
+    /// before (`known`) never does, however short the outage was or however long it was hidden:
+    /// new-window rules could move it to another workspace and hide it (r4 F1, F2).
+    public func isNew(_ id: WindowID, known: Set<WindowID> = [], now: Date) -> Bool {
+        if known.contains(id) { return false }
+        return entries[id].map { now.timeIntervalSince($0.firstSeen) < Self.newFor } ?? true
     }
 }

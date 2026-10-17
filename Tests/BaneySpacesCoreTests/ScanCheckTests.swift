@@ -27,7 +27,7 @@ final class UnplacedWindowsTests: XCTestCase {
         var u = UnplacedWindows()
         var now = t0
         for wait in [3.0, 6, 12, 12, 12] {
-            u.scanned(unplaced: [7], now: now)
+            u.scanned(unplaced: [7], known: [7], now: now)
             XCTAssertFalse(u.due([7], now: now.addingTimeInterval(wait - 0.1)))
             XCTAssertTrue(u.due([7], now: now.addingTimeInterval(wait)))
             XCTAssertEqual(u.nextDue, now.addingTimeInterval(wait))
@@ -73,5 +73,40 @@ final class UnplacedWindowsTests: XCTestCase {
         XCTAssertTrue(u.isNew(7, now: t0.addingTimeInterval(3)))
         XCTAssertFalse(u.isNew(7, now: t0.addingTimeInterval(9)))
         XCTAssertTrue(u.isNew(99, now: t0))
+    }
+
+    /// r4 F2: the first heal look comes 3 s after the blip, inside `newFor`. A window that had a
+    /// workspace before isn't new, however soon it heals.
+    func testAWindowThatHadAWorkspaceIsNeverNew() {
+        var u = UnplacedWindows()
+        u.scanned(unplaced: [7], known: [7], now: t0)
+        XCTAssertFalse(u.isNew(7, known: [7], now: u.nextDue!))
+        XCTAssertTrue(u.isNew(8, known: [7], now: t0))
+    }
+
+    /// r4 F1: hiding it drops the entry (`keep`), which used to make it new again.
+    func testHidingAKnownWindowDoesntMakeItNew() {
+        var u = UnplacedWindows()
+        u.scanned(unplaced: [7], known: [7], now: t0)
+        u.keep([])
+        XCTAssertFalse(u.isNew(7, known: [7], now: t0.addingTimeInterval(300)))
+    }
+
+    /// r4 F3: one that never had a workspace settles to a look a minute; one that had one keeps 12 s.
+    func testOnlyKnownWindowsKeepTheFastLook() {
+        var u = UnplacedWindows()
+        var now = t0
+        for wait in [3.0, 6, 12, 30, 60, 60] {
+            u.scanned(unplaced: [9], now: now)
+            XCTAssertEqual(u.nextDue, now.addingTimeInterval(wait))
+            now = now.addingTimeInterval(wait)
+        }
+        var k = UnplacedWindows()
+        now = t0
+        for wait in [3.0, 6, 12, 12, 12] {
+            k.scanned(unplaced: [7], known: [7], now: now)
+            XCTAssertEqual(k.nextDue, now.addingTimeInterval(wait))
+            now = now.addingTimeInterval(wait)
+        }
     }
 }
