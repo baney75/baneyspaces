@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import BaneySpacesCore
 import ApplicationServices
 import ServiceManagement
@@ -625,6 +626,7 @@ struct SetupView: View {
 final class SetupWindowController: NSWindowController, NSWindowDelegate {
     let model = SetupModel()
     private var activeObserver: NSObjectProtocol?
+    private var sizing: AnyCancellable?
 
     convenience init() {
         let window = NSWindow(contentRect: .zero, styleMask: [.titled, .closable], backing: .buffered, defer: false)
@@ -632,11 +634,24 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         window.title = "BaneySpaces Settings"
         window.delegate = self
         let host = NSHostingView(rootView: SetupView(model: model) { [weak window] in window?.close() })
-        // The window grows and shrinks with the steps shown.
-        host.sizingOptions = [.preferredContentSize]
+        // Its size comes from the content. With .preferredContentSize the hosting view reported
+        // 0×0 on macOS 27 and the window opened invisible (2026-10-16, on main too).
+        host.sizingOptions = [.intrinsicContentSize]
         window.contentView = host
         window.setContentSize(host.fittingSize)
         window.center()
+        // The window grows and shrinks with the tab and the steps shown, its top edge holding still.
+        sizing = model.objectWillChange.sink { [weak window, weak host] _ in
+            DispatchQueue.main.async {
+                guard let window, let host else { return }
+                host.layoutSubtreeIfNeeded()
+                let size = host.fittingSize
+                guard size.height > 0, size != window.contentRect(forFrameRect: window.frame).size else { return }
+                let frame = window.frameRect(forContentRect: NSRect(origin: .zero, size: size))
+                window.setFrame(NSRect(x: window.frame.minX, y: window.frame.maxY - frame.height, width: frame.width, height: frame.height),
+                                display: true, animate: window.isVisible)
+            }
+        }
         // On grant: come forward, celebrate, then get out of the way.
         model.onReady = { [weak self] in
             NSApp.activate(ignoringOtherApps: true)
