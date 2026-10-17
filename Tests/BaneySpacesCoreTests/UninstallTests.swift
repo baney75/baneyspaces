@@ -131,10 +131,29 @@ final class UninstallTests: XCTestCase {
     func testPutsAeroSpaceBack() throws {
         try write(".aerospace.toml", "after-login-command = []\nstart-at-login = false\n")
         try write("Library/Application Support/BaneySpaces/aerospace-start-at-login", "")
-        try write("Library/Application Support/BaneySpaces/aerospace-login-item", "/Applications/AeroSpace.app")
+        try write("Applications/AeroSpace.app/Contents/Info.plist", "")
+        try write("Library/Application Support/BaneySpaces/aerospace-login-item", path("Applications/AeroSpace.app").path)
         let out = try uninstall()
         XCTAssertTrue(try String(contentsOf: path(".aerospace.toml"), encoding: .utf8).contains("start-at-login = true"))
-        XCTAssertTrue(out.contains("make login item") && out.contains("/Applications/AeroSpace.app"), out)
+        XCTAssertTrue(out.contains("make login item") && out.contains("AeroSpace.app"), out)
+    }
+
+    /// r4: AeroSpace gone from where it was: said so, not skipped quietly behind "back as they were".
+    func testSaysWhenAeroSpaceMoved() throws {
+        try write("Library/Application Support/BaneySpaces/aerospace-login-item", "/nowhere/AeroSpace.app")
+        let out = try uninstall(status: 2)
+        XCTAssertTrue(out.contains("isn't any more"), out)
+    }
+
+    /// r4: a failed removal is listed once, with what to do.
+    func testAnAppThatWontGoIsListedOnce() throws {
+        try write("Applications/BaneySpaces.app/Contents/MacOS/BaneySpaces", "#!/bin/sh\n")
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path("Applications/BaneySpaces.app/Contents/MacOS/BaneySpaces").path)
+        try fm.setAttributes([.posixPermissions: 0o555], ofItemAtPath: path("Applications/BaneySpaces.app/Contents").path)
+        defer { try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path("Applications/BaneySpaces.app/Contents").path) }
+        let out = try uninstall(status: 2)
+        XCTAssertEqual(out.components(separatedBy: "Couldn't remove").count - 1, 1, out)
+        XCTAssertFalse(out.contains("A step failed"), out)
     }
 
     /// Never told: AeroSpace's own choice stays.
@@ -162,7 +181,7 @@ final class UninstallTests: XCTestCase {
         defer { try? fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: path(".aerospace.toml").path) }
         try write(".claude/skills/baneyspaces/SKILL.md", "skill")
         let out = try uninstall(status: 2)
-        XCTAssertTrue(out.contains("A step failed"), out)
+        XCTAssertTrue(out.contains("set start-at-login = true"), out)
         XCTAssertFalse(fm.fileExists(atPath: path(".claude/skills/baneyspaces").path))
         XCTAssertFalse(fm.fileExists(atPath: path("Library/Application Support/BaneySpaces").path))
     }

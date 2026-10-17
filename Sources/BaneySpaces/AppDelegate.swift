@@ -134,10 +134,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // `BaneySpaces --check-settings`: opens the settings window on each tab and exits 1 if any
         // comes up empty or taller than the screen. It opened 0×0, invisible, on macOS 27.
         if CommandLine.arguments.contains("--check-settings") {
-            let c = SetupWindowController()
+            // The app's own controller, wired as the app wires it.
+            let c = setup
             c.show()
             let screen = NSScreen.main?.visibleFrame.height ?? 800
             var ok = true
+            var heights = Set<Int>()
             for t in SettingsTab.allCases {
                 c.model.tab = t
                 RunLoop.current.run(until: Date().addingTimeInterval(0.5))
@@ -145,7 +147,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let fits = f.width >= 400 && f.height >= 200 && f.height <= screen
                 print("\(t.rawValue): \(Int(f.width))×\(Int(f.height))\(fits ? "" : "  FAIL")")
                 ok = ok && fits
+                heights.insert(Int(f.height))
             }
+            // Every tab the same height means the window never refit to its tab.
+            if heights.count < 2 { print("FAIL: every tab is \(heights.first ?? 0) tall; the window didn't refit"); ok = false }
             exit(ok ? 0 : 1)
         }
         // `BaneySpaces --unregister-login`: the uninstaller's way to take it out of Login Items.

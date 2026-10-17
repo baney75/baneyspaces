@@ -641,8 +641,14 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         window.setContentSize(host.fittingSize)
         window.center()
         // The window grows and shrinks with the tab and the steps shown, its top edge holding still.
+        // Many changes land at once (the 0.25 s permission check reassigns several), so they're
+        // folded into one refit per pass of the main loop.
+        var pending = false
         sizing = model.objectWillChange.sink { [weak window, weak host] _ in
+            guard !pending else { return }
+            pending = true
             DispatchQueue.main.async {
+                pending = false
                 guard let window, let host else { return }
                 host.layoutSubtreeIfNeeded()
                 let size = host.fittingSize

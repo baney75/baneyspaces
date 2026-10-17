@@ -53,8 +53,13 @@ shortcuts_off() { pref freedShortcuts | grep -q '[0-9]' || [ "$(pref freedSpotli
 # The app knows how to undo its own changes to macOS. Already in the Trash still counts.
 BIN=""
 # The places it's installed; the test stays inside its made-up home.
-INSTALLED=("$APP" "$HOME/Applications/BaneySpaces.app")
-[ -z "$TEST" ] && INSTALLED+=("/Applications/BaneySpaces.app")
+# Each once: by default $APP is the first of these.
+INSTALLED=("$APP")
+for app in "$HOME/Applications/BaneySpaces.app" "/Applications/BaneySpaces.app"; do
+  [ "$app" = "$APP" ] && continue
+  [ "$app" = "/Applications/BaneySpaces.app" ] && [ -n "$TEST" ] && continue
+  INSTALLED+=("$app")
+done
 for app in "${INSTALLED[@]}" "$HOME/.Trash/BaneySpaces"*.app; do
   if [ -x "$app/Contents/MacOS/BaneySpaces" ]; then BIN="$app/Contents/MacOS/BaneySpaces"; break; fi
 done
@@ -92,14 +97,17 @@ fi
 # AeroSpace: the installer stopped it opening at login so the two don't fight over the same keys.
 if [ -f "$DATA/aerospace-start-at-login" ] && [ -f "$HOME/.aerospace.toml" ]; then
   step "Letting AeroSpace open at login again, as it did before"
-  sed -i '' 's/^start-at-login *= *false/start-at-login = true/' "$HOME/.aerospace.toml"
+  sed -i '' 's/^start-at-login *= *false/start-at-login = true/' "$HOME/.aerospace.toml" 2>/dev/null \
+    || problem "AeroSpace still won't open at login: set start-at-login = true in ~/.aerospace.toml."
 fi
 if [ -s "$DATA/aerospace-login-item" ]; then
   item=$(cat "$DATA/aerospace-login-item")
   # Only if AeroSpace is still where it was; moved or deleted since, that was the person's call.
-  if [ -e "$item" ] || [ -n "$TEST" ]; then
+  if [ -e "$item" ]; then
     sys osascript -e 'on run argv' -e 'tell application "System Events" to make login item at end with properties {path:(item 1 of argv), hidden:false}' -e 'end run' "$item" >/dev/null 2>&1 \
       || problem "AeroSpace isn't back in Login Items: add $item in System Settings › General › Login Items."
+  else
+    problem "AeroSpace was at $item and isn't any more, so it isn't back in Login Items: add it there yourself if you still use it."
   fi
 fi
 
@@ -179,8 +187,8 @@ sys tccutil reset Accessibility "$ID" >/dev/null 2>&1 \
 step "Removing the app"
 # Last, so a failure here leaves nothing else half done. Open at Login goes with it.
 for app in "${INSTALLED[@]}"; do
-  rm -rf "$app" 2>/dev/null
-  [ -e "$app" ] && problem "Couldn't remove $app: move it to the Trash yourself."
+  rm -rf "$app" 2>/dev/null || true
+  if [ -e "$app" ]; then problem "Couldn't remove $app: move it to the Trash yourself."; fi
 done
 
 echo
