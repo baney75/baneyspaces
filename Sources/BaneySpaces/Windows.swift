@@ -176,7 +176,10 @@ enum Windows {
     /// missing from the result. `listed` is every window number the apps gave, of any kind, and
     /// `partial` the apps that gave an element whose number couldn't be read: only an app that
     /// answered in full can say a window it didn't list is closed.
-    static func all(owners: Set<pid_t>? = nil) -> (windows: [Window], unsure: Set<pid_t>, listed: Set<WindowID>, partial: Set<pid_t>) {
+    /// `notWindows` are listed elements whose subrole was read and isn't a standard window's
+    /// (sheets, panels). One whose subrole couldn't be read is neither: it stays unplaced, so
+    /// `UnplacedWindows` looks at it again.
+    static func all(owners: Set<pid_t>? = nil) -> (windows: [Window], unsure: Set<pid_t>, listed: Set<WindowID>, partial: Set<pid_t>, notWindows: Set<WindowID>) {
         // Only apps that own a window are asked. A running app with no windows is often frozen by
         // macOS and never answers, which would cost a full timeout on every scan.
         let candidates = owners.map { RunningApps.regular.intersection($0) } ?? RunningApps.regular
@@ -186,7 +189,7 @@ enum Windows {
             return (pid, app.localizedName ?? "App")
         }
         var results = [[Window]](repeating: [], count: apps.count)
-        var listedIDs = Set<WindowID>(), partial = Set<pid_t>()
+        var listedIDs = Set<WindowID>(), partial = Set<pid_t>(), notWindows = Set<WindowID>()
         let lock = NSLock()
         DispatchQueue.concurrentPerform(iterations: apps.count) { i in
             let (pid, name) = apps[i]
@@ -199,17 +202,19 @@ enum Windows {
             if listed == nil { lock.lock(); unsure.insert(pid); lock.unlock(); markUnresponsive(pid) } else { markResponsive(pid) }
             let elements = listed ?? []
             let ids = elements.map(\.windowID)
-            let found = zip(elements, ids).compactMap { el, id -> Window? in
-                guard let id, el.string(kAXSubroleAttribute) == kAXStandardWindowSubrole as String else { return nil }
-                return Window(id: id, element: el, pid: pid, appName: name)
+            var found: [Window] = [], other: [WindowID] = []
+            for (el, id) in zip(elements, ids) {
+                guard let id, let subrole = el.string(kAXSubroleAttribute) else { continue }
+                if subrole == kAXStandardWindowSubrole as String { found.append(Window(id: id, element: el, pid: pid, appName: name)) } else { other.append(id) }
             }
             lock.lock()
             results[i] = found
             listedIDs.formUnion(ids.compactMap { $0 })
+            notWindows.formUnion(other)
             if ids.contains(nil) { partial.insert(pid) }
             lock.unlock()
         }
-        return (results.flatMap { $0 }, unsure, listedIDs, partial)
+        return (results.flatMap { $0 }, unsure, listedIDs, partial, notWindows)
     }
 
     static func alive() -> Set<WindowID> { snapshot(apps: RunningApps.regular).alive }
@@ -218,10 +223,11 @@ enum Windows {
     /// set hasn't changed since the last look, no window was opened or closed, and the full
     /// Accessibility scan can be skipped.
     /// `offscreen` holds the app windows the window server isn't drawing (a hidden app's,
-    /// minimized ones, ones on another macOS desktop, and ones the app closed but kept), by owner.
-    static func snapshot(apps: Set<pid_t>) -> (alive: Set<WindowID>, appWindows: Set<WindowID>, owners: Set<pid_t>, offscreen: [WindowID: pid_t]) {
+    /// minimized ones, ones on another macOS desktop, and ones the app closed but kept), by owner;
+    /// `onScreen` the rest.
+    static func snapshot(apps: Set<pid_t>) -> (alive: Set<WindowID>, appWindows: Set<WindowID>, owners: Set<pid_t>, offscreen: [WindowID: pid_t], onScreen: [WindowID: pid_t]) {
         let info = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
-        var alive = Set<WindowID>(), appWindows = Set<WindowID>(), owners = Set<pid_t>(), offscreen: [WindowID: pid_t] = [:]
+        var alive = Set<WindowID>(), appWindows = Set<WindowID>(), owners = Set<pid_t>(), offscreen: [WindowID: pid_t] = [:], onScreen: [WindowID: pid_t] = [:]
         for w in info {
             guard let id = (w[kCGWindowNumber as String] as? NSNumber)?.uint32Value else { continue }
             alive.insert(id)
@@ -229,9 +235,9 @@ enum Windows {
                   let pid = (w[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value, apps.contains(pid) else { continue }
             appWindows.insert(id)
             owners.insert(pid)
-            if (w[kCGWindowIsOnscreen as String] as? Bool) != true { offscreen[id] = pid }
+            if (w[kCGWindowIsOnscreen as String] as? Bool) != true { offscreen[id] = pid } else { onScreen[id] = pid }
         }
-        return (alive, appWindows, owners, offscreen)
+        return (alive, appWindows, owners, offscreen, onScreen)
     }
 
     /// Whether a window is on no macOS desktop at all, or on one a display is showing. A window
