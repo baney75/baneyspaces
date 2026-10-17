@@ -80,6 +80,13 @@ final class WorkspaceDock {
         set { UserDefaults.standard.set(newValue.rawValue, forKey: "dockEdge") }
     }
 
+    /// Badges for coding agents on app icons and tiles. On unless turned off; off, the dock
+    /// shows apps only and a click on one never detours to an agent.
+    static var agentStatus: Bool {
+        get { UserDefaults.standard.object(forKey: "dockAgentStatus") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "dockAgentStatus") }
+    }
+
     /// True while any app shows a menu: a window at the pop-up menu level is on screen.
     static func otherMenuOpen() -> Bool {
         let level = Int(CGWindowLevelForKey(.popUpMenuWindow))
@@ -106,6 +113,8 @@ final class WorkspaceDock {
     var onTurnOff: () -> Void = {}
     /// Picking a side from a tile's menu; the app delegate keeps setup and the menu in step.
     var onSetEdge: (DockEdge) -> Void = { _ in }
+    /// Turning agent badges on or off from a tile's menu; the app delegate keeps setup in step.
+    var onSetAgentStatus: (Bool) -> Void = { _ in }
     let model = DockModel()
     private var panel: DockPanel?
     private var timer: Timer?
@@ -137,6 +146,7 @@ final class WorkspaceDock {
         model.onShowLauncher = { [weak self] in self?.hide(); self?.onShowLauncher() }
         model.onTurnOff = { [weak self] in self?.onTurnOff() }
         model.onSetEdge = { [weak self] e in self?.onSetEdge(e) }
+        model.onSetAgentStatus = { [weak self] on in self?.onSetAgentStatus(on) }
         // A tile's right-click menu keeps the dock up while it's open.
         NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { [weak self] _ in
             self?.model.menuOpen = true
@@ -419,6 +429,8 @@ final class DockModel: ObservableObject {
     /// The longest the tiles can run along the edge on this screen; a longer dock shrinks to fit.
     @Published var maxLength: CGFloat = .infinity
     var onSetEdge: (DockEdge) -> Void = { _ in }
+    @Published var agentStatus = WorkspaceDock.agentStatus
+    var onSetAgentStatus: (Bool) -> Void = { _ in }
     @Published var hover: Hover? {
         didSet {
             hoverChanged()
@@ -492,13 +504,13 @@ final class DockModel: ObservableObject {
         }
         let current = spaces.model.current
         // Each agent sits on the tile that holds its window, so its badge marks the app it runs in.
-        let placed = DockTiles.place(agents(), windows: entries.mapValues { $0.map(\.id) }, current: current)
+        let placed = !agentStatus ? [:] : DockTiles.place(agents(), windows: entries.mapValues { $0.map(\.id) }, current: current)
         let last = spaces.model.lastFocused
         tiles = DockTiles.make(current: current, windows: entries.mapValues { $0.map { "\($0.pid)" } }).map { t in
             let here = entries[t.workspace] ?? []
             let agents = placed[t.workspace] ?? []
-            // A finished agent is what you came for, so it wins over one still working.
-            let byWindow = Dictionary(agents.map { ($0.window, $0) }) { a, b in a.state == .done ? a : b }
+            // The one that needs you most wins: asking, then an error, then finished, then working.
+            let byWindow = Dictionary(agents.map { ($0.window, $0) }) { a, b in a.state.urgency >= b.state.urgency ? a : b }
             var apps = t.apps.map { a in
                 let pid = pid_t(a.key) ?? 0
                 let list = here.filter { "\($0.pid)" == a.key }.map {
@@ -507,7 +519,7 @@ final class DockModel: ObservableObject {
                 return App(id: a.key, pid: pid, name: byPid[a.key]?.app ?? "App",
                            icon: NSRunningApplication(processIdentifier: pid)?.icon ?? NSWorkspace.shared.icon(for: .application),
                            windows: a.windows, list: list,
-                           agent: list.compactMap(\.agent).first { $0.state == .done } ?? list.compactMap(\.agent).first)
+                           agent: list.compactMap(\.agent).max { $0.state.urgency < $1.state.urgency })
             }
             var order = DockTiles.agentsInView(apps.map(\.id), flagged: Set(apps.filter { $0.agent != nil }.map(\.id)), shown: DockModel.iconsShown)
             // Under the pointer, icons hold still: an agent starting elsewhere mustn't swap
@@ -885,7 +897,8 @@ struct DockView: View {
     private func title(_ tile: DockModel.Tile) -> String {
         guard !tile.apps.isEmpty else { return "Workspace \(tile.id) · empty" }
         let apps = tile.apps.map { $0.windows > 1 ? "\($0.name) (\($0.windows))" : $0.name }
-        return (["Workspace \(tile.id)", apps.joined(separator: ", ")] + tile.agents.prefix(1).map(\.summary)).joined(separator: " · ")
+        let agent = tile.agents.max { $0.state.urgency < $1.state.urgency }
+        return (["Workspace \(tile.id)", apps.joined(separator: ", ")] + [agent?.summary].compactMap { $0 }).joined(separator: " · ")
     }
 
     private func isHovered(_ tile: DockModel.Tile) -> Bool {
@@ -944,9 +957,11 @@ struct DockView: View {
                 .accessibilityAddTraits(.isButton)
                 .accessibilityAction { model.onFocusAgent(done, tile.id) }
                 .offset(x: 4, y: -4)
-        } else if tile.agents.contains(where: { a in a.state == .working && !tile.apps.contains { $0.agent == a } }) {
-            // Working somewhere the dock can't pin to an app (its window isn't known yet).
-            AgentSpinner(size: 12).offset(x: 3, y: -3)
+        } else if let a = tile.agents.filter({ a in !tile.apps.contains { $0.agent == a } }).max(by: { $0.state.urgency < $1.state.urgency }) {
+            // Somewhere the dock can't pin to an app (its window isn't known yet).
+            AgentStatusBadge(state: a.state, size: 12).offset(x: 3, y: -3)
+                .onTapGesture { if a.state.needsYou, model.clickCounts { model.onFocusAgent(a, tile.id) } }
+                .help(a.summary)
         }
     }
 
@@ -995,6 +1010,10 @@ struct DockView: View {
                     if e == model.edge { Label(e.title, systemImage: "checkmark") } else { Text(e.title) }
                 }
             }
+        }
+        Divider()
+        Button { model.onSetAgentStatus(!model.agentStatus) } label: {
+            if model.agentStatus { Label("Show Agent Status", systemImage: "checkmark") } else { Text("Show Agent Status") }
         }
         Divider()
         Button("Turn Off Workspace Dock") { model.onTurnOff() }
@@ -1069,8 +1088,8 @@ struct DockView: View {
                 }
             }
             .overlay(alignment: .topTrailing) {
-                if app.agent?.state == .working {
-                    AgentSpinner(size: max(10, size * 0.42)).offset(x: 3, y: -3)
+                if let a = app.agent, a.state != .done {
+                    AgentStatusBadge(state: a.state, size: max(10, size * 0.42)).offset(x: 3, y: -3)
                 }
             }
             .modifier(CenterReport(key: "\(tile.id):\(app.id)"))
@@ -1096,9 +1115,9 @@ struct DockView: View {
             .accessibilityAction { tapApp(app, in: tile) }
     }
 
-    /// A finished agent is why you'd click: go to its tab, not the app's last window.
+    /// An agent waiting on you is why you'd click: go to its tab, not the app's last window.
     private func tapApp(_ app: DockModel.App, in tile: DockModel.Tile) {
-        if let a = app.agent, a.state == .done { model.onFocusAgent(a, tile.id) } else { model.onFocusApp(app.pid, tile.id) }
+        if let a = app.agent, a.state.needsYou { model.onFocusAgent(a, tile.id) } else { model.onFocusApp(app.pid, tile.id) }
     }
 
     private func newWorkspaceButton(_ n: Int) -> some View {
@@ -1206,10 +1225,10 @@ private struct StripRow: View {
             Text(title).font(.system(size: 12.5, weight: hovered ? .semibold : .regular))
                 .foregroundStyle(.white.opacity(hovered ? 1 : 0.85)).lineLimit(1).truncationMode(.tail)
             Spacer(minLength: 6)
-            if window.agent?.state == .working {
-                AgentSpinner(size: 12)
-            } else if window.agent?.state == .done {
-                Text("Finished").font(.system(size: 10, weight: .semibold)).foregroundStyle(Color.orange)
+            if let a = window.agent, a.state == .working {
+                AgentStatusBadge(state: a.state, size: 12)
+            } else if let a = window.agent {
+                Text(a.state.word).font(.system(size: 10, weight: .semibold)).foregroundStyle(a.state.color)
             } else if window.isLast {
                 Text("Last used").font(.system(size: 10, weight: .medium)).foregroundStyle(.white.opacity(0.4))
             }
@@ -1232,6 +1251,59 @@ private struct StripRow: View {
         .accessibilityLabel(title + (window.agent.map { ", " + $0.summary } ?? (window.isLast ? ", last used" : "")))
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { action() }
+    }
+}
+
+/// What an agent is doing, in the corner of its app's icon: a turning ring while it works, a
+/// yellow "?" when it's asking you something, a red "!" when it stopped on an error. A finish
+/// is the tile's orange count instead. Shapes differ as well as colors, so it reads without color.
+struct AgentStatusBadge: View {
+    let state: DockAgent.State
+    let size: CGFloat
+
+    var body: some View {
+        if state == .working {
+            AgentSpinner(size: size)
+        } else {
+            Image(systemName: state.symbol)
+                .font(.system(size: size * 0.62, weight: .heavy))
+                .foregroundStyle(state == .asking ? Color.black.opacity(0.85) : Color.white)
+                .frame(width: size, height: size)
+                .background(Circle().fill(state.color))
+                .overlay(Circle().strokeBorder(Color.black.opacity(0.35), lineWidth: 0.75))
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+    }
+}
+
+extension DockAgent.State {
+    var color: Color {
+        switch self {
+        case .working: .blue
+        case .asking: .yellow
+        case .failed: .red
+        case .done: .orange
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .working: "arrow.triangle.2.circlepath"
+        case .asking: "questionmark"
+        case .failed: "exclamationmark"
+        case .done: "checkmark"
+        }
+    }
+
+    /// The strip's word for it.
+    var word: String {
+        switch self {
+        case .working: "Working"
+        case .asking: "Needs you"
+        case .failed: "Error"
+        case .done: "Finished"
+        }
     }
 }
 

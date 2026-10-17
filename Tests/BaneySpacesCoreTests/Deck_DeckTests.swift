@@ -40,6 +40,10 @@ final class AgentEventTests: XCTestCase {
         XCTAssertEqual(ev("Notification", ["message": "Claude needs your permission to use Bash"])?.message,
                        "Claude needs your permission to use Bash")
         XCTAssertEqual(ev("Stop", ["message": "ignored"])?.message, "")
+        // A minute after it finishes, Claude says it's waiting for input: still done, not asking.
+        XCTAssertEqual(ev("Notification", ["message": "Claude is waiting for your input", "notification_type": "idle_prompt"])?.message, "")
+        XCTAssertEqual(ev("Notification", ["message": "Claude is waiting for your input"])?.message, "")
+        XCTAssertEqual(ev("StopFailure")?.message, AgentEvent.failedMessage)
         XCTAssertNil(ev("PreCompact"))
         XCTAssertNil(AgentEvent.claude(["session_id": "x"], tty: "", at: 0))
     }

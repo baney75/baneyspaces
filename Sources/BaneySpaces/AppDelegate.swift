@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         d.onShowLauncher = { [weak self] in self?.launcher.show() }
         d.onSetEdge = { [weak self] e in self?.setDockEdge(e) }
         d.onTurnOff = { [weak self] in self?.setWorkspaceDock(false) }
+        d.onSetAgentStatus = { [weak self] on in self?.setDockAgentStatus(on) }
         d.model.agents = { [weak self] in
             guard let self, self.deck.started else { return [] }
             return self.deck.dockAgents()
@@ -89,6 +90,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         c.model.onWorkspaceDockChange = { [weak self] on in self?.setWorkspaceDock(on) }
         c.model.onDockEdgeChange = { [weak self] e in self?.setDockEdge(e) }
+        c.model.onDockAgentStatusChange = { [weak self] on in self?.setDockAgentStatus(on) }
+        c.model.onDeckChange = { [weak self] on in if DeckController.enabled != on { self?.toggleDeck() } }
+        c.model.hooksInstalled = { DeckController.hooksInstalled() }
+        c.model.onInstallHooks = { [weak self] in self?.deck.installHooks() }
         c.model.onLauncherChange = { [weak self] on in self?.setLauncherOnCmdSpace(on) }
         c.model.onCmdTabChange = { [weak self] mode in
             MissionControlKeys.cmdTabMode = mode
@@ -336,7 +341,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleDeck() {
         DeckController.enabled.toggle()
         if DeckController.enabled { startDeck() } else { deck.stop() }
+        if setup.model.deck != DeckController.enabled { setup.model.deck = DeckController.enabled }
         updateIcon()
+        dock.reload()
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -402,6 +409,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             pos.submenu = edges
             sub.addItem(pos)
+            let status = item("Agent Status on the Dock", #selector(toggleDockAgentStatus))
+            status.state = WorkspaceDock.agentStatus ? .on : .off
+            status.indentationLevel = 1
+            status.toolTip = "Badges on app icons: a turning ring while an agent works, a yellow ? when it asks you something, a red ! when it stops on an error, an orange count when it finishes."
+            sub.addItem(status)
         }
         let deckItem = item("Terminal and Agent Deck", #selector(toggleDeck))
         deckItem.state = DeckController.enabled ? .on : .off
@@ -470,6 +482,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func setDockEdge(_ e: DockEdge) {
         dock.setEdge(e)
         if setup.model.dockEdge != e { setup.model.dockEdge = e }
+    }
+
+    @objc private func toggleDockAgentStatus() { setDockAgentStatus(!WorkspaceDock.agentStatus) }
+
+    /// Shows or hides agent badges on the Workspace Dock; settings and the menu follow.
+    func setDockAgentStatus(_ on: Bool) {
+        WorkspaceDock.agentStatus = on
+        dock.model.agentStatus = on
+        if setup.model.dockAgentStatus != on { setup.model.dockAgentStatus = on }
+        dock.reload()
     }
 
     /// Turns the Workspace Dock on or off; off brings the macOS Dock back as it was.

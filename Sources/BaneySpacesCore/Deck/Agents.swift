@@ -35,10 +35,13 @@ public struct AgentEvent: Codable, Equatable, Sendable {
         case "Stop", "StopCancelled", "stop", "stop_cancelled": state = .waiting
         case "StopFailure", "stop_failure":
             state = .waiting
-            message = "Stopped on an API error"
+            message = failedMessage
         case "Notification", "notification":
             state = .waiting
             message = json["message"] as? String ?? ""
+            // Claude's reminder a minute after it finished isn't a question: it's still just done.
+            let type = json["notification_type"] as? String ?? json["notificationType"] as? String ?? ""
+            if type == "idle_prompt" || message.localizedCaseInsensitiveContains("waiting for your input") { message = "" }
         case "SessionStart", "session_start": state = .idle
         case "SessionEnd", "session_end":
             // A Grok subagent's own teardown isn't the session ending.
@@ -50,6 +53,9 @@ public struct AgentEvent: Codable, Equatable, Sendable {
         return AgentEvent(agent: agent, session: session, cwd: json["cwd"] as? String ?? "", tty: tty, app: app,
                           state: state, message: message, at: at)
     }
+
+    /// The notice a session that stopped on an API error carries.
+    public static let failedMessage = "Stopped on an API error"
 
     public static func claude(_ json: [String: Any], tty: String, at: Double) -> AgentEvent? {
         hook(json, agent: "claude", tty: tty, at: at)
