@@ -44,8 +44,9 @@ public struct DockAgent: Equatable, Sendable {
         case failed
 
         /// What a Deck row shows on the dock: `unseen` is the Deck's "finished while you were
-        /// away", `notice` what the agent last said. Asking and failed stay until the agent moves
-        /// on, since they wait on you; a plain finish goes once you've looked. Nil for none.
+        /// away", `notice` what the agent last said. Asking and failed stay while you're elsewhere,
+        /// since they wait on you, and go once you've looked at the row (`AnsweredQuestions`) or
+        /// the agent moves on; a plain finish goes once you've looked. Nil for none.
         public static func of(activity: Activity, unseen: Bool, notice: String) -> State? {
             if activity == .working { return .working }
             if notice == AgentEvent.failedMessage { return .failed }

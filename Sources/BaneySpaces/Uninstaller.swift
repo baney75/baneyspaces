@@ -33,15 +33,20 @@ enum Uninstaller {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/bash")
         // When it's done, say so: the app that asked is gone by then.
-        // When it's done, say so: the app that asked is gone by then.
         let say = "osascript -e 'on run argv' -e 'display dialog (item 1 of argv) buttons {\"OK\"} default button 1 with title \"BaneySpaces\"' -e 'end run' \"$m\""
-        p.arguments = ["-c", """
+        let run = """
             /bin/bash "$0"; s=$?
-            if [ $s = 0 ]; then m="BaneySpaces is removed. Your windows, Dock, shortcuts and agent settings are back as they were."
-            else m="The uninstaller stopped before it finished. Its log is at $1"; fi
+            case $s in
+              0) m="BaneySpaces is removed. Your windows, Dock, shortcuts and agent settings are back as they were." ;;
+              2) m="BaneySpaces is removed, but some settings need a hand. The list is at $1" ;;
+              *) m="The uninstaller stopped before removing anything. Its log is at $1" ;;
+            esac
             \(say) >/dev/null 2>&1
             exit $s
-            """, copy.path, log.path]
+            """
+        // Started in the background with nohup, so it's on its own the moment this bash exits:
+        // nothing ties it to the app that's about to quit.
+        p.arguments = ["-c", "nohup /bin/bash -c \"$2\" \"$0\" \"$1\" </dev/null >>\"$1\" 2>&1 &", copy.path, log.path, run]
         var env = ProcessInfo.processInfo.environment
         env["BANEYSPACES_APP"] = Bundle.main.bundleURL.path
         env.removeValue(forKey: "BANEYSPACES_UNINSTALL_TEST")
@@ -49,5 +54,6 @@ enum Uninstaller {
         p.standardOutput = out
         p.standardError = out
         try p.run()
+        p.waitUntilExit()
     }
 }

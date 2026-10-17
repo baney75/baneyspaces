@@ -4,6 +4,10 @@
 # Settings > General > Uninstall BaneySpaces runs this same script.
 # Quitting first brings every hidden window and app back on screen.
 #
+# Exits 0 when everything is removed and put back, 2 when everything is removed but something
+# couldn't be put back (it says what, and keeps what's needed to finish by hand), 1 when it
+# stopped before removing anything.
+#
 # BANEYSPACES_APP: the app to remove (default ~/Applications/BaneySpaces.app).
 # BANEYSPACES_UNINSTALL_TEST=1: for the test only. Commands that touch the real Mac's
 # settings, permissions or processes are printed instead of run; files under $HOME still go.
@@ -18,7 +22,18 @@ TEST="${BANEYSPACES_UNINSTALL_TEST:-}"
 # (To the script's own output, past any redirect on the command.)
 exec 3>&1
 sys() { if [ -n "$TEST" ]; then echo "would run: $*" >&3; else "$@"; fi; }
-running() { [ -z "$TEST" ] && pgrep -f "BaneySpaces.app/Contents/MacOS/BaneySpaces" >/dev/null; }
+# What couldn't be put back, for the end.
+problems=()
+problem() { problems+=("$*"); }
+running() {
+  [ -z "$TEST" ] || return 1
+  pgrep -f "BaneySpaces.app/Contents/MacOS/BaneySpaces" >/dev/null || pgrep -f "$APP/Contents/MacOS/" >/dev/null
+}
+# Its own settings. The test reads them from a plist file instead (BANEYSPACES_UNINSTALL_PREFS).
+pref() {
+  if [ -n "$TEST" ]; then [ -n "${BANEYSPACES_UNINSTALL_PREFS:-}" ] && defaults read "$BANEYSPACES_UNINSTALL_PREFS" "$1" 2>/dev/null || true
+  else defaults read "$ID" "$1" 2>/dev/null || true; fi
+}
 
 step "Quitting BaneySpaces (it puts every window back first)"
 sys osascript -e "tell application id \"$ID\" to quit" >/dev/null 2>&1 || true
@@ -30,33 +45,63 @@ if running; then
   exit 1
 fi
 
-if [ -x "$APP/Contents/MacOS/BaneySpaces" ]; then
+# The app knows how to undo its own changes to macOS. Already in the Trash still counts.
+BIN=""
+for app in "$APP" "$HOME/Applications/BaneySpaces.app" "/Applications/BaneySpaces.app" "$HOME/.Trash/BaneySpaces"*.app; do
+  if [ -x "$app/Contents/MacOS/BaneySpaces" ]; then BIN="$app/Contents/MacOS/BaneySpaces"; break; fi
+done
+
+if [ -n "$BIN" ]; then
   # Screenshot and Spotlight shortcuts that setup's Free Them or the launcher switched off go back on.
   step "Turning macOS's screenshot and Spotlight shortcuts back on (if BaneySpaces turned them off)"
-  sys "$APP/Contents/MacOS/BaneySpaces" --restore-shortcuts >/dev/null 2>&1 || true
+  sys "$BIN" --restore-shortcuts >/dev/null 2>&1 || problem "macOS's screenshot or Spotlight shortcuts may still be off: turn them on in System Settings › Keyboard › Keyboard Shortcuts."
   # Quitting already brings the macOS Dock back; this covers a crash that didn't.
-  sys "$APP/Contents/MacOS/BaneySpaces" --restore-dock >/dev/null 2>&1 || true
+  sys "$BIN" --restore-dock >/dev/null 2>&1 || true
   step "Removing it from Login Items"
-  sys "$APP/Contents/MacOS/BaneySpaces" --unregister-login >/dev/null 2>&1 || true
+  sys "$BIN" --unregister-login >/dev/null 2>&1 || true
+elif [ -n "$(pref freedShortcuts)$(pref freedSpotlight)" ]; then
+  # Without the app the shortcuts can't be written back the way it turned them off, so its
+  # record of them stays for the next install to finish the job.
+  problem "macOS's screenshot or Spotlight shortcuts are still off (the app was already gone): turn them on in System Settings › Keyboard › Keyboard Shortcuts."
 fi
 
-# Without the app (already in the Trash), still undo the Workspace Dock's Dock setting.
+# The Workspace Dock's own Dock settings, if the app wasn't there to put them back. Each goes
+# back only if it's still at BaneySpaces' value; a setting changed since is the person's.
 if [ -z "$TEST" ] && [ "$(defaults read com.apple.dock autohide-delay 2>/dev/null)" = "1000" ]; then
   step "Bringing the macOS Dock back"
-  defaults delete com.apple.dock autohide-delay
+  saved=$(pref systemDockSaved)
+  delay=$(printf '%s\n' "$saved" | sed -n 's/.*"autohide-delay" = "\{0,1\}\([0-9.]*\)"\{0,1\};.*/\1/p')
+  if [ -n "$delay" ]; then defaults write com.apple.dock autohide-delay -float "$delay"; else defaults delete com.apple.dock autohide-delay; fi
+  if [ "$(defaults read com.apple.dock autohide 2>/dev/null)" = "1" ]; then
+    hide=$(printf '%s\n' "$saved" | sed -n 's/.*[^-]autohide = "\{0,1\}\([01]\)"\{0,1\};.*/\1/p')
+    if [ -n "$hide" ]; then defaults write com.apple.dock autohide -bool "$([ "$hide" = 1 ] && echo true || echo false)"
+    else defaults delete com.apple.dock autohide 2>/dev/null || true; fi
+  fi
   killall Dock 2>/dev/null || true
+fi
+
+# AeroSpace: the installer stopped it opening at login so the two don't fight over the same keys.
+if [ -f "$DATA/aerospace-start-at-login" ] && [ -f "$HOME/.aerospace.toml" ]; then
+  step "Letting AeroSpace open at login again, as it did before"
+  sed -i '' 's/^start-at-login *= *false/start-at-login = true/' "$HOME/.aerospace.toml"
+fi
+if [ -s "$DATA/aerospace-login-item" ]; then
+  item=$(cat "$DATA/aerospace-login-item")
+  sys osascript -e 'on run argv' -e 'tell application "System Events" to make login item at end with properties {path:(item 1 of argv), hidden:false}' -e 'end run' "$item" >/dev/null 2>&1 \
+    || problem "AeroSpace isn't back in Login Items: add it in System Settings › General › Login Items."
 fi
 
 # The agent hooks the Deck added. Only BaneySpaces' own entries go; every other hook and
 # setting stays as it is. With the app gone, the same rule runs here in JavaScript.
 CLAUDE="$HOME/.claude/settings.json"
-if [ -f "$CLAUDE" ] && grep -Eq "(ghostdeck|baneyspaces)'?\"? +hook +(claude|grok)" "$CLAUDE"; then
+ours="(ghostdeck|baneyspaces)'?\"? +hook +(claude|grok)"
+if [ -f "$CLAUDE" ] && grep -Eq "$ours" "$CLAUDE"; then
   step "Removing its hooks from Claude Code's settings (your own hooks stay)"
-  if [ -x "$APP/Contents/Resources/bin/baneyspaces" ]; then
-    "$APP/Contents/Resources/bin/baneyspaces" hooks uninstall >/dev/null 2>&1 || true
-  fi
-  if grep -Eq "(ghostdeck|baneyspaces)'?\"? +hook +(claude|grok)" "$CLAUDE"; then
-    osascript -l JavaScript - "$CLAUDE" >/dev/null <<'JS' || echo "  Couldn't edit $CLAUDE; remove the entries that run 'baneyspaces hook' by hand." >&2
+  had_backup=""; [ -f "$CLAUDE.baneyspaces-backup" ] && had_backup=1
+  CLI=""; [ -n "$BIN" ] && CLI="$(dirname "$(dirname "$BIN")")/Resources/bin/baneyspaces"
+  if [ -n "$CLI" ] && [ -x "$CLI" ]; then "$CLI" hooks uninstall >/dev/null 2>&1 || true; fi
+  if grep -Eq "$ours" "$CLAUDE"; then
+    osascript -l JavaScript - "$CLAUDE" >/dev/null 2>&1 <<'JS' || true
 ObjC.import('Foundation')
 function run(argv) {
   // Through a symlink (settings kept in a dotfiles repo) to the file itself, written in place so
@@ -83,7 +128,10 @@ function run(argv) {
 }
 JS
   fi
-  if [ -f "$CLAUDE.baneyspaces-backup" ]; then
+  if grep -Eq "$ours" "$CLAUDE"; then
+    problem "Claude Code's settings ($CLAUDE) still have hooks that run 'baneyspaces hook': remove those entries by hand."
+  fi
+  if [ -n "$had_backup" ]; then
     echo "  Your settings from before BaneySpaces are still at $CLAUDE.baneyspaces-backup"
   fi
 fi
@@ -98,22 +146,34 @@ for link in "$HOME/.local/bin/baneyspaces" "$HOME/.local/bin/ghostdeck"; do
 done
 rm -rf "$HOME/.claude/skills/baneyspaces"
 
-step "Removing the app"
-rm -rf "$APP"
-
 step "Removing settings and the local signing key"
 if [ -f "$DATA/Signing/baneyspaces-signing.keychain-db" ]; then
   sys security delete-keychain "$DATA/Signing/baneyspaces-signing.keychain-db" 2>/dev/null || true
 fi
 rm -rf "$DATA" "$HOME/Library/Caches/$ID" "$HOME/Library/HTTPStorages/$ID" \
   "$HOME/Library/Saved Application State/$ID.savedState"
-sys defaults delete "$ID" >/dev/null 2>&1 || true
+# Its record of shortcuts it turned off stays while they're still off, so a reinstall can finish.
+if [ ${#problems[@]} -eq 0 ] || [ -z "$(pref freedShortcuts)$(pref freedSpotlight)" ]; then
+  sys defaults delete "$ID" >/dev/null 2>&1 || true
+fi
 
 step "Removing its Accessibility permission"
 # A fresh install gets a new signature; an old entry left here would show "on" but not work.
 sys tccutil reset Accessibility "$ID" >/dev/null 2>&1 || true
 
+step "Removing the app"
+# Last, so a failure here leaves nothing else half done. Open at Login goes with it.
+for app in "$APP" "$HOME/Applications/BaneySpaces.app"; do
+  rm -rf "$app" || problem "Couldn't remove $app: move it to the Trash yourself."
+done
+
 echo
-printf '%sBaneySpaces is removed.%s\n' "$bold" "$reset"
-echo "Your windows, Dock, shortcuts and agent settings are back as they were."
-echo "Its permission, settings, login item and command are gone too."
+if [ ${#problems[@]} -eq 0 ]; then
+  printf '%sBaneySpaces is removed.%s\n' "$bold" "$reset"
+  echo "Your windows, Dock, shortcuts and agent settings are back as they were."
+  echo "Its permission, settings, login item and command are gone too."
+  exit 0
+fi
+printf '%sBaneySpaces is removed, but some things need a hand:%s\n' "$bold" "$reset"
+for p in "${problems[@]}"; do echo "  - $p"; done
+exit 2

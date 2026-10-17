@@ -21,20 +21,26 @@ final class UninstallTests: XCTestCase {
         try text.write(to: path(p), atomically: true, encoding: .utf8)
     }
 
-    private func uninstall() throws -> String {
+    private func uninstall(status: Int32 = 0, prefs: [String: Any]? = nil) throws -> String {
         let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("uninstall.sh")
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/bash")
         p.arguments = [script.path]
-        p.environment = ["HOME": home.path, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "BANEYSPACES_UNINSTALL_TEST": "1"]
+        var env = ["HOME": home.path, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "BANEYSPACES_UNINSTALL_TEST": "1"]
+        if let prefs {
+            let file = home.appendingPathComponent("prefs.plist")
+            try PropertyListSerialization.data(fromPropertyList: prefs, format: .xml, options: 0).write(to: file)
+            env["BANEYSPACES_UNINSTALL_PREFS"] = file.path
+        }
+        p.environment = env
         let pipe = Pipe()
         p.standardOutput = pipe
         p.standardError = pipe
         try p.run()
         let out = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         p.waitUntilExit()
-        XCTAssertEqual(p.terminationStatus, 0, out)
+        XCTAssertEqual(p.terminationStatus, status, out)
         return out
     }
 
@@ -101,6 +107,41 @@ final class UninstallTests: XCTestCase {
                      "tccutil reset Accessibility com.baney.baneyspaces"] {
             XCTAssertTrue(out.contains("would run: ") && out.contains(step), "missing \(step):\n\(out)")
         }
+    }
+
+    /// r2: the app already in the Trash (emptied) can't turn the shortcuts back on. It says so,
+    /// exits 2, and keeps its record of them instead of deleting it.
+    func testWithoutTheAppItSaysWhatsStillOffAndKeepsTheRecord() throws {
+        let out = try uninstall(status: 2, prefs: ["freedShortcuts": [28, 29]])
+        XCTAssertTrue(out.contains("screenshot or Spotlight shortcuts are still off"), out)
+        XCTAssertFalse(out.contains("defaults delete com.baney.baneyspaces"), out)
+        XCTAssertFalse(out.contains("back as they were"), out)
+    }
+
+    /// r2: one in the Trash still counts as the app.
+    func testUsesTheAppFromTheTrash() throws {
+        try write(".Trash/BaneySpaces 2.app/Contents/MacOS/BaneySpaces", "#!/bin/sh\n")
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path(".Trash/BaneySpaces 2.app/Contents/MacOS/BaneySpaces").path)
+        let out = try uninstall(prefs: ["freedShortcuts": [28]])
+        XCTAssertTrue(out.contains("BaneySpaces 2.app/Contents/MacOS/BaneySpaces --restore-shortcuts"), out)
+    }
+
+    /// r2: the installer stops AeroSpace opening at login, and writes that down; uninstalling
+    /// puts both back.
+    func testPutsAeroSpaceBack() throws {
+        try write(".aerospace.toml", "after-login-command = []\nstart-at-login = false\n")
+        try write("Library/Application Support/BaneySpaces/aerospace-start-at-login", "")
+        try write("Library/Application Support/BaneySpaces/aerospace-login-item", "/Applications/AeroSpace.app")
+        let out = try uninstall()
+        XCTAssertTrue(try String(contentsOf: path(".aerospace.toml"), encoding: .utf8).contains("start-at-login = true"))
+        XCTAssertTrue(out.contains("make login item") && out.contains("/Applications/AeroSpace.app"), out)
+    }
+
+    /// Never told: AeroSpace's own choice stays.
+    func testLeavesAeroSpaceAloneWithoutARecord() throws {
+        try write(".aerospace.toml", "start-at-login = false\n")
+        _ = try uninstall()
+        XCTAssertTrue(try String(contentsOf: path(".aerospace.toml"), encoding: .utf8).contains("start-at-login = false"))
     }
 
     /// Nothing installed at all: it still finishes cleanly, so running it twice is safe.

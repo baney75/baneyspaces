@@ -949,6 +949,29 @@ struct DockView: View {
     /// agent. One still working turns a ring on its app's icon instead (`appIcon`): a plain
     /// dot on the tile read as an unread badge and didn't say which app (Donovan, 2026-10-16).
     @ViewBuilder private func agentBadge(_ tile: DockModel.Tile) -> some View {
+        HStack(spacing: 2) {
+            unpinnedBadge(tile)
+            doneBadge(tile)
+        }
+    }
+
+    /// An agent asking or stopped on an error with no app here to wear its badge: in the corner,
+    /// beside a finished count if there is one, since it needs you more.
+    @ViewBuilder private func unpinnedBadge(_ tile: DockModel.Tile) -> some View {
+        if let a = tile.unpinned.filter({ $0.state != .done }).max(by: { $0.state.urgency < $1.state.urgency }) {
+            AgentStatusBadge(state: a.state, size: 14)
+                .contentShape(Circle())
+                .onTapGesture { if model.clickCounts { model.onFocusAgent(a, tile.id) } }
+                .help(a.summary)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(a.summary)
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction { model.onFocusAgent(a, tile.id) }
+                .offset(x: 4, y: -4)
+        }
+    }
+
+    @ViewBuilder private func doneBadge(_ tile: DockModel.Tile) -> some View {
         if let done = tile.agents.first(where: { $0.state == .done }) {
             Text("\(tile.agentsDone)")
                 .font(.system(size: 9.5, weight: .heavy, design: .rounded)).foregroundStyle(.white)
@@ -961,17 +984,6 @@ struct DockView: View {
                 .accessibilityAddTraits(.isButton)
                 .accessibilityAction { model.onFocusAgent(done, tile.id) }
                 .offset(x: 4, y: -4)
-        } else if let a = tile.unpinned.max(by: { $0.state.urgency < $1.state.urgency }) {
-            // Somewhere the dock can't pin to an app (its window isn't known yet).
-            AgentStatusBadge(state: a.state, size: 12)
-                .contentShape(Circle())
-                .onTapGesture { if model.clickCounts { model.onFocusAgent(a, tile.id) } }
-                .help(a.summary)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(a.summary)
-                .accessibilityAddTraits(.isButton)
-                .accessibilityAction { model.onFocusAgent(a, tile.id) }
-                .offset(x: 3, y: -3)
         }
     }
 

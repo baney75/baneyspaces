@@ -93,8 +93,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         c.model.onDockEdgeChange = { [weak self] e in self?.setDockEdge(e) }
         c.model.onDockAgentStatusChange = { [weak self] on in self?.setDockAgentStatus(on) }
         c.model.onDeckChange = { [weak self] on in if DeckController.enabled != on { self?.toggleDeck() } }
+        // Every event, not just any: an older install lacks StopFailure, which the red badge needs.
         c.model.hooksInstalled = {
-            FileManager.default.fileExists(atPath: NSHomeDirectory() + "/.claude/settings.json") ? DeckController.hooksInstalled() : nil
+            guard let d = FileManager.default.contents(atPath: NSHomeDirectory() + "/.claude/settings.json") else { return nil }
+            let settings = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] ?? [:]
+            return HookSettings.installed(settings).count == HookSettings.events.count
         }
         c.model.onInstallHooks = { [weak self] in self?.deck.installHooks() }
         c.model.onLauncherChange = { [weak self] on in self?.setLauncherOnCmdSpace(on) }

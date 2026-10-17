@@ -3,7 +3,8 @@ import Foundation
 /// Adds and removes BaneySpaces' deck entries in a Claude Code settings object, leaving every other
 /// hook exactly as it was. Pure, so it's tested against real settings shapes.
 public enum HookSettings {
-    public static let events = ["SessionStart", "UserPromptSubmit", "PostToolUse", "Notification", "Stop", "SessionEnd"]
+    /// StopFailure is what turns the Workspace Dock's badge red: a turn that ended on an API error.
+    public static let events = ["SessionStart", "UserPromptSubmit", "PostToolUse", "Notification", "Stop", "StopFailure", "SessionEnd"]
 
     /// Ours whatever the path looks like: `'/Users/me/.local/bin/baneyspaces' hook claude 2>/dev/null || true`.
     /// Ghostdeck's hooks count too, so installing replaces them instead of doubling up.

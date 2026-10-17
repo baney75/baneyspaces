@@ -412,10 +412,13 @@ BaneySpaces changed:
 - Claude Code's `~/.claude/settings.json`: only BaneySpaces' hooks come out; your own hooks and
   settings stay. Its first backup, from before BaneySpaces touched the file, stays beside it as
   `settings.json.baneyspaces-backup`.
+- AeroSpace opening at login, if the installer turned that off
 
 And it removes the app, its login item, its Accessibility entry, its settings and local signing
 key, the `baneyspaces` and `ghostdeck` commands in `~/.local/bin`, its Grok hook file and its
-agent skill. Running it twice is safe.
+agent skill. Running it twice is safe. If something can't be put back (say the app was already
+emptied from the Trash, so the shortcuts can't be turned back on), it still removes the rest,
+lists what needs a hand, and keeps its record of it.
 
 ## License
 
