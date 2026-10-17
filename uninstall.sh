@@ -15,6 +15,7 @@ set -euo pipefail
 bold=$(tput bold 2>/dev/null || true); reset=$(tput sgr0 2>/dev/null || true)
 step() { printf '%s==>%s %s\n' "$bold" "$reset" "$*"; }
 APP="${BANEYSPACES_APP:-$HOME/Applications/BaneySpaces.app}"
+APP="${APP%/}"
 DATA="$HOME/Library/Application Support/BaneySpaces"
 ID=com.baney.baneyspaces
 TEST="${BANEYSPACES_UNINSTALL_TEST:-}"
@@ -102,7 +103,7 @@ if [ -f "$DATA/aerospace-start-at-login" ] && [ -f "$HOME/.aerospace.toml" ]; th
 fi
 if [ -s "$DATA/aerospace-login-item" ]; then
   item=$(cat "$DATA/aerospace-login-item")
-  # Only if AeroSpace is still where it was; moved or deleted since, that was the person's call.
+  # Only where it was. Moved or deleted since, it can't be put back, so the person is told.
   if [ -e "$item" ]; then
     sys osascript -e 'on run argv' -e 'tell application "System Events" to make login item at end with properties {path:(item 1 of argv), hidden:false}' -e 'end run' "$item" >/dev/null 2>&1 \
       || problem "AeroSpace isn't back in Login Items: add $item in System Settings › General › Login Items."
