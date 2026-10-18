@@ -283,15 +283,20 @@ final class WorkspaceDock {
         // Here too: the app's window on this workspace comes forward, so a browser puts the
         // link in that window, not in one parked on another workspace.
         spaces.focusApp(pid, on: n, announce: false)
-        // A switch runs over a few turns of the run loop (one a spring started may still be);
-        // open once it's done, or a second on.
-        let deadline = Date().addingTimeInterval(1)
-        Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { [weak self] t in
+        // A switch runs over a few turns of the run loop (one a spring started may still be, and
+        // a window leaving full screen takes its animation); open once it's done. The cap is only
+        // for a switch that never ends, and says so. In the common modes, so an open menu
+        // doesn't hold it up.
+        let deadline = Date().addingTimeInterval(4)
+        let t = Timer(timeInterval: 0.02, repeats: true) { [weak self] t in
             guard let self else { t.invalidate(); return }
-            guard !self.spaces.switching || Date() > deadline else { return }
+            let late = Date() > deadline
+            guard !self.spaces.switching || late else { return }
             t.invalidate()
+            if late { Trace.log("dock drop: switch to \(n) still running after 4 s; opening anyway") }
             openThem()
         }
+        RunLoop.main.add(t, forMode: .common)
     }
 
     /// The files and links being dragged that this app can open, or none unless it can open them
@@ -554,8 +559,9 @@ final class DockModel: ObservableObject {
     @Published var fileDrag: FileDrag? {
         didSet {
             guard fileDrag != oldValue else { return }
-            // Its end catches up on what changed while the tiles held still.
-            if fileDrag == nil { onDragDone() }
+            // Its end catches up on what changed while the tiles held still: after the drag
+            // callback that ended it returns, so a window scan never holds up the drop.
+            if fileDrag == nil { DispatchQueue.main.async { [weak self] in self?.onDragDone() } }
             // During a drag the pointer's hover isn't reported; the drag's target lights up instead.
             switch fileDrag?.target {
             case .app(let n, let id): hover = .app(n, id)
@@ -1356,7 +1362,9 @@ private struct OutsideDrop: DropDelegate {
         guard case .app(let n, let id) = target, let pid = pid_t(id) else { return false }
         let urls = model.openable(pid)
         guard !urls.isEmpty else { return false }
-        model.onOpenFiles(urls, pid, n)
+        // The drop is answered at once; going to the app (Accessibility calls a busy app can
+        // stall) waits for the next turn of the run loop, so the source app isn't held up.
+        DispatchQueue.main.async { [model] in model.onOpenFiles(urls, pid, n) }
         return true
     }
 
