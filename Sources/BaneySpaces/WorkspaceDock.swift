@@ -152,10 +152,7 @@ final class WorkspaceDock {
         model.onTurnOff = { [weak self] in self?.onTurnOff() }
         model.onSetEdge = { [weak self] e in self?.onSetEdge(e) }
         model.onSetAgentStatus = { [weak self] on in self?.onSetAgentStatus(on) }
-        model.onOpenFiles = { urls, pid in
-            guard let app = NSRunningApplication(processIdentifier: pid)?.bundleURL else { return }
-            NSWorkspace.shared.open(urls, withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration())
-        }
+        model.onOpenFiles = { [weak self] urls, pid, n in self?.open(urls, with: pid, on: n) }
         // A tile's right-click menu keeps the dock up while it's open.
         NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { [weak self] _ in
             self?.model.menuOpen = true
@@ -188,8 +185,10 @@ final class WorkspaceDock {
     /// Workspaces changed: a shown dock follows along.
     func reload() {
         // Mid-switch the windows are on the move; the switch's end calls this again. A drag in
-        // progress keeps its tiles; a reload could pull the dragged icon out from under it.
-        guard isShown, !spaces.switching, model.drag == nil else { return }
+        // progress keeps its tiles; a reload could pull the dragged icon out from under it. One
+        // from another app too: tiles shifting under a held file would spring the one beside it.
+        // Either drag's end reloads.
+        guard isShown, !spaces.switching, model.drag == nil, model.fileDrag == nil else { return }
         model.load(from: spaces)
         resize()
     }
@@ -197,13 +196,16 @@ final class WorkspaceDock {
     // MARK: Showing and hiding
 
     private func tick() {
-        guard isRunning, !pinned else { return }
+        guard isRunning else { return }
+        // A pinned dock takes drags from other apps too, though it doesn't come and go.
+        let carrying = outsideDrag.update(buttonsDown: NSEvent.pressedMouseButtons != 0) { NSPasteboard(name: .drag).changeCount }
+        // A drag that ended without leaving the dock or dropping (Escape) is over too.
+        if !carrying, model.fileDrag != nil { model.fileDrag = nil }
+        springLoad(carrying)
+        guard !pinned else { return }
         // The overview already shows every workspace; the dock stays down while it's open.
         if MissionControlKeys.viewerOpen { if isShown { hide() }; edgeSince = nil; return }
         let mouse = NSEvent.mouseLocation
-        let carrying = outsideDrag.update(buttonsDown: NSEvent.pressedMouseButtons != 0) { NSPasteboard(name: .drag).changeCount }
-        if !carrying, model.fileDrag != nil { model.fileDrag = nil }
-        springLoad(carrying)
         // A drag whose mouse-up never reached the dock (the screen locked, another app took the
         // pointer) would hold it open forever; once the button has been up a moment, it's over.
         if model.drag != nil, NSEvent.pressedMouseButtons == 0 {
@@ -260,6 +262,22 @@ final class WorkspaceDock {
             spaces.focusApp(pid, on: n)
         case .tile(let n):
             if n != spaces.model.current { spaces.switchTo(n, announce: false) }
+        }
+    }
+
+    /// Files or links dropped on an app's icon open in that app on that icon's workspace: you go
+    /// there first, so the window they open in is the one in front of you.
+    private func open(_ urls: [URL], with pid: pid_t, on n: Int) {
+        guard let app = NSRunningApplication(processIdentifier: pid)?.bundleURL else { return }
+        let openThem = { NSWorkspace.shared.open(urls, withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration()) }
+        guard n != spaces.model.current else { return openThem() }
+        spaces.focusApp(pid, on: n)
+        // The switch runs over a few turns of the run loop; open once it's done (or a second on).
+        let deadline = Date().addingTimeInterval(1)
+        Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { [weak self] t in
+            guard let self, !self.spaces.switching || Date() > deadline else { return }
+            t.invalidate()
+            openThem()
         }
     }
 
@@ -505,6 +523,8 @@ final class DockModel: ObservableObject {
     @Published var fileDrag: FileDrag? {
         didSet {
             guard fileDrag != oldValue else { return }
+            // Its end catches up on what changed while the tiles held still.
+            if fileDrag == nil { onDragDone() }
             // During a drag the pointer's hover isn't reported; the drag's target lights up instead.
             switch fileDrag?.target {
             case .app(let n, let id): hover = .app(n, id)
@@ -535,8 +555,8 @@ final class DockModel: ObservableObject {
     var onSendHere: (Int) -> Void = { _ in }
     var onMove: ([WindowID], Int) -> Void = { _, _ in }
     var onDragDone: () -> Void = {}
-    /// Files or links dropped on an app's icon: that app opens them.
-    var onOpenFiles: ([URL], pid_t) -> Void = { _, _ in }
+    /// Files or links dropped on an app's icon: that app opens them on the icon's workspace.
+    var onOpenFiles: ([URL], pid_t, Int) -> Void = { _, _, _ in }
     var onShowOverview: () -> Void = {}
     var onShowLauncher: () -> Void = {}
     var onTurnOff: () -> Void = {}
@@ -1281,14 +1301,14 @@ private struct OutsideDrop: DropDelegate {
         return DropProposal(operation: .copy)
     }
 
-    func dropExited(info: DropInfo) {
-        if model.fileDrag != nil { model.fileDrag = DockModel.FileDrag(target: nil, canOpen: false) }
-    }
+    func dropExited(info: DropInfo) { model.fileDrag = nil }
 
     func performDrop(info: DropInfo) -> Bool {
-        let target = model.fileDrag?.target
+        // From the drop itself: the dock's tick may already have seen the button come up and
+        // cleared the drag's state.
+        let target = DockSpringTarget.at(info.location, frames: model.frames)
         model.fileDrag = nil
-        guard case .app(_, let id) = target, let pid = pid_t(id) else { return false }
+        guard case .app(let n, let id) = target, let pid = pid_t(id) else { return false }
         let providers = info.itemProviders(for: [.fileURL, .url])
         guard !providers.isEmpty else { return false }
         var urls: [URL?] = Array(repeating: nil, count: providers.count)
@@ -1301,7 +1321,7 @@ private struct OutsideDrop: DropDelegate {
         }
         group.notify(queue: .main) { [model] in
             let found = urls.compactMap { $0 }
-            if !found.isEmpty { model.onOpenFiles(found, pid) }
+            if !found.isEmpty { model.onOpenFiles(found, pid, n) }
         }
         return true
     }

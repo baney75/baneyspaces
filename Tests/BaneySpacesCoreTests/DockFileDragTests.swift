@@ -7,12 +7,14 @@ import XCTest
 final class DockFileDragTests: XCTestCase {
     func testAPressWithoutADragIsNotOne() {
         var d = OutsideDrag()
+        d.update(buttonsDown: false) { 7 }
         XCTAssertFalse(d.update(buttonsDown: true) { 7 })
         XCTAssertFalse(d.update(buttonsDown: true) { 7 })
     }
 
     func testTheDragPasteboardChangingWhileDownIsADrag() {
         var d = OutsideDrag()
+        d.update(buttonsDown: false) { 7 }
         d.update(buttonsDown: true) { 7 }
         XCTAssertTrue(d.update(buttonsDown: true) { 8 })
         // Still on while the button stays down, even with no further change.
@@ -20,19 +22,28 @@ final class DockFileDragTests: XCTestCase {
         XCTAssertFalse(d.update(buttonsDown: false) { 8 })
     }
 
-    func testAChangeBetweenPressesIsNotADrag() {
+    /// Review r1: a flick that starts the drag before the first tick with the button down.
+    func testADragAlreadyStartedOnTheFirstDownTickCounts() {
         var d = OutsideDrag()
-        d.update(buttonsDown: true) { 7 }
         d.update(buttonsDown: false) { 7 }
-        // A drag finished while the button was up last time; the new press starts fresh.
-        XCTAssertFalse(d.update(buttonsDown: true) { 9 })
+        XCTAssertTrue(d.update(buttonsDown: true) { 8 })
     }
 
-    func testThePasteboardIsReadOnlyWhileAButtonIsDown() {
+    func testTheNextPressStartsFromTheLastDragsCount() {
+        var d = OutsideDrag()
+        d.update(buttonsDown: false) { 7 }
+        XCTAssertTrue(d.update(buttonsDown: true) { 8 })
+        d.update(buttonsDown: false) { 8 }
+        XCTAssertFalse(d.update(buttonsDown: true) { 8 })
+    }
+
+    func testIdleTicksDontReadThePasteboard() {
         var d = OutsideDrag()
         var reads = 0
         d.update(buttonsDown: false) { reads += 1; return 1 }
-        XCTAssertEqual(reads, 0)
+        d.update(buttonsDown: false) { reads += 1; return 1 }
+        d.update(buttonsDown: false) { reads += 1; return 1 }
+        XCTAssertEqual(reads, 1)
     }
 
     let frames: [String: CGRect] = [

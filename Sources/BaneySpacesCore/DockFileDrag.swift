@@ -5,24 +5,30 @@ import Foundation
 /// the system's drag pasteboard changes while the mouse button is down. A drag inside the dock,
 /// or a window being moved by its title bar, never touches that pasteboard.
 public struct OutsideDrag: Sendable {
-    /// The pasteboard's change count when the button went down. A drag starts only once the
-    /// pointer moves, so a count read on the first tick with the button down is from before it.
-    private var baseline: Int?
+    /// The pasteboard's change count when the buttons last went up. No drag can start while
+    /// they're up, so it holds until the next press, however fast that press starts a drag.
+    private var upCount: Int?
+    private var wasDown = false
     public private(set) var active = false
 
     public init() {}
 
-    /// Call on every tick; true while such a drag is under way. The count is read only while a
-    /// button is down.
+    /// Call on every tick; true while such a drag is under way. The count is read when the
+    /// buttons go up and on each tick they're down until a drag shows, never on idle ticks.
     @discardableResult
     public mutating func update(buttonsDown: Bool, changeCount: () -> Int) -> Bool {
         guard buttonsDown else {
-            baseline = nil
+            if wasDown || upCount == nil { upCount = changeCount() }
+            wasDown = false
             active = false
             return false
         }
+        wasDown = true
+        guard !active else { return true }
         let count = changeCount()
-        if let baseline { if count != baseline { active = true } } else { baseline = count }
+        // Down on the very first tick: nothing to compare with, so this press counts as before.
+        guard let upCount else { self.upCount = count; return false }
+        active = count != upCount
         return active
     }
 }
