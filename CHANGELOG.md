@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Drag a file to the dock to drop it in a window on another workspace.** The Workspace Dock
+  used to stay down while a mouse button was held, so a file, link or image dragged from Finder or
+  a browser couldn't reach it. Now it comes up for the drag. Hold over an app's icon and that app's
+  window there comes forward; hold over a tile and you go to that workspace. Then carry the file
+  up into the window and let go. Drop on an app's icon and the app opens the file or link, when
+  it's one that app can open, as in the macOS Dock.
 - **The dock says which app an agent is working in.** The blue dot on a tile meant a coding
   agent was at work on that workspace, but it looked like an unread badge and didn't say where.
   Now a small turning ring sits on the icon of the app the agent runs in (Ghostty, T3 Code), the
