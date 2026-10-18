@@ -5,20 +5,30 @@ import Foundation
 /// the system's drag pasteboard changes while the mouse button is down. A drag inside the dock,
 /// or a window being moved by its title bar, never touches that pasteboard.
 public struct OutsideDrag: Sendable {
-    /// The pasteboard's change count when the buttons last went up. No drag can start while
-    /// they're up, so it holds until the next press, however fast that press starts a drag.
+    /// The pasteboard's change count while the buttons are up: read when they go up and again
+    /// every `idleRefresh` ticks, so a late write (a drop finishing, a cancelled drag sliding
+    /// back) isn't taken for the next drag. A press compares with it, however fast that press
+    /// starts a drag.
     private var upCount: Int?
     private var wasDown = false
+    private var idleTicks = 0
+    /// Half a second of the dock's 30 Hz ticks.
+    public static let idleRefresh = 15
     public private(set) var active = false
 
     public init() {}
 
     /// Call on every tick; true while such a drag is under way. The count is read when the
-    /// buttons go up and on each tick they're down until a drag shows, never on idle ticks.
+    /// buttons go up, every `idleRefresh` idle ticks, and on each tick they're down until a
+    /// drag shows.
     @discardableResult
     public mutating func update(buttonsDown: Bool, changeCount: () -> Int) -> Bool {
         guard buttonsDown else {
-            if wasDown || upCount == nil { upCount = changeCount() }
+            idleTicks += 1
+            if wasDown || upCount == nil || idleTicks >= OutsideDrag.idleRefresh {
+                upCount = changeCount()
+                idleTicks = 0
+            }
             wasDown = false
             active = false
             return false
@@ -59,6 +69,16 @@ public enum DockSpringTarget: Equatable, Sendable {
             if parts.count == 2, let n = Int(parts[0]) { return .app(workspace: n, id: String(parts[1])) }
         }
         return tile.map { .tile($0) }
+    }
+}
+
+/// Whether an app's icon takes a drop: only when the app can open every file or link dropped,
+/// as the macOS Dock lights an icon only for what its app claims. `handlers` lists the apps
+/// that can open a URL (`NSWorkspace.urlsForApplications(toOpen:)`).
+public enum DockOpen {
+    public static func accepts(_ urls: [URL], app: URL, handlers: (URL) -> [URL]) -> Bool {
+        let app = app.standardizedFileURL.path
+        return !urls.isEmpty && urls.allSatisfy { url in handlers(url).contains { $0.standardizedFileURL.path == app } }
     }
 }
 

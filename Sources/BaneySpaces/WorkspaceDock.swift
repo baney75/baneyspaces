@@ -153,6 +153,8 @@ final class WorkspaceDock {
         model.onSetEdge = { [weak self] e in self?.onSetEdge(e) }
         model.onSetAgentStatus = { [weak self] on in self?.onSetAgentStatus(on) }
         model.onOpenFiles = { [weak self] urls, pid, n in self?.open(urls, with: pid, on: n) }
+        model.openable = { [weak self] pid in self?.openable(by: pid) ?? [] }
+        model.liveCurrent = { [weak self] in self?.spaces.model.current ?? 0 }
         // A tile's right-click menu keeps the dock up while it's open.
         NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { [weak self] _ in
             self?.model.menuOpen = true
@@ -259,7 +261,7 @@ final class WorkspaceDock {
         switch fire {
         case .app(let n, let id):
             guard let pid = pid_t(id) else { return }
-            spaces.focusApp(pid, on: n)
+            spaces.focusApp(pid, on: n, announce: false)
         case .tile(let n):
             if n != spaces.model.current { spaces.switchTo(n, announce: false) }
         }
@@ -269,9 +271,13 @@ final class WorkspaceDock {
     /// there first, so the window they open in is the one in front of you.
     private func open(_ urls: [URL], with pid: pid_t, on n: Int) {
         guard let app = NSRunningApplication(processIdentifier: pid)?.bundleURL else { return }
-        let openThem = { NSWorkspace.shared.open(urls, withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration()) }
+        let openThem = {
+            NSWorkspace.shared.open(urls, withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration()) { _, error in
+                if let error { Trace.log("dock drop: \(app.lastPathComponent) didn't open \(urls.count) item(s): \(error.localizedDescription)") }
+            }
+        }
         guard n != spaces.model.current else { return openThem() }
-        spaces.focusApp(pid, on: n)
+        spaces.focusApp(pid, on: n, announce: false)
         // The switch runs over a few turns of the run loop; open once it's done (or a second on).
         let deadline = Date().addingTimeInterval(1)
         Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { [weak self] t in
@@ -280,6 +286,21 @@ final class WorkspaceDock {
             openThem()
         }
     }
+
+    /// The files and links being dragged that this app can open, or none unless it can open them
+    /// all. Asked on every move over an icon, so it's kept per drag and app.
+    private func openable(by pid: pid_t) -> [URL] {
+        let board = NSPasteboard(name: .drag)
+        let key = "\(board.changeCount):\(pid)"
+        if let hit = openableCache, hit.key == key { return hit.urls }
+        let urls = board.readObjects(forClasses: [NSURL.self], options: nil) as? [URL] ?? []
+        let ok = NSRunningApplication(processIdentifier: pid)?.bundleURL.map { app in
+            DockOpen.accepts(urls, app: app) { NSWorkspace.shared.urlsForApplications(toOpen: $0) }
+        } ?? false
+        openableCache = (key, ok ? urls : [])
+        return ok ? urls : []
+    }
+    private var openableCache: (key: String, urls: [URL])?
 
     /// `baneyspaces://dock/show`: for scripts and checks. It stays until `dock/hide`.
     func pin(_ on: Bool) {
@@ -557,6 +578,13 @@ final class DockModel: ObservableObject {
     var onDragDone: () -> Void = {}
     /// Files or links dropped on an app's icon: that app opens them on the icon's workspace.
     var onOpenFiles: ([URL], pid_t, Int) -> Void = { _, _, _ in }
+    /// What of the drag an app can open: everything, or nothing.
+    var openable: (pid_t) -> [URL] = { _ in [] }
+    /// The workspace you're on now. During a drag the tiles hold still, so theirs can be old.
+    var liveCurrent: () -> Int = { 0 }
+    /// The icon or tile the drag was last over, as lit and labeled. The drop goes there, even
+    /// if the tiles moved after the button came up.
+    var heldTarget: DockSpringTarget?
     var onShowOverview: () -> Void = {}
     var onShowLauncher: () -> Void = {}
     var onTurnOff: () -> Void = {}
@@ -713,6 +741,7 @@ final class DockModel: ObservableObject {
         if drag != nil { NSCursor.pop() }
         drag = nil
         fileDrag = nil
+        heldTarget = nil
         shown = false
         dwell?.cancel()
         hover = nil
@@ -893,7 +922,7 @@ struct DockView: View {
                 guard let app = model.tiles.first(where: { $0.id == n })?.apps.first(where: { $0.id == id }) else { return nil }
                 return file.canOpen ? "Hold to bring up \(app.name), or drop to open it there" : "Hold to bring up \(app.name)"
             case .tile(let n):
-                return n == model.tiles.first(where: \.isCurrent)?.id ? "Workspace \(n) · you're here" : "Hold to go to Workspace \(n)"
+                return n == model.liveCurrent() ? "Workspace \(n) · you're here" : "Hold to go to Workspace \(n)"
             case nil:
                 return "Hold on an app or a workspace"
             }
@@ -1301,34 +1330,30 @@ private struct OutsideDrop: DropDelegate {
         return DropProposal(operation: .copy)
     }
 
-    func dropExited(info: DropInfo) { model.fileDrag = nil }
+    func dropExited(info: DropInfo) {
+        model.heldTarget = nil
+        model.fileDrag = nil
+    }
 
     func performDrop(info: DropInfo) -> Bool {
-        // From the drop itself: the dock's tick may already have seen the button come up and
-        // cleared the drag's state.
-        let target = DockSpringTarget.at(info.location, frames: model.frames)
+        // What was lit when the button came up: the dock's tick may since have cleared the
+        // drag and let the tiles move.
+        let target = model.heldTarget
+        model.heldTarget = nil
         model.fileDrag = nil
         guard case .app(let n, let id) = target, let pid = pid_t(id) else { return false }
-        let providers = info.itemProviders(for: [.fileURL, .url])
-        guard !providers.isEmpty else { return false }
-        var urls: [URL?] = Array(repeating: nil, count: providers.count)
-        let group = DispatchGroup()
-        for (i, p) in providers.enumerated() {
-            group.enter()
-            _ = p.loadObject(ofClass: NSURL.self) { url, _ in
-                DispatchQueue.main.async { urls[i] = url as? URL; group.leave() }
-            }
-        }
-        group.notify(queue: .main) { [model] in
-            let found = urls.compactMap { $0 }
-            if !found.isEmpty { model.onOpenFiles(found, pid, n) }
-        }
+        let urls = model.openable(pid)
+        guard !urls.isEmpty else { return false }
+        model.onOpenFiles(urls, pid, n)
         return true
     }
 
     private func track(_ info: DropInfo) {
-        let state = DockModel.FileDrag(target: DockSpringTarget.at(info.location, frames: model.frames),
-                                       canOpen: info.hasItemsConforming(to: [.fileURL, .url]))
+        let target = DockSpringTarget.at(info.location, frames: model.frames)
+        var canOpen = false
+        if case .app(_, let id) = target, let pid = pid_t(id) { canOpen = !model.openable(pid).isEmpty }
+        model.heldTarget = target
+        let state = DockModel.FileDrag(target: target, canOpen: canOpen)
         if model.fileDrag != state { model.fileDrag = state }
     }
 }

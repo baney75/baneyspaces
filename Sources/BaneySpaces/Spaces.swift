@@ -918,9 +918,9 @@ final class Spaces {
     }
 
     /// Goes to workspace `n` and lands on one particular window there.
-    func focus(_ id: WindowID, on n: Int) {
+    func focus(_ id: WindowID, on n: Int, announce: Bool = true) {
         guard active else { return }
-        if switching { return enqueue { [weak self] in self?.focus(id, on: n) } }
+        if switching { return enqueue { [weak self] in self?.focus(id, on: n, announce: announce) } }
         // Picking a minimized window in the viewer means wanting it back.
         if let w = windows[id], w.isMinimized { w.unminimize() }
         // Already here: raise it directly. A switch would first record the window in front (the
@@ -933,7 +933,7 @@ final class Spaces {
             return
         }
         model.noteFocus(id)
-        switchTo(n)
+        switchTo(n, announce: announce)
     }
 
     /// Goes to an app wherever it is: the window of it used last, on whichever workspace that is,
@@ -946,7 +946,7 @@ final class Spaces {
 
     /// `on` limits it to one workspace, for an app icon clicked in a dock tile. `cycle` steps to
     /// the app's next window there when one of its windows on that workspace is already in front.
-    func focusApp(_ pid: pid_t, on only: Int? = nil, cycle: Bool = false) {
+    func focusApp(_ pid: pid_t, on only: Int? = nil, cycle: Bool = false, announce: Bool = true) {
         guard active else { NSRunningApplication(processIdentifier: pid)?.activate(options: []); return }
         refresh()
         var mine = windows.values.filter { $0.pid == pid && model.workspace(of: $0.id) != nil }
@@ -966,13 +966,13 @@ final class Spaces {
             if cycle, n == model.current, let front = Windows.focused(in: Array(windows.values)),
                here.contains(where: { $0.id == front.id }), here.count > 1,
                let next = WindowCycle.next(here.map(\.id).sorted(), after: front.id) {
-                return focus(next, on: n)
+                return focus(next, on: n, announce: announce)
             }
             let last = model.lastFocused[n].flatMap { id in here.first { $0.id == id } }
             let pick = last ?? here.first { !$0.isMinimized } ?? here[0]
-            return focus(pick.id, on: n)
+            return focus(pick.id, on: n, announce: announce)
         }
-        if let only { return switchTo(only) }
+        if let only { return switchTo(only, announce: announce) }
         NSRunningApplication(processIdentifier: pid)?.activate(options: [])
     }
 

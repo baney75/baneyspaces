@@ -37,13 +37,38 @@ final class DockFileDragTests: XCTestCase {
         XCTAssertFalse(d.update(buttonsDown: true) { 8 })
     }
 
-    func testIdleTicksDontReadThePasteboard() {
+    func testIdleTicksRarelyReadThePasteboard() {
         var d = OutsideDrag()
         var reads = 0
-        d.update(buttonsDown: false) { reads += 1; return 1 }
-        d.update(buttonsDown: false) { reads += 1; return 1 }
-        d.update(buttonsDown: false) { reads += 1; return 1 }
-        XCTAssertEqual(reads, 1)
+        for _ in 0..<(OutsideDrag.idleRefresh * 2 + 1) { d.update(buttonsDown: false) { reads += 1; return 1 } }
+        XCTAssertEqual(reads, 3)
+    }
+
+    /// Review r2: a write after the buttons went up (a drop finishing late) isn't the next drag.
+    func testALateWriteWhileUpIsNotTheNextDrag() {
+        var d = OutsideDrag()
+        d.update(buttonsDown: false) { 7 }
+        for _ in 0..<OutsideDrag.idleRefresh { d.update(buttonsDown: false) { 8 } }
+        XCTAssertFalse(d.update(buttonsDown: true) { 8 })
+    }
+
+    let preview = URL(fileURLWithPath: "/System/Applications/Preview.app")
+    let ghostty = URL(fileURLWithPath: "/Applications/Ghostty.app")
+
+    /// Review r2: an icon takes a drop only when its app can open everything dropped.
+    func testAnAppTakesOnlyWhatItCanOpen() {
+        let png = URL(fileURLWithPath: "/tmp/a.png"), pdf = URL(fileURLWithPath: "/tmp/b.pdf")
+        let handlers: (URL) -> [URL] = { _ in [self.preview] }
+        XCTAssertTrue(DockOpen.accepts([png, pdf], app: preview, handlers: handlers))
+        XCTAssertFalse(DockOpen.accepts([png], app: ghostty, handlers: handlers))
+        XCTAssertFalse(DockOpen.accepts([], app: preview, handlers: handlers))
+        let mixed: (URL) -> [URL] = { $0 == png ? [self.preview] : [] }
+        XCTAssertFalse(DockOpen.accepts([png, pdf], app: preview, handlers: mixed))
+    }
+
+    func testTheSameAppAtAnotherPathSpellingStillCounts() {
+        let handlers: (URL) -> [URL] = { _ in [URL(fileURLWithPath: "/System/Applications/Preview.app/")] }
+        XCTAssertTrue(DockOpen.accepts([URL(fileURLWithPath: "/tmp/a.png")], app: preview, handlers: handlers))
     }
 
     let frames: [String: CGRect] = [

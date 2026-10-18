@@ -90,7 +90,7 @@ another tile to move its windows on that workspace there, or drag one window out
 move just that one; drop it on the dashed tile to start a new workspace with it. Dragging a file,
 link or image from another app brings the dock up too: hold it over an app's icon and that
 app's window comes forward, or over a tile and you go to that workspace, then drop it into the
-window. Drop it on an app's icon and that app opens it. A tile with more than four apps shows three
+window. Drop it on an app's icon and that app opens it, if it can. A tile with more than four apps shows three
 and a "+N"; rest on the "+N" to list the rest and click one. You stay where
 you are. The dashed tile goes to
 the first empty workspace, and the two small buttons at the end open the launcher and the
