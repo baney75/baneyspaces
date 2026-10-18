@@ -190,7 +190,9 @@ final class WorkspaceDock {
         // progress keeps its tiles; a reload could pull the dragged icon out from under it. One
         // from another app too: tiles shifting under a held file would spring the one beside it.
         // Either drag's end reloads.
-        guard isShown, !spaces.switching, model.drag == nil, model.fileDrag == nil else { return }
+        guard isShown, !spaces.switching, model.drag == nil else { return }
+        // The tiles hold still, but the "you're here" highlight and label read the live workspace.
+        guard model.fileDrag == nil else { model.objectWillChange.send(); return }
         model.load(from: spaces)
         resize()
     }
@@ -298,13 +300,16 @@ final class WorkspaceDock {
         let board = NSPasteboard(name: .drag)
         if openableCache?.drag != board.changeCount {
             let urls = board.readObjects(forClasses: [NSURL.self], options: nil) as? [URL] ?? []
-            openableCache = (board.changeCount, urls, DockOpen.apps(openingAll: urls) { NSWorkspace.shared.urlsForApplications(toOpen: $0) })
+            let apps = DockOpen.apps(openingAll: urls, kind: { url in
+                url.isFileURL ? ((try? url.resourceValues(forKeys: [.contentTypeKey]))?.contentType?.identifier ?? DockOpen.kind(url)) : DockOpen.kind(url)
+            }, handlers: { NSWorkspace.shared.urlsForApplications(toOpen: $0) }, identify: { Bundle(url: $0)?.bundleIdentifier })
+            openableCache = (board.changeCount, urls, apps)
         }
-        guard let cache = openableCache, let app = NSRunningApplication(processIdentifier: pid)?.bundleURL,
-              cache.apps.contains(app.standardizedFileURL.path) else { return [] }
+        guard let cache = openableCache, let id = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier,
+              cache.apps.contains(id) else { return [] }
         return cache.urls
     }
-    /// One drag's files and links, and the apps that can open them all.
+    /// One drag's files and links, and the bundle identifiers of the apps that can open them all.
     private var openableCache: (drag: Int, urls: [URL], apps: Set<String>)?
 
     /// `baneyspaces://dock/show`: for scripts and checks. It stays until `dock/hide`.

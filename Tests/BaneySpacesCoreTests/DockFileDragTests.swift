@@ -46,32 +46,39 @@ final class DockFileDragTests: XCTestCase {
         XCTAssertFalse(d.update(buttonsDown: true) { 8 })
     }
 
-    func testTheHandlerLookupRunsOncePerFile() {
-        var asked = 0
-        let urls = (0..<50).map { URL(fileURLWithPath: "/tmp/\($0).png") }
-        let apps = DockOpen.apps(openingAll: urls) { _ in asked += 1; return [self.preview] }
-        XCTAssertEqual(asked, 50)
-        XCTAssertTrue(apps.contains(preview.standardizedFileURL.path))
-        XCTAssertFalse(apps.contains(ghostty.standardizedFileURL.path))
-    }
 
     let preview = URL(fileURLWithPath: "/System/Applications/Preview.app")
     let ghostty = URL(fileURLWithPath: "/Applications/Ghostty.app")
+    /// Bundle identifiers by app name, as `Bundle(url:)` would read them.
+    func identify(_ app: URL) -> String? {
+        ["Preview": "com.apple.Preview", "Ghostty": "com.mitchellh.ghostty", "Safari": "com.apple.Safari"][app.deletingPathExtension().lastPathComponent]
+    }
 
     /// Review r2: an icon takes a drop only when its app can open everything dropped.
     func testAnAppTakesOnlyWhatItCanOpen() {
         let png = URL(fileURLWithPath: "/tmp/a.png"), pdf = URL(fileURLWithPath: "/tmp/b.pdf")
-        let handlers: (URL) -> [URL] = { _ in [self.preview] }
-        XCTAssertTrue(DockOpen.accepts([png, pdf], app: preview, handlers: handlers))
-        XCTAssertFalse(DockOpen.accepts([png], app: ghostty, handlers: handlers))
-        XCTAssertFalse(DockOpen.accepts([], app: preview, handlers: handlers))
-        let mixed: (URL) -> [URL] = { $0 == png ? [self.preview] : [] }
-        XCTAssertFalse(DockOpen.accepts([png, pdf], app: preview, handlers: mixed))
+        let both = DockOpen.apps(openingAll: [png, pdf], handlers: { _ in [self.preview] }, identify: identify)
+        XCTAssertEqual(both, ["com.apple.Preview"])
+        XCTAssertFalse(both.contains("com.mitchellh.ghostty"))
+        XCTAssertEqual(DockOpen.apps(openingAll: [], handlers: { _ in [self.preview] }, identify: identify), [])
+        let mixed = DockOpen.apps(openingAll: [png, pdf], handlers: { $0 == png ? [self.preview] : [] }, identify: identify)
+        XCTAssertEqual(mixed, [])
     }
 
-    func testTheSameAppAtAnotherPathSpellingStillCounts() {
-        let handlers: (URL) -> [URL] = { _ in [URL(fileURLWithPath: "/System/Applications/Preview.app/")] }
-        XCTAssertTrue(DockOpen.accepts([URL(fileURLWithPath: "/tmp/a.png")], app: preview, handlers: handlers))
+    /// Review r4: LaunchServices lists Safari in its Cryptex, a quarantined app at its real
+    /// path while it runs translocated. The same bundle identifier is the same app.
+    func testTheSameAppAtAnotherPathStillCounts() {
+        let registered = URL(fileURLWithPath: "/System/Volumes/Preboot/Cryptexes/App/System/Applications/Safari.app")
+        let link = URL(string: "https://example.com")!
+        let ids = DockOpen.apps(openingAll: [link], handlers: { _ in [registered] }, identify: identify)
+        XCTAssertTrue(ids.contains("com.apple.Safari"))
+    }
+
+    func testOneLookupPerKindOfFile() {
+        var asked = 0
+        let urls = (0..<50).map { URL(fileURLWithPath: "/tmp/\($0).png") } + [URL(fileURLWithPath: "/tmp/x.PDF")]
+        _ = DockOpen.apps(openingAll: urls, handlers: { _ in asked += 1; return [self.preview] }, identify: identify)
+        XCTAssertEqual(asked, 2)
     }
 
     let frames: [String: CGRect] = [
