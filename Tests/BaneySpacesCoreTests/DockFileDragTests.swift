@@ -37,19 +37,22 @@ final class DockFileDragTests: XCTestCase {
         XCTAssertFalse(d.update(buttonsDown: true) { 8 })
     }
 
-    func testIdleTicksRarelyReadThePasteboard() {
-        var d = OutsideDrag()
-        var reads = 0
-        for _ in 0..<(OutsideDrag.idleRefresh * 2 + 1) { d.update(buttonsDown: false) { reads += 1; return 1 } }
-        XCTAssertEqual(reads, 3)
-    }
-
-    /// Review r2: a write after the buttons went up (a drop finishing late) isn't the next drag.
+    /// Review r2, r3: a write after the buttons went up (a drop finishing late) isn't the next
+    /// drag, even when the next press comes on the very next tick.
     func testALateWriteWhileUpIsNotTheNextDrag() {
         var d = OutsideDrag()
         d.update(buttonsDown: false) { 7 }
-        for _ in 0..<OutsideDrag.idleRefresh { d.update(buttonsDown: false) { 8 } }
+        d.update(buttonsDown: false) { 8 }
         XCTAssertFalse(d.update(buttonsDown: true) { 8 })
+    }
+
+    func testTheHandlerLookupRunsOncePerFile() {
+        var asked = 0
+        let urls = (0..<50).map { URL(fileURLWithPath: "/tmp/\($0).png") }
+        let apps = DockOpen.apps(openingAll: urls) { _ in asked += 1; return [self.preview] }
+        XCTAssertEqual(asked, 50)
+        XCTAssertTrue(apps.contains(preview.standardizedFileURL.path))
+        XCTAssertFalse(apps.contains(ghostty.standardizedFileURL.path))
     }
 
     let preview = URL(fileURLWithPath: "/System/Applications/Preview.app")

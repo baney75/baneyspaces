@@ -5,35 +5,23 @@ import Foundation
 /// the system's drag pasteboard changes while the mouse button is down. A drag inside the dock,
 /// or a window being moved by its title bar, never touches that pasteboard.
 public struct OutsideDrag: Sendable {
-    /// The pasteboard's change count while the buttons are up: read when they go up and again
-    /// every `idleRefresh` ticks, so a late write (a drop finishing, a cancelled drag sliding
-    /// back) isn't taken for the next drag. A press compares with it, however fast that press
-    /// starts a drag.
+    /// The pasteboard's change count on the last tick the buttons were up, so a late write (a
+    /// drop finishing, a cancelled drag sliding back) isn't taken for the next drag. A press
+    /// compares with it, however fast that press starts a drag.
     private var upCount: Int?
-    private var wasDown = false
-    private var idleTicks = 0
-    /// Half a second of the dock's 30 Hz ticks.
-    public static let idleRefresh = 15
     public private(set) var active = false
 
     public init() {}
 
-    /// Call on every tick; true while such a drag is under way. The count is read when the
-    /// buttons go up, every `idleRefresh` idle ticks, and on each tick they're down until a
-    /// drag shows.
+    /// Call on every tick; true while such a drag is under way. The count is read on each tick
+    /// until a drag shows (a cheap property read).
     @discardableResult
     public mutating func update(buttonsDown: Bool, changeCount: () -> Int) -> Bool {
         guard buttonsDown else {
-            idleTicks += 1
-            if wasDown || upCount == nil || idleTicks >= OutsideDrag.idleRefresh {
-                upCount = changeCount()
-                idleTicks = 0
-            }
-            wasDown = false
+            upCount = changeCount()
             active = false
             return false
         }
-        wasDown = true
         guard !active else { return true }
         let count = changeCount()
         // Down on the very first tick: nothing to compare with, so this press counts as before.
@@ -76,9 +64,19 @@ public enum DockSpringTarget: Equatable, Sendable {
 /// as the macOS Dock lights an icon only for what its app claims. `handlers` lists the apps
 /// that can open a URL (`NSWorkspace.urlsForApplications(toOpen:)`).
 public enum DockOpen {
+    /// The apps (as standardized paths) that can open every one of `urls`, asked once per drag
+    /// so hovering icon after icon costs a lookup, not a LaunchServices query per file.
+    public static func apps(openingAll urls: [URL], handlers: (URL) -> [URL]) -> Set<String> {
+        guard let first = urls.first else { return [] }
+        var common = Set(handlers(first).map(\.standardizedFileURL.path))
+        for url in urls.dropFirst() where !common.isEmpty {
+            common.formIntersection(handlers(url).map(\.standardizedFileURL.path))
+        }
+        return common
+    }
+
     public static func accepts(_ urls: [URL], app: URL, handlers: (URL) -> [URL]) -> Bool {
-        let app = app.standardizedFileURL.path
-        return !urls.isEmpty && urls.allSatisfy { url in handlers(url).contains { $0.standardizedFileURL.path == app } }
+        apps(openingAll: urls, handlers: handlers).contains(app.standardizedFileURL.path)
     }
 }
 

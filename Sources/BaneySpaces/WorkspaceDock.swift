@@ -258,6 +258,8 @@ final class WorkspaceDock {
         guard carrying, isShown, let drag = model.fileDrag else { spring.reset(); return }
         guard let fire = spring.update(drag.target) else { return }
         Trace.log("dock spring \(fire)")
+        // The tiles hold still mid-drag; their "you're here" highlight follows the switch.
+        defer { model.objectWillChange.send() }
         switch fire {
         case .app(let n, let id):
             guard let pid = pid_t(id) else { return }
@@ -276,12 +278,15 @@ final class WorkspaceDock {
                 if let error { Trace.log("dock drop: \(app.lastPathComponent) didn't open \(urls.count) item(s): \(error.localizedDescription)") }
             }
         }
-        guard n != spaces.model.current else { return openThem() }
+        // Here too: the app's window on this workspace comes forward, so a browser puts the
+        // link in that window, not in one parked on another workspace.
         spaces.focusApp(pid, on: n, announce: false)
-        // The switch runs over a few turns of the run loop; open once it's done (or a second on).
+        // A switch runs over a few turns of the run loop (one a spring started may still be);
+        // open once it's done, or a second on.
         let deadline = Date().addingTimeInterval(1)
         Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { [weak self] t in
-            guard let self, !self.spaces.switching || Date() > deadline else { return }
+            guard let self else { t.invalidate(); return }
+            guard !self.spaces.switching || Date() > deadline else { return }
             t.invalidate()
             openThem()
         }
@@ -291,16 +296,16 @@ final class WorkspaceDock {
     /// all. Asked on every move over an icon, so it's kept per drag and app.
     private func openable(by pid: pid_t) -> [URL] {
         let board = NSPasteboard(name: .drag)
-        let key = "\(board.changeCount):\(pid)"
-        if let hit = openableCache, hit.key == key { return hit.urls }
-        let urls = board.readObjects(forClasses: [NSURL.self], options: nil) as? [URL] ?? []
-        let ok = NSRunningApplication(processIdentifier: pid)?.bundleURL.map { app in
-            DockOpen.accepts(urls, app: app) { NSWorkspace.shared.urlsForApplications(toOpen: $0) }
-        } ?? false
-        openableCache = (key, ok ? urls : [])
-        return ok ? urls : []
+        if openableCache?.drag != board.changeCount {
+            let urls = board.readObjects(forClasses: [NSURL.self], options: nil) as? [URL] ?? []
+            openableCache = (board.changeCount, urls, DockOpen.apps(openingAll: urls) { NSWorkspace.shared.urlsForApplications(toOpen: $0) })
+        }
+        guard let cache = openableCache, let app = NSRunningApplication(processIdentifier: pid)?.bundleURL,
+              cache.apps.contains(app.standardizedFileURL.path) else { return [] }
+        return cache.urls
     }
-    private var openableCache: (key: String, urls: [URL])?
+    /// One drag's files and links, and the apps that can open them all.
+    private var openableCache: (drag: Int, urls: [URL], apps: Set<String>)?
 
     /// `baneyspaces://dock/show`: for scripts and checks. It stays until `dock/hide`.
     func pin(_ on: Bool) {
@@ -1026,6 +1031,8 @@ struct DockView: View {
     }
 
     private func tileView(_ tile: DockModel.Tile) -> some View {
+        // Mid-drag from another app the tiles hold still, so a spring's switch shows from the live workspace.
+        let tile = model.fileDrag == nil ? tile : DockModel.Tile(id: tile.id, apps: tile.apps, isCurrent: tile.id == model.liveCurrent(), agents: tile.agents, unpinned: tile.unpinned)
         let target = model.dropTarget == tile.id
         let hovered = isHovered(tile) || target
         let tint = Chrome.workspace(tile.id)
