@@ -799,6 +799,7 @@ private struct HoverScale: ViewModifier {
         if #available(macOS 14, *) {
             content.animation(spring) { $0.scaleEffect(scale, anchor: anchor) }
         } else {
+            // macOS 13 has no scoped animation, so the slide can still show there.
             content.scaleEffect(scale, anchor: anchor).animation(spring, value: scale)
         }
     }
