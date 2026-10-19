@@ -787,6 +787,23 @@ private struct CenterReport: ViewModifier {
     }
 }
 
+/// Grows a tile, icon or button under the pointer with a spring, and animates nothing else. A plain
+/// `.animation(_, value: hovered)` also animated the layout change that hover sets off in the same
+/// update (the label above the dock widens it and re-centers the bar), so the tile under the pointer
+/// slid sideways across its neighbors while the panel snapped into place (Donovan, 2026-10-19).
+private struct HoverScale: ViewModifier {
+    let scale: CGFloat
+    var anchor: UnitPoint = .center
+    let spring: Animation
+    func body(content: Content) -> some View {
+        if #available(macOS 14, *) {
+            content.animation(spring) { $0.scaleEffect(scale, anchor: anchor) }
+        } else {
+            content.scaleEffect(scale, anchor: anchor).animation(spring, value: scale)
+        }
+    }
+}
+
 private struct SizeReport: ViewModifier {
     @Binding var size: CGSize
     func body(content: Content) -> some View {
@@ -1068,8 +1085,7 @@ struct DockView: View {
                 .background(Capsule().fill(tile.isCurrent ? tint : Color.clear))
                 .allowsHitTesting(false)
         }
-        .scaleEffect(hovered ? 1.06 : 1, anchor: .bottom)
-        .animation(.spring(response: 0.25, dampingFraction: 0.72), value: hovered)
+        .modifier(HoverScale(scale: hovered ? 1.06 : 1, anchor: .bottom, spring: .spring(response: 0.25, dampingFraction: 0.72)))
         .contextMenu { tileMenu(tile) }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(title(tile) + (tile.isCurrent ? ", current" : ""))
@@ -1248,8 +1264,7 @@ struct DockView: View {
                 }
             }
             .modifier(CenterReport(key: "\(tile.id):\(app.id)"))
-            .scaleEffect(hovered ? 1.18 : 1)
-            .animation(.spring(response: 0.22, dampingFraction: 0.65), value: hovered)
+            .modifier(HoverScale(scale: hovered ? 1.18 : 1, spring: .spring(response: 0.22, dampingFraction: 0.65)))
             .opacity(dragging ? 0.3 : 1)
             .contentShape(Rectangle())
             .onHover { model.setHover(.app(tile.id, app.id), $0) }
@@ -1319,8 +1334,7 @@ struct DockView: View {
             .overlay(Image(systemName: symbol).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white.opacity(hovered ? 0.95 : 0.6)))
             .frame(width: size.width, height: size.height)
             .modifier(CenterReport(key: which == .launcher ? "btn:launcher" : "btn:overview"))
-            .scaleEffect(hovered ? 1.06 : 1)
-            .animation(.spring(response: 0.25, dampingFraction: 0.72), value: hovered)
+            .modifier(HoverScale(scale: hovered ? 1.06 : 1, spring: .spring(response: 0.25, dampingFraction: 0.72)))
             .contentShape(Rectangle())
             .onHover { model.setHover(which, $0) }
             .onTapGesture(perform: action)

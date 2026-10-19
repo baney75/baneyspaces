@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Dock tiles stay put under the pointer.** Hovering a tile could slide it sideways over the
+  tile beside it or the "+", because the grow-on-hover spring also animated the dock re-centering
+  itself as the label above it changed width. Now hover only grows the tile, icon or button.
 - **Drag a file to the dock to drop it in a window on another workspace.** The Workspace Dock
   used to stay down while a mouse button was held, so a file, link or image dragged from Finder or
   a browser couldn't reach it. Now it comes up for the drag. Hold over an app's icon and that app's
