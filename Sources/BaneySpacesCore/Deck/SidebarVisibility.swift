@@ -1,3 +1,5 @@
+import CoreGraphics
+
 /// When the sidebar is on screen. Unpinned, it's a drawer: it opens on request and gets out of the
 /// way by itself. Pinned, it stays while Ghostty is in front and windows move out of its strip.
 public struct SidebarVisibility: Equatable, Sendable {
@@ -49,4 +51,16 @@ public struct SidebarVisibility: Equatable, Sendable {
     }
 
     private mutating func close() { open = false; pointerVisited = false }
+}
+
+/// Where the pointer counts as at the sidebar: the sidebar itself, a little past its right side,
+/// and the gap between it and the screen's left edge. That gap holds the edge strip, so a pointer
+/// still resting where it opened the drawer hasn't left it.
+public enum SidebarZone {
+    public static let slack: CGFloat = 10
+
+    /// In the screen's own coordinates, as the sidebar's frame is.
+    public static func contains(_ p: CGPoint, sidebar: CGRect, screenMinX: CGFloat) -> Bool {
+        CGRect(x: screenMinX, y: sidebar.minY, width: sidebar.maxX + slack - screenMinX, height: sidebar.height).contains(p)
+    }
 }

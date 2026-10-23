@@ -271,13 +271,23 @@ final class DeckController {
         }
         apply()
         if visibility.pinned && !wasPinned { arrange() }
-        if e == .edgeRest { closeUnlessPointerArrives() }
+        if e == .edgeRest { closeWhenPointerLeaves(after: 1.0) }
     }
 
-    func closeUnlessPointerArrives() {
-        Timer.scheduledTimer(withTimeInterval: 1.0, repeats: false) { [weak self] _ in
+    /// The pointer is at the sidebar, by where it really is: tracking events alone go wrong while
+    /// the sidebar slides in under a pointer resting on the edge.
+    var pointerAtSidebar: Bool {
+        SidebarZone.contains(NSEvent.mouseLocation, sidebar: panel.home, screenMinX: panel.screen?.frame.minX ?? panel.home.minX)
+    }
+
+    /// Closes the drawer once the pointer is away from the sidebar. While it waits in the gap by
+    /// the edge, which sends no events, it looks again until the pointer is over the sidebar.
+    func closeWhenPointerLeaves(after delay: TimeInterval) {
+        leaveTimer?.invalidate()
+        leaveTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
             guard let self, self.panel.shown, !self.visibility.pinned else { return }
-            if !self.panel.frame.insetBy(dx: -10, dy: 0).contains(NSEvent.mouseLocation) { self.send(.pointerLeft) }
+            if !self.pointerAtSidebar { self.send(.pointerLeft) }
+            else if !self.panel.home.contains(NSEvent.mouseLocation) { self.closeWhenPointerLeaves(after: 0.45) }
         }
     }
 
@@ -304,7 +314,7 @@ final class DeckController {
             edge.orderOut(nil)
         } else {
             panel.slideOut()
-            if front { edge.place(on: DeckLayout.activeScreen()); edge.orderFrontRegardless() } else { edge.orderOut(nil) }
+            if front { edge.show(on: DeckLayout.activeScreen()) } else { edge.orderOut(nil) }
         }
         if show && !visibility.pinned && front { escape.activate() } else { escape.deactivate() }
         engine.scheduleSweep(visible: show)
@@ -313,9 +323,10 @@ final class DeckController {
 
     var leaveTimer: Timer?
     func pointer(inside: Bool) {
-        leaveTimer?.invalidate()
-        if inside { send(.pointerEntered); return }
-        leaveTimer = Timer.scheduledTimer(withTimeInterval: 0.45, repeats: false) { [weak self] _ in self?.send(.pointerLeft) }
+        guard inside, pointerAtSidebar else { return closeWhenPointerLeaves(after: 0.45) }
+        send(.pointerEntered)
+        // Over the sidebar itself, its own exit comes next; in the gap by the edge, keep looking.
+        if panel.home.contains(NSEvent.mouseLocation) { leaveTimer?.invalidate() }
     }
 
     // MARK: actions

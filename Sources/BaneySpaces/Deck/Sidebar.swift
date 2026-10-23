@@ -454,6 +454,16 @@ final class TrackingView: NSView {
     override func mouseExited(with event: NSEvent) { onPointer(false) }
 }
 
+/// The window background color over a blur, kept in step with light and dark mode.
+final class Tint: NSView {
+    override var wantsUpdateLayer: Bool { true }
+    override func updateLayer() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.72).cgColor
+        }
+    }
+}
+
 /// The sidebar: a strip down the left edge of the active screen. It never takes focus: clicks act
 /// and keystrokes keep going to the app you're in.
 final class SidebarPanel: NSPanel {
@@ -462,6 +472,8 @@ final class SidebarPanel: NSPanel {
     var onPointer: (Bool) -> Void = { _ in }
     /// Meant to be on screen. Differs from isVisible while it slides out.
     private(set) var shown = false
+    /// Where it rests once placed, whatever its frame is while it slides.
+    private(set) var home = NSRect.zero
 
     init(model: DeckModel) {
         super.init(contentRect: NSRect(x: 0, y: 0, width: Self.width, height: 600),
@@ -490,7 +502,11 @@ final class SidebarPanel: NSPanel {
         blur.wantsLayer = true
         blur.layer?.cornerRadius = radius
         blur.layer?.masksToBounds = true
-        for (child, parent) in [(blur as NSView, root as NSView), (content, blur)] {
+        // The blur alone lets a bright window behind show through as a smudge; the tint keeps
+        // it to a hint of color.
+        let tint = Tint()
+        tint.wantsLayer = true
+        for (child, parent) in [(blur as NSView, root as NSView), (tint, blur), (content, blur)] {
             child.translatesAutoresizingMaskIntoConstraints = false
             parent.addSubview(child)
             NSLayoutConstraint.activate([
@@ -515,6 +531,7 @@ final class SidebarPanel: NSPanel {
     func place(on screen: NSScreen, animated: Bool) {
         let target = frame(on: screen)
         shown = true
+        home = target
         guard animated else {
             // Through the animator, with no duration, so it also cancels a slide-out in flight.
             NSAnimationContext.runAnimationGroup { ctx in
@@ -558,6 +575,10 @@ final class SidebarPanel: NSPanel {
 final class EdgeTrigger: NSPanel {
     var onRest: () -> Void = {}
     private var timer: Timer?
+    /// False while a pointer that was already on the strip when it came back is still there: one
+    /// resting where the sidebar just closed doesn't open it again. Leaving the strip arms it.
+    private var armed = true
+    private var armTimer: Timer?
 
     init() {
         super.init(contentRect: NSRect(x: 0, y: 0, width: 2, height: 600),
@@ -571,7 +592,7 @@ final class EdgeTrigger: NSPanel {
         let view = TrackingView()
         view.onPointer = { [weak self] inside in
             self?.timer?.invalidate()
-            guard inside else { return }
+            guard inside, self?.armed == true else { return }
             self?.timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { _ in self?.onRest() }
         }
         contentView = view
@@ -582,7 +603,26 @@ final class EdgeTrigger: NSPanel {
     /// Hiding the strip sends no mouseExited, so a pending rest is dropped here.
     override func orderOut(_ sender: Any?) {
         timer?.invalidate()
+        armTimer?.invalidate()
+        armed = true
         super.orderOut(sender)
+    }
+
+    /// Puts the strip up on `screen`. Coming back under a pointer already on it, it waits for the
+    /// pointer to leave before a rest counts.
+    func show(on screen: NSScreen) {
+        let wasUp = isVisible
+        place(on: screen)
+        orderFrontRegardless()
+        guard !wasUp, frame.contains(NSEvent.mouseLocation) else { return }
+        armed = false
+        armTimer?.invalidate()
+        armTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] t in
+            guard let self, self.isVisible, self.frame.contains(NSEvent.mouseLocation) else {
+                self?.armed = true
+                return t.invalidate()
+            }
+        }
     }
 
     func place(on screen: NSScreen) {
