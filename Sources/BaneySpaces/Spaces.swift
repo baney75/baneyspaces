@@ -922,7 +922,10 @@ final class Spaces {
         guard active, Workspaces.range.contains(n) else { return }
         if switching { return enqueue { [weak self] in self?.moveCarried(id, to: n, from: frame) } }
         if let w = windows[id] { w.place(frame, currentSize: w.frame?.size ?? .zero) }
-        move(id, to: n)
+        // The window had the keyboard (it was just dragged) and the overview never took it, so
+        // this workspace's next window takes it, or the empty-workspace holder when none is left.
+        model.assign(id, to: n, focus: false)
+        switchTo(model.current, announce: false)
     }
 
     /// Records the window in front, so closing the viewer (or any switch back here) returns to it.

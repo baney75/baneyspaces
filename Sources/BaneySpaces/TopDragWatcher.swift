@@ -25,12 +25,15 @@ enum SystemTopDrag {
     static var isTakenByUs: Bool { UserDefaults.standard.dictionary(forKey: savedKey) != nil }
 
     static func takeOver() {
-        if !isTakenByUs {
-            // A setting that wasn't there is saved as absent, so restoring removes it again.
-            var saved: [String: Any] = [:]
-            for s in settings { if let v = read(s) { saved[s.id] = v } }
-            UserDefaults.standard.set(saved, forKey: savedKey)
+        // A setting that wasn't there is saved as absent, so restoring removes it again. One
+        // not off any more since the last launch was changed in System Settings since: that's
+        // the person's newer choice, and the one to put back later.
+        var saved = UserDefaults.standard.dictionary(forKey: savedKey) ?? [:]
+        let first = !isTakenByUs
+        for s in settings where first || read(s) != off {
+            saved[s.id] = read(s)
         }
+        UserDefaults.standard.set(saved, forKey: savedKey)
         restart(settings.filter { write($0, off) })
     }
 
@@ -77,10 +80,12 @@ final class TopDragWatcher {
     var onOpen: (TopDrag.Grab, CGPoint) -> Bool = { _, _ in false }
     /// The pointer moved while the overview is open for a drag.
     var onMove: (CGPoint) -> Void = { _ in }
-    /// The button came up with the overview open for `grab`.
-    var onRelease: (TopDrag.Grab) -> Void = { _ in }
+    /// The button came up with the overview open for `grab`. `drop` is false when the drag
+    /// ended some other way (the watcher stopped, or a release it missed), so nothing moves.
+    var onRelease: (_ grab: TopDrag.Grab, _ drop: Bool) -> Void = { _, _ in }
 
     private var monitor: Any?
+    private var upMonitor: Any?
     private var timer: Timer?
     private var state = TopDrag()
     private var open: TopDrag.Grab?
@@ -89,19 +94,37 @@ final class TopDragWatcher {
 
     func start() {
         guard monitor == nil else { return }
-        monitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] _ in self?.pressed() }
+        monitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] e in
+            self?.pressed(at: e.cgEvent?.location ?? TopDragWatcher.cursor)
+        }
+        // The release itself, where it happened, so a quick let-go lands on the tile it was
+        // over; the tick's button check is the fallback for one the monitor misses.
+        upMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { [weak self] e in
+            self?.released(at: e.cgEvent?.location ?? TopDragWatcher.cursor)
+        }
     }
 
     func stop() {
-        if let monitor { NSEvent.removeMonitor(monitor) }
+        for m in [monitor, upMonitor].compactMap({ $0 }) { NSEvent.removeMonitor(m) }
         monitor = nil
-        endTicks()
-        if let g = open { open = nil; onRelease(g) }
+        upMonitor = nil
+        released(at: nil)
     }
 
-    private func pressed() {
+    /// Ends the drag: the overview, if it opened for it, gets the last position and the release.
+    /// Without a position it closes and nothing moves.
+    private func released(at p: CGPoint?) {
         endTicks()
-        let p = TopDragWatcher.cursor
+        guard let g = open else { return }
+        open = nil
+        if let p { onMove(p) }
+        onRelease(g, p != nil)
+    }
+
+    private func pressed(at p: CGPoint) {
+        // A press always follows a release; one the watcher missed ends the last drag first,
+        // without a drop, since where it let go is unknown.
+        released(at: nil)
         guard let grab = TopDragWatcher.window(at: p) else { return }
         state.press(grab)
         let t = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in self?.tick() }
@@ -111,11 +134,7 @@ final class TopDragWatcher {
 
     private func tick() {
         let p = TopDragWatcher.cursor
-        guard NSEvent.pressedMouseButtons & 1 != 0 else {
-            endTicks()
-            if let g = open { open = nil; onRelease(g) }
-            return
-        }
+        guard NSEvent.pressedMouseButtons & 1 != 0 else { return released(at: p) }
         if open != nil { return onMove(p) }
         guard let grab = state.grab else { return endTicks() }
         let frame = TopDragWatcher.bounds(of: grab.window)

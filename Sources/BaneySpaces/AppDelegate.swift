@@ -43,10 +43,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return self.viewer.openCarrying(grab.window, at: p)
         }
         t.onMove = { [weak self] p in self?.viewer.carryMoved(to: p) }
-        t.onRelease = { [weak self] grab in
-            guard let self, let n = self.viewer.endCarrying() else { return }
-            // The window server finishes its own drop first; the window moves after it.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { self.spaces.moveCarried(grab.window, to: n, from: grab.frame) }
+        t.onRelease = { [weak self] grab, drop in
+            guard let self, let n = self.viewer.endCarrying(), drop else { return }
+            // The window server and the app finish their own drop first: the window moves once
+            // two looks 20 ms apart find it in the same place, or after 0.4 s at the most.
+            var last = TopDragWatcher.bounds(of: grab.window)
+            var looks = 0
+            Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { [weak self] timer in
+                looks += 1
+                let now = TopDragWatcher.bounds(of: grab.window)
+                guard now == last || looks >= 20 else { last = now; return }
+                timer.invalidate()
+                guard let self, now != nil else { return }
+                self.spaces.moveCarried(grab.window, to: n, from: grab.frame)
+            }
         }
         return t
     }()

@@ -374,9 +374,12 @@ final class ViewerController {
     /// isn't on a workspace.
     func openCarrying(_ id: WindowID, at p: CGPoint) -> Bool {
         guard !isOpen, let (entry, from) = spaces.entry(for: id) else { return false }
+        // Matched in window-server space, as the drag was: at a screen's very top edge an AppKit
+        // point would fall just outside it.
+        let cgFrames = TopDragWatcher.screens()
         guard let mainHeight = NSScreen.screens.first?.frame.maxY,
-              let screen = NSScreen.screens.first(where: { $0.frame.contains(NSPoint(x: p.x, y: mainHeight - p.y)) }) ?? NSScreen.main
-        else { return false }
+              let i = cgFrames.firstIndex(where: { $0.contains(p) }), i < NSScreen.screens.count else { return false }
+        let screen = NSScreen.screens[i]
         if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil }
         isOpen = true
         openCount += 1
