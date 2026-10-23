@@ -288,7 +288,6 @@ final class DeckController {
             UserDefaults.standard.set(visibility.pinned, forKey: "deckPinned")
             model.pinned = visibility.pinned
         }
-        if !visibility.open && !visibility.pinned { stopDocking() }
         apply()
         if visibility.pinned && !wasPinned { arrange() }
         if e == .edgeRest { closeWhenPointerLeaves(after: 1.0) }
@@ -318,6 +317,8 @@ final class DeckController {
             guard let self, self.visibility.open, !self.visibility.pinned else { return }
             // Stepped aside for one of BaneySpaces' own panels, still open: look again once it's back.
             guard self.panel.shown else { return self.closeWhenPointerLeaves(after: 0.45) }
+            // A picked phone's app is still opening: the pointer may already be heading for it.
+            guard self.dockTimer?.isValid != true else { return self.closeWhenPointerLeaves(after: 0.45) }
             if !self.pointerAtSidebar && !self.pointerOnDockedDevice { self.send(.pointerLeft) }
             else if !self.panel.home.contains(NSEvent.mouseLocation) { self.closeWhenPointerLeaves(after: 0.45) }
         }
@@ -339,6 +340,8 @@ final class DeckController {
     func apply() {
         let front = wrappedFront != nil
         let show = visibility.visible(ghosttyFront: front)
+        // However it closed (a key, a pick, another app in front), a phone still on its way stays put.
+        if !visibility.open && !visibility.pinned { stopDocking() }
         if show {
             if !panel.shown { panel.place(on: DeckLayout.activeScreen(), animated: !visibility.pinned) }
             else if let s = panel.screen, s != DeckLayout.activeScreen() { panel.place(on: DeckLayout.activeScreen(), animated: false) }
