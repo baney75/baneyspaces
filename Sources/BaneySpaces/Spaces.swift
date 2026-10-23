@@ -922,6 +922,9 @@ final class Spaces {
     func moveCarried(_ id: WindowID, to n: Int, from frame: CGRect, wanted: @escaping () -> Bool = { true }) {
         guard active, Workspaces.range.contains(n), wanted() else { return }
         if switching { return enqueue { [weak self] in self?.moveCarried(id, to: n, from: frame, wanted: wanted) } }
+        // Already gone to `n` while the drop settled: the window is out of sight on the workspace
+        // just left, so it goes back to its spot now, before the switch below shows it here.
+        if n == model.current, let w = windows[id] { w.place(frame, currentSize: w.frame?.size ?? .zero) }
         // The window had the keyboard (it was just dragged) and the overview never took it, so
         // this workspace's next window takes it, or the empty-workspace holder when none is left.
         model.assign(id, to: n, focus: false)

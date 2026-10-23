@@ -147,6 +147,8 @@ drag(from: titleBar, to: topEdge, hold: 0.8, release: tileCenter(target)) {
     expect(!missionControlUp(screenRect), "Mission Control stayed closed")
 }
 expect(!overviewUp(screenRect), "the overview closed on letting go")
+usleep(300_000)
+expect(NSWorkspace.shared.frontmostApplication?.processIdentifier != getpid(), "the keyboard left the moved window")
 expect(workspace(of: id) == target, "the window moved to workspace \(target) (it's on \(workspace(of: id).map(String.init) ?? "none"))")
 expect(state().current == start.current, "you stayed on workspace \(start.current)")
 go(target)
@@ -156,16 +158,65 @@ expect(landed.map { abs($0.minX - original.minX) < 3 && abs($0.minY - original.m
 
 // 2. From there, up to the top again and let go off the tiles, on the footer: it stays.
 if let now = onScreen(id) {
-    drag(from: CGPoint(x: now.midX, y: now.minY + 12), to: CGPoint(x: now.midX, y: 0), hold: 0.8,
-         release: CGPoint(x: screenRect.midX, y: screenRect.height - 20)) {
+    let release = CGPoint(x: screenRect.midX, y: screenRect.height - 20)
+    drag(from: CGPoint(x: now.midX, y: now.minY + 12), to: CGPoint(x: now.midX, y: 0), hold: 0.8, release: release) {
         expect(overviewUp(screenRect), "the overview opens again from workspace \(target)")
     }
     expect(workspace(of: id) == target, "let go off the tiles, the window stayed on workspace \(target)")
+    let dropped = onScreen(id)
+    expect(dropped.map { $0.minY > now.minY + 200 } ?? false,
+           "and it stayed where it was let go, not back at its pick-up spot (\(dropped.map { "\($0.origin)" } ?? "not on screen"))")
 } else {
     expect(false, "the window is on screen on workspace \(target)")
 }
 
 cleanup()
+go(start.current)
+
+// 3. A window already against the menu bar can't move up; its title bar pushed up still counts.
+let top = screen.visibleFrame.maxY
+let pinned = DispatchQueue.main.sync { () -> NSWindow in
+    let w = NSWindow(contentRect: NSRect(x: 300, y: top - 500, width: 800, height: 500),
+                     styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
+    w.title = "BaneySpaces top-drag probe (pinned)"
+    w.isReleasedWhenClosed = false
+    w.setFrameTopLeftPoint(NSPoint(x: 300, y: top))
+    w.makeKeyAndOrderFront(nil)
+    NSApp.activate(ignoringOtherApps: true)
+    return w
+}
+usleep(1_000_000)
+let pinnedID = UInt32(pinned.windowNumber)
+let placedPinned = Date().addingTimeInterval(4)
+while workspace(of: pinnedID) == nil && Date() < placedPinned { usleep(200_000) }
+if let p = onScreen(pinnedID) {
+    drag(from: CGPoint(x: p.midX, y: p.minY + 12), to: CGPoint(x: p.midX, y: 0), hold: 0.8, release: tileCenter(target)) {
+        expect(onScreen(pinnedID).map { abs($0.minY - p.minY) < 2 } ?? false, "the window against the menu bar didn't move (\(p.origin))")
+        expect(overviewUp(screenRect), "pushing its title bar up opens the overview")
+    }
+    expect(workspace(of: pinnedID) == target, "and letting go over workspace \(target) sends it there")
+} else {
+    expect(false, "a window against the menu bar is on screen")
+}
+DispatchQueue.main.sync { pinned.close() }
+
+// 4. The arrow keys move the overview's highlight; Return goes there.
+func key(_ code: CGKeyCode) {
+    for down in [true, false] {
+        CGEvent(keyboardEventSource: CGEventSource(stateID: .hidSystemState), virtualKey: code, keyDown: down)?.post(tap: .cgSessionEventTap)
+        usleep(30_000)
+    }
+}
+let from = state().current
+let col = (from - 1) % 3
+let expected = col < 2 ? from + 1 : from - 1
+run("/usr/bin/open", ["-g", "baneyspaces://viewer"])
+usleep(800_000)
+key(col < 2 ? 124 : 123)   // → or ←
+usleep(200_000)
+key(36)                     // Return
+usleep(900_000)
+expect(state().current == expected, "→/← then Return went from workspace \(from) to \(expected) (on \(state().current))")
 go(start.current)
 if failures.isEmpty { print("top drag opens the overview and moves the window") } else { exit(1) }
 exit(0)

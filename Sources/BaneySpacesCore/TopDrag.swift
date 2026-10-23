@@ -16,8 +16,9 @@ public struct TopDrag: Sendable {
     public static let dwell: TimeInterval = 0.25
 
     /// How far below a window's top edge a press can be and still be on its title bar or
-    /// toolbar, the parts a window is dragged by.
-    public static let titleBand: CGFloat = 52
+    /// toolbar, the parts a window is dragged by. The first few points are the edge that
+    /// resizes it.
+    public static let titleBand: ClosedRange<CGFloat> = 5...52
 
     /// The window under the press, its frame before the drag moved it, and where the press was.
     public struct Grab: Equatable, Sendable {
@@ -43,6 +44,9 @@ public struct TopDrag: Sendable {
     public private(set) var fired = false
     private var topSince: TimeInterval?
     private var last: CGRect?
+    /// The window's frame since its size last changed: the press, or the size macOS gave a
+    /// tiled window back. A pinned window is one that hasn't moved from it.
+    private var baseline: CGRect?
 
     public init() {}
 
@@ -51,6 +55,7 @@ public struct TopDrag: Sendable {
         self = TopDrag()
         self.grab = grab
         last = grab?.frame
+        baseline = grab?.frame
     }
 
     /// The button came up.
@@ -65,13 +70,19 @@ public struct TopDrag: Sendable {
             let sameSize = abs(frame.width - last.width) < 1 && abs(frame.height - last.height) < 1
             let shifted = hypot(frame.minX - last.minX, frame.minY - last.minY) > 0.5
             moving = sameSize && shifted
+            if !sameSize { baseline = frame }
         }
         last = frame
-        if !moving {
-            let unmoved = hypot(frame.minX - grab.frame.minX, frame.minY - grab.frame.minY) < 1 && frame.size == grab.frame.size
-            let onTitleBar = (0...TopDrag.titleBand).contains(grab.press.y - grab.frame.minY)
-            let atScreenTop = screens.first { $0.contains(grab.press) }.map { grab.frame.minY - $0.minY <= 50 } ?? false
-            pinned = unmoved && onTitleBar && atScreenTop && cursor.y < grab.frame.minY - 2
+        if !moving, let base = baseline {
+            let unmoved = hypot(frame.minX - base.minX, frame.minY - base.minY) < 1 && frame.size == base.size
+            let onTitleBar = TopDrag.titleBand.contains(grab.press.y - grab.frame.minY)
+            let screenTop = screens.first { $0.contains(grab.press) }?.minY
+            let atScreenTop = screenTop.map { base.minY - $0 <= 50 } ?? false
+            // Above the window, or, for one whose top is the screen's own edge (the menu bar
+            // hidden), at that edge: the pointer can't get any higher.
+            let pushedUp = cursor.y < base.minY - 2
+                || (screenTop.map { base.minY - $0 <= TopDrag.band + 2 } ?? false) && TopDrag.atTop(cursor, screens: screens)
+            pinned = unmoved && onTitleBar && atScreenTop && pushedUp
         }
         guard moving || pinned, TopDrag.atTop(cursor, screens: screens) else { topSince = nil; return nil }
         let since = topSince ?? now
