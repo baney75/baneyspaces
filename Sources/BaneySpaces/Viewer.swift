@@ -16,6 +16,12 @@ final class ViewerModel: ObservableObject {
     @Published var current = 1
     @Published var tiles: [Int: [Spaces.Entry]] = [:]
     @Published var hovered: Int?
+    /// The tile the arrow keys picked. Kept apart from `hovered`: SwiftUI can report the pointer
+    /// leaving a tile as it redraws it lit, which would drop the keyboard's pick. Only the
+    /// pointer entering a tile takes over from it.
+    @Published var keyed: Int?
+    /// The lit tile, and the one Return goes to.
+    var highlighted: Int? { keyed ?? hovered }
     @Published var drag: Drag?
     /// The drag is a real window carried up from the desktop by its title bar, not a card
     /// picked up here; the pointer belongs to that drag, so the viewer only watches it.
@@ -48,10 +54,11 @@ final class ViewerModel: ObservableObject {
         drag = nil
         carrying = false
         hovered = nil
+        keyed = nil
     }
 
     func hover(_ n: Int, _ inside: Bool) {
-        if inside { hovered = n } else if hovered == n { hovered = nil }
+        if inside { hovered = n; keyed = nil } else if hovered == n { hovered = nil }
     }
 
     func endDrag() {
@@ -146,7 +153,7 @@ struct ViewerView: View {
         let entries = model.tiles[n] ?? []
         let isCurrent = n == model.current
         let isTarget = model.dropTarget == n
-        let isHovered = model.drag == nil && model.hovered == n
+        let isHovered = model.drag == nil && model.highlighted == n
         let content = VStack(alignment: .leading, spacing: 8) {
             tileHeader(n, count: entries.count, isCurrent: isCurrent)
             tileBody(n, entries: entries, isTarget: isTarget)
@@ -354,11 +361,11 @@ final class ViewerController {
                 self.model.onPick(n)
                 return nil
             }
-            if event.keyCode == 36 { self.model.onPick(self.model.hovered ?? self.model.current); return nil }  // Return
+            if event.keyCode == 36 { self.model.onPick(self.model.highlighted ?? self.model.current); return nil }  // Return
             // The arrow keys move the highlight from tile to tile; Return goes there.
             let steps: [UInt16: GridStep] = [123: .left, 124: .right, 125: .down, 126: .up]
             if let step = steps[event.keyCode], self.model.drag == nil {
-                self.model.hovered = step.from(self.model.hovered ?? self.model.current)
+                self.model.keyed = step.from(self.model.highlighted ?? self.model.current)
                 return nil
             }
             return event

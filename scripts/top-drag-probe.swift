@@ -117,8 +117,8 @@ func cleanup() { DispatchQueue.main.sync { made.close() } }
 DispatchQueue.global().async {
 usleep(1_000_000)
 guard let original = onScreen(id) else { print("couldn't open a window"); exit(2) }
-// BaneySpaces places a new window on its next scan.
-let placedBy = Date().addingTimeInterval(4)
+// BaneySpaces places a new window on its next scan; a new app's first one can wait out a heal (3, 6, then 12 s).
+let placedBy = Date().addingTimeInterval(15)
 while workspace(of: id) == nil && Date() < placedBy { usleep(200_000) }
 usleep(800_000)
 expect(workspace(of: id) == start.current, "the new window is on workspace \(start.current)")
@@ -187,7 +187,7 @@ let pinned = DispatchQueue.main.sync { () -> NSWindow in
 }
 usleep(1_000_000)
 let pinnedID = UInt32(pinned.windowNumber)
-let placedPinned = Date().addingTimeInterval(4)
+let placedPinned = Date().addingTimeInterval(15)
 while workspace(of: pinnedID) == nil && Date() < placedPinned { usleep(200_000) }
 if let p = onScreen(pinnedID) {
     drag(from: CGPoint(x: p.midX, y: p.minY + 12), to: CGPoint(x: p.midX, y: 0), hold: 0.8, release: tileCenter(target)) {
@@ -210,13 +210,27 @@ func key(_ code: CGKeyCode) {
 let from = state().current
 let col = (from - 1) % 3
 let expected = col < 2 ? from + 1 : from - 1
-run("/usr/bin/open", ["-g", "baneyspaces://viewer"])
-usleep(800_000)
-key(col < 2 ? 124 : 123)   // → or ←
+// The pointer off the tiles, so no tile is hovered and the highlight starts on this workspace.
+post(.mouseMoved, CGPoint(x: screenRect.midX, y: screenRect.height - 20))
 usleep(200_000)
-key(36)                     // Return
-usleep(900_000)
-expect(state().current == expected, "→/← then Return went from workspace \(from) to \(expected) (on \(state().current))")
+run("/usr/bin/open", ["-g", "baneyspaces://viewer"])
+// Keys are typed only once the overview has the keyboard: never into whatever app is in front.
+let keysBy = Date().addingTimeInterval(2)
+func overviewHasKeys() -> Bool {
+    NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.baney.baneyspaces" && overviewUp(screenRect)
+}
+while !overviewHasKeys() && Date() < keysBy { usleep(50_000) }
+if overviewHasKeys() {
+    usleep(300_000)
+    key(col < 2 ? 124 : 123)   // → or ←
+    usleep(300_000)
+    key(36)                     // Return
+    usleep(900_000)
+    expect(state().current == expected, "→/← then Return went from workspace \(from) to \(expected) (on \(state().current))")
+} else {
+    expect(false, "the overview took the keyboard (in front: \(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"), overview \(overviewUp(screenRect) ? "up" : "not up"))")
+    if overviewUp(screenRect) { run("/usr/bin/open", ["-g", "baneyspaces://viewer"]) }
+}
 go(start.current)
 if failures.isEmpty { print("top drag opens the overview and moves the window") } else { exit(1) }
 exit(0)
