@@ -908,6 +908,23 @@ final class Spaces {
         }
     }
 
+    /// One window as the viewer shows it, with its workspace; nil for a window not on one.
+    func entry(for id: WindowID) -> (Entry, Int)? {
+        refresh()
+        guard let w = windows[id], let n = model.workspace(of: id) else { return nil }
+        return (Entry(id: id, pid: w.pid, app: w.appName, title: w.title), n)
+    }
+
+    /// A window dragged to the top of the screen and let go over another workspace in the
+    /// overview: it goes back to where the drag picked it up, then to workspace `n`, so it's
+    /// waiting there where it was instead of pressed against the menu bar.
+    func moveCarried(_ id: WindowID, to n: Int, from frame: CGRect) {
+        guard active, Workspaces.range.contains(n) else { return }
+        if switching { return enqueue { [weak self] in self?.moveCarried(id, to: n, from: frame) } }
+        if let w = windows[id] { w.place(frame, currentSize: w.frame?.size ?? .zero) }
+        move(id, to: n)
+    }
+
     /// Records the window in front, so closing the viewer (or any switch back here) returns to it.
     func rememberFocus() {
         refresh()

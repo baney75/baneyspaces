@@ -35,6 +35,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return d
     }()
     private lazy var switcher = WorkspaceSwitcher(spaces: spaces)
+    /// A window dragged to the top of the screen opens the overview, in place of Mission Control.
+    private lazy var topDrag: TopDragWatcher = {
+        let t = TopDragWatcher()
+        t.onOpen = { [weak self] grab, p in
+            guard let self, self.started, !self.spaces.switching else { return false }
+            return self.viewer.openCarrying(grab.window, at: p)
+        }
+        t.onMove = { [weak self] p in self?.viewer.carryMoved(to: p) }
+        t.onRelease = { [weak self] grab in
+            guard let self, let n = self.viewer.endCarrying() else { return }
+            // The window server finishes its own drop first; the window moves after it.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { self.spaces.moveCarried(grab.window, to: n, from: grab.frame) }
+        }
+        return t
+    }()
     private lazy var launcher: LauncherController = {
         var a = LauncherActions()
         a.focusApp = { [weak self] pid, n in self?.spaces.focusApp(pid, on: n) }
@@ -90,6 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.restartKeyWatcher()
         }
         c.model.onWorkspaceDockChange = { [weak self] on in self?.setWorkspaceDock(on) }
+        c.model.onTopDragChange = { [weak self] on in self?.setTopDrag(on) }
         c.model.onDockEdgeChange = { [weak self] e in self?.setDockEdge(e) }
         c.model.onDockAgentStatusChange = { [weak self] on in self?.setDockAgentStatus(on) }
         c.model.onDeckChange = { [weak self] on in if DeckController.enabled != on { self?.toggleDeck() } }
@@ -129,6 +145,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Workspace Dock had it out of sight.
         if CommandLine.arguments.contains("--restore-dock") {
             SystemDock.restore()
+            SystemTopDrag.restore()
             exit(0)
         }
         // `BaneySpaces --check-settings`: opens the settings window on each tab and exits 1 if any
@@ -238,6 +255,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationWillTerminate(_ n: Notification) {
         // The macOS Dock comes back with everything else; the next launch tucks it away again.
         dock.stop(restoreSystemDock: true)
+        topDrag.stop()
         if started { spaces.restoreAll() }
         // ⌘Space goes back to Spotlight while BaneySpaces isn't running; the next launch takes it again.
         SystemShortcuts.spotlightQueue.sync { SystemShortcuts.restoreSpotlight() }
@@ -276,6 +294,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         missionControlKeys.start()
         spaces.start()
         if WorkspaceDock.enabled { dock.start() }
+        if TopDragWatcher.enabled { startTopDrag() }
         startDeck()
         updateIcon()
         watchdog?.invalidate()
@@ -296,6 +315,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if AXIsProcessTrusted() { return true }
         watchdog?.invalidate()
         missionControlKeys.stop()
+        topDrag.stop()
         viewer.close()
         dock.stop(restoreSystemDock: true)
         deck.stop()
@@ -306,6 +326,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         showSetup()
         startWhenTrusted()
         return false
+    }
+
+    /// macOS's own top-of-screen drag goes quiet first, so only one view answers the gesture.
+    private func startTopDrag() {
+        SystemTopDrag.takeOver()
+        topDrag.start()
+    }
+
+    private func setTopDrag(_ on: Bool) {
+        TopDragWatcher.enabled = on
+        if on {
+            if started { startTopDrag() }
+        } else {
+            topDrag.stop()
+            SystemTopDrag.restore()
+        }
     }
 
     /// The shortcuts are taken only once they work, so the keys keep their usual meaning in other

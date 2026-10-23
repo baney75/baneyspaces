@@ -7,7 +7,7 @@ enum Uninstaller {
 
     static let summary = """
         BaneySpaces quits first, which brings every hidden window and app back. Then it puts back \
-        the macOS Dock, the screenshot and Spotlight shortcuts and your Claude Code settings as \
+        the macOS Dock and its drag-to-top Mission Control, the screenshot and Spotlight shortcuts and your Claude Code settings as \
         they were, and removes the app, its settings, its login item, its command and its \
         Accessibility permission. Your own hooks and settings stay.
         """

@@ -17,6 +17,9 @@ final class ViewerModel: ObservableObject {
     @Published var tiles: [Int: [Spaces.Entry]] = [:]
     @Published var hovered: Int?
     @Published var drag: Drag?
+    /// The drag is a real window carried up from the desktop by its title bar, not a card
+    /// picked up here; the pointer belongs to that drag, so the viewer only watches it.
+    @Published var carrying = false
     /// Icons supplied directly, for rendered product images with sample windows.
     var icons: [WindowID: NSImage] = [:]
     /// Each tile's frame in the viewer, to find the tile under a dragged card.
@@ -43,6 +46,7 @@ final class ViewerModel: ObservableObject {
     /// Forget anything left from the last time the viewer was open.
     func reset() {
         drag = nil
+        carrying = false
         hovered = nil
     }
 
@@ -130,6 +134,8 @@ struct ViewerView: View {
     private var footer: some View {
         Text(model.drag == nil
                      ? "Click a workspace or press its number  ·  Drag a window to another workspace  ·  Esc to close"
+                     : model.carrying
+                     ? "Let go over a workspace to move the window there  ·  Anywhere else leaves it here"
                      : "Drop on a workspace to move the window there")
             .font(.callout)
             .foregroundStyle(.white.opacity(0.7))
@@ -330,6 +336,7 @@ final class ViewerController {
         guard let frame = screen?.frame else { return }
         let p = panel ?? makePanel()
         panel = p
+        p.ignoresMouseEvents = false
         p.setFrame(frame, display: true)
         p.alphaValue = 0
         // The viewer takes the keyboard so 1–9, Return and Esc reach it, not the app below.
@@ -351,6 +358,58 @@ final class ViewerController {
             return event
         }
     }
+
+    /// The top-left of the screen a carried window's overview is on, in window-server space.
+    private var carryOrigin = CGPoint.zero
+
+    /// Opens over the screen under `p` for a window being dragged to the top of the screen, in
+    /// place of Mission Control. The drag stays the window server's: the viewer takes neither
+    /// the pointer nor the keyboard, and only follows where it goes. False for a window that
+    /// isn't on a workspace.
+    func openCarrying(_ id: WindowID, at p: CGPoint) -> Bool {
+        guard !isOpen, let (entry, from) = spaces.entry(for: id) else { return false }
+        guard let mainHeight = NSScreen.screens.first?.frame.maxY,
+              let screen = NSScreen.screens.first(where: { $0.frame.contains(NSPoint(x: p.x, y: mainHeight - p.y)) }) ?? NSScreen.main
+        else { return false }
+        if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil }
+        isOpen = true
+        openCount += 1
+        model.reset()
+        model.load(from: spaces)
+        carryOrigin = CGPoint(x: screen.frame.minX, y: mainHeight - screen.frame.maxY)
+        model.carrying = true
+        model.drag = ViewerModel.Drag(entry: entry, from: from, location: viewerPoint(p))
+        let panel = panel ?? makePanel()
+        self.panel = panel
+        panel.ignoresMouseEvents = true
+        panel.setFrame(screen.frame, display: true)
+        panel.alphaValue = 0
+        panel.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.12
+            panel.animator().alphaValue = 1
+        }
+        Trace.log("topDrag open window=\(id) from=\(from)")
+        return true
+    }
+
+    /// The carried window's card follows the pointer.
+    func carryMoved(to p: CGPoint) {
+        guard isOpen, model.carrying, var d = model.drag else { return }
+        d.location = viewerPoint(p)
+        model.drag = d
+    }
+
+    /// The button came up: the workspace the window was let go over, if not its own. Closes.
+    func endCarrying() -> Int? {
+        guard isOpen, model.carrying else { return nil }
+        let target = model.dropTarget
+        Trace.log("topDrag release target=\(target.map(String.init) ?? "none")")
+        close()
+        return target
+    }
+
+    private func viewerPoint(_ p: CGPoint) -> CGPoint { CGPoint(x: p.x - carryOrigin.x, y: p.y - carryOrigin.y) }
 
     func close() {
         if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil }

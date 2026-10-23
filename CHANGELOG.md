@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Drag a window to the top of the screen and the overview opens, not Mission Control.**
+  Pulling a window up against the menu bar used to throw you into macOS's Mission Control.
+  Now, after a quarter second at the top, BaneySpaces' own 3×3 overview opens with the window's
+  card under your pointer. Let go over a workspace and the window goes there, back in the spot
+  you picked it up from; let go anywhere else and it stays where you dropped it. macOS's own
+  answers to that drag (Mission Control and fill-the-screen) stay off while it's on. Their
+  settings are saved first and put back when you turn it off in **Settings › Keys** or uninstall.
 - **Dock tiles stay put under the pointer.** Hovering a tile could slide it sideways over the
   tile beside it or the "+", because the grow-on-hover spring also animated the dock re-centering
   itself as the label above it changed width. Now hover only grows the tile, icon or button.

@@ -68,6 +68,10 @@ enum Render {
         model.tileFrames = [6: target]
         model.drag = ViewerModel.Drag(entry: mail, from: 2, location: CGPoint(x: target.midX - 40, y: target.midY + 10))
         guard save(ViewerView(model: model, stillBackdrop: true), "overview-drag.png", size) else { return 1 }
+        // A window carried up by its title bar opens the same view; the footer says what letting go does.
+        model.carrying = true
+        guard save(ViewerView(model: model, stillBackdrop: true), "overview-carry.png", size) else { return 1 }
+        model.carrying = false
 
         let setup = SetupModel()
         setup.trusted = true
