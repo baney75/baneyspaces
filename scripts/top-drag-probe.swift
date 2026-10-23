@@ -56,8 +56,12 @@ func run(_ path: String, _ args: [String]) {
 }
 func go(_ n: Int) { run("/usr/bin/open", ["-g", "baneyspaces://switch/\(n)"]); usleep(700_000) }
 
+// Posted at the session tap with a click count: macOS 27 starts a title-bar drag only for
+// those (measured: events at the HID tap, or without a click count, never moved the window).
 func post(_ type: CGEventType, _ p: CGPoint) {
-    CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: p, mouseButton: .left)?.post(tap: .cghidEventTap)
+    let e = CGEvent(mouseEventSource: CGEventSource(stateID: .hidSystemState), mouseType: type, mouseCursorPosition: p, mouseButton: .left)
+    if type != .mouseMoved { e?.setIntegerValueField(.mouseEventClickState, value: 1) }
+    e?.post(tap: .cgSessionEventTap)
 }
 /// Presses on `from`, glides to `to`, rests there `hold` seconds, glides to `release`, lets go.
 func drag(from: CGPoint, to: CGPoint, hold: TimeInterval, release: CGPoint, check: () -> Void) {

@@ -13,6 +13,8 @@ A change is done when all of these pass on the installed build (`make install`):
 3. For anything that hides, parks, moves or restores windows: `swift scripts/motion-probe.swift <a> <b>`
    with Helium or Ghostty on one of the two workspaces. It must print "no window slid".
    For anything that decides which windows exist or where they live: `swift scripts/closed-window-probe.swift <empty n>`.
+   For the drag to the top of the screen (`TopDrag`, `TopDragWatcher`, the viewer's carrying mode):
+   `swift scripts/top-drag-probe.swift`. It takes the pointer for ten seconds; run it while Donovan is away.
 4. The gesture Donovan reported, done live through cua-driver on his Mac (the real keys, the
    real hold, the real click), with the result read back from the screen, `trace.log` or
    `state.json`.
