@@ -74,12 +74,14 @@ cli.executableURL = FileManager.default.homeDirectoryForCurrentUser.appendingPat
 cli.arguments = ["sidebar"]
 cli.standardOutput = FileHandle.nullDevice
 try? cli.run(); cli.waitUntilExit()
-var shut = (changes: 0, last: true)
+// The app writes deck.json before it answers the CLI, so the drawer reads shut from here on.
+check(deck()?.visible == false, "the toggle closed it while the pointer rested on the edge")
+var shut = (changes: 0, last: false)
 for x in [0, 3, 1, 4, 0, 2] {
     let r = watch(0.3, nudge: CGPoint(x: CGFloat(x), y: edge.y))
     shut = (shut.changes + r.changes, r.last)
 }
-check(!shut.last && shut.changes == 1, "closed while resting, a drift of a few points didn't reopen it (changes: \(shut.changes))")
+check(!shut.last && shut.changes == 0, "closed while resting, a drift of a few points didn't reopen it (changes: \(shut.changes))")
 move(to: CGPoint(x: screen.midX, y: screen.midY))
 _ = watch(0.5)
 move(to: edge)
