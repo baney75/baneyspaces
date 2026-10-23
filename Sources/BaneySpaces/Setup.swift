@@ -14,6 +14,8 @@ final class SetupModel: ObservableObject {
     @Published var desktops = Desktops.count
     @Published var openAtLogin = SMAppService.mainApp.status == .enabled
     @Published var viewerKeys = MissionControlKeys.enabled
+    @Published var topDrag = TopDragWatcher.enabled
+    var onTopDragChange: ((Bool) -> Void)?
     @Published var cmdTab = MissionControlKeys.cmdTabMode
     var onCmdTabChange: ((MissionControlKeys.CmdTabMode) -> Void)?
     @Published var workspaceDock = WorkspaceDock.enabled
@@ -178,6 +180,11 @@ final class SetupModel: ObservableObject {
         viewerKeys = on
         onViewerKeysChange?(on)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.reloadOptional() }
+    }
+
+    func setTopDrag(_ on: Bool) {
+        topDrag = on
+        onTopDragChange?(on)
     }
 
     func setCmdTab(_ mode: MissionControlKeys.CmdTabMode) {
@@ -442,6 +449,9 @@ struct SetupView: View {
                 Text("Turn this off to give both keys back to Mission Control and to apps that use ⌃↑. The overview stays in the menu bar menu.")
                     .font(.callout).foregroundStyle(.secondary)
             }
+            Toggle("Dragging a window to the top of the screen opens the overview", isOn: Binding(get: { model.topDrag }, set: { model.setTopDrag($0) }))
+            Text("Let go over a workspace to send the window there. macOS's own Mission Control and fill-the-screen for that drag stay off while this is on, and come back when you turn it off.")
+                .font(.callout).foregroundStyle(.secondary)
         }
 
         section("⌘Tab") {

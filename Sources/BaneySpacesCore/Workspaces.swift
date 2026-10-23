@@ -97,3 +97,21 @@ public struct Concealment: Equatable {
         park = plan.hide.filter { owner[$0].map(kept.contains) ?? false }
     }
 }
+
+/// The arrow keys in the overview, which lays the workspaces out as the number keys do: 1–3 on
+/// top, 7–9 at the bottom.
+public enum GridStep: Sendable {
+    case left, right, up, down
+
+    /// The workspace next to `n` that way; stays at the edge rather than wrapping.
+    public func from(_ n: Int) -> Int {
+        guard Workspaces.range.contains(n) else { return n }
+        let row = (n - 1) / 3, col = (n - 1) % 3
+        switch self {
+        case .left: return col > 0 ? n - 1 : n
+        case .right: return col < 2 ? n + 1 : n
+        case .up: return row > 0 ? n - 3 : n
+        case .down: return row < 2 ? n + 3 : n
+        }
+    }
+}
