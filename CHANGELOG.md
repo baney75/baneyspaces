@@ -9,6 +9,8 @@
   you picked it up from; let go anywhere else and it stays where you dropped it. macOS's own
   answers to that drag (Mission Control and fill-the-screen) stay off while it's on. Their
   settings are saved first and put back when you turn it off in **Settings › Keys** or uninstall.
+- **Arrow keys in the overview.** The arrows move the highlight from workspace to workspace in
+  the 3×3 grid, and Return goes there, so you can pick one without the mouse or a number key.
 - **Dock tiles stay put under the pointer.** Hovering a tile could slide it sideways over the
   tile beside it or the "+", because the grow-on-hover spring also animated the dock re-centering
   itself as the label above it changed width. Now hover only grows the tile, icon or button.

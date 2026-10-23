@@ -62,7 +62,8 @@ Prefer to keep ⌘1 for your browser's first tab? Pick ⌃, ⌥ or ⌃⌥ in set
 Press the Mission Control key (F3 on Apple keyboards) or ⌃↑, and BaneySpaces shows all nine
 workspaces in the same 3×3 grid as the number keys, with every window's app and title.
 
-- **Click a workspace,** or press its number, to go there.
+- **Click a workspace,** or press its number, to go there. The arrow keys move the highlight
+  and Return goes to it.
 - **Click a window** to go straight to it.
 - **Drag a window** onto another workspace to move it. The card follows your cursor and the
   workspace it will land on lights up.

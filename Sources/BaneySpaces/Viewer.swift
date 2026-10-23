@@ -133,7 +133,7 @@ struct ViewerView: View {
 
     private var footer: some View {
         Text(model.drag == nil
-                     ? "Click a workspace or press its number  ·  Drag a window to another workspace  ·  Esc to close"
+                     ? "Click a workspace or press its number  ·  Arrow keys and Return work too  ·  Drag a window to another workspace  ·  Esc to close"
                      : model.carrying
                      ? "Let go over a workspace to move the window there  ·  Anywhere else leaves it here"
                      : "Drop on a workspace to move the window there")
@@ -355,6 +355,12 @@ final class ViewerController {
                 return nil
             }
             if event.keyCode == 36 { self.model.onPick(self.model.hovered ?? self.model.current); return nil }  // Return
+            // The arrow keys move the highlight from tile to tile; Return goes there.
+            let steps: [UInt16: GridStep] = [123: .left, 124: .right, 125: .down, 126: .up]
+            if let step = steps[event.keyCode], self.model.drag == nil {
+                self.model.hovered = step.from(self.model.hovered ?? self.model.current)
+                return nil
+            }
             return event
         }
     }
