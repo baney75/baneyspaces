@@ -54,8 +54,9 @@ public struct SidebarVisibility: Equatable, Sendable {
 }
 
 /// Where the pointer counts as at the sidebar: the sidebar itself, a little past its right side,
-/// and the gap between it and `screenMinX`, where windows start (right of a Dock on the left).
-/// The edge strip that opened it counts too; the caller adds that.
+/// and the gap between it and the screen's left edge. That gap holds the edge strip, so a pointer
+/// still resting where it opened the drawer hasn't left it. A Dock on the left is in the gap too:
+/// crossing beside it to reach the sidebar must not close it.
 public enum SidebarZone {
     public static let slack: CGFloat = 10
 

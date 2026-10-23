@@ -277,10 +277,7 @@ final class DeckController {
     /// The pointer is at the sidebar, by where it really is: tracking events alone go wrong while
     /// the sidebar slides in under a pointer resting on the edge.
     var pointerAtSidebar: Bool {
-        let p = NSEvent.mouseLocation
-        guard let screen = panel.screen else { return panel.home.contains(p) }
-        // From where windows start (right of a Dock on the left), plus the edge strip itself.
-        return SidebarZone.contains(p, sidebar: panel.home, screenMinX: screen.visibleFrame.minX) || EdgeTrigger.strip(on: screen).contains(p)
+        SidebarZone.contains(NSEvent.mouseLocation, sidebar: panel.home, screenMinX: panel.screen?.frame.minX ?? panel.home.minX)
     }
 
     /// Closes the drawer once the pointer is away from the sidebar. While it waits in the gap by
@@ -288,7 +285,9 @@ final class DeckController {
     func closeWhenPointerLeaves(after delay: TimeInterval) {
         leaveTimer?.invalidate()
         leaveTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
-            guard let self, self.panel.shown, !self.visibility.pinned else { return }
+            guard let self, self.visibility.open, !self.visibility.pinned else { return }
+            // Stepped aside for one of BaneySpaces' own panels, still open: look again once it's back.
+            guard self.panel.shown else { return self.closeWhenPointerLeaves(after: 0.45) }
             if !self.pointerAtSidebar { self.send(.pointerLeft) }
             else if !self.panel.home.contains(NSEvent.mouseLocation) { self.closeWhenPointerLeaves(after: 0.45) }
         }
