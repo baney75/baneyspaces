@@ -918,9 +918,10 @@ final class Spaces {
     /// A window dragged to the top of the screen and let go over another workspace in the
     /// overview: it goes back to where the drag picked it up, then to workspace `n`, so it's
     /// waiting there where it was instead of pressed against the menu bar.
-    func moveCarried(_ id: WindowID, to n: Int, from frame: CGRect) {
-        guard active, Workspaces.range.contains(n) else { return }
-        if switching { return enqueue { [weak self] in self?.moveCarried(id, to: n, from: frame) } }
+    /// `wanted` is asked again when the move runs, which may be after a switch in progress.
+    func moveCarried(_ id: WindowID, to n: Int, from frame: CGRect, wanted: @escaping () -> Bool = { true }) {
+        guard active, Workspaces.range.contains(n), wanted() else { return }
+        if switching { return enqueue { [weak self] in self?.moveCarried(id, to: n, from: frame, wanted: wanted) } }
         if let w = windows[id] { w.place(frame, currentSize: w.frame?.size ?? .zero) }
         // The window had the keyboard (it was just dragged) and the overview never took it, so
         // this workspace's next window takes it, or the empty-workspace holder when none is left.

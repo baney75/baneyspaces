@@ -35,6 +35,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return d
     }()
     private lazy var switcher = WorkspaceSwitcher(spaces: spaces)
+    /// A carried window let go over a workspace, waiting for its drop to settle; bumped by
+    /// every press so a stale one never runs.
+    private var settling: Timer?
+    private var dropGeneration = 0
     /// A window dragged to the top of the screen opens the overview, in place of Mission Control.
     private lazy var topDrag: TopDragWatcher = {
         let t = TopDragWatcher()
@@ -43,19 +47,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return self.viewer.openCarrying(grab.window, at: p)
         }
         t.onMove = { [weak self] p in self?.viewer.carryMoved(to: p) }
+        // A new press makes any drop still waiting to settle stale, even one already queued
+        // behind a switch: it would move a window the person has just picked up again.
+        t.onPress = { [weak self] in
+            guard let self else { return }
+            self.dropGeneration += 1
+            self.settling?.invalidate()
+            self.settling = nil
+        }
         t.onRelease = { [weak self] grab, drop in
             guard let self, let n = self.viewer.endCarrying(), drop else { return }
             // The window server and the app finish their own drop first: the window moves once
-            // two looks 20 ms apart find it in the same place, or after 0.4 s at the most.
+            // it has held still for 60 ms (four looks 20 ms apart), no sooner than 0.1 s after
+            // the release and no later than 0.5 s.
+            let gen = self.dropGeneration
             var last = TopDragWatcher.bounds(of: grab.window)
-            var looks = 0
-            Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { [weak self] timer in
+            var looks = 0, still = 0
+            self.settling?.invalidate()
+            self.settling = Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { [weak self] timer in
                 looks += 1
                 let now = TopDragWatcher.bounds(of: grab.window)
-                guard now == last || looks >= 20 else { last = now; return }
+                still = now == last ? still + 1 : 0
+                last = now
+                guard (looks >= 5 && still >= 3) || looks >= 25 else { return }
                 timer.invalidate()
-                guard let self, now != nil else { return }
-                self.spaces.moveCarried(grab.window, to: n, from: grab.frame)
+                guard let self, now != nil, self.dropGeneration == gen else { return }
+                self.settling = nil
+                self.spaces.moveCarried(grab.window, to: n, from: grab.frame) { [weak self] in self?.dropGeneration == gen }
             }
         }
         return t

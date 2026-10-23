@@ -78,6 +78,8 @@ final class TopDragWatcher {
 
     /// The drag reached the top: open for it. False when the window isn't one BaneySpaces places.
     var onOpen: (TopDrag.Grab, CGPoint) -> Bool = { _, _ in false }
+    /// Any press on another app, or the watcher stopping: a drop still settling is stale.
+    var onPress: () -> Void = {}
     /// The pointer moved while the overview is open for a drag.
     var onMove: (CGPoint) -> Void = { _ in }
     /// The button came up with the overview open for `grab`. `drop` is false when the drag
@@ -109,6 +111,7 @@ final class TopDragWatcher {
         monitor = nil
         upMonitor = nil
         released(at: nil)
+        onPress()
     }
 
     /// Ends the drag: the overview, if it opened for it, gets the last position and the release.
@@ -125,6 +128,7 @@ final class TopDragWatcher {
         // A press always follows a release; one the watcher missed ends the last drag first,
         // without a drop, since where it let go is unknown.
         released(at: nil)
+        onPress()
         guard let grab = TopDragWatcher.window(at: p) else { return }
         state.press(grab)
         let t = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in self?.tick() }
