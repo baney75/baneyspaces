@@ -576,9 +576,8 @@ final class SidebarPanel: NSPanel {
 final class EdgeTrigger: NSPanel {
     var onRest: () -> Void = {}
     private var timer: Timer?
-    /// False while a pointer that was already on the strip when it came back is still there: one
-    /// resting where the sidebar just closed doesn't open it again. Leaving the strip arms it.
-    private var armed = true
+    /// A pointer resting where the sidebar just closed doesn't open it again until it moves away.
+    private var arming = EdgeArming()
     private var armTimer: Timer?
 
     init() {
@@ -593,8 +592,7 @@ final class EdgeTrigger: NSPanel {
         let view = TrackingView()
         view.onPointer = { [weak self] inside in
             self?.timer?.invalidate()
-            guard inside else { self?.armed = true; return }
-            guard self?.armed == true else { return }
+            guard inside, self?.arming.armed == true else { return }
             self?.timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { _ in self?.onRest() }
         }
         contentView = view
@@ -606,24 +604,25 @@ final class EdgeTrigger: NSPanel {
     override func orderOut(_ sender: Any?) {
         timer?.invalidate()
         armTimer?.invalidate()
-        armed = true
+        arming = EdgeArming()
         super.orderOut(sender)
     }
 
     /// Puts the strip up on `screen`. Coming back under a pointer already on it, it waits for the
-    /// pointer to leave before a rest counts.
+    /// pointer to move clearly away before a rest counts.
     func show(on screen: NSScreen) {
         let wasUp = isVisible
         place(on: screen)
         orderFrontRegardless()
-        guard !wasUp, frame.contains(NSEvent.mouseLocation) else { return }
-        armed = false
+        guard !wasUp else { return }
+        arming.shown(pointerOnStrip: frame.contains(NSEvent.mouseLocation))
         armTimer?.invalidate()
+        guard !arming.armed else { return }
+        // The strip's own exit fires on a 2-point drift, so where the pointer is decides.
         armTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] t in
-            guard let self, self.isVisible, self.frame.contains(NSEvent.mouseLocation) else {
-                self?.armed = true
-                return t.invalidate()
-            }
+            guard let self else { return t.invalidate() }
+            self.arming.sample(NSEvent.mouseLocation, strip: self.frame)
+            if self.arming.armed { t.invalidate() }
         }
     }
 

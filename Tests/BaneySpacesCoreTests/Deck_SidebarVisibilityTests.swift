@@ -77,4 +77,22 @@ final class SidebarVisibilityTests: XCTestCase {
             XCTAssertTrue(SidebarZone.contains(CGPoint(x: x, y: 610), sidebar: besideDock, screenMinX: 0))
         }
     }
+
+    func testTheEdgeStripBackUnderARestingPointerWaitsForItToMoveAway() {
+        let strip = CGRect(x: 0, y: 95, width: 2, height: 758)
+        var a = EdgeArming()
+        a.shown(pointerOnStrip: true)
+        XCTAssertFalse(a.armed)
+        // A hand drifting off the 2-point strip and back isn't leaving.
+        for x in [CGFloat(1), 2, 3, 0, 10, 1] {
+            a.sample(CGPoint(x: x, y: 610), strip: strip)
+            XCTAssertFalse(a.armed, "drifted to x=\(x)")
+        }
+        a.sample(CGPoint(x: 40, y: 610), strip: strip)
+        XCTAssertTrue(a.armed)
+        // Shown with the pointer elsewhere, a rest counts straight away.
+        var b = EdgeArming()
+        b.shown(pointerOnStrip: false)
+        XCTAssertTrue(b.armed)
+    }
 }
