@@ -62,11 +62,17 @@ Prefer to keep ⌘1 for your browser's first tab? Pick ⌃, ⌥ or ⌃⌥ in set
 Press the Mission Control key (F3 on Apple keyboards) or ⌃↑, and BaneySpaces shows all nine
 workspaces in the same 3×3 grid as the number keys, with every window's app and title.
 
-- **Click a workspace,** or press its number, to go there.
+- **Click a workspace,** or press its number, to go there. The arrow keys move the highlight
+  and Return goes to it.
 - **Click a window** to go straight to it.
 - **Drag a window** onto another workspace to move it. The card follows your cursor and the
   workspace it will land on lights up.
 - **Esc,** or the same key again, puts you back where you were.
+- **Drag a window up to the top of the screen** and the overview opens in place of Mission
+  Control, with the window's card under your pointer. Let go over a workspace to send the window
+  there, in the same spot you picked it up from; let go anywhere else and it stays where it is.
+  While this is on, macOS's own Mission Control and fill-the-screen for that drag are off; turn
+  it off under **Settings › Keys** and they come back as they were.
 
 <p align="center">
   <img src="docs/shots/overview-drag.jpg" alt="Dragging a Mail window card onto workspace 6 in the overview; the target tile is outlined" width="760">

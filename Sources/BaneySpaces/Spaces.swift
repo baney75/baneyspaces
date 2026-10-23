@@ -908,6 +908,53 @@ final class Spaces {
         }
     }
 
+    /// One window as the viewer shows it, with its workspace; nil for a window not on one.
+    func entry(for id: WindowID) -> (Entry, Int)? {
+        refresh()
+        guard let w = windows[id], let n = model.workspace(of: id) else { return nil }
+        return (Entry(id: id, pid: w.pid, app: w.appName, title: w.title), n)
+    }
+
+    /// A window dragged to the top of the screen and let go over another workspace in the
+    /// overview: it goes back to where the drag picked it up, then to workspace `n`, so it's
+    /// waiting there where it was instead of pressed against the menu bar.
+    /// `wanted` is asked again when the move runs, which may be after a switch in progress.
+    func moveCarried(_ id: WindowID, to n: Int, from frame: CGRect, wanted: @escaping () -> Bool = { true }) {
+        guard active, Workspaces.range.contains(n), wanted() else { return }
+        if switching { return enqueue { [weak self] in self?.moveCarried(id, to: n, from: frame, wanted: wanted) } }
+        // Already gone to `n` while the drop settled: the window is out of sight on the workspace
+        // just left, so it goes back to its spot now, before the switch below shows it here.
+        if n == model.current, let w = windows[id] { w.place(frame, currentSize: w.frame?.size ?? .zero) }
+        // The window had the keyboard (it was just dragged) and the overview never took it, so
+        // this workspace's next window takes it, or the empty-workspace holder when none is left.
+        model.assign(id, to: n, focus: false)
+        switchTo(model.current, announce: false)
+        // Out of sight now, it goes back where the drag picked it up, never on screen here.
+        let putBack: () -> Void = { [weak self] in self?.placeAway(id, at: frame) }
+        if switching { enqueue(putBack) } else { putBack() }
+    }
+
+    /// A window on another workspace will come back at `frame`: a parked one's record says so,
+    /// and one whose app is hidden moves there unseen.
+    private func placeAway(_ id: WindowID, at frame: CGRect) {
+        guard active, let n = model.workspace(of: id), n != model.current else { return }
+        if saved.frames[id] != nil {
+            saved.frames[id] = frame
+            persist()
+        } else if let w = windows[id], saved.hiddenApps.contains(w.pid) {
+            // BaneySpaces' own record says it hid the app; the move waits until the window
+            // server has the window off screen, so it's never seen.
+            waitUntil(timeout: 0.5, interval: 0.02, { Windows.allOffscreen([id]) }) { [weak self] in
+                guard let self, self.model.workspace(of: id) == n, Windows.allOffscreen([id]) else {
+                    return Trace.log("topDrag putBack skipped window=\(id): still on screen")
+                }
+                w.place(frame, currentSize: w.frame?.size ?? .zero)
+            }
+        } else {
+            Trace.log("topDrag putBack skipped window=\(id): neither parked nor hidden")
+        }
+    }
+
     /// Records the window in front, so closing the viewer (or any switch back here) returns to it.
     func rememberFocus() {
         refresh()

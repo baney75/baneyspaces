@@ -16,7 +16,16 @@ final class ViewerModel: ObservableObject {
     @Published var current = 1
     @Published var tiles: [Int: [Spaces.Entry]] = [:]
     @Published var hovered: Int?
+    /// The tile the arrow keys picked. Kept apart from `hovered`: SwiftUI can report the pointer
+    /// leaving a tile as it redraws it lit, which would drop the keyboard's pick. Only the
+    /// pointer entering a tile takes over from it.
+    @Published var keyed: Int?
+    /// The lit tile, and the one Return goes to.
+    var highlighted: Int? { keyed ?? hovered }
     @Published var drag: Drag?
+    /// The drag is a real window carried up from the desktop by its title bar, not a card
+    /// picked up here; the pointer belongs to that drag, so the viewer only watches it.
+    @Published var carrying = false
     /// Icons supplied directly, for rendered product images with sample windows.
     var icons: [WindowID: NSImage] = [:]
     /// Each tile's frame in the viewer, to find the tile under a dragged card.
@@ -43,11 +52,13 @@ final class ViewerModel: ObservableObject {
     /// Forget anything left from the last time the viewer was open.
     func reset() {
         drag = nil
+        carrying = false
         hovered = nil
+        keyed = nil
     }
 
     func hover(_ n: Int, _ inside: Bool) {
-        if inside { hovered = n } else if hovered == n { hovered = nil }
+        if inside { hovered = n; keyed = nil } else if hovered == n { hovered = nil }
     }
 
     func endDrag() {
@@ -129,7 +140,9 @@ struct ViewerView: View {
 
     private var footer: some View {
         Text(model.drag == nil
-                     ? "Click a workspace or press its number  ·  Drag a window to another workspace  ·  Esc to close"
+                     ? "Click a workspace or press its number  ·  Arrow keys and Return work too  ·  Drag a window to another workspace  ·  Esc to close"
+                     : model.carrying
+                     ? "Let go over a workspace to move the window there  ·  Anywhere else leaves it here"
                      : "Drop on a workspace to move the window there")
             .font(.callout)
             .foregroundStyle(.white.opacity(0.7))
@@ -140,7 +153,7 @@ struct ViewerView: View {
         let entries = model.tiles[n] ?? []
         let isCurrent = n == model.current
         let isTarget = model.dropTarget == n
-        let isHovered = model.drag == nil && model.hovered == n
+        let isHovered = model.drag == nil && model.highlighted == n
         let content = VStack(alignment: .leading, spacing: 8) {
             tileHeader(n, count: entries.count, isCurrent: isCurrent)
             tileBody(n, entries: entries, isTarget: isTarget)
@@ -330,6 +343,7 @@ final class ViewerController {
         guard let frame = screen?.frame else { return }
         let p = panel ?? makePanel()
         panel = p
+        p.ignoresMouseEvents = false
         p.setFrame(frame, display: true)
         p.alphaValue = 0
         // The viewer takes the keyboard so 1–9, Return and Esc reach it, not the app below.
@@ -347,9 +361,75 @@ final class ViewerController {
                 self.model.onPick(n)
                 return nil
             }
-            if event.keyCode == 36 { self.model.onPick(self.model.hovered ?? self.model.current); return nil }  // Return
+            if event.keyCode == 36 { self.model.onPick(self.model.highlighted ?? self.model.current); return nil }  // Return
+            // The arrow keys move the highlight from tile to tile; Return goes there.
+            let steps: [UInt16: GridStep] = [123: .left, 124: .right, 125: .down, 126: .up]
+            if let step = steps[event.keyCode], self.model.drag == nil {
+                self.model.keyed = step.from(self.model.highlighted ?? self.model.current)
+                return nil
+            }
             return event
         }
+    }
+
+    /// The top-left of the screen a carried window's overview is on, in window-server space.
+    private var carryOrigin = CGPoint.zero
+
+    /// Opens over the screen under `p` for a window being dragged to the top of the screen, in
+    /// place of Mission Control. The drag stays the window server's: the viewer takes neither
+    /// the pointer nor the keyboard, and only follows where it goes. False for a window that
+    /// isn't on a workspace.
+    func openCarrying(_ id: WindowID, at p: CGPoint) -> Bool {
+        guard !isOpen, let (entry, from) = spaces.entry(for: id) else { return false }
+        // Matched in window-server space, as the drag was: at a screen's very top edge an AppKit
+        // point would fall just outside it.
+        let cgFrames = TopDragWatcher.screens()
+        guard let mainHeight = NSScreen.screens.first?.frame.maxY,
+              let i = cgFrames.firstIndex(where: { $0.contains(p) }), i < NSScreen.screens.count else { return false }
+        let screen = NSScreen.screens[i]
+        if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil }
+        isOpen = true
+        openCount += 1
+        model.reset()
+        model.load(from: spaces)
+        carryOrigin = CGPoint(x: screen.frame.minX, y: mainHeight - screen.frame.maxY)
+        let panel = panel ?? makePanel()
+        self.panel = panel
+        panel.ignoresMouseEvents = true
+        panel.setFrame(screen.frame, display: true)
+        model.carrying = true
+        model.drag = ViewerModel.Drag(entry: entry, from: from, location: viewerPoint(p))
+        panel.alphaValue = 0
+        panel.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.12
+            panel.animator().alphaValue = 1
+        }
+        Trace.log("topDrag open window=\(id) from=\(from)")
+        return true
+    }
+
+    /// The carried window's card follows the pointer.
+    func carryMoved(to p: CGPoint) {
+        guard isOpen, model.carrying, var d = model.drag else { return }
+        d.location = viewerPoint(p)
+        model.drag = d
+    }
+
+    /// The button came up: the workspace the window was let go over, if not its own. Closes.
+    func endCarrying() -> Int? {
+        guard isOpen, model.carrying else { return nil }
+        let target = model.dropTarget
+        Trace.log("topDrag release target=\(target.map(String.init) ?? "none")")
+        close()
+        return target
+    }
+
+    /// The pointer in the viewer's own space, which SwiftUI lays out inside the safe area: below
+    /// the camera housing on a Mac with a notch, so tile frames start that far down.
+    private func viewerPoint(_ p: CGPoint) -> CGPoint {
+        let inset = panel?.contentView?.safeAreaInsets ?? NSEdgeInsetsZero
+        return CGPoint(x: p.x - carryOrigin.x - inset.left, y: p.y - carryOrigin.y - inset.top)
     }
 
     func close() {

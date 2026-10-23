@@ -21,7 +21,7 @@ final class UninstallTests: XCTestCase {
         try text.write(to: path(p), atomically: true, encoding: .utf8)
     }
 
-    private func uninstall(status: Int32 = 0, prefs: [String: Any]? = nil) throws -> String {
+    private func uninstall(status: Int32 = 0, prefs: [String: Any]? = nil, macOS: String? = nil) throws -> String {
         let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("uninstall.sh")
         let p = Process()
@@ -33,6 +33,7 @@ final class UninstallTests: XCTestCase {
             try PropertyListSerialization.data(fromPropertyList: prefs, format: .xml, options: 0).write(to: file)
             env["BANEYSPACES_UNINSTALL_PREFS"] = file.path
         }
+        if let macOS { env["BANEYSPACES_UNINSTALL_MACOS"] = macOS }
         p.environment = env
         let pipe = Pipe()
         p.standardOutput = pipe
@@ -116,6 +117,22 @@ final class UninstallTests: XCTestCase {
         XCTAssertTrue(out.contains("screenshot or Spotlight shortcuts are still off"), out)
         XCTAssertFalse(out.contains("defaults delete com.baney.baneyspaces"), out)
         XCTAssertFalse(out.contains("back as they were"), out)
+    }
+
+    /// Without the app, Mission Control and fill-the-screen for a drag to the top still go back:
+    /// one saved as on is turned on, one that wasn't set is unset again.
+    func testWithoutTheAppItPutsTheTopDragSettingsBack() throws {
+        let saved = ["com.apple.dock/enterMissionControlByTopWindowDrag": true]
+        let out = try uninstall(prefs: ["systemTopDragSaved": saved], macOS: "0")
+        XCTAssertTrue(out.contains("would run: defaults write com.apple.dock enterMissionControlByTopWindowDrag -bool true"), out)
+        XCTAssertTrue(out.contains("would run: defaults delete com.apple.WindowManager EnableTopTilingByEdgeDrag"), out)
+        XCTAssertTrue(out.contains("would run: killall Dock") && out.contains("would run: killall WindowManager"), out)
+    }
+
+    /// One switched back on since in System Settings is the person's choice and stays.
+    func testLeavesATopDragSettingTurnedOnSince() throws {
+        let out = try uninstall(prefs: ["systemTopDragSaved": [String: Bool]()], macOS: "1")
+        XCTAssertFalse(out.contains("enterMissionControlByTopWindowDrag"), out)
     }
 
     /// r2: one in the Trash still counts as the app.

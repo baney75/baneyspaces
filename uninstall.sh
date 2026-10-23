@@ -95,6 +95,24 @@ if [ -z "$TEST" ] && [ "$(defaults read com.apple.dock autohide-delay 2>/dev/nul
   killall Dock 2>/dev/null || true
 fi
 
+# Mission Control and fill-the-screen for a window dragged to the top, if the app wasn't there
+# to put them back. Only one still off as BaneySpaces left it goes back to its saved value.
+# The test reads this Mac's settings as BANEYSPACES_UNINSTALL_MACOS says, not for real.
+macos_pref() { if [ -n "$TEST" ]; then echo "${BANEYSPACES_UNINSTALL_MACOS:-}"; else defaults read "$1" "$2" 2>/dev/null || true; fi; }
+top_drag_back() {  # domain key process what
+  [ "$(macos_pref "$1" "$2")" = "0" ] || return 0
+  step "Putting back $4 for a window dragged to the top"
+  was=$(printf '%s\n' "$saved" | sed -n "s|.*\"$1/$2\" = \([01]\);.*|\1|p")
+  if [ -n "$was" ]; then sys defaults write "$1" "$2" -bool "$([ "$was" = 1 ] && echo true || echo false)"
+  else sys defaults delete "$1" "$2" 2>/dev/null || true; fi
+  sys killall "$3" 2>/dev/null || true
+}
+saved=$(pref systemTopDragSaved)
+if [ -n "$saved" ]; then
+  top_drag_back com.apple.dock enterMissionControlByTopWindowDrag Dock "Mission Control"
+  top_drag_back com.apple.WindowManager EnableTopTilingByEdgeDrag WindowManager "fill-the-screen"
+fi
+
 # AeroSpace: the installer stopped it opening at login so the two don't fight over the same keys.
 if [ -f "$DATA/aerospace-start-at-login" ] && [ -f "$HOME/.aerospace.toml" ]; then
   step "Letting AeroSpace open at login again, as it did before"

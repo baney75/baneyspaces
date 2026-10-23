@@ -35,6 +35,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return d
     }()
     private lazy var switcher = WorkspaceSwitcher(spaces: spaces)
+    /// Carried windows let go over a workspace, each waiting for its drop to settle. Picking
+    /// one up again bumps its generation, so its stale move never runs, even one queued.
+    private var settling: [WindowID: Timer] = [:]
+    private var dropGeneration: [WindowID: Int] = [:]
+
+    /// Cancels the drop waiting for window `id`, or every one.
+    private func cancelSettling(_ id: WindowID? = nil) {
+        for w in id.map({ [$0] }) ?? Array(Set(settling.keys).union(dropGeneration.keys)) {
+            dropGeneration[w, default: 0] += 1
+            settling.removeValue(forKey: w)?.invalidate()
+        }
+    }
+    /// A window dragged to the top of the screen opens the overview, in place of Mission Control.
+    private lazy var topDrag: TopDragWatcher = {
+        let t = TopDragWatcher()
+        t.onOpen = { [weak self] grab, p in
+            guard let self, self.started else { return false }
+            if self.spaces.switching { return nil }
+            return self.viewer.openCarrying(grab.window, at: p)
+        }
+        t.onMove = { [weak self] p in self?.viewer.carryMoved(to: p) }
+        // Picking the window up again makes its drop still waiting to settle stale, even one
+        // already queued behind a switch. A click anywhere else leaves the drop alone.
+        t.onPress = { [weak self] id in
+            guard let self, let id else { return }
+            self.cancelSettling(id)
+        }
+        t.onRelease = { [weak self] grab, drop in
+            guard let self, let n = self.viewer.endCarrying(), drop else { return }
+            // The window server and the app finish their own drop first: the window moves once
+            // it has held still for 60 ms (four looks 20 ms apart), no sooner than 0.1 s after
+            // the release and no later than 0.5 s.
+            let id = grab.window
+            self.cancelSettling(id)
+            let gen = self.dropGeneration[id, default: 0]
+            var last = TopDragWatcher.bounds(of: id)
+            var looks = 0, still = 0
+            self.settling[id] = Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { [weak self] timer in
+                looks += 1
+                let now = TopDragWatcher.bounds(of: id)
+                still = now == last ? still + 1 : 0
+                last = now
+                guard (looks >= 5 && still >= 3) || looks >= 25 else { return }
+                timer.invalidate()
+                guard let self, now != nil, self.dropGeneration[id, default: 0] == gen else { return }
+                self.settling[id] = nil
+                self.spaces.moveCarried(id, to: n, from: grab.frame) { [weak self] in self?.dropGeneration[id, default: 0] == gen }
+            }
+        }
+        return t
+    }()
     private lazy var launcher: LauncherController = {
         var a = LauncherActions()
         a.focusApp = { [weak self] pid, n in self?.spaces.focusApp(pid, on: n) }
@@ -90,6 +141,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.restartKeyWatcher()
         }
         c.model.onWorkspaceDockChange = { [weak self] on in self?.setWorkspaceDock(on) }
+        c.model.onTopDragChange = { [weak self] on in self?.setTopDrag(on) }
         c.model.onDockEdgeChange = { [weak self] e in self?.setDockEdge(e) }
         c.model.onDockAgentStatusChange = { [weak self] on in self?.setDockAgentStatus(on) }
         c.model.onDeckChange = { [weak self] on in if DeckController.enabled != on { self?.toggleDeck() } }
@@ -131,6 +183,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Workspace Dock had it out of sight.
         if CommandLine.arguments.contains("--restore-dock") {
             SystemDock.restore()
+            SystemTopDrag.restore()
             exit(0)
         }
         // `BaneySpaces --check-settings`: opens the settings window on each tab and exits 1 if any
@@ -240,6 +293,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationWillTerminate(_ n: Notification) {
         // The macOS Dock comes back with everything else; the next launch tucks it away again.
         dock.stop(restoreSystemDock: true)
+        topDrag.stop()
         if started { spaces.restoreAll() }
         // ⌘Space goes back to Spotlight while BaneySpaces isn't running; the next launch takes it again.
         SystemShortcuts.spotlightQueue.sync { SystemShortcuts.restoreSpotlight() }
@@ -253,8 +307,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func startWhenTrusted() {
         if canStart { return start() }
         // Left out of sight by a crash, the macOS Dock comes back while BaneySpaces waits; the
-        // Workspace Dock takes over again once it starts.
+        // Workspace Dock takes over again once it starts. The same goes for the drag to the top.
         SystemDock.restore()
+        SystemTopDrag.restore()
         updateIcon()
         trustTimer?.invalidate()
         trustTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] timer in
@@ -278,6 +333,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         missionControlKeys.start()
         spaces.start()
         if WorkspaceDock.enabled { dock.start() }
+        if TopDragWatcher.enabled { startTopDrag() }
         startDeck()
         updateIcon()
         watchdog?.invalidate()
@@ -298,6 +354,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if AXIsProcessTrusted() { return true }
         watchdog?.invalidate()
         missionControlKeys.stop()
+        topDrag.stop()
+        cancelSettling()
+        // Not watching any more, so macOS answers the drag again until BaneySpaces is back.
+        SystemTopDrag.restore()
         viewer.close()
         dock.stop(restoreSystemDock: true)
         deck.stop()
@@ -308,6 +368,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         showSetup()
         startWhenTrusted()
         return false
+    }
+
+    /// macOS's own top-of-screen drag goes quiet first, so only one view answers the gesture.
+    private func startTopDrag() {
+        SystemTopDrag.takeOver()
+        topDrag.start()
+    }
+
+    private func setTopDrag(_ on: Bool) {
+        TopDragWatcher.enabled = on
+        if on {
+            if started { startTopDrag() }
+        } else {
+            topDrag.stop()
+            cancelSettling()
+            SystemTopDrag.restore()
+        }
     }
 
     /// The shortcuts are taken only once they work, so the keys keep their usual meaning in other
