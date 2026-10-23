@@ -1,13 +1,13 @@
 // Fails unless dragging a window to the top of the screen opens BaneySpaces' overview, not
 // Mission Control, and letting go over a workspace sends the window there in its old spot.
-// It opens a TextEdit window, drags it by its title bar to the top edge with real mouse events,
+// It opens a window of its own, drags it by its title bar to the top edge with real mouse events,
 // holds it there, checks that the overview is on screen, then lets go over the first empty
 // workspace. The window must leave this workspace, and on the target workspace it must sit where
 // the drag picked it up. A second drag lets go off the tiles: the window must stay here.
 // Run it with BaneySpaces installed and running.
 //   swift scripts/top-drag-probe.swift
 // It takes the pointer for about ten seconds, visits the target workspace, comes back, and
-// closes the TextEdit window it made.
+// closes its window. It needs no AppleScript, so no Automation prompt.
 import AppKit
 
 let stateURL = FileManager.default.homeDirectoryForCurrentUser
@@ -54,7 +54,6 @@ func run(_ path: String, _ args: [String]) {
     try? p.run()
     p.waitUntilExit()
 }
-func osascript(_ s: String) { run("/usr/bin/osascript", ["-e", s]) }
 func go(_ n: Int) { run("/usr/bin/open", ["-g", "baneyspaces://switch/\(n)"]); usleep(700_000) }
 
 func post(_ type: CGEventType, _ p: CGPoint) {
@@ -97,36 +96,39 @@ guard let target = (1...9).first(where: { $0 != start.current && (start.workspac
     print("no empty workspace to drop on"); exit(2)
 }
 
-// A TextEdit window in the middle of the screen, away from the top.
-let before = Set(windows().compactMap { $0[kCGWindowNumber as String] as? Int })
-osascript("""
-    tell application "TextEdit"
-        activate
-        make new document with properties {text:"BaneySpaces top-drag probe"}
-        set bounds of front window to {360, 260, 1060, 760}
-    end tell
-    """)
+// A window of the probe's own in the middle of the screen, away from the top. The gesture runs
+// on a background thread while the main thread runs the app, so the window answers the drag.
+let app = NSApplication.shared
+app.setActivationPolicy(.regular)
+let made = NSWindow(contentRect: NSRect(x: 360, y: screen.frame.height - 760, width: 700, height: 500),
+                    styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
+made.title = "BaneySpaces top-drag probe"
+made.isReleasedWhenClosed = false
+made.makeKeyAndOrderFront(nil)
+app.activate(ignoringOtherApps: true)
+let id = UInt32(made.windowNumber)
+func cleanup() { DispatchQueue.main.sync { made.close() } }
+
+DispatchQueue.global().async {
 usleep(1_000_000)
-guard let made = windows().first(where: { w in
-    (w[kCGWindowOwnerName as String] as? String) == "TextEdit" && (w[kCGWindowLayer as String] as? Int) == 0
-        && !before.contains(w[kCGWindowNumber as String] as? Int ?? 0)
-}), let id = (made[kCGWindowNumber as String] as? Int).map(UInt32.init), let original = bounds(made) else {
-    print("couldn't open a TextEdit window"); exit(2)
-}
-func cleanup() {
-    osascript("tell application \"TextEdit\" to close (every document whose text is \"BaneySpaces top-drag probe\") saving no")
-}
+guard let original = onScreen(id) else { print("couldn't open a window"); exit(2) }
+// BaneySpaces places a new window on its next scan.
+let placedBy = Date().addingTimeInterval(4)
+while workspace(of: id) == nil && Date() < placedBy { usleep(200_000) }
 usleep(800_000)
 expect(workspace(of: id) == start.current, "the new window is on workspace \(start.current)")
 
 // The tile's middle, laid out as ViewerView lays it out: 48 pt padding, 20 pt gaps, a 40 pt
 // footer, at most 1600 pt wide. Tiles are a few hundred points tall, so a few points off is fine.
+// SwiftUI lays it out below the camera housing on a Mac with a notch.
 func tileCenter(_ n: Int) -> CGPoint {
+    let inset = screen.safeAreaInsets.top
+    let height = screenRect.height - inset
     let w = min(screenRect.width, 1600) - 96
     let left = (screenRect.width - min(screenRect.width, 1600)) / 2 + 48
     let tileW = (w - 40) / 3
-    let tileH = max(160, (screenRect.height - 96 - 40 - 40) / 3)
-    let top = (screenRect.height - (3 * tileH + 40 + 18 + 40)) / 2
+    let tileH = max(160, (height - 96 - 40 - 40) / 3)
+    let top = inset + (height - (3 * tileH + 40 + 18 + 40)) / 2
     let col = CGFloat((n - 1) % 3), row = CGFloat((n - 1) / 3)
     return CGPoint(x: left + col * (tileW + 20) + tileW / 2, y: top + row * (tileH + 20) + tileH / 2)
 }
@@ -148,8 +150,6 @@ expect(landed.map { abs($0.minX - original.minX) < 3 && abs($0.minY - original.m
        "on workspace \(target) it sits where it was picked up (\(original.origin) → \(landed.map { "\($0.origin)" } ?? "not on screen"))")
 
 // 2. From there, up to the top again and let go off the tiles, on the footer: it stays.
-osascript("tell application \"TextEdit\" to activate")
-usleep(400_000)
 if let now = onScreen(id) {
     drag(from: CGPoint(x: now.midX, y: now.minY + 12), to: CGPoint(x: now.midX, y: 0), hold: 0.8,
          release: CGPoint(x: screenRect.midX, y: screenRect.height - 20)) {
@@ -163,3 +163,6 @@ if let now = onScreen(id) {
 cleanup()
 go(start.current)
 if failures.isEmpty { print("top drag opens the overview and moves the window") } else { exit(1) }
+exit(0)
+}
+app.run()

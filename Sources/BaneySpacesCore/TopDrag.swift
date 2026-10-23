@@ -62,6 +62,10 @@ public struct TopDrag: Sendable {
         return grab
     }
 
+    /// The overview couldn't open just now (a switch was under way): the next tick still at the
+    /// top tries again.
+    public mutating func rearm() { fired = false }
+
     /// True when `p` is on a screen's top edge, and that edge doesn't lead onto a screen above.
     public static func atTop(_ p: CGPoint, screens: [CGRect]) -> Bool {
         guard let s = screens.first(where: { $0.contains(p) }), p.y < s.minY + band else { return false }

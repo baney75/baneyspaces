@@ -76,10 +76,12 @@ final class TopDragWatcher {
         set { UserDefaults.standard.set(newValue, forKey: "topDragOpensOverview") }
     }
 
-    /// The drag reached the top: open for it. False when the window isn't one BaneySpaces places.
-    var onOpen: (TopDrag.Grab, CGPoint) -> Bool = { _, _ in false }
-    /// Any press on another app, or the watcher stopping: a drop still settling is stale.
-    var onPress: () -> Void = {}
+    /// The drag reached the top: open for it. True opened, false never will (a window
+    /// BaneySpaces doesn't place), nil not right now (a switch is under way): ask again.
+    var onOpen: (TopDrag.Grab, CGPoint) -> Bool? = { _, _ in false }
+    /// A press on another app, with the window under it: a drop of that window still settling
+    /// is stale, since it's being picked up again.
+    var onPress: (WindowID?) -> Void = { _ in }
     /// The pointer moved while the overview is open for a drag.
     var onMove: (CGPoint) -> Void = { _ in }
     /// The button came up with the overview open for `grab`. `drop` is false when the drag
@@ -111,7 +113,6 @@ final class TopDragWatcher {
         monitor = nil
         upMonitor = nil
         released(at: nil)
-        onPress()
     }
 
     /// Ends the drag: the overview, if it opened for it, gets the last position and the release.
@@ -128,8 +129,9 @@ final class TopDragWatcher {
         // A press always follows a release; one the watcher missed ends the last drag first,
         // without a drop, since where it let go is unknown.
         released(at: nil)
-        onPress()
-        guard let grab = TopDragWatcher.window(at: p) else { return }
+        let grab = TopDragWatcher.window(at: p)
+        onPress(grab?.window)
+        guard let grab else { return }
         state.press(grab)
         let t = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in self?.tick() }
         RunLoop.main.add(t, forMode: .common)
@@ -143,7 +145,11 @@ final class TopDragWatcher {
         guard let grab = state.grab else { return endTicks() }
         let frame = TopDragWatcher.bounds(of: grab.window)
         if let g = state.tick(cursor: p, frame: frame, screens: TopDragWatcher.screens(), now: ProcessInfo.processInfo.systemUptime) {
-            if onOpen(g, p) { open = g } else { endTicks() }
+            switch onOpen(g, p) {
+            case true?: open = g
+            case false?: endTicks()
+            case nil: state.rearm()
+            }
         } else if state.grab == nil {
             endTicks()
         }

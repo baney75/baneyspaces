@@ -25,6 +25,15 @@ final class TopDragTests: XCTestCase {
         XCTAssertTrue(d.fired)
     }
 
+    func testRearmedItOpensOnTheNextTickStillAtTheTop() {
+        var d = TopDrag()
+        d.press(window)
+        XCTAssertNil(drag(&d, to: 0, at: 0.5))
+        XCTAssertNotNil(drag(&d, to: 0, at: 0.5 + TopDrag.dwell))
+        d.rearm()
+        XCTAssertEqual(drag(&d, to: 0, at: 1), window)
+    }
+
     func testPassingThroughTheTopDoesNotOpen() {
         var d = TopDrag()
         d.press(window)

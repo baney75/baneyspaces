@@ -386,12 +386,12 @@ final class ViewerController {
         model.reset()
         model.load(from: spaces)
         carryOrigin = CGPoint(x: screen.frame.minX, y: mainHeight - screen.frame.maxY)
-        model.carrying = true
-        model.drag = ViewerModel.Drag(entry: entry, from: from, location: viewerPoint(p))
         let panel = panel ?? makePanel()
         self.panel = panel
         panel.ignoresMouseEvents = true
         panel.setFrame(screen.frame, display: true)
+        model.carrying = true
+        model.drag = ViewerModel.Drag(entry: entry, from: from, location: viewerPoint(p))
         panel.alphaValue = 0
         panel.orderFrontRegardless()
         NSAnimationContext.runAnimationGroup { ctx in
@@ -418,7 +418,12 @@ final class ViewerController {
         return target
     }
 
-    private func viewerPoint(_ p: CGPoint) -> CGPoint { CGPoint(x: p.x - carryOrigin.x, y: p.y - carryOrigin.y) }
+    /// The pointer in the viewer's own space, which SwiftUI lays out inside the safe area: below
+    /// the camera housing on a Mac with a notch, so tile frames start that far down.
+    private func viewerPoint(_ p: CGPoint) -> CGPoint {
+        let inset = panel?.contentView?.safeAreaInsets ?? NSEdgeInsetsZero
+        return CGPoint(x: p.x - carryOrigin.x - inset.left, y: p.y - carryOrigin.y - inset.top)
+    }
 
     func close() {
         if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil }

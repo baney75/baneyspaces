@@ -922,11 +922,25 @@ final class Spaces {
     func moveCarried(_ id: WindowID, to n: Int, from frame: CGRect, wanted: @escaping () -> Bool = { true }) {
         guard active, Workspaces.range.contains(n), wanted() else { return }
         if switching { return enqueue { [weak self] in self?.moveCarried(id, to: n, from: frame, wanted: wanted) } }
-        if let w = windows[id] { w.place(frame, currentSize: w.frame?.size ?? .zero) }
         // The window had the keyboard (it was just dragged) and the overview never took it, so
         // this workspace's next window takes it, or the empty-workspace holder when none is left.
         model.assign(id, to: n, focus: false)
         switchTo(model.current, announce: false)
+        // Out of sight now, it goes back where the drag picked it up, never on screen here.
+        let putBack: () -> Void = { [weak self] in self?.placeAway(id, at: frame) }
+        if switching { enqueue(putBack) } else { putBack() }
+    }
+
+    /// A window on another workspace will come back at `frame`: a parked one's record says so,
+    /// and one whose app is hidden moves there unseen.
+    private func placeAway(_ id: WindowID, at frame: CGRect) {
+        guard active, let n = model.workspace(of: id), n != model.current else { return }
+        if saved.frames[id] != nil {
+            saved.frames[id] = frame
+            persist()
+        } else if let w = windows[id], NSRunningApplication(processIdentifier: w.pid)?.isHidden == true {
+            w.place(frame, currentSize: w.frame?.size ?? .zero)
+        }
     }
 
     /// Records the window in front, so closing the viewer (or any switch back here) returns to it.

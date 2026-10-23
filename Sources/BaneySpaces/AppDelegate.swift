@@ -38,22 +38,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// A carried window let go over a workspace, waiting for its drop to settle; bumped by
     /// every press so a stale one never runs.
     private var settling: Timer?
+    private var settlingWindow: WindowID?
     private var dropGeneration = 0
+
+    private func cancelSettling() {
+        dropGeneration += 1
+        settling?.invalidate()
+        settling = nil
+        settlingWindow = nil
+    }
     /// A window dragged to the top of the screen opens the overview, in place of Mission Control.
     private lazy var topDrag: TopDragWatcher = {
         let t = TopDragWatcher()
         t.onOpen = { [weak self] grab, p in
-            guard let self, self.started, !self.spaces.switching else { return false }
+            guard let self, self.started else { return false }
+            if self.spaces.switching { return nil }
             return self.viewer.openCarrying(grab.window, at: p)
         }
         t.onMove = { [weak self] p in self?.viewer.carryMoved(to: p) }
-        // A new press makes any drop still waiting to settle stale, even one already queued
-        // behind a switch: it would move a window the person has just picked up again.
-        t.onPress = { [weak self] in
-            guard let self else { return }
-            self.dropGeneration += 1
-            self.settling?.invalidate()
-            self.settling = nil
+        // Picking the window up again makes its drop still waiting to settle stale, even one
+        // already queued behind a switch. A click anywhere else leaves the drop alone.
+        t.onPress = { [weak self] id in
+            guard let self, id != nil, id == self.settlingWindow else { return }
+            self.cancelSettling()
         }
         t.onRelease = { [weak self] grab, drop in
             guard let self, let n = self.viewer.endCarrying(), drop else { return }
@@ -61,6 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // it has held still for 60 ms (four looks 20 ms apart), no sooner than 0.1 s after
             // the release and no later than 0.5 s.
             let gen = self.dropGeneration
+            self.settlingWindow = grab.window
             var last = TopDragWatcher.bounds(of: grab.window)
             var looks = 0, still = 0
             self.settling?.invalidate()
@@ -73,6 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 timer.invalidate()
                 guard let self, now != nil, self.dropGeneration == gen else { return }
                 self.settling = nil
+                self.settlingWindow = nil
                 self.spaces.moveCarried(grab.window, to: n, from: grab.frame) { [weak self] in self?.dropGeneration == gen }
             }
         }
@@ -344,6 +353,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         watchdog?.invalidate()
         missionControlKeys.stop()
         topDrag.stop()
+        cancelSettling()
         viewer.close()
         dock.stop(restoreSystemDock: true)
         deck.stop()
@@ -368,6 +378,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if started { startTopDrag() }
         } else {
             topDrag.stop()
+            cancelSettling()
             SystemTopDrag.restore()
         }
     }
