@@ -54,12 +54,12 @@ public struct SidebarVisibility: Equatable, Sendable {
 }
 
 /// Where the pointer counts as at the sidebar: the sidebar itself, a little past its right side,
-/// and the gap between it and the screen's left edge. That gap holds the edge strip, so a pointer
-/// still resting where it opened the drawer hasn't left it.
+/// and the gap between it and `screenMinX`, where windows start (right of a Dock on the left).
+/// The edge strip that opened it counts too; the caller adds that.
 public enum SidebarZone {
     public static let slack: CGFloat = 10
 
-    /// In the screen's own coordinates, as the sidebar's frame is.
+    /// In screen coordinates, as the sidebar's frame is.
     public static func contains(_ p: CGPoint, sidebar: CGRect, screenMinX: CGFloat) -> Bool {
         CGRect(x: screenMinX, y: sidebar.minY, width: sidebar.maxX + slack - screenMinX, height: sidebar.height).contains(p)
     }

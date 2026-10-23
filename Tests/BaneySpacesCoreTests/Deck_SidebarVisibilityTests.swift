@@ -71,5 +71,9 @@ final class SidebarVisibilityTests: XCTestCase {
         // Down the edge past the sidebar's bottom, or on the screen to its left.
         XCTAssertFalse(SidebarZone.contains(CGPoint(x: 0, y: 2), sidebar: sidebar, screenMinX: 0))
         XCTAssertFalse(SidebarZone.contains(CGPoint(x: -1, y: 610), sidebar: sidebar, screenMinX: 0))
+        // With a 70-point Dock on the left, the zone starts where windows do; over the Dock is away.
+        let besideDock = sidebar.offsetBy(dx: 70, dy: 0)
+        XCTAssertFalse(SidebarZone.contains(CGPoint(x: 30, y: 610), sidebar: besideDock, screenMinX: 70))
+        XCTAssertTrue(SidebarZone.contains(CGPoint(x: 72, y: 610), sidebar: besideDock, screenMinX: 70))
     }
 }

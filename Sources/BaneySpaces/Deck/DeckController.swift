@@ -277,7 +277,10 @@ final class DeckController {
     /// The pointer is at the sidebar, by where it really is: tracking events alone go wrong while
     /// the sidebar slides in under a pointer resting on the edge.
     var pointerAtSidebar: Bool {
-        SidebarZone.contains(NSEvent.mouseLocation, sidebar: panel.home, screenMinX: panel.screen?.frame.minX ?? panel.home.minX)
+        let p = NSEvent.mouseLocation
+        guard let screen = panel.screen else { return panel.home.contains(p) }
+        // From where windows start (right of a Dock on the left), plus the edge strip itself.
+        return SidebarZone.contains(p, sidebar: panel.home, screenMinX: screen.visibleFrame.minX) || EdgeTrigger.strip(on: screen).contains(p)
     }
 
     /// Closes the drawer once the pointer is away from the sidebar. While it waits in the gap by

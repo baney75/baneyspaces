@@ -488,11 +488,11 @@ final class SidebarPanel: NSPanel {
         title = "BaneySpaces Deck"
         setAccessibilityIdentifier("deck.sidebar")
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
-        contentView = Self.chrome(NSHostingView(rootView: SidebarView(model: model)), radius: 12, onPointer: { [weak self] in self?.onPointer($0) })
+        contentView = Self.chrome(NSHostingView(rootView: SidebarView(model: model)), radius: 12, tinted: true, onPointer: { [weak self] in self?.onPointer($0) })
     }
 
     /// A blurred rounded card hosting `content`.
-    static func chrome(_ content: NSView, radius: CGFloat, onPointer: ((Bool) -> Void)? = nil) -> NSView {
+    static func chrome(_ content: NSView, radius: CGFloat, tinted: Bool = false, onPointer: ((Bool) -> Void)? = nil) -> NSView {
         let root = TrackingView()
         if let onPointer { root.onPointer = onPointer }
         let blur = NSVisualEffectView()
@@ -502,11 +502,12 @@ final class SidebarPanel: NSPanel {
         blur.wantsLayer = true
         blur.layer?.cornerRadius = radius
         blur.layer?.masksToBounds = true
-        // The blur alone lets a bright window behind show through as a smudge; the tint keeps
-        // it to a hint of color.
+        // The blur alone lets a bright window behind the tall sidebar show through as a smudge;
+        // the tint keeps it to a hint of color.
         let tint = Tint()
         tint.wantsLayer = true
-        for (child, parent) in [(blur as NSView, root as NSView), (tint, blur), (content, blur)] {
+        let layers: [(NSView, NSView)] = [(blur, root)] + (tinted ? [(tint, blur)] : []) + [(content, blur)]
+        for (child, parent) in layers {
             child.translatesAutoresizingMaskIntoConstraints = false
             parent.addSubview(child)
             NSLayoutConstraint.activate([
@@ -592,7 +593,8 @@ final class EdgeTrigger: NSPanel {
         let view = TrackingView()
         view.onPointer = { [weak self] inside in
             self?.timer?.invalidate()
-            guard inside, self?.armed == true else { return }
+            guard inside else { self?.armed = true; return }
+            guard self?.armed == true else { return }
             self?.timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { _ in self?.onRest() }
         }
         contentView = view
@@ -625,9 +627,11 @@ final class EdgeTrigger: NSPanel {
         }
     }
 
-    func place(on screen: NSScreen) {
+    func place(on screen: NSScreen) { setFrame(Self.strip(on: screen), display: false) }
+
+    /// The middle 80% of the edge: the corners stay free for hot corners and the menu bar.
+    static func strip(on screen: NSScreen) -> NSRect {
         let v = screen.visibleFrame
-        // The middle 80% of the edge: the corners stay free for hot corners and the menu bar.
-        setFrame(NSRect(x: screen.frame.minX, y: v.minY + v.height * 0.1, width: 2, height: v.height * 0.8), display: false)
+        return NSRect(x: screen.frame.minX, y: v.minY + v.height * 0.1, width: 2, height: v.height * 0.8)
     }
 }

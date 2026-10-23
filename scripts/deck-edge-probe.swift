@@ -4,7 +4,7 @@
 // closed about every 1.6 s.
 //
 // Usage: swift scripts/deck-edge-probe.swift   (BaneySpaces running, an app the Deck covers in front,
-// the Deck unpinned). Puts the pointer back where it was.
+// the Deck unpinned and closed). Puts the pointer back where it was.
 import AppKit
 
 let state = FileManager.default.homeDirectoryForCurrentUser
@@ -41,6 +41,7 @@ func watch(_ seconds: Double, nudge: CGPoint? = nil) -> (changes: Int, last: Boo
 
 guard let d = deck() else { print("no deck.json: is BaneySpaces running with the Deck on?"); exit(2) }
 guard !d.pinned else { print("the Deck is pinned; unpin it to probe the drawer"); exit(2) }
+guard !d.visible else { print("the Deck is open; close it first"); exit(2) }
 let front = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
 let screen = NSScreen.screens[0].frame
 let home = CGEvent(source: nil)?.location ?? CGPoint(x: screen.midX, y: screen.midY)
