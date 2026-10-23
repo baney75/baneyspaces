@@ -28,11 +28,13 @@ enum DeckLayout {
         return NSScreen.main ?? NSScreen.screens[0]
     }
 
-    /// Windows of `pids` that are on this desk and on `screen`.
-    static func windowsHere(_ engine: Engine, on screen: NSScreen) -> [(pid: pid_t, w: NativeWindow)] {
+    /// Windows of `pids` that are on this desk and on `screen`. A phone's window (iPhone Mirroring,
+    /// Device Hub) keeps its own size beside the sidebar, so stacking, splitting and tiling leave it
+    /// out; only clearing the strip moves it.
+    static func windowsHere(_ engine: Engine, on screen: NSScreen, devices: Bool = false) -> [(pid: pid_t, w: NativeWindow)] {
         let area = AX.flip(screen.frame)
         var out: [(pid_t, NativeWindow)] = []
-        for (pid, t) in engine.tracked where !t.app.isHidden {
+        for (pid, t) in engine.tracked where !t.app.isHidden && (devices || t.spec.role != .device) {
             for w in NativeWindow.list(pid: pid) where w.onScreen && !w.fullScreen {
                 if area.contains(CGPoint(x: w.frame.midX, y: w.frame.midY)) { out.append((pid, w)) }
             }
@@ -64,7 +66,7 @@ enum DeckLayout {
         guard AX.isTrusted else { AX.askForTrust(); return }
         let (l, r) = Deck.halves(content(on: activeScreen(), reserve: reserve))
         func here(_ i: Item) -> (pid_t, NativeWindow)? {
-            guard i.workspace == 0, let w = engine.nativeWindow(for: i), w.onScreen, !w.fullScreen,
+            guard i.workspace == 0, i.role != .device, let w = engine.nativeWindow(for: i), w.onScreen, !w.fullScreen,
                   let pid = engine.trackedApp(for: i)?.app.processIdentifier else { return nil }
             return (pid, w)
         }
@@ -74,7 +76,7 @@ enum DeckLayout {
 
     /// Puts one window into the deck frame, used when a window appears or is picked while stacked.
     static func place(_ engine: Engine, item: Item, reserve: CGFloat) {
-        guard AX.isTrusted, item.workspace == 0, let w = engine.nativeWindow(for: item), w.onScreen, !w.fullScreen,
+        guard AX.isTrusted, item.workspace == 0, item.role != .device, let w = engine.nativeWindow(for: item), w.onScreen, !w.fullScreen,
               let pid = engine.trackedApp(for: item)?.app.processIdentifier else { return }
         move(pid, w, to: content(on: activeScreen(), reserve: reserve))
     }
@@ -103,7 +105,7 @@ enum DeckLayout {
         let screen = activeScreen()
         let area = AX.flip(screen.visibleFrame)
         let edge = area.minX + width + 6
-        for (pid, w) in windowsHere(engine, on: screen) {
+        for (pid, w) in windowsHere(engine, on: screen, devices: true) {
             let f = w.frame
             guard f.minX < edge else { continue }
             let target = f.maxX - edge >= 480

@@ -288,6 +288,7 @@ final class DeckController {
             UserDefaults.standard.set(visibility.pinned, forKey: "deckPinned")
             model.pinned = visibility.pinned
         }
+        if !visibility.open && !visibility.pinned { stopDocking() }
         apply()
         if visibility.pinned && !wasPinned { arrange() }
         if e == .edgeRest { closeWhenPointerLeaves(after: 1.0) }
@@ -299,6 +300,16 @@ final class DeckController {
         SidebarZone.contains(NSEvent.mouseLocation, sidebar: panel.home, screenMinX: panel.screen?.frame.minX ?? panel.home.minX)
     }
 
+    /// The phone picked from the sidebar, docked beside it: while it's in front, the pointer on its
+    /// window still counts as in the Deck, so going to use the phone doesn't close the drawer.
+    private var dockedDevice: pid_t?
+
+    var pointerOnDockedDevice: Bool {
+        guard let pid = dockedDevice, NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return false }
+        let p = AX.flip(CGRect(origin: NSEvent.mouseLocation, size: .zero)).origin
+        return NativeWindow.list(pid: pid).contains { $0.onScreen && $0.frame.contains(p) }
+    }
+
     /// Closes the drawer once the pointer is away from the sidebar. While it waits in the gap by
     /// the edge, which sends no events, it looks again until the pointer is over the sidebar.
     func closeWhenPointerLeaves(after delay: TimeInterval) {
@@ -307,7 +318,7 @@ final class DeckController {
             guard let self, self.visibility.open, !self.visibility.pinned else { return }
             // Stepped aside for one of BaneySpaces' own panels, still open: look again once it's back.
             guard self.panel.shown else { return self.closeWhenPointerLeaves(after: 0.45) }
-            if !self.pointerAtSidebar { self.send(.pointerLeft) }
+            if !self.pointerAtSidebar && !self.pointerOnDockedDevice { self.send(.pointerLeft) }
             else if !self.panel.home.contains(NSEvent.mouseLocation) { self.closeWhenPointerLeaves(after: 0.45) }
         }
     }
@@ -337,7 +348,8 @@ final class DeckController {
             panel.slideOut()
             if front && Self.edgeOpens { edge.show(on: DeckLayout.activeScreen()) } else { edge.orderOut(nil) }
         }
-        if show && !visibility.pinned && front { escape.activate() } else { escape.deactivate() }
+        // Not over a phone's app: Esc there belongs to the phone (backing out, closing a sheet).
+        if show && !visibility.pinned && front && wrappedFront?.role != .device { escape.activate() } else { escape.deactivate() }
         engine.scheduleSweep(visible: show)
         writeState()
     }
@@ -353,6 +365,7 @@ final class DeckController {
     // MARK: actions
 
     func focus(_ item: Item) {
+        if item.kind != .device { stopDocking() }
         if item.kind == .device {
             engine.seen(item.id)
             if let p = phones.phone(item.id) { phones.open(p) { [weak self] in self?.dockDevice($0) } }
@@ -368,6 +381,12 @@ final class DeckController {
 
     private var dockTimer: Timer?
 
+    /// A pick elsewhere, or the drawer closing, drops a phone window still on its way.
+    func stopDocking() {
+        dockTimer?.invalidate()
+        dockedDevice = nil
+    }
+
     /// Puts the window of the app now showing a phone (iPhone Mirroring, Device Hub) right beside
     /// the sidebar at its own size, once it's up. Looks for up to 5 s while the app opens.
     func dockDevice(_ bundleID: String) {
@@ -380,6 +399,7 @@ final class DeckController {
             guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first, app.isActive,
                   let w = NativeWindow.list(pid: app.processIdentifier).first(where: { $0.onScreen && !$0.fullScreen }) else { return }
             t.invalidate()
+            self.dockedDevice = app.processIdentifier
             let screen = DeckLayout.activeScreen()
             let f = Deck.docked(w.frame.size, visible: AX.flip(screen.visibleFrame), sidebar: SidebarPanel.width + SidebarPanel.margin)
             DeckLayout.move(app.processIdentifier, w, to: f)
