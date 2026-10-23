@@ -454,6 +454,16 @@ final class TrackingView: NSView {
     override func mouseExited(with event: NSEvent) { onPointer(false) }
 }
 
+/// The window background color over a blur, kept in step with light and dark mode.
+final class Tint: NSView {
+    override var wantsUpdateLayer: Bool { true }
+    override func updateLayer() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.72).cgColor
+        }
+    }
+}
+
 /// The sidebar: a strip down the left edge of the active screen. It never takes focus: clicks act
 /// and keystrokes keep going to the app you're in.
 final class SidebarPanel: NSPanel {
@@ -462,6 +472,8 @@ final class SidebarPanel: NSPanel {
     var onPointer: (Bool) -> Void = { _ in }
     /// Meant to be on screen. Differs from isVisible while it slides out.
     private(set) var shown = false
+    /// Where it rests once placed, whatever its frame is while it slides.
+    private(set) var home = NSRect.zero
 
     init(model: DeckModel) {
         super.init(contentRect: NSRect(x: 0, y: 0, width: Self.width, height: 600),
@@ -476,11 +488,11 @@ final class SidebarPanel: NSPanel {
         title = "BaneySpaces Deck"
         setAccessibilityIdentifier("deck.sidebar")
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
-        contentView = Self.chrome(NSHostingView(rootView: SidebarView(model: model)), radius: 12, onPointer: { [weak self] in self?.onPointer($0) })
+        contentView = Self.chrome(NSHostingView(rootView: SidebarView(model: model)), radius: 12, tinted: true, onPointer: { [weak self] in self?.onPointer($0) })
     }
 
     /// A blurred rounded card hosting `content`.
-    static func chrome(_ content: NSView, radius: CGFloat, onPointer: ((Bool) -> Void)? = nil) -> NSView {
+    static func chrome(_ content: NSView, radius: CGFloat, tinted: Bool = false, onPointer: ((Bool) -> Void)? = nil) -> NSView {
         let root = TrackingView()
         if let onPointer { root.onPointer = onPointer }
         let blur = NSVisualEffectView()
@@ -490,7 +502,12 @@ final class SidebarPanel: NSPanel {
         blur.wantsLayer = true
         blur.layer?.cornerRadius = radius
         blur.layer?.masksToBounds = true
-        for (child, parent) in [(blur as NSView, root as NSView), (content, blur)] {
+        // The blur alone lets a bright window behind the tall sidebar show through as a smudge;
+        // the tint keeps it to a hint of color.
+        let tint = Tint()
+        tint.wantsLayer = true
+        let layers: [(NSView, NSView)] = [(blur, root)] + (tinted ? [(tint, blur)] : []) + [(content, blur)]
+        for (child, parent) in layers {
             child.translatesAutoresizingMaskIntoConstraints = false
             parent.addSubview(child)
             NSLayoutConstraint.activate([
@@ -515,6 +532,7 @@ final class SidebarPanel: NSPanel {
     func place(on screen: NSScreen, animated: Bool) {
         let target = frame(on: screen)
         shown = true
+        home = target
         guard animated else {
             // Through the animator, with no duration, so it also cancels a slide-out in flight.
             NSAnimationContext.runAnimationGroup { ctx in
@@ -558,6 +576,9 @@ final class SidebarPanel: NSPanel {
 final class EdgeTrigger: NSPanel {
     var onRest: () -> Void = {}
     private var timer: Timer?
+    /// A pointer resting where the sidebar just closed doesn't open it again until it moves away.
+    private var arming = EdgeArming()
+    private var armTimer: Timer?
 
     init() {
         super.init(contentRect: NSRect(x: 0, y: 0, width: 2, height: 600),
@@ -571,7 +592,7 @@ final class EdgeTrigger: NSPanel {
         let view = TrackingView()
         view.onPointer = { [weak self] inside in
             self?.timer?.invalidate()
-            guard inside else { return }
+            guard inside, self?.arming.armed == true else { return }
             self?.timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { _ in self?.onRest() }
         }
         contentView = view
@@ -582,12 +603,34 @@ final class EdgeTrigger: NSPanel {
     /// Hiding the strip sends no mouseExited, so a pending rest is dropped here.
     override func orderOut(_ sender: Any?) {
         timer?.invalidate()
+        armTimer?.invalidate()
+        arming = EdgeArming()
         super.orderOut(sender)
     }
 
-    func place(on screen: NSScreen) {
+    /// Puts the strip up on `screen`. Coming back under a pointer already on it, it waits for the
+    /// pointer to move clearly away before a rest counts.
+    func show(on screen: NSScreen) {
+        let wasUp = isVisible
+        place(on: screen)
+        orderFrontRegardless()
+        guard !wasUp else { return }
+        arming.shown(pointerOnStrip: frame.contains(NSEvent.mouseLocation))
+        armTimer?.invalidate()
+        guard !arming.armed else { return }
+        // The strip's own exit fires on a 2-point drift, so where the pointer is decides.
+        armTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] t in
+            guard let self else { return t.invalidate() }
+            self.arming.sample(NSEvent.mouseLocation, strip: self.frame)
+            if self.arming.armed { t.invalidate() }
+        }
+    }
+
+    func place(on screen: NSScreen) { setFrame(Self.strip(on: screen), display: false) }
+
+    /// The middle 80% of the edge: the corners stay free for hot corners and the menu bar.
+    static func strip(on screen: NSScreen) -> NSRect {
         let v = screen.visibleFrame
-        // The middle 80% of the edge: the corners stay free for hot corners and the menu bar.
-        setFrame(NSRect(x: screen.frame.minX, y: v.minY + v.height * 0.1, width: 2, height: v.height * 0.8), display: false)
+        return NSRect(x: screen.frame.minX, y: v.minY + v.height * 0.1, width: 2, height: v.height * 0.8)
     }
 }

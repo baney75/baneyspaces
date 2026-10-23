@@ -1,3 +1,5 @@
+import CoreGraphics
+
 /// When the sidebar is on screen. Unpinned, it's a drawer: it opens on request and gets out of the
 /// way by itself. Pinned, it stays while Ghostty is in front and windows move out of its strip.
 public struct SidebarVisibility: Equatable, Sendable {
@@ -49,4 +51,36 @@ public struct SidebarVisibility: Equatable, Sendable {
     }
 
     private mutating func close() { open = false; pointerVisited = false }
+}
+
+/// Where the pointer counts as at the sidebar: the sidebar itself, a little past its right side,
+/// and the gap between it and the screen's left edge. That gap holds the edge strip, so a pointer
+/// still resting where it opened the drawer hasn't left it. A Dock on the left is in the gap too:
+/// crossing beside it to reach the sidebar must not close it.
+public enum SidebarZone {
+    public static let slack: CGFloat = 10
+
+    /// In screen coordinates, as the sidebar's frame is.
+    public static func contains(_ p: CGPoint, sidebar: CGRect, screenMinX: CGFloat) -> Bool {
+        CGRect(x: screenMinX, y: sidebar.minY, width: sidebar.maxX + slack - screenMinX, height: sidebar.height).contains(p)
+    }
+}
+
+/// The edge strip, put back under a pointer already resting on it (the drawer just closed by a
+/// key or a pick), waits for that pointer to move clearly away before a rest there counts again:
+/// a hand drifting a point or two off the 2-point strip and back isn't leaving.
+public struct EdgeArming: Equatable, Sendable {
+    /// How far past the strip the pointer has to go.
+    public static let away: CGFloat = 24
+    public private(set) var armed = true
+
+    public init() {}
+
+    /// The strip came up, with the pointer already on it or not.
+    public mutating func shown(pointerOnStrip: Bool) { armed = !pointerOnStrip }
+
+    /// Where the pointer is now, with the strip's frame.
+    public mutating func sample(_ p: CGPoint, strip: CGRect) {
+        if !armed, !strip.insetBy(dx: -Self.away, dy: -Self.away).contains(p) { armed = true }
+    }
 }
