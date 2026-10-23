@@ -15,23 +15,34 @@ public struct TopDrag: Sendable {
     /// the top on its way to another screen doesn't open it.
     public static let dwell: TimeInterval = 0.25
 
-    /// The window under the press, and its frame before the drag moved it.
+    /// How far below a window's top edge a press can be and still be on its title bar or
+    /// toolbar, the parts a window is dragged by.
+    public static let titleBand: CGFloat = 52
+
+    /// The window under the press, its frame before the drag moved it, and where the press was.
     public struct Grab: Equatable, Sendable {
         public let window: WindowID
         public let frame: CGRect
-        public init(window: WindowID, frame: CGRect) {
+        public let press: CGPoint
+        public init(window: WindowID, frame: CGRect, press: CGPoint? = nil) {
             self.window = window
             self.frame = frame
+            self.press = press ?? CGPoint(x: frame.midX, y: frame.minY + 12)
         }
     }
 
     public private(set) var grab: Grab?
-    /// The window has followed the pointer: its origin changed and its size didn't. A resize, a
-    /// text selection or a click inside the window never sets it.
+    /// The window has followed the pointer: between two ticks its origin changed and its size
+    /// didn't. A resize or a text selection never sets it. Compared tick to tick, because macOS
+    /// gives a tiled window its old size back as the drag starts.
     public private(set) var moving = false
+    /// The window can't follow because it's already against the top of the screen: the press
+    /// was on its title bar, it hasn't moved, and the pointer went on up above it.
+    public private(set) var pinned = false
     /// The overview opened for this drag; nothing more happens until the button comes up.
     public private(set) var fired = false
     private var topSince: TimeInterval?
+    private var last: CGRect?
 
     public init() {}
 
@@ -39,6 +50,7 @@ public struct TopDrag: Sendable {
     public mutating func press(_ grab: Grab?) {
         self = TopDrag()
         self.grab = grab
+        last = grab?.frame
     }
 
     /// The button came up.
@@ -49,12 +61,19 @@ public struct TopDrag: Sendable {
     public mutating func tick(cursor: CGPoint, frame: CGRect?, screens: [CGRect], now: TimeInterval) -> Grab? {
         guard let grab, !fired else { return nil }
         guard let frame else { self = TopDrag(); return nil }
-        if !moving {
-            let sameSize = abs(frame.width - grab.frame.width) < 1 && abs(frame.height - grab.frame.height) < 1
-            let shifted = hypot(frame.minX - grab.frame.minX, frame.minY - grab.frame.minY) > 2
+        if let last, !moving {
+            let sameSize = abs(frame.width - last.width) < 1 && abs(frame.height - last.height) < 1
+            let shifted = hypot(frame.minX - last.minX, frame.minY - last.minY) > 0.5
             moving = sameSize && shifted
         }
-        guard moving, TopDrag.atTop(cursor, screens: screens) else { topSince = nil; return nil }
+        last = frame
+        if !moving {
+            let unmoved = hypot(frame.minX - grab.frame.minX, frame.minY - grab.frame.minY) < 1 && frame.size == grab.frame.size
+            let onTitleBar = (0...TopDrag.titleBand).contains(grab.press.y - grab.frame.minY)
+            let atScreenTop = screens.first { $0.contains(grab.press) }.map { grab.frame.minY - $0.minY <= 50 } ?? false
+            pinned = unmoved && onTitleBar && atScreenTop && cursor.y < grab.frame.minY - 2
+        }
+        guard moving || pinned, TopDrag.atTop(cursor, screens: screens) else { topSince = nil; return nil }
         let since = topSince ?? now
         topSince = since
         guard now - since >= TopDrag.dwell else { return nil }

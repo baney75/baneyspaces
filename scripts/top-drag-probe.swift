@@ -75,6 +75,7 @@ func drag(from: CGPoint, to: CGPoint, hold: TimeInterval, release: CGPoint, chec
     glide(from, to)
     let end = Date().addingTimeInterval(hold)
     while Date() < end { post(.leftMouseDragged, to); usleep(30_000) }
+    print("      held at \(to); the window is at \(onScreen(id).map { "\($0.origin)" } ?? "nowhere") (picked up at \(from))")
     check()
     glide(to, release)
     usleep(150_000)

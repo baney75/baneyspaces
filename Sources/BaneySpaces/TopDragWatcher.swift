@@ -93,6 +93,8 @@ final class TopDragWatcher {
     private var timer: Timer?
     private var state = TopDrag()
     private var open: TopDrag.Grab?
+    /// The app whose window was pressed.
+    private var owner: pid_t = 0
 
     var isRunning: Bool { monitor != nil }
 
@@ -129,10 +131,11 @@ final class TopDragWatcher {
         // A press always follows a release; one the watcher missed ends the last drag first,
         // without a drop, since where it let go is unknown.
         released(at: nil)
-        let grab = TopDragWatcher.window(at: p)
-        onPress(grab?.window)
-        guard let grab else { return }
-        state.press(grab)
+        let found = TopDragWatcher.window(at: p)
+        onPress(found?.grab.window)
+        guard let found else { return }
+        state.press(found.grab)
+        owner = found.pid
         let t = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in self?.tick() }
         RunLoop.main.add(t, forMode: .common)
         timer = t
@@ -144,7 +147,15 @@ final class TopDragWatcher {
         if open != nil { return onMove(p) }
         guard let grab = state.grab else { return endTicks() }
         let frame = TopDragWatcher.bounds(of: grab.window)
+        let wasDragging = state.moving || state.pinned
+        defer {
+            // Once per drag, so trace.log shows the drags the watcher saw.
+            if !wasDragging, state.moving || state.pinned { Trace.log("topDrag \(state.moving ? "moving" : "pinned") window=\(grab.window)") }
+        }
         if let g = state.tick(cursor: p, frame: frame, screens: TopDragWatcher.screens(), now: ProcessInfo.processInfo.systemUptime) {
+            // A window against the top that didn't move: a tab torn off its title bar makes a
+            // new window of the same app in front of it, and that drag isn't this one.
+            if !state.moving, TopDragWatcher.frontWindow(of: owner) != g.window { return endTicks() }
             switch onOpen(g, p) {
             case true?: open = g
             case false?: endTicks()
@@ -169,18 +180,25 @@ final class TopDragWatcher {
         return NSScreen.screens.map { CGRect(x: $0.frame.minX, y: mainHeight - $0.frame.maxY, width: $0.frame.width, height: $0.frame.height) }
     }
 
-    /// The frontmost ordinary window of another app under `p`.
-    static func window(at p: CGPoint) -> TopDrag.Grab? {
+    /// The frontmost ordinary window of another app under `p`, and its app.
+    static func window(at p: CGPoint) -> (grab: TopDrag.Grab, pid: pid_t)? {
         let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
         for w in list {
             guard let bounds = (w[kCGWindowBounds as String] as? NSDictionary).flatMap({ CGRect(dictionaryRepresentation: $0) }),
                   bounds.contains(p) else { continue }
             // The first window under the pointer takes the click, whatever it is.
-            guard (w[kCGWindowLayer as String] as? Int) == 0, (w[kCGWindowOwnerPID as String] as? Int32) != getpid(),
+            guard (w[kCGWindowLayer as String] as? Int) == 0, let pid = w[kCGWindowOwnerPID as String] as? Int32, pid != getpid(),
                   let id = w[kCGWindowNumber as String] as? Int else { return nil }
-            return TopDrag.Grab(window: WindowID(id), frame: bounds)
+            return (TopDrag.Grab(window: WindowID(id), frame: bounds, press: p), pid)
         }
         return nil
+    }
+
+    /// The frontmost ordinary on-screen window of app `pid`.
+    static func frontWindow(of pid: pid_t) -> WindowID? {
+        let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        return list.first { ($0[kCGWindowLayer as String] as? Int) == 0 && ($0[kCGWindowOwnerPID as String] as? Int32) == pid }
+            .flatMap { ($0[kCGWindowNumber as String] as? Int).map(WindowID.init) }
     }
 
     static func bounds(of id: WindowID) -> CGRect? {

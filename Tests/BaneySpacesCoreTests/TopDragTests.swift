@@ -65,6 +65,39 @@ final class TopDragTests: XCTestCase {
         XCTAssertFalse(d.moving)
     }
 
+    func testATiledWindowThatShrinksAsTheDragStartsStillCounts() {
+        // macOS gives a tiled window its old size back on the first move, then it follows.
+        var d = TopDrag()
+        d.press(window)
+        let small = CGSize(width: 600, height: 400)
+        XCTAssertNil(d.tick(cursor: CGPoint(x: 700, y: 180), frame: CGRect(origin: CGPoint(x: 400, y: 170), size: small), screens: [main], now: 0))
+        XCTAssertNil(d.tick(cursor: CGPoint(x: 700, y: 60), frame: CGRect(origin: CGPoint(x: 400, y: 50), size: small), screens: [main], now: 0.1))
+        XCTAssertTrue(d.moving)
+        XCTAssertNil(d.tick(cursor: CGPoint(x: 700, y: 0), frame: CGRect(origin: CGPoint(x: 400, y: 33), size: small), screens: [main], now: 0.5))
+        XCTAssertNotNil(d.tick(cursor: CGPoint(x: 700, y: 0), frame: CGRect(origin: CGPoint(x: 400, y: 33), size: small), screens: [main], now: 0.5 + TopDrag.dwell))
+    }
+
+    func testAWindowAlreadyAgainstTheMenuBarCountsWhenPushedUp() {
+        // A full-height window under a 33 pt menu bar can't go any higher: the pointer does.
+        let tall = TopDrag.Grab(window: 8, frame: CGRect(x: 0, y: 33, width: 1512, height: 949), press: CGPoint(x: 700, y: 45))
+        var d = TopDrag()
+        d.press(tall)
+        XCTAssertNil(d.tick(cursor: CGPoint(x: 700, y: 20), frame: tall.frame, screens: [main], now: 0.5))
+        XCTAssertTrue(d.pinned)
+        XCTAssertNil(d.tick(cursor: CGPoint(x: 700, y: 0), frame: tall.frame, screens: [main], now: 0.6))
+        XCTAssertEqual(d.tick(cursor: CGPoint(x: 700, y: 0), frame: tall.frame, screens: [main], now: 0.6 + TopDrag.dwell), tall)
+    }
+
+    func testAPressBelowTheTitleBarOfAWindowAtTheTopNeverCounts() {
+        // Selecting text from the middle of a full-height window up into the menu bar.
+        let tall = TopDrag.Grab(window: 8, frame: CGRect(x: 0, y: 33, width: 1512, height: 949), press: CGPoint(x: 700, y: 400))
+        var d = TopDrag()
+        d.press(tall)
+        for t in stride(from: 0.0, through: 1.0, by: 0.05) {
+            XCTAssertNil(d.tick(cursor: CGPoint(x: 700, y: 0), frame: tall.frame, screens: [main], now: t))
+        }
+    }
+
     func testAWindowThatClosesMidDragEndsIt() {
         var d = TopDrag()
         d.press(window)

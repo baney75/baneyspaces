@@ -35,17 +35,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return d
     }()
     private lazy var switcher = WorkspaceSwitcher(spaces: spaces)
-    /// A carried window let go over a workspace, waiting for its drop to settle; bumped by
-    /// every press so a stale one never runs.
-    private var settling: Timer?
-    private var settlingWindow: WindowID?
-    private var dropGeneration = 0
+    /// Carried windows let go over a workspace, each waiting for its drop to settle. Picking
+    /// one up again bumps its generation, so its stale move never runs, even one queued.
+    private var settling: [WindowID: Timer] = [:]
+    private var dropGeneration: [WindowID: Int] = [:]
 
-    private func cancelSettling() {
-        dropGeneration += 1
-        settling?.invalidate()
-        settling = nil
-        settlingWindow = nil
+    /// Cancels the drop waiting for window `id`, or every one.
+    private func cancelSettling(_ id: WindowID? = nil) {
+        for w in id.map({ [$0] }) ?? Array(Set(settling.keys).union(dropGeneration.keys)) {
+            dropGeneration[w, default: 0] += 1
+            settling.removeValue(forKey: w)?.invalidate()
+        }
     }
     /// A window dragged to the top of the screen opens the overview, in place of Mission Control.
     private lazy var topDrag: TopDragWatcher = {
@@ -59,30 +59,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Picking the window up again makes its drop still waiting to settle stale, even one
         // already queued behind a switch. A click anywhere else leaves the drop alone.
         t.onPress = { [weak self] id in
-            guard let self, id != nil, id == self.settlingWindow else { return }
-            self.cancelSettling()
+            guard let self, let id else { return }
+            self.cancelSettling(id)
         }
         t.onRelease = { [weak self] grab, drop in
             guard let self, let n = self.viewer.endCarrying(), drop else { return }
             // The window server and the app finish their own drop first: the window moves once
             // it has held still for 60 ms (four looks 20 ms apart), no sooner than 0.1 s after
             // the release and no later than 0.5 s.
-            let gen = self.dropGeneration
-            self.settlingWindow = grab.window
-            var last = TopDragWatcher.bounds(of: grab.window)
+            let id = grab.window
+            self.cancelSettling(id)
+            let gen = self.dropGeneration[id, default: 0]
+            var last = TopDragWatcher.bounds(of: id)
             var looks = 0, still = 0
-            self.settling?.invalidate()
-            self.settling = Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { [weak self] timer in
+            self.settling[id] = Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { [weak self] timer in
                 looks += 1
-                let now = TopDragWatcher.bounds(of: grab.window)
+                let now = TopDragWatcher.bounds(of: id)
                 still = now == last ? still + 1 : 0
                 last = now
                 guard (looks >= 5 && still >= 3) || looks >= 25 else { return }
                 timer.invalidate()
-                guard let self, now != nil, self.dropGeneration == gen else { return }
-                self.settling = nil
-                self.settlingWindow = nil
-                self.spaces.moveCarried(grab.window, to: n, from: grab.frame) { [weak self] in self?.dropGeneration == gen }
+                guard let self, now != nil, self.dropGeneration[id, default: 0] == gen else { return }
+                self.settling[id] = nil
+                self.spaces.moveCarried(id, to: n, from: grab.frame) { [weak self] in self?.dropGeneration[id, default: 0] == gen }
             }
         }
         return t
@@ -306,8 +305,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func startWhenTrusted() {
         if canStart { return start() }
         // Left out of sight by a crash, the macOS Dock comes back while BaneySpaces waits; the
-        // Workspace Dock takes over again once it starts.
+        // Workspace Dock takes over again once it starts. The same goes for the drag to the top.
         SystemDock.restore()
+        SystemTopDrag.restore()
         updateIcon()
         trustTimer?.invalidate()
         trustTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] timer in
@@ -354,6 +354,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         missionControlKeys.stop()
         topDrag.stop()
         cancelSettling()
+        // Not watching any more, so macOS answers the drag again until BaneySpaces is back.
+        SystemTopDrag.restore()
         viewer.close()
         dock.stop(restoreSystemDock: true)
         deck.stop()

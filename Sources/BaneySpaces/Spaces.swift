@@ -938,8 +938,17 @@ final class Spaces {
         if saved.frames[id] != nil {
             saved.frames[id] = frame
             persist()
-        } else if let w = windows[id], NSRunningApplication(processIdentifier: w.pid)?.isHidden == true {
-            w.place(frame, currentSize: w.frame?.size ?? .zero)
+        } else if let w = windows[id], saved.hiddenApps.contains(w.pid) {
+            // BaneySpaces' own record says it hid the app; the move waits until the window
+            // server has the window off screen, so it's never seen.
+            waitUntil(timeout: 0.5, interval: 0.02, { Windows.allOffscreen([id]) }) { [weak self] in
+                guard let self, self.model.workspace(of: id) == n, Windows.allOffscreen([id]) else {
+                    return Trace.log("topDrag putBack skipped window=\(id): still on screen")
+                }
+                w.place(frame, currentSize: w.frame?.size ?? .zero)
+            }
+        } else {
+            Trace.log("topDrag putBack skipped window=\(id): neither parked nor hidden")
         }
     }
 
