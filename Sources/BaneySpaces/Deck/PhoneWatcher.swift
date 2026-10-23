@@ -136,7 +136,8 @@ final class PhoneWatcher {
 
     /// The phone's screen: scrcpy's mirror for Android, Simulator for a simulator, iPhone
     /// Mirroring for an iPhone, and Device Hub for an iPad (iPhone Mirroring has no iPad mode).
-    /// `opened` gets the bundle ID of the app that will show it, so the Deck can dock its window.
+    /// `opened` gets the bundle ID of the app that will show it, so the Deck can dock its window;
+    /// only for apps the Deck wraps, since the drawer leaves when any other app comes forward.
     func open(_ phone: Phone, opened: (String) -> Void = { _ in }) {
         switch phone.platform {
         case .ios:
@@ -144,7 +145,7 @@ final class PhoneWatcher {
             let app = phone.simulator ? "com.apple.iphonesimulator" : Self.mirroring
             if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: app) {
                 NSWorkspace.shared.openApplication(at: url, configuration: .init())
-                opened(app)
+                if !phone.simulator { opened(app) }
             }
         case .android:
             if let m = mirrors[phone.id], m.isRunning {

@@ -27,12 +27,22 @@ public struct Phone: Equatable, Sendable {
     }
 
     /// Opens Xcode's Device Hub with this device selected (`devices://manage/open?id=<UDID>`).
+    /// Only for a real device: the link was tried live with one, not with a simulator.
     public var deviceHubURL: URL? {
-        guard platform == .ios, !udid.isEmpty else { return nil }
+        guard platform == .ios, !simulator, !udid.isEmpty else { return nil }
         var c = URLComponents()
         c.scheme = "devices"; c.host = "manage"; c.path = "/open"
         c.queryItems = [URLQueryItem(name: "id", value: udid)]
         return c.url
+    }
+
+    /// The menu item that shows its screen, named for the app that will: nil for an iPad, which
+    /// opens in Device Hub instead.
+    public var mirrorTitle: String? {
+        switch platform {
+        case .android: return "Mirror the Screen"
+        case .ios: return simulator ? "Open in Simulator" : tablet ? nil : "Open iPhone Mirroring"
+        }
     }
 
     public var item: Item {

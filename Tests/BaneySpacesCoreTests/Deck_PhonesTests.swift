@@ -97,6 +97,19 @@ final class PhonesTests: XCTestCase {
         XCTAssertEqual(p[0].deviceHubURL?.absoluteString, "devices://manage/open?id=00008103-001824281469401E")
         XCTAssertNil(p[1].deviceHubURL, "no UDID, no link")
         XCTAssertNil(Phone(platform: .android, id: "R5CT", name: "Pixel", model: "Pixel 8", ready: true, status: "USB", udid: "x").deviceHubURL)
+        XCTAssertNil(Phone(platform: .ios, id: "9B32", name: "iPhone 17 Pro", model: "iPhone 17 Pro Simulator", ready: true, status: "ready", simulator: true, udid: "9B32").deviceHubURL,
+                     "a simulator's link was never tried")
+    }
+
+    /// Each device's menu names the app that will show it (review r1 on #27).
+    func testTheMirrorItemNamesTheAppThatOpens() {
+        func phone(_ p: Phone.Platform, simulator: Bool = false, tablet: Bool = false) -> Phone {
+            Phone(platform: p, id: "x", name: "x", model: "x", ready: true, status: "", simulator: simulator, tablet: tablet)
+        }
+        XCTAssertEqual(phone(.ios).mirrorTitle, "Open iPhone Mirroring")
+        XCTAssertNil(phone(.ios, tablet: true).mirrorTitle, "an iPad opens in Device Hub")
+        XCTAssertEqual(phone(.ios, simulator: true).mirrorTitle, "Open in Simulator")
+        XCTAssertEqual(phone(.android).mirrorTitle, "Mirror the Screen")
     }
 }
 

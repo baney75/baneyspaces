@@ -184,6 +184,7 @@ final class DeckController {
             case .screenshot: self.phones.screenshot(p)
             }
         }
+        model.phone = { [weak self] in self?.phones.phone($0.id) }
         model.onClose = { [weak self] item, what in self?.engine.close(item, what) }
         model.onNewHere = { [weak self] in self?.engine.newTerminal(in: $0.directory) }
         model.onTile = { [weak self] in self?.tile() }
@@ -373,9 +374,11 @@ final class DeckController {
         dockTimer?.invalidate()
         let until = Date().addingTimeInterval(5)
         dockTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] t in
-            guard let self, Date() < until, AX.isTrusted,
-                  let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first else { return t.invalidate() }
-            guard app.isActive, let w = NativeWindow.list(pid: app.processIdentifier).first(where: { !$0.minimized && !$0.fullScreen }) else { return }
+            guard let self, Date() < until, AX.isTrusted else { return t.invalidate() }
+            // Starting cold, the app isn't running yet, then has a window with no frame yet. One
+            // parked off screen for another workspace isn't this one's to move.
+            guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first, app.isActive,
+                  let w = NativeWindow.list(pid: app.processIdentifier).first(where: { $0.onScreen && !$0.fullScreen }) else { return }
             t.invalidate()
             let screen = DeckLayout.activeScreen()
             let f = Deck.docked(w.frame.size, visible: AX.flip(screen.visibleFrame), sidebar: SidebarPanel.width + SidebarPanel.margin)
