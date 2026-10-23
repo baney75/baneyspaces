@@ -16,12 +16,33 @@ public struct Phone: Equatable, Sendable {
     /// Why it isn't ready, in words for the sidebar.
     public var status: String
     public var simulator: Bool
-    /// An iPad. iPhone Mirroring can't show one, so it gets its own icon and no Mirroring item.
+    /// An iPad. iPhone Mirroring can't show one, so it opens in Xcode's Device Hub instead.
     public var tablet: Bool
+    /// The hardware UDID, which Device Hub's links take. Empty for Android.
+    public var udid: String
 
-    public init(platform: Platform, id: String, name: String, model: String, ready: Bool, status: String, simulator: Bool = false, tablet: Bool = false) {
+    public init(platform: Platform, id: String, name: String, model: String, ready: Bool, status: String, simulator: Bool = false, tablet: Bool = false, udid: String = "") {
         self.platform = platform; self.id = id; self.name = name; self.model = model
-        self.ready = ready; self.status = status; self.simulator = simulator; self.tablet = tablet
+        self.ready = ready; self.status = status; self.simulator = simulator; self.tablet = tablet; self.udid = udid
+    }
+
+    /// Opens Xcode's Device Hub with this device selected (`devices://manage/open?id=<UDID>`).
+    /// Only for a real device: the link was tried live with one, not with a simulator.
+    public var deviceHubURL: URL? {
+        guard platform == .ios, !simulator, !udid.isEmpty else { return nil }
+        var c = URLComponents()
+        c.scheme = "devices"; c.host = "manage"; c.path = "/open"
+        c.queryItems = [URLQueryItem(name: "id", value: udid)]
+        return c.url
+    }
+
+    /// The menu item that shows its screen, named for the app that will: nil for an iPad, which
+    /// opens in Device Hub instead.
+    public var mirrorTitle: String? {
+        switch platform {
+        case .android: return "Mirror the Screen"
+        case .ios: return simulator ? "Open in Simulator" : tablet ? nil : "Open iPhone Mirroring"
+        }
     }
 
     public var item: Item {
@@ -99,7 +120,7 @@ public enum DeviceCtl {
             let fallback = tablet ? "iPad" : "iPhone"
             return Phone(platform: .ios, id: id, name: props["name"] as? String ?? hw["marketingName"] as? String ?? fallback,
                          model: (hw["marketingName"] as? String ?? fallback) + (simulator ? " Simulator" : ""),
-                         ready: ready, status: status, simulator: simulator, tablet: tablet)
+                         ready: ready, status: status, simulator: simulator, tablet: tablet, udid: hw["udid"] as? String ?? "")
         }
     }
 }

@@ -23,8 +23,10 @@ final class DeckModel: ObservableObject {
     var onAllow: () -> Void = {}
     var onSearch: () -> Void = {}
     var onInstallHooks: () -> Void = {}
-    enum PhoneAction { case mirror, shell, screenshot }
+    enum PhoneAction { case mirror, deviceHub, shell, screenshot }
     var onPhone: (Item, PhoneAction) -> Void = { _, _ in }
+    /// The phone behind a device row, for its menu.
+    var phone: (Item) -> Phone? = { _ in nil }
 
     var working: Int { items.filter { $0.activity == .working }.count }
     var here: [Item] { items.filter { $0.workspace == 0 } }
@@ -296,8 +298,12 @@ struct ItemRow: View {
             Button("Go To") { model.onFocus(item) }
             Divider()
             if item.kind == .device {
-                if item.appName != "iPad" {
-                    Button(item.id.hasPrefix("ios:") ? "Open iPhone Mirroring" : "Mirror the Screen") { model.onPhone(item, .mirror) }
+                let phone = model.phone(item)
+                if let mirror = phone?.mirrorTitle {
+                    Button(mirror) { model.onPhone(item, .mirror) }
+                }
+                if phone?.deviceHubURL != nil {
+                    Button("Open in Device Hub") { model.onPhone(item, .deviceHub) }
                 }
                 if item.id.hasPrefix("android:") {
                     Button("Open a Shell on It") { model.onPhone(item, .shell) }

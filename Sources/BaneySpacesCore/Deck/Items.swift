@@ -60,6 +60,7 @@ public enum Catalog {
         AppSpec(bundleID: "com.t3tools.t3code", name: "T3 Code", role: .agent, adapter: .windows),
         AppSpec(bundleID: "com.anysphere.sand", name: "Grok Bot", role: .agent, adapter: .windows),
         AppSpec(bundleID: "com.apple.ScreenContinuity", name: "iPhone Mirroring", role: .device, adapter: .windows),
+        AppSpec(bundleID: "com.apple.dt.Devices", name: "Device Hub", role: .device, adapter: .windows),
         AppSpec(bundleID: "com.todesktop.230313mzl4w4u92", name: "Cursor", role: .agent, adapter: .windows),
         AppSpec(bundleID: "com.microsoft.VSCode", name: "VS Code", role: .agent, adapter: .windows),
         AppSpec(bundleID: "dev.zed.Zed", name: "Zed", role: .agent, adapter: .windows),

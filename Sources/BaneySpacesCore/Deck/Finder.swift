@@ -31,6 +31,14 @@ public enum Deck {
                width: visible.width - sidebar - 2 * gap, height: visible.height - 2 * gap).integral
     }
 
+    /// Where a device's window (iPhone Mirroring, Device Hub) goes when picked from the sidebar:
+    /// its own size, just right of the sidebar, centered top to bottom, kept on the visible screen.
+    public static func docked(_ size: CGSize, visible: CGRect, sidebar: CGFloat, gap: CGFloat = 6) -> CGRect {
+        let c = content(visible: visible, sidebar: sidebar, gap: gap)
+        let w = min(size.width, c.width), h = min(size.height, c.height)
+        return CGRect(x: c.minX, y: (c.midY - h / 2).rounded(), width: w, height: h)
+    }
+
     /// Left and right halves of `content`.
     public static func halves(_ content: CGRect, gap: CGFloat = 6) -> (CGRect, CGRect) {
         let w = ((content.width - gap) / 2).rounded(.down)
