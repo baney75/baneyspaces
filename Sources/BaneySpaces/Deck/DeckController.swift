@@ -86,6 +86,22 @@ final class DeckController {
         set { UserDefaults.standard.set(newValue, forKey: "deckEnabled") }
     }
 
+    /// Resting the pointer on the left edge opens the drawer. Off, only ⌃⌘B (and ⌘⇧B in a
+    /// terminal) opens it, so reaching for something at the edge never pops it out.
+    static var edgeOpens: Bool {
+        get { UserDefaults.standard.object(forKey: "deckEdgeOpens") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "deckEdgeOpens") }
+    }
+
+    /// Settings follows a change made from the menu bar.
+    var onEdgeOpensChange: (Bool) -> Void = { _ in }
+
+    func setEdgeOpens(_ on: Bool) {
+        Self.edgeOpens = on
+        onEdgeOpensChange(on)
+        if started { apply() }
+    }
+
     var reserve: CGFloat { visibility.pinned ? SidebarPanel.width + SidebarPanel.margin : 0 }
     var effectiveLayout: Deck.Layout { visibility.pinned ? layout : .free }
     var unseenCount: Int { engine.attention.unseen.count }
@@ -157,11 +173,13 @@ final class DeckController {
     func wireModel() {
         model.pinned = visibility.pinned
         model.layout = layout
-        model.onFocus = { [weak self] in self?.focus($0); self?.send(.picked) }
+        // A phone stays beside the open drawer, as if it were in the Deck; anything else closes it.
+        model.onFocus = { [weak self] in self?.focus($0); if $0.kind != .device { self?.send(.picked) } }
         model.onPhone = { [weak self] item, action in
             guard let self, let p = self.phones.phone(item.id) else { return }
             switch action {
-            case .mirror: self.phones.open(p)
+            case .mirror: self.phones.open(p) { self.dockDevice($0) }
+            case .deviceHub: self.phones.openInDeviceHub(p) { self.dockDevice($0) }
             case .shell: self.phones.shell(p)
             case .screenshot: self.phones.screenshot(p)
             }
@@ -316,7 +334,7 @@ final class DeckController {
             edge.orderOut(nil)
         } else {
             panel.slideOut()
-            if front { edge.show(on: DeckLayout.activeScreen()) } else { edge.orderOut(nil) }
+            if front && Self.edgeOpens { edge.show(on: DeckLayout.activeScreen()) } else { edge.orderOut(nil) }
         }
         if show && !visibility.pinned && front { escape.activate() } else { escape.deactivate() }
         engine.scheduleSweep(visible: show)
@@ -336,7 +354,7 @@ final class DeckController {
     func focus(_ item: Item) {
         if item.kind == .device {
             engine.seen(item.id)
-            if let p = phones.phone(item.id) { phones.open(p) }
+            if let p = phones.phone(item.id) { phones.open(p) { [weak self] in self?.dockDevice($0) } }
             return
         }
         if effectiveLayout == .split {
@@ -345,6 +363,24 @@ final class DeckController {
             DeckLayout.place(engine, item: item, reserve: reserve)
         }
         engine.focus(item)
+    }
+
+    private var dockTimer: Timer?
+
+    /// Puts the window of the app now showing a phone (iPhone Mirroring, Device Hub) right beside
+    /// the sidebar at its own size, once it's up. Looks for up to 5 s while the app opens.
+    func dockDevice(_ bundleID: String) {
+        dockTimer?.invalidate()
+        let until = Date().addingTimeInterval(5)
+        dockTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] t in
+            guard let self, Date() < until, AX.isTrusted,
+                  let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first else { return t.invalidate() }
+            guard app.isActive, let w = NativeWindow.list(pid: app.processIdentifier).first(where: { !$0.minimized && !$0.fullScreen }) else { return }
+            t.invalidate()
+            let screen = DeckLayout.activeScreen()
+            let f = Deck.docked(w.frame.size, visible: AX.flip(screen.visibleFrame), sidebar: SidebarPanel.width + SidebarPanel.margin)
+            DeckLayout.move(app.processIdentifier, w, to: f)
+        }
     }
 
     func goBack() { if let id = history.back(alive: Set(engine.items.map(\.id))), let i = engine.item(id) { focus(i) } else { NSSound.beep() } }
@@ -676,6 +712,7 @@ final class DeckController {
         sub.addItem(item("Go to Anything…", key: "k", { [weak self] in self?.togglePalette() }))
         sub.addItem(item("Jump to Finished Agent", key: "u", { [weak self] in self?.jumpToFinished() }))
         sub.addItem(.separator())
+        sub.addItem(item("Open at the Left Edge", { [weak self] in self?.setEdgeOpens(!Self.edgeOpens) }, on: Self.edgeOpens))
         sub.addItem(item("Dock the Sidebar", { [weak self] in guard let self else { return }; self.send(.pin(!self.visibility.pinned)) }, on: visibility.pinned))
         let layouts = NSMenu()
         for l in Deck.Layout.allCases {

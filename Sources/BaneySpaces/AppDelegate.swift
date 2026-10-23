@@ -100,6 +100,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return HookSettings.installed(settings).count == HookSettings.events.count ? .on : .off
         }
         c.model.onInstallHooks = { [weak self] in self?.deck.installHooks() }
+        c.model.onDeckEdgeChange = { [weak self] on in self?.deck.setEdgeOpens(on) }
+        deck.onEdgeOpensChange = { [weak c] on in c?.model.deckEdge = on }
         c.model.onLauncherChange = { [weak self] on in self?.setLauncherOnCmdSpace(on) }
         c.model.onCmdTabChange = { [weak self] mode in
             MissionControlKeys.cmdTabMode = mode

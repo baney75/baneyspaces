@@ -79,6 +79,25 @@ final class PhonesTests: XCTestCase {
         XCTAssertFalse(p[4].tablet, "an iPad simulator still opens in Simulator")
         XCTAssertTrue(p[4].ready)
     }
+
+    /// Donovan, 2026-10-23: picking the iPad should open Device Hub on it. Device Hub's links take
+    /// the hardware UDID; devicectl's own identifier opens nothing (tried live against vestry1).
+    func testAnIPadOpensInDeviceHubByItsUDID() {
+        let json = #"""
+        {"result":{"devices":[
+          {"identifier":"B946EA8B-637F-5D1C-B246-13A8E2AE7817","deviceProperties":{"name":"vestry1"},
+           "hardwareProperties":{"marketingName":"iPad Pro (12.9-inch) (5th generation)","deviceType":"iPad","reality":"physical","udid":"00008103-001824281469401E"},
+           "connectionProperties":{"pairingState":"paired","tunnelState":"disconnected","transportType":"localNetwork"}},
+          {"identifier":"3F42","deviceProperties":{"name":"wayside1"},"hardwareProperties":{"marketingName":"iPhone 15 Plus","deviceType":"iPhone","reality":"physical"},
+           "connectionProperties":{"pairingState":"paired","tunnelState":"connected","transportType":"wired"}}
+        ]}}
+        """#
+        let p = DeviceCtl.phones(Data(json.utf8))
+        XCTAssertEqual(p[0].udid, "00008103-001824281469401E")
+        XCTAssertEqual(p[0].deviceHubURL?.absoluteString, "devices://manage/open?id=00008103-001824281469401E")
+        XCTAssertNil(p[1].deviceHubURL, "no UDID, no link")
+        XCTAssertNil(Phone(platform: .android, id: "R5CT", name: "Pixel", model: "Pixel 8", ready: true, status: "USB", udid: "x").deviceHubURL)
+    }
 }
 
 final class AdbInputTests: XCTestCase {

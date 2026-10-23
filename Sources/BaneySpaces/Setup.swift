@@ -24,6 +24,8 @@ final class SetupModel: ObservableObject {
     var onDockAgentStatusChange: ((Bool) -> Void)?
     @Published var deck = DeckController.enabled
     var onDeckChange: ((Bool) -> Void)?
+    @Published var deckEdge = DeckController.edgeOpens
+    var onDeckEdgeChange: ((Bool) -> Void)?
     /// Whether Claude Code and Grok report to BaneySpaces; agent badges need it.
     enum HookState { case on, off, noClaudeCode, unreadable }
     var hooksInstalled: () -> HookState = { .on }
@@ -198,6 +200,11 @@ final class SetupModel: ObservableObject {
     func setDeck(_ on: Bool) {
         deck = on
         onDeckChange?(on)
+    }
+
+    func setDeckEdge(_ on: Bool) {
+        deckEdge = on
+        onDeckEdgeChange?(on)
     }
 
     func installHooks() {
@@ -528,7 +535,9 @@ struct SetupView: View {
     @ViewBuilder private var deckTab: some View {
         section("Terminal and Agent Deck") {
             Toggle("A sidebar of every terminal, browser tab and coding agent", isOn: Binding(get: { model.deck }, set: { model.setDeck($0) }))
-            Text("Rest the pointer on the left edge in a terminal, browser or agent app, or press ⌃⌘B. ⌃⌘K goes to anything in it; ⌃⌘U jumps to the agent that finished last. The Workspace Dock's agent badges come from here.")
+            Toggle("Open it by resting the pointer on the left edge", isOn: Binding(get: { model.deckEdge }, set: { model.setDeckEdge($0) }))
+                .disabled(!model.deck)
+            Text("\(model.deckEdge ? "Rest the pointer on the left edge in a terminal, browser, agent or phone app, or press ⌃⌘B" : "Press ⌃⌘B in a terminal, browser, agent or phone app") to open it. ⌃⌘K goes to anything in it; ⌃⌘U jumps to the agent that finished last. Picking an iPhone opens iPhone Mirroring beside it; an iPad opens in Xcode's Device Hub. The Workspace Dock's agent badges come from here.")
                 .font(.callout).foregroundStyle(.secondary)
         }
         section("Agent hooks") {

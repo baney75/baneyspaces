@@ -130,15 +130,21 @@ final class PhoneWatcher {
 
     func phone(_ itemID: String) -> Phone? { phones.first { $0.item.id == itemID } }
 
-    /// The phone's screen: scrcpy's mirror for Android, iPhone Mirroring or Simulator for iOS.
-    func open(_ phone: Phone) {
+    /// Device Hub's bundle ID; it ships inside Xcode.
+    static let deviceHub = "com.apple.dt.Devices"
+    static let mirroring = "com.apple.ScreenContinuity"
+
+    /// The phone's screen: scrcpy's mirror for Android, Simulator for a simulator, iPhone
+    /// Mirroring for an iPhone, and Device Hub for an iPad (iPhone Mirroring has no iPad mode).
+    /// `opened` gets the bundle ID of the app that will show it, so the Deck can dock its window.
+    func open(_ phone: Phone, opened: (String) -> Void = { _ in }) {
         switch phone.platform {
         case .ios:
-            // iPhone Mirroring has no iPad mode; opening it for one would show the wrong device.
-            guard !phone.tablet else { return NSSound.beep() }
-            let app = phone.simulator ? "com.apple.iphonesimulator" : "com.apple.ScreenContinuity"
+            if phone.tablet { return openInDeviceHub(phone, opened: opened) }
+            let app = phone.simulator ? "com.apple.iphonesimulator" : Self.mirroring
             if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: app) {
                 NSWorkspace.shared.openApplication(at: url, configuration: .init())
+                opened(app)
             }
         case .android:
             if let m = mirrors[phone.id], m.isRunning {
@@ -157,6 +163,13 @@ final class PhoneWatcher {
             p.standardError = FileHandle.nullDevice
             if (try? p.run()) != nil { mirrors[phone.id] = p }
         }
+    }
+
+    /// Xcode's Device Hub with this iPhone or iPad selected. Without Xcode, a beep.
+    func openInDeviceHub(_ phone: Phone, opened: (String) -> Void = { _ in }) {
+        guard let link = phone.deviceHubURL, NSWorkspace.shared.urlForApplication(toOpen: link) != nil else { return NSSound.beep() }
+        NSWorkspace.shared.open(link)
+        opened(Self.deviceHub)
     }
 
     /// `adb shell` on the phone in a new Ghostty window.
