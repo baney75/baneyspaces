@@ -51,6 +51,24 @@ final class DockEdgeTests: XCTestCase {
         XCTAssertFalse(DockEdge.menuInTheWay([], pointer: CGPoint(x: 756, y: 0)))
     }
 
+    func testAMenuWindowUpForLongIsNotAMenu() {
+        // The same stuck window blocks a top dock while fresh: nearness can't tell it from a menu
+        // bar menu. After 30 s on screen it no longer counts, on any edge.
+        let stuck = CGRect(x: 844, y: 795, width: 367, height: 154)
+        let top = CGPoint(x: 900, y: 981.5)
+        var menus = MenuWindows()
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        XCTAssertTrue(DockEdge.menuInTheWay(menus.update([(66418, stuck)], now: t0), pointer: top))
+        XCTAssertTrue(DockEdge.menuInTheWay(menus.update([(66418, stuck)], now: t0 + 29), pointer: top))
+        XCTAssertFalse(DockEdge.menuInTheWay(menus.update([(66418, stuck)], now: t0 + 31), pointer: top))
+        // A menu opened now beside it is fresh and counts.
+        let dropdown = CGRect(x: 700, y: 649, width: 240, height: 300)
+        XCTAssertEqual(menus.update([(66418, stuck), (70000, dropdown)], now: t0 + 32), [dropdown])
+        // A window that closes and a new one under the same number starts over.
+        menus.update([], now: t0 + 33)
+        XCTAssertEqual(menus.update([(66418, stuck)], now: t0 + 34), [stuck])
+    }
+
     func testFramesSitInsideTheScreenAndClearOfTheMenuBar() {
         let size = CGSize(width: 600, height: 120)
         for edge in DockEdge.allCases {

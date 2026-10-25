@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 
 /// Which side of the screen the Workspace Dock lives on. Rectangles are in AppKit's screen
 /// coordinates: the origin at the bottom left, y growing upward.
@@ -79,10 +80,8 @@ public enum DockEdge: String, CaseIterable, Sendable {
     }
 
     /// Whether a menu open in another app is what the pointer is there for: one within reach of
-    /// it, including a menu bar menu hanging just below a pointer resting on the top edge. Any
-    /// menu anywhere used to count, and macOS 27's MenuBarAgent can leave an empty window at the
-    /// menu level on screen for hours, which kept the dock from ever coming up (2026-10-25).
-    /// `menus` are in the same coordinates as `pointer`.
+    /// it, including a menu bar menu hanging just below a pointer resting on the top edge.
+    /// `menus` are in the same coordinates as `pointer`, and only fresh ones (`MenuWindows`).
     public static func menuInTheWay(_ menus: [CGRect], pointer: CGPoint) -> Bool {
         menus.contains { $0.insetBy(dx: -48, dy: -48).contains(pointer) }
     }
@@ -95,5 +94,25 @@ public enum DockEdge: String, CaseIterable, Sendable {
         case .left: CGVector(dx: -18, dy: 0)
         case .right: CGVector(dx: 18, dy: 0)
         }
+    }
+}
+
+/// Other apps' windows at the pop-up menu level, and how long each has been on screen. Any one
+/// anywhere used to keep the dock down, and macOS 27's MenuBarAgent left an empty one under the
+/// menu bar for hours, so the dock never came up (2026-10-25). A real menu is opened by hand and
+/// closed within moments; one on screen longer than `staleAfter` isn't counted.
+public struct MenuWindows {
+    public var staleAfter: TimeInterval = 30
+    private var firstSeen: [Int: Date] = [:]
+
+    public init() {}
+
+    /// Notes which menu windows are on screen now; returns the frames of the fresh ones.
+    @discardableResult
+    public mutating func update(_ windows: [(id: Int, frame: CGRect)], now: Date) -> [CGRect] {
+        let ids = Set(windows.map(\.id))
+        firstSeen = firstSeen.filter { ids.contains($0.key) }
+        for w in windows where firstSeen[w.id] == nil { firstSeen[w.id] = now }
+        return windows.filter { now.timeIntervalSince(firstSeen[$0.id] ?? now) < staleAfter }.map(\.frame)
     }
 }

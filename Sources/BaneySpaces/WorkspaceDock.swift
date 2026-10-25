@@ -88,19 +88,18 @@ final class WorkspaceDock {
         set { UserDefaults.standard.set(newValue, forKey: "dockAgentStatus") }
     }
 
-    /// True while another app shows a menu near the pointer: a window at the pop-up menu level
-    /// is on screen within reach of it (`DockEdge.menuInTheWay`).
-    static func otherMenuOpen(near pointer: CGPoint) -> Bool {
+    /// Other apps' windows at the pop-up menu level, in AppKit's coordinates.
+    static func menuLevelWindows() -> [(id: Int, frame: CGRect)] {
         let level = Int(CGWindowLevelForKey(.popUpMenuWindow))
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
         let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
-        let menus = windows.compactMap { w -> CGRect? in
+        return windows.compactMap { w in
             guard (w[kCGWindowLayer as String] as? Int) == level, (w[kCGWindowOwnerPID as String] as? Int32) != getpid(),
+                  let id = w[kCGWindowNumber as String] as? Int,
                   let b = w[kCGWindowBounds as String] as? NSDictionary, let r = CGRect(dictionaryRepresentation: b) else { return nil }
             // Window server bounds have their origin at the top left; flipping is its own inverse.
-            return Geometry.toAX(r, primaryHeight: primaryHeight)
+            return (id, Geometry.toAX(r, primaryHeight: primaryHeight))
         }
-        return DockEdge.menuInTheWay(menus, pointer: pointer)
     }
 
     /// Moves it to another side; it comes up there the next time the pointer rests on that edge.
@@ -143,6 +142,9 @@ final class WorkspaceDock {
     private var outsideDrag = OutsideDrag()
     /// Resting that drag on an icon or tile brings its window or workspace forward.
     private var spring = SpringLoad()
+    /// How long other apps' menu-level windows have been up: an old one isn't a menu.
+    private var menuWindows = MenuWindows()
+    private var menusSeenAt = Date.distantPast
 
     init(spaces: Spaces) {
         self.spaces = spaces
@@ -209,6 +211,11 @@ final class WorkspaceDock {
 
     private func tick() {
         guard isRunning else { return }
+        // Once a second, so a menu window's age is known before the pointer reaches the edge.
+        if Date().timeIntervalSince(menusSeenAt) > 1 {
+            menusSeenAt = Date()
+            menuWindows.update(WorkspaceDock.menuLevelWindows(), now: menusSeenAt)
+        }
         // A pinned dock takes drags from other apps too, though it doesn't come and go.
         let carrying = outsideDrag.update(buttonsDown: NSEvent.pressedMouseButtons != 0) { NSPasteboard(name: .drag).changeCount }
         // A drag that ended without leaving the dock or dropping (Escape) is over too.
@@ -257,7 +264,8 @@ final class WorkspaceDock {
         guard Date().timeIntervalSince(edgeSince!) > edge.dwell else { return }
         // A menu open in another app (a menu bar title, a status item) is what the pointer is
         // there for; the dock waits until it closes.
-        if WorkspaceDock.otherMenuOpen(near: mouse) { return }
+        let fresh = menuWindows.update(WorkspaceDock.menuLevelWindows(), now: Date())
+        if DockEdge.menuInTheWay(fresh, pointer: mouse) { return }
         show(on: screen)
     }
 
