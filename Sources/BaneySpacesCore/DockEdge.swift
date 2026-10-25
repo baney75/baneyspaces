@@ -78,6 +78,15 @@ public enum DockEdge: String, CaseIterable, Sendable {
         return r.insetBy(dx: -24, dy: -24)
     }
 
+    /// Whether a menu open in another app is what the pointer is there for: one within reach of
+    /// it, including a menu bar menu hanging just below a pointer resting on the top edge. Any
+    /// menu anywhere used to count, and macOS 27's MenuBarAgent can leave an empty window at the
+    /// menu level on screen for hours, which kept the dock from ever coming up (2026-10-25).
+    /// `menus` are in the same coordinates as `pointer`.
+    public static func menuInTheWay(_ menus: [CGRect], pointer: CGPoint) -> Bool {
+        menus.contains { $0.insetBy(dx: -48, dy: -48).contains(pointer) }
+    }
+
     /// The way it slides out of sight: toward its edge.
     public var away: CGVector {
         switch self {

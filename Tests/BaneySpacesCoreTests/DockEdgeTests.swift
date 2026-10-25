@@ -36,6 +36,21 @@ final class DockEdgeTests: XCTestCase {
         XCTAssertFalse(DockEdge.top.withinSpan(CGPoint(x: 10, y: 981), screen: main, visible: visible, length: 600))
     }
 
+    func testOnlyAMenuNearThePointerHoldsTheDockBack() {
+        // 2026-10-25: MenuBarAgent's empty window at the menu level, on screen for hours just
+        // under the menu bar (window server 844, 33, 367 x 154, flipped).
+        let stuck = CGRect(x: 844, y: 795, width: 367, height: 154)
+        XCTAssertFalse(DockEdge.menuInTheWay([stuck], pointer: CGPoint(x: 756, y: 0)))
+        XCTAssertFalse(DockEdge.menuInTheWay([stuck], pointer: CGPoint(x: 0, y: 474)))
+        // A long menu reaching down to the bottom edge, the pointer at its foot.
+        let long = CGRect(x: 600, y: 4, width: 260, height: 945)
+        XCTAssertTrue(DockEdge.menuInTheWay([stuck, long], pointer: CGPoint(x: 756, y: 0)))
+        // A menu bar menu hanging under a pointer resting on the top edge, on its title.
+        let dropdown = CGRect(x: 700, y: 649, width: 240, height: 300)
+        XCTAssertTrue(DockEdge.menuInTheWay([dropdown], pointer: CGPoint(x: 720, y: 981.5)))
+        XCTAssertFalse(DockEdge.menuInTheWay([], pointer: CGPoint(x: 756, y: 0)))
+    }
+
     func testFramesSitInsideTheScreenAndClearOfTheMenuBar() {
         let size = CGSize(width: 600, height: 120)
         for edge in DockEdge.allCases {

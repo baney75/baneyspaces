@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **The dock comes up from the edge again.** It waits while another app's menu is open, but it
+  counted any menu-level window anywhere on screen, and macOS sometimes leaves an empty one
+  under the menu bar for hours. Now only a menu near the pointer holds it back.
 - **Drag a window to the top of the screen and the overview opens, not Mission Control.**
   Pulling a window up against the menu bar used to throw you into macOS's Mission Control.
   Now, after a quarter second at the top, BaneySpaces' own 3×3 overview opens with the window's

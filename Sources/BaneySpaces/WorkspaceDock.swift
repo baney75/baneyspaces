@@ -88,11 +88,19 @@ final class WorkspaceDock {
         set { UserDefaults.standard.set(newValue, forKey: "dockAgentStatus") }
     }
 
-    /// True while any app shows a menu: a window at the pop-up menu level is on screen.
-    static func otherMenuOpen() -> Bool {
+    /// True while another app shows a menu near the pointer: a window at the pop-up menu level
+    /// is on screen within reach of it (`DockEdge.menuInTheWay`).
+    static func otherMenuOpen(near pointer: CGPoint) -> Bool {
         let level = Int(CGWindowLevelForKey(.popUpMenuWindow))
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
         let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
-        return windows.contains { ($0[kCGWindowLayer as String] as? Int) == level && ($0[kCGWindowOwnerPID as String] as? Int32) != getpid() }
+        let menus = windows.compactMap { w -> CGRect? in
+            guard (w[kCGWindowLayer as String] as? Int) == level, (w[kCGWindowOwnerPID as String] as? Int32) != getpid(),
+                  let b = w[kCGWindowBounds as String] as? NSDictionary, let r = CGRect(dictionaryRepresentation: b) else { return nil }
+            // Window server bounds have their origin at the top left; flipping is its own inverse.
+            return Geometry.toAX(r, primaryHeight: primaryHeight)
+        }
+        return DockEdge.menuInTheWay(menus, pointer: pointer)
     }
 
     /// Moves it to another side; it comes up there the next time the pointer rests on that edge.
@@ -249,7 +257,7 @@ final class WorkspaceDock {
         guard Date().timeIntervalSince(edgeSince!) > edge.dwell else { return }
         // A menu open in another app (a menu bar title, a status item) is what the pointer is
         // there for; the dock waits until it closes.
-        if WorkspaceDock.otherMenuOpen() { return }
+        if WorkspaceDock.otherMenuOpen(near: mouse) { return }
         show(on: screen)
     }
 
