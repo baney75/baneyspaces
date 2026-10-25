@@ -88,11 +88,11 @@ final class WorkspaceDock {
         set { UserDefaults.standard.set(newValue, forKey: "dockAgentStatus") }
     }
 
-    /// True while any app shows a menu: a window at the pop-up menu level is on screen.
-    static func otherMenuOpen() -> Bool {
-        let level = Int(CGWindowLevelForKey(.popUpMenuWindow))
+    /// Other apps' windows at the pop-up menu level, in AppKit's coordinates.
+    static func menuLevelWindows() -> [(id: Int, frame: CGRect)] {
         let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
-        return windows.contains { ($0[kCGWindowLayer as String] as? Int) == level && ($0[kCGWindowOwnerPID as String] as? Int32) != getpid() }
+        return MenuWindows.parse(windows, level: Int(CGWindowLevelForKey(.popUpMenuWindow)), ownPID: getpid(),
+                                 primaryHeight: NSScreen.screens.first?.frame.height ?? 0)
     }
 
     /// Moves it to another side; it comes up there the next time the pointer rests on that edge.
@@ -135,6 +135,9 @@ final class WorkspaceDock {
     private var outsideDrag = OutsideDrag()
     /// Resting that drag on an icon or tile brings its window or workspace forward.
     private var spring = SpringLoad()
+    /// How long other apps' menu-level windows have been up: an old one isn't a menu.
+    private var menuWindows = MenuWindows()
+    private var menusSeenAt: TimeInterval = 0
 
     init(spaces: Spaces) {
         self.spaces = spaces
@@ -207,6 +210,12 @@ final class WorkspaceDock {
         if !carrying, model.fileDrag != nil { model.fileDrag = nil }
         springLoad(carrying)
         guard !pinned else { return }
+        // Once a second, so a menu window's age is known before the pointer reaches the edge.
+        let uptime = ProcessInfo.processInfo.systemUptime
+        if uptime - menusSeenAt > 1 {
+            menusSeenAt = uptime
+            menuWindows.update(WorkspaceDock.menuLevelWindows(), now: uptime)
+        }
         // The overview already shows every workspace; the dock stays down while it's open.
         if MissionControlKeys.viewerOpen { if isShown { hide() }; edgeSince = nil; return }
         let mouse = NSEvent.mouseLocation
@@ -249,7 +258,8 @@ final class WorkspaceDock {
         guard Date().timeIntervalSince(edgeSince!) > edge.dwell else { return }
         // A menu open in another app (a menu bar title, a status item) is what the pointer is
         // there for; the dock waits until it closes.
-        if WorkspaceDock.otherMenuOpen() { return }
+        let fresh = menuWindows.update(WorkspaceDock.menuLevelWindows(), now: ProcessInfo.processInfo.systemUptime)
+        if DockEdge.menuInTheWay(fresh, pointer: mouse) { return }
         show(on: screen)
     }
 

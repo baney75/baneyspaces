@@ -36,6 +36,59 @@ final class DockEdgeTests: XCTestCase {
         XCTAssertFalse(DockEdge.top.withinSpan(CGPoint(x: 10, y: 981), screen: main, visible: visible, length: 600))
     }
 
+    func testOnlyAMenuNearThePointerHoldsTheDockBack() {
+        // 2026-10-25: MenuBarAgent's empty window at the menu level, on screen for hours just
+        // under the menu bar (window server 844, 33, 367 x 154, flipped).
+        let stuck = CGRect(x: 844, y: 795, width: 367, height: 154)
+        XCTAssertFalse(DockEdge.menuInTheWay([stuck], pointer: CGPoint(x: 756, y: 0)))
+        XCTAssertFalse(DockEdge.menuInTheWay([stuck], pointer: CGPoint(x: 0, y: 474)))
+        // A long menu reaching down to the bottom edge, the pointer at its foot.
+        let long = CGRect(x: 600, y: 4, width: 260, height: 945)
+        XCTAssertTrue(DockEdge.menuInTheWay([stuck, long], pointer: CGPoint(x: 756, y: 0)))
+        // A menu bar menu hanging under a pointer resting on the top edge, on its title.
+        let dropdown = CGRect(x: 700, y: 649, width: 240, height: 300)
+        XCTAssertTrue(DockEdge.menuInTheWay([dropdown], pointer: CGPoint(x: 720, y: 981.5)))
+        XCTAssertFalse(DockEdge.menuInTheWay([], pointer: CGPoint(x: 756, y: 0)))
+    }
+
+    func testAMenuWindowUpForLongIsNotAMenu() {
+        // The same stuck window blocks a top dock while fresh: nearness can't tell it from a menu
+        // bar menu. After 30 s on screen it no longer counts, on any edge.
+        let stuck = CGRect(x: 844, y: 795, width: 367, height: 154)
+        let top = CGPoint(x: 900, y: 981.5)
+        var menus = MenuWindows()
+        menus.update([], now: 1_000) // BaneySpaces is up; nothing at the menu level yet.
+        XCTAssertTrue(DockEdge.menuInTheWay(menus.update([(66418, stuck)], now: 1_001), pointer: top))
+        XCTAssertTrue(DockEdge.menuInTheWay(menus.update([(66418, stuck)], now: 1_030), pointer: top))
+        XCTAssertFalse(DockEdge.menuInTheWay(menus.update([(66418, stuck)], now: 1_032), pointer: top))
+        // A menu opened now beside it is fresh and counts.
+        let dropdown = CGRect(x: 700, y: 649, width: 240, height: 300)
+        XCTAssertEqual(menus.update([(66418, stuck), (70000, dropdown)], now: 1_033), [dropdown])
+        // A window that closes and a new one under the same number starts over.
+        menus.update([], now: 1_034)
+        XCTAssertEqual(menus.update([(66418, stuck)], now: 1_035), [stuck])
+    }
+
+    func testAWindowAlreadyUpAtLaunchCountsAsOld() {
+        var menus = MenuWindows()
+        XCTAssertEqual(menus.update([(66418, CGRect(x: 844, y: 795, width: 367, height: 154))], now: 50), [])
+    }
+
+    func testMenuWindowsAreReadFromTheWindowServerList() {
+        // The entry measured on 2026-10-25, beside an ordinary window and one of our own.
+        let list: [[String: Any]] = [
+            [kCGWindowLayer as String: 101, kCGWindowOwnerPID as String: Int32(1105), kCGWindowNumber as String: 66418,
+             kCGWindowBounds as String: ["X": 844, "Y": 33, "Width": 367, "Height": 154] as NSDictionary],
+            [kCGWindowLayer as String: 0, kCGWindowOwnerPID as String: Int32(14511), kCGWindowNumber as String: 63661,
+             kCGWindowBounds as String: ["X": 0, "Y": 34, "Width": 1512, "Height": 948] as NSDictionary],
+            [kCGWindowLayer as String: 101, kCGWindowOwnerPID as String: Int32(3251), kCGWindowNumber as String: 61500,
+             kCGWindowBounds as String: ["X": 10, "Y": 33, "Width": 200, "Height": 100] as NSDictionary],
+        ]
+        let menus = MenuWindows.parse(list, level: 101, ownPID: 3251, primaryHeight: 982)
+        XCTAssertEqual(menus.map(\.id), [66418])
+        XCTAssertEqual(menus.first?.frame, CGRect(x: 844, y: 795, width: 367, height: 154))
+    }
+
     func testFramesSitInsideTheScreenAndClearOfTheMenuBar() {
         let size = CGSize(width: 600, height: 120)
         for edge in DockEdge.allCases {
