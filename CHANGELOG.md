@@ -4,7 +4,7 @@
 
 - **The dock comes up from the edge again.** It waits while another app's menu is open, but it
   counted any menu-level window anywhere on screen, and macOS sometimes leaves an empty one
-  under the menu bar for hours. Now only a menu near the pointer, opened in the last 30 seconds,
+  under the menu bar for hours. Now only a menu near the pointer that came up in the last 30 seconds
   holds it back.
 - **Drag a window to the top of the screen and the overview opens, not Mission Control.**
   Pulling a window up against the menu bar used to throw you into macOS's Mission Control.

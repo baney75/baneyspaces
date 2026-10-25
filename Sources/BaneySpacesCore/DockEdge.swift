@@ -100,19 +100,34 @@ public enum DockEdge: String, CaseIterable, Sendable {
 /// Other apps' windows at the pop-up menu level, and how long each has been on screen. Any one
 /// anywhere used to keep the dock down, and macOS 27's MenuBarAgent left an empty one under the
 /// menu bar for hours, so the dock never came up (2026-10-25). A real menu is opened by hand and
-/// closed within moments; one on screen longer than `staleAfter` isn't counted.
+/// closed within moments; one seen on screen longer than `staleAfter` isn't counted.
 public struct MenuWindows {
     public var staleAfter: TimeInterval = 30
-    private var firstSeen: [Int: Date] = [:]
+    private var firstSeen: [Int: TimeInterval] = [:]
+    private var sampled = false
 
     public init() {}
 
-    /// Notes which menu windows are on screen now; returns the frames of the fresh ones.
+    /// Notes which menu windows are on screen at `now` (seconds of uptime, which never steps
+    /// back); returns the frames of the fresh ones. Windows already up at the first sample count
+    /// as old: at launch, one is far likelier stuck than a menu someone just opened.
     @discardableResult
-    public mutating func update(_ windows: [(id: Int, frame: CGRect)], now: Date) -> [CGRect] {
+    public mutating func update(_ windows: [(id: Int, frame: CGRect)], now: TimeInterval) -> [CGRect] {
         let ids = Set(windows.map(\.id))
         firstSeen = firstSeen.filter { ids.contains($0.key) }
-        for w in windows where firstSeen[w.id] == nil { firstSeen[w.id] = now }
-        return windows.filter { now.timeIntervalSince(firstSeen[$0.id] ?? now) < staleAfter }.map(\.frame)
+        for w in windows where firstSeen[w.id] == nil { firstSeen[w.id] = sampled ? now : now - staleAfter }
+        sampled = true
+        return windows.filter { now - (firstSeen[$0.id] ?? now) < staleAfter }.map(\.frame)
+    }
+
+    /// The menu-level windows of other processes in a window server list, flipped from its
+    /// top-left origin to AppKit's bottom-left one.
+    public static func parse(_ list: [[String: Any]], level: Int, ownPID: Int32, primaryHeight: CGFloat) -> [(id: Int, frame: CGRect)] {
+        list.compactMap { w in
+            guard (w[kCGWindowLayer as String] as? Int) == level, (w[kCGWindowOwnerPID as String] as? Int32) != ownPID,
+                  let id = w[kCGWindowNumber as String] as? Int,
+                  let b = w[kCGWindowBounds as String] as? NSDictionary, let r = CGRect(dictionaryRepresentation: b) else { return nil }
+            return (id, Geometry.toAX(r, primaryHeight: primaryHeight))
+        }
     }
 }

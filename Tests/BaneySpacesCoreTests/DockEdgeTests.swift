@@ -57,16 +57,36 @@ final class DockEdgeTests: XCTestCase {
         let stuck = CGRect(x: 844, y: 795, width: 367, height: 154)
         let top = CGPoint(x: 900, y: 981.5)
         var menus = MenuWindows()
-        let t0 = Date(timeIntervalSince1970: 1_000)
-        XCTAssertTrue(DockEdge.menuInTheWay(menus.update([(66418, stuck)], now: t0), pointer: top))
-        XCTAssertTrue(DockEdge.menuInTheWay(menus.update([(66418, stuck)], now: t0 + 29), pointer: top))
-        XCTAssertFalse(DockEdge.menuInTheWay(menus.update([(66418, stuck)], now: t0 + 31), pointer: top))
+        menus.update([], now: 1_000) // BaneySpaces is up; nothing at the menu level yet.
+        XCTAssertTrue(DockEdge.menuInTheWay(menus.update([(66418, stuck)], now: 1_001), pointer: top))
+        XCTAssertTrue(DockEdge.menuInTheWay(menus.update([(66418, stuck)], now: 1_030), pointer: top))
+        XCTAssertFalse(DockEdge.menuInTheWay(menus.update([(66418, stuck)], now: 1_032), pointer: top))
         // A menu opened now beside it is fresh and counts.
         let dropdown = CGRect(x: 700, y: 649, width: 240, height: 300)
-        XCTAssertEqual(menus.update([(66418, stuck), (70000, dropdown)], now: t0 + 32), [dropdown])
+        XCTAssertEqual(menus.update([(66418, stuck), (70000, dropdown)], now: 1_033), [dropdown])
         // A window that closes and a new one under the same number starts over.
-        menus.update([], now: t0 + 33)
-        XCTAssertEqual(menus.update([(66418, stuck)], now: t0 + 34), [stuck])
+        menus.update([], now: 1_034)
+        XCTAssertEqual(menus.update([(66418, stuck)], now: 1_035), [stuck])
+    }
+
+    func testAWindowAlreadyUpAtLaunchCountsAsOld() {
+        var menus = MenuWindows()
+        XCTAssertEqual(menus.update([(66418, CGRect(x: 844, y: 795, width: 367, height: 154))], now: 50), [])
+    }
+
+    func testMenuWindowsAreReadFromTheWindowServerList() {
+        // The entry measured on 2026-10-25, beside an ordinary window and one of our own.
+        let list: [[String: Any]] = [
+            [kCGWindowLayer as String: 101, kCGWindowOwnerPID as String: Int32(1105), kCGWindowNumber as String: 66418,
+             kCGWindowBounds as String: ["X": 844, "Y": 33, "Width": 367, "Height": 154] as NSDictionary],
+            [kCGWindowLayer as String: 0, kCGWindowOwnerPID as String: Int32(14511), kCGWindowNumber as String: 63661,
+             kCGWindowBounds as String: ["X": 0, "Y": 34, "Width": 1512, "Height": 948] as NSDictionary],
+            [kCGWindowLayer as String: 101, kCGWindowOwnerPID as String: Int32(3251), kCGWindowNumber as String: 61500,
+             kCGWindowBounds as String: ["X": 10, "Y": 33, "Width": 200, "Height": 100] as NSDictionary],
+        ]
+        let menus = MenuWindows.parse(list, level: 101, ownPID: 3251, primaryHeight: 982)
+        XCTAssertEqual(menus.map(\.id), [66418])
+        XCTAssertEqual(menus.first?.frame, CGRect(x: 844, y: 795, width: 367, height: 154))
     }
 
     func testFramesSitInsideTheScreenAndClearOfTheMenuBar() {
