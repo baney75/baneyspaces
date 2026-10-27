@@ -263,14 +263,16 @@ final class WorkspaceDock {
         let fresh = menuWindows.update(WorkspaceDock.menuLevelWindows(), now: ProcessInfo.processInfo.systemUptime)
         if DockEdge.menuInTheWay(fresh, pointer: mouse) { return }
         show(on: screen)
-        if let g = windowCarry?.grab { carryMoved(g) }
+        if let g = windowCarry { carryMoved(g) }
     }
 
     // MARK: A window dragged down to the dock
 
-    /// The window being dragged by its title bar, while the pointer could take it to the dock:
-    /// only one on a workspace, looked up once per drag.
-    private var windowCarry: (grab: TopDrag.Grab, entry: Spaces.Entry, from: Int)?
+    /// The window being dragged by its title bar, while the pointer could take it to the dock.
+    private var windowCarry: TopDrag.Grab?
+    /// Its app, title and workspace, looked up once the dock is up for it: an ordinary drag
+    /// elsewhere on screen costs no window scan.
+    private var carryEntry: (entry: Spaces.Entry, from: Int)?
     /// A window dragged this time that isn't on a workspace: not asked about again until it's let go.
     private var carryRefused: WindowID?
     private var carryTarget: Int?
@@ -282,24 +284,39 @@ final class WorkspaceDock {
     func carryMoved(_ grab: TopDrag.Grab) {
         guard isRunning, DockCarry.accepts(WorkspaceDock.edge), !MissionControlKeys.viewerOpen,
               carryRefused != grab.window else { return }
-        // A file dragged out of the window, or a switch that parked it (one a spring started for
-        // that file): the window "moved" without being carried. Not for the dock, all this press.
-        if outsideDrag.active || model.fileDrag != nil || spaces.switching {
+        // A file dragged out of the window, or a switch during the drag that parked it: the window
+        // "moved" without being carried. Not for the dock, all this press. A switch still running
+        // from before (the last drop's, a key's) only holds the carry back until it ends.
+        let started = windowCarry?.window == grab.window
+        if outsideDrag.active || model.fileDrag != nil || (spaces.switching && started) {
             carryRefused = grab.window
             if let d = model.drag, d.carried { model.drag = nil }
             // A file drag keeps the dock it's using.
             shownForCarry = false
             windowCarry = nil
+            carryEntry = nil
             return
         }
-        if windowCarry?.grab.window != grab.window {
-            guard let (entry, from) = spaces.entry(for: grab.window) else { carryRefused = grab.window; return }
-            windowCarry = (grab, entry, from)
+        if spaces.switching { return }
+        if !started {
+            windowCarry = grab
+            carryEntry = nil
             carryTarget = nil
         }
         // Sliding in, the panel isn't where it will be and the tiles may not have reported where
         // they are: nothing is lit, and a let-go then moves nothing.
-        guard let carry = windowCarry, isShown, model.shown, !slidingIn, let p = panel else { return }
+        guard isShown, model.shown, !slidingIn, let p = panel else { return }
+        if carryEntry == nil {
+            guard let (entry, from) = spaces.entry(for: grab.window) else {
+                // Not on a workspace: the dock that came up for it goes down.
+                carryRefused = grab.window
+                windowCarry = nil
+                if isShown, !pinned { hide() }
+                return
+            }
+            carryEntry = (entry, from)
+        }
+        guard let carry = carryEntry else { return }
         let location = DockCarry.point(NSEvent.mouseLocation, panel: p.frame, origin: model.origin)
         if var d = model.drag, d.carried, d.ids == [grab.window] {
             d.location = location
@@ -324,6 +341,7 @@ final class WorkspaceDock {
     /// workspace, for the window to go to. The dock goes down either way.
     func endCarry(_ grab: TopDrag.Grab, at p: CGPoint?) -> Int? {
         windowCarry = nil
+        carryEntry = nil
         carryRefused = nil
         let wasShown = shownForCarry
         shownForCarry = false

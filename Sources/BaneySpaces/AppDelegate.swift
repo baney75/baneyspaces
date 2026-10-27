@@ -347,6 +347,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         missionControlKeys.start()
         spaces.start()
         if WorkspaceDock.enabled { dock.start() }
+        // macOS's own top-of-screen drag goes quiet first, so only one view answers the gesture.
+        if TopDragWatcher.enabled { SystemTopDrag.takeOver() }
         syncWindowDrags()
         startDeck()
         updateIcon()
@@ -385,12 +387,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Windows dragged by their title bars are followed while the drag to the top opens the
-    /// overview or the Workspace Dock takes them. macOS's own top-of-screen drag goes quiet
-    /// first, so only one view answers that gesture.
+    /// overview or the Workspace Dock takes them. macOS's own top-of-screen drag is the top
+    /// drag's to turn off and on (`setTopDrag`), never the dock's: turning the dock on or off
+    /// leaves those settings, and the Dock process, alone.
     private func syncWindowDrags() {
         guard started else { return }
         topDrag.topEnabled = TopDragWatcher.enabled
-        if TopDragWatcher.enabled { SystemTopDrag.takeOver() } else { SystemTopDrag.restore() }
         if TopDragWatcher.enabled || WorkspaceDock.enabled {
             topDrag.start()
         } else {
@@ -401,7 +403,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func setTopDrag(_ on: Bool) {
         TopDragWatcher.enabled = on
-        if started { syncWindowDrags() } else if !on { SystemTopDrag.restore() }
+        if on, started { SystemTopDrag.takeOver() } else if !on { SystemTopDrag.restore() }
+        syncWindowDrags()
     }
 
     /// The shortcuts are taken only once they work, so the keys keep their usual meaning in other
