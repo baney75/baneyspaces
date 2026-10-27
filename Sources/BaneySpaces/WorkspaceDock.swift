@@ -262,6 +262,8 @@ final class WorkspaceDock {
         // there for; the dock waits until it closes.
         let fresh = menuWindows.update(WorkspaceDock.menuLevelWindows(), now: ProcessInfo.processInfo.systemUptime)
         if DockEdge.menuInTheWay(fresh, pointer: mouse) { return }
+        // A carried window that can't be dropped anywhere doesn't bring the dock up at all.
+        if NSEvent.pressedMouseButtons != 0, !carrying, windowCarry != nil, resolveCarry() == nil { edgeSince = nil; return }
         show(on: screen)
         if let g = windowCarry { carryMoved(g) }
     }
@@ -305,18 +307,7 @@ final class WorkspaceDock {
         }
         // Sliding in, the panel isn't where it will be and the tiles may not have reported where
         // they are: nothing is lit, and a let-go then moves nothing.
-        guard isShown, model.shown, !slidingIn, let p = panel else { return }
-        if carryEntry == nil {
-            guard let (entry, from) = spaces.entry(for: grab.window) else {
-                // Not on a workspace: the dock that came up for it goes down.
-                carryRefused = grab.window
-                windowCarry = nil
-                if isShown, !pinned { hide() }
-                return
-            }
-            carryEntry = (entry, from)
-        }
-        guard let carry = carryEntry else { return }
+        guard isShown, model.shown, !slidingIn, let p = panel, let carry = resolveCarry() else { return }
         let location = DockCarry.point(NSEvent.mouseLocation, panel: p.frame, origin: model.origin)
         if var d = model.drag, d.carried, d.ids == [grab.window] {
             d.location = location
@@ -335,6 +326,22 @@ final class WorkspaceDock {
         let target = model.dropTarget
         if target != carryTarget { Trace.log("dockCarry target=\(target.map(String.init) ?? "none")") }
         carryTarget = target
+    }
+
+    /// The carried window's app, title and workspace, looked up once the pointer has brought it
+    /// to the dock. Only a window on the workspace you're on: one parked by a switch during the
+    /// press is out of sight, not being carried. Nil, and refused for the rest of the press, for
+    /// any other.
+    private func resolveCarry() -> (entry: Spaces.Entry, from: Int)? {
+        if let carryEntry { return carryEntry }
+        guard let grab = windowCarry else { return nil }
+        guard let (entry, from) = spaces.entry(for: grab.window), from == spaces.model.current else {
+            carryRefused = grab.window
+            windowCarry = nil
+            return nil
+        }
+        carryEntry = (entry, from)
+        return carryEntry
     }
 
     /// The drag ended. Let go at `p` (window-server space) over another workspace's tile: that
