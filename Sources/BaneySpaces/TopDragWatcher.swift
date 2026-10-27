@@ -67,9 +67,10 @@ enum SystemTopDrag {
     }
 }
 
-/// Watches for another app's window being dragged by its title bar to the top of a screen, and
-/// then follows the drag until the button comes up. A press is all it listens for; a tick per
-/// frame runs only while the button that started on a window stays down.
+/// Watches for another app's window being dragged by its title bar to the top of a screen, or
+/// down to the Workspace Dock, and then follows the drag until the button comes up. A press is
+/// all it listens for; a tick per frame runs only while the button that started on a window
+/// stays down.
 final class TopDragWatcher {
     static var enabled: Bool {
         get { UserDefaults.standard.object(forKey: "topDragOpensOverview") as? Bool ?? true }
@@ -87,12 +88,22 @@ final class TopDragWatcher {
     /// The button came up with the overview open for `grab`. `drop` is false when the drag
     /// ended some other way (the watcher stopped, or a release it missed), so nothing moves.
     var onRelease: (_ grab: TopDrag.Grab, _ drop: Bool) -> Void = { _, _ in }
+    /// The drag to the top opens the overview. Off, the watcher still follows drags for the dock.
+    var topEnabled = true
+    /// The window follows the pointer, on every tick until the overview opens for it: the dock
+    /// comes up when the pointer reaches its edge.
+    var onCarry: (TopDrag.Grab, CGPoint) -> Void = { _, _ in }
+    /// That drag ended: let go at the point given, or nil when it ended some other way (the
+    /// overview took it, the window went away, the watcher stopped), so nothing moves.
+    var onCarryEnd: (TopDrag.Grab, CGPoint?) -> Void = { _, _ in }
 
     private var monitor: Any?
     private var upMonitor: Any?
     private var timer: Timer?
     private var state = TopDrag()
     private var open: TopDrag.Grab?
+    /// The drag `onCarry` has been told about.
+    private var carried: TopDrag.Grab?
     /// The app whose window was pressed.
     private var owner: pid_t = 0
 
@@ -120,6 +131,7 @@ final class TopDragWatcher {
     /// Ends the drag: the overview, if it opened for it, gets the last position and the release.
     /// Without a position it closes and nothing moves.
     private func released(at p: CGPoint?) {
+        endCarry(at: p)
         endTicks()
         guard let g = open else { return }
         open = nil
@@ -152,21 +164,38 @@ final class TopDragWatcher {
             // Once per drag, so trace.log shows the drags the watcher saw.
             if !wasDragging, state.moving || state.pinned { Trace.log("topDrag \(state.moving ? "moving" : "pinned") window=\(grab.window)") }
         }
-        if let g = state.tick(cursor: p, frame: frame, screens: TopDragWatcher.screens(), now: ProcessInfo.processInfo.systemUptime) {
+        let top = state.tick(cursor: p, frame: frame, screens: TopDragWatcher.screens(), now: ProcessInfo.processInfo.systemUptime)
+        if let g = top, topEnabled {
             // A window against the top that didn't move: a tab torn off its title bar makes a
             // new window of the same app in front of it, and that drag isn't this one.
             if !state.moving, TopDragWatcher.frontWindow(of: owner) != g.window { return endTicks() }
             switch onOpen(g, p) {
-            case true?: open = g
+            case true?:
+                // The overview has it now, not the dock.
+                endCarry(at: nil)
+                open = g
             case false?: endTicks()
             case nil: state.rearm()
             }
         } else if state.grab == nil {
             endTicks()
+        } else if top != nil {
+            // The overview is off: the drag goes on, for the dock, as if the top never fired.
+            state.rearm()
+        } else if state.moving {
+            carried = grab
+            onCarry(grab, p)
         }
     }
 
+    private func endCarry(at p: CGPoint?) {
+        guard let g = carried else { return }
+        carried = nil
+        onCarryEnd(g, p)
+    }
+
     private func endTicks() {
+        endCarry(at: nil)
         timer?.invalidate()
         timer = nil
         state.release()

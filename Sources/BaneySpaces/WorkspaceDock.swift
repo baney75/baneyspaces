@@ -232,7 +232,9 @@ final class WorkspaceDock {
             // Hovering the dock or the edge below it keeps it up; a menu open from it too, and a
             // drag that strays off it on the way to a tile.
             let screenFrame = (shownOn ?? p.screen)?.frame ?? p.frame
-            let keep = WorkspaceDock.edge.keepZone(dock: p.frame, screen: screenFrame).contains(mouse) || model.menuOpen || model.drag != nil
+            // A window carried down from another app has the pointer itself: off the dock, it's not for it.
+            let keep = WorkspaceDock.edge.keepZone(dock: p.frame, screen: screenFrame).contains(mouse) || model.menuOpen
+                || (model.drag != nil && model.drag?.carried == false)
             if keep { awaySince = nil; return }
             if awaySince == nil { awaySince = Date() }
             if Date().timeIntervalSince(awaySince!) > 0.4 {
@@ -242,13 +244,13 @@ final class WorkspaceDock {
             }
             return
         }
-        // Resting on the dock's edge, buttons up (not dragging a window or a selection) unless
-        // carrying something from another app to drop, on an edge with no other screen beyond
-        // it, as the macOS Dock uses.
+        // Resting on the dock's edge, buttons up (not dragging a selection) unless carrying
+        // something from another app to drop, or a window by its title bar, on an edge with no
+        // other screen beyond it, as the macOS Dock uses.
         let edge = WorkspaceDock.edge
         let screens = NSScreen.screens
         let screen = edge.screen(at: mouse, among: screens.map(\.frame)).map { screens[$0] }
-        guard let screen, NSEvent.pressedMouseButtons == 0 || carrying else { edgeSince = nil; needsRearm = false; return }
+        guard let screen, NSEvent.pressedMouseButtons == 0 || carrying || windowCarry != nil && carryRefused == nil else { edgeSince = nil; needsRearm = false; return }
         if needsRearm, screen == rearmScreen { edgeSince = nil; return }
         needsRearm = false
         // Only along the dock itself; the corners and the rest of the edge stay free.
@@ -261,6 +263,92 @@ final class WorkspaceDock {
         let fresh = menuWindows.update(WorkspaceDock.menuLevelWindows(), now: ProcessInfo.processInfo.systemUptime)
         if DockEdge.menuInTheWay(fresh, pointer: mouse) { return }
         show(on: screen)
+        if let g = windowCarry?.grab { carryMoved(g) }
+    }
+
+    // MARK: A window dragged down to the dock
+
+    /// The window being dragged by its title bar, while the pointer could take it to the dock:
+    /// only one on a workspace, looked up once per drag.
+    private var windowCarry: (grab: TopDrag.Grab, entry: Spaces.Entry, from: Int)?
+    /// A window dragged this time that isn't on a workspace: not asked about again until it's let go.
+    private var carryRefused: WindowID?
+    private var carryTarget: Int?
+    /// The dock came up for the carried window, so it goes down when that drag ends.
+    private var shownForCarry = false
+
+    /// Another app's window follows the pointer. The dock comes up when the pointer rests on its
+    /// edge (the tick watches for that), and then the tile under the pointer lights.
+    func carryMoved(_ grab: TopDrag.Grab) {
+        guard isRunning, DockCarry.accepts(WorkspaceDock.edge), !MissionControlKeys.viewerOpen,
+              carryRefused != grab.window else { return }
+        // A file dragged out of the window, or a switch that parked it (one a spring started for
+        // that file): the window "moved" without being carried. Not for the dock, all this press.
+        if outsideDrag.active || model.fileDrag != nil || spaces.switching {
+            carryRefused = grab.window
+            if let d = model.drag, d.carried { model.drag = nil }
+            // A file drag keeps the dock it's using.
+            shownForCarry = false
+            windowCarry = nil
+            return
+        }
+        if windowCarry?.grab.window != grab.window {
+            guard let (entry, from) = spaces.entry(for: grab.window) else { carryRefused = grab.window; return }
+            windowCarry = (grab, entry, from)
+            carryTarget = nil
+        }
+        // Sliding in, the panel isn't where it will be and the tiles may not have reported where
+        // they are: nothing is lit, and a let-go then moves nothing.
+        guard let carry = windowCarry, isShown, model.shown, !slidingIn, let p = panel else { return }
+        let location = DockCarry.point(NSEvent.mouseLocation, panel: p.frame, origin: model.origin)
+        if var d = model.drag, d.carried, d.ids == [grab.window] {
+            d.location = location
+            model.drag = d
+        } else {
+            guard model.drag == nil else { return }
+            shownForCarry = true
+            let e = carry.entry
+            let icon = NSRunningApplication(processIdentifier: e.pid)?.icon ?? NSWorkspace.shared.icon(for: .application)
+            let title = WindowTitle.clean(e.title, app: e.app)
+            model.drag = DockModel.Drag(ids: [grab.window], from: carry.from, icon: icon, name: title.isEmpty ? e.app : "“\(title)”",
+                                        location: location, carried: true)
+            Trace.log("dockCarry show window=\(grab.window) from=\(carry.from)")
+        }
+        // Each change, so trace.log (and scripts/dock-drag-probe.swift) shows what's lit.
+        let target = model.dropTarget
+        if target != carryTarget { Trace.log("dockCarry target=\(target.map(String.init) ?? "none")") }
+        carryTarget = target
+    }
+
+    /// The drag ended. Let go at `p` (window-server space) over another workspace's tile: that
+    /// workspace, for the window to go to. The dock goes down either way.
+    func endCarry(_ grab: TopDrag.Grab, at p: CGPoint?) -> Int? {
+        windowCarry = nil
+        carryRefused = nil
+        let wasShown = shownForCarry
+        shownForCarry = false
+        var target: Int?
+        if let d = model.drag, d.carried, d.ids == [grab.window] {
+            if let p, let panel, !slidingIn, let mainHeight = NSScreen.screens.first?.frame.maxY {
+                var last = d
+                last.location = DockCarry.point(CGPoint(x: p.x, y: mainHeight - p.y), panel: panel.frame, origin: model.origin)
+                model.drag = last
+                target = model.dropTarget
+            }
+            model.drag = nil
+            Trace.log("dockCarry release target=\(target.map(String.init) ?? "none")")
+        }
+        guard wasShown, isShown else { return target }
+        if pinned {
+            // A pinned dock stays up; it catches up on what changed while its tiles held still.
+            model.onDragDone()
+        } else {
+            // The pointer is still on the edge; it has to leave it before the dock comes again.
+            rearmScreen = panel?.screen
+            needsRearm = true
+            hide()
+        }
+        return target
     }
 
     /// A drag from another app held on an icon or a tile for a moment brings that app's window
@@ -509,6 +597,9 @@ final class DockModel: ObservableObject {
         /// What moves, for the label: an app's name or a window's title.
         let name: String
         var location: CGPoint
+        /// Another app's window dragged by its title bar down to the dock: the window itself
+        /// follows the pointer, so no icon does.
+        var carried = false
     }
     /// Something from another app dragged over the dock: what it rests on, and whether it holds
     /// files or links an app can open.
@@ -583,6 +674,8 @@ final class DockModel: ObservableObject {
     /// Each tile's and button's frame in the dock, keyed as `CenterReport` reports them, to find
     /// the tile under a drag.
     var frames: [String: CGRect] = [:]
+    /// Where the space those frames are in starts, from the panel's top left.
+    var origin: CGPoint = .zero
     /// When the last drag ended: the click that ends a drag isn't also a click on the icon.
     private var dragEnded = Date.distantPast
     /// Up on screen; a dwell that ends after the dock hid opens nothing.
@@ -736,7 +829,7 @@ final class DockModel: ObservableObject {
 
     /// Let go over another workspace's tile: the windows move there, and you stay where you are.
     func endDrag() {
-        guard let drag else { return }
+        guard let drag, !drag.carried else { return }
         NSCursor.pop()
         let to = dropTarget
         self.drag = nil
@@ -752,8 +845,8 @@ final class DockModel: ObservableObject {
 
     /// Ends a drag without moving anything.
     func cancelDrag() {
-        guard drag != nil else { return }
-        NSCursor.pop()
+        guard let d = drag else { return }
+        if !d.carried { NSCursor.pop() }
         drag = nil
         dragEnded = Date()
         onDragDone()
@@ -764,7 +857,7 @@ final class DockModel: ObservableObject {
 
     /// The dock went away.
     func reset() {
-        if drag != nil { NSCursor.pop() }
+        if let drag, !drag.carried { NSCursor.pop() }
         drag = nil
         fileDrag = nil
         heldTarget = nil
@@ -823,6 +916,9 @@ private struct SizeReport: ViewModifier {
 }
 
 struct DockView: View {
+    /// The key under which the stack reports its own frame in the panel. No colon, so no drop
+    /// target reads it as a tile or an icon.
+    static let originKey = "origin"
     @ObservedObject var model: DockModel
     private let tileSize: CGFloat = 64
     /// Where each tile, app icon and button sits in the dock, so the strip and label line up with it.
@@ -843,18 +939,26 @@ struct DockView: View {
         .modifier(SizeReport(size: $stackSize))
         // The icon being dragged follows the pointer.
         .overlay(alignment: .topLeading) {
-            if let drag = model.drag {
+            if let drag = model.drag, !drag.carried {
                 Image(nsImage: drag.icon).resizable().interpolation(.high).frame(width: 36, height: 36)
                     .shadow(color: .black.opacity(0.45), radius: 6, y: 2)
                     .position(drag.location)
                     .allowsHitTesting(false)
             }
         }
+        // Where the "dock" space starts in the panel, to place a pointer the panel never hears.
+        .background(GeometryReader { g in
+            Color.clear.preference(key: AppFrames.self, value: [DockView.originKey: g.frame(in: .global)])
+        })
         .coordinateSpace(name: "dock")
         // Files, links and images dragged from another app. Its location is in the stack's own
         // space, the one named "dock" that the frames are reported in.
         .onDrop(of: [.item], delegate: OutsideDrop(model: model))
-        .onPreferenceChange(AppFrames.self) { frames = $0; model.frames = $0 }
+        .onPreferenceChange(AppFrames.self) { f in
+            frames = f
+            model.frames = f
+            if let o = f[DockView.originKey]?.origin { model.origin = o }
+        }
         .padding(edge.isVertical ? .vertical : .horizontal, 16)
         .padding(edge == .bottom ? .bottom : edge == .top ? .top : edge == .left ? .leading : .trailing, 4)
         // Room for a long label beside a short dock.

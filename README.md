@@ -93,7 +93,9 @@ it, each labeled with its title, to pick one;
 hover to see what's there. Right-click a tile to move the front window there, or an app to show
 or quit it (hold ⌥ for **Force Quit**). Drag an app's icon onto
 another tile to move its windows on that workspace there, or drag one window out of the strip to
-move just that one; drop it on the dashed tile to start a new workspace with it. Dragging a file,
+move just that one; drop it on the dashed tile to start a new workspace with it. Drag any window
+by its title bar down to a bottom dock and it comes up; let go on a tile (or the dashed one) and the
+window goes to that workspace, back where you picked it up. Dragging a file,
 link or image from another app brings the dock up too: hold it over an app's icon and that
 app's window comes forward, or over a tile and you go to that workspace, then drop it into the
 window. Drop a file or link on an app's icon and that app opens it, if it can. A tile with more than four apps shows three

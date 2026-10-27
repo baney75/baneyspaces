@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Drag a window down to the dock to move it to another workspace.** Pulling a window by its
+  title bar to the bottom edge used to do nothing: the dock stayed down while the button was held.
+  Now it comes up for the window, the tile under the pointer lights, and the label says where it's
+  going. Let go on a tile, or on the dashed one for an empty workspace, and the window moves there,
+  back in the spot you picked it up from; you stay where you are. Let go anywhere else and it stays
+  where you dropped it. This needs the dock on the bottom edge: at the top the drag opens the
+  overview, and at the sides macOS tiles the window to half the screen.
 - **The dock comes up from the edge again.** It waits while another app's menu is open, but it
   counted any menu-level window anywhere on screen, and macOS sometimes leaves an empty one
   under the menu bar for hours. Now only a menu near the pointer that came up in the last 30 seconds
