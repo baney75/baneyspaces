@@ -317,9 +317,12 @@ struct SetupView: View {
             .padding(24)
             Divider()
             HStack {
-                Text("Full screen works as usual; switching workspaces takes a window out of it first. Change anything later from the menu bar icon.")
-                    .font(.footnote).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                // About the app as a whole, so only under General; on the Deck tab it read like a stray note.
+                if model.tab == .general {
+                    Text("Full screen works as usual; switching workspaces takes a window out of it first. Change anything later from the menu bar icon.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 Spacer()
                 Button("Done", action: close).keyboardShortcut(.defaultAction)
             }
@@ -406,13 +409,12 @@ struct SetupView: View {
         }
 
         step(done: true, title: "Uninstall", symbol: "trash") {
-            HStack(alignment: .top, spacing: 12) {
-                Text("Puts back your windows, the macOS Dock, the screenshot and Spotlight shortcuts and your Claude Code settings as they were, then removes BaneySpaces.")
-                    .font(.callout).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 0)
-                Button("Uninstall BaneySpaces…") { model.onUninstall?() }
-            }
+            // Text across the full width, the button under it, as the Allow step lays out; side by
+            // side, the text wrapped into a narrow four-line column beside a floating button.
+            Text("Puts back your windows, the macOS Dock, the screenshot and Spotlight shortcuts and your Claude Code settings as they were, then removes BaneySpaces.")
+                .font(.callout).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Uninstall BaneySpaces…") { model.onUninstall?() }
         }
     }
 
