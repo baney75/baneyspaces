@@ -64,28 +64,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         t.onRelease = { [weak self] grab, drop in
             guard let self, let n = self.viewer.endCarrying(), drop else { return }
-            // The window server and the app finish their own drop first: the window moves once
-            // it has held still for 60 ms (four looks 20 ms apart), no sooner than 0.1 s after
-            // the release and no later than 0.5 s.
-            let id = grab.window
-            self.cancelSettling(id)
-            let gen = self.dropGeneration[id, default: 0]
-            var last = TopDragWatcher.bounds(of: id)
-            var looks = 0, still = 0
-            self.settling[id] = Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { [weak self] timer in
-                looks += 1
-                let now = TopDragWatcher.bounds(of: id)
-                still = now == last ? still + 1 : 0
-                last = now
-                guard (looks >= 5 && still >= 3) || looks >= 25 else { return }
-                timer.invalidate()
-                guard let self, now != nil, self.dropGeneration[id, default: 0] == gen else { return }
-                self.settling[id] = nil
-                self.spaces.moveCarried(id, to: n, from: grab.frame) { [weak self] in self?.dropGeneration[id, default: 0] == gen }
-            }
+            self.dropCarried(grab, on: n)
+        }
+        // The same drag taken down to the Workspace Dock: let go on a tile, it goes there.
+        t.onCarry = { [weak self] grab, _ in
+            guard let self, self.started else { return }
+            self.dock.carryMoved(grab)
+        }
+        t.onCarryEnd = { [weak self] grab, p in
+            guard let self, let n = self.dock.endCarry(grab, at: p), p != nil else { return }
+            self.dropCarried(grab, on: n)
         }
         return t
     }()
+
+    /// A window dragged by its title bar and let go over workspace `n` in the overview or the
+    /// dock. The window server and the app finish their own drop first: the window moves once
+    /// it has held still for 60 ms (four looks 20 ms apart), no sooner than 0.1 s after the
+    /// release and no later than 0.5 s.
+    private func dropCarried(_ grab: TopDrag.Grab, on n: Int) {
+        let id = grab.window
+        cancelSettling(id)
+        let gen = dropGeneration[id, default: 0]
+        var last = TopDragWatcher.bounds(of: id)
+        var looks = 0, still = 0
+        settling[id] = Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { [weak self] timer in
+            looks += 1
+            let now = TopDragWatcher.bounds(of: id)
+            still = now == last ? still + 1 : 0
+            last = now
+            guard (looks >= 5 && still >= 3) || looks >= 25 else { return }
+            timer.invalidate()
+            guard let self, now != nil, self.dropGeneration[id, default: 0] == gen else { return }
+            self.settling[id] = nil
+            self.spaces.moveCarried(id, to: n, from: grab.frame) { [weak self] in self?.dropGeneration[id, default: 0] == gen }
+        }
+    }
     private lazy var launcher: LauncherController = {
         var a = LauncherActions()
         a.focusApp = { [weak self] pid, n in self?.spaces.focusApp(pid, on: n) }
@@ -333,7 +347,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         missionControlKeys.start()
         spaces.start()
         if WorkspaceDock.enabled { dock.start() }
-        if TopDragWatcher.enabled { startTopDrag() }
+        syncWindowDrags()
         startDeck()
         updateIcon()
         watchdog?.invalidate()
@@ -370,21 +384,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return false
     }
 
-    /// macOS's own top-of-screen drag goes quiet first, so only one view answers the gesture.
-    private func startTopDrag() {
-        SystemTopDrag.takeOver()
-        topDrag.start()
+    /// Windows dragged by their title bars are followed while the drag to the top opens the
+    /// overview or the Workspace Dock takes them. macOS's own top-of-screen drag goes quiet
+    /// first, so only one view answers that gesture.
+    private func syncWindowDrags() {
+        guard started else { return }
+        topDrag.topEnabled = TopDragWatcher.enabled
+        if TopDragWatcher.enabled { SystemTopDrag.takeOver() } else { SystemTopDrag.restore() }
+        if TopDragWatcher.enabled || WorkspaceDock.enabled {
+            topDrag.start()
+        } else {
+            topDrag.stop()
+            cancelSettling()
+        }
     }
 
     private func setTopDrag(_ on: Bool) {
         TopDragWatcher.enabled = on
-        if on {
-            if started { startTopDrag() }
-        } else {
-            topDrag.stop()
-            cancelSettling()
-            SystemTopDrag.restore()
-        }
+        if started { syncWindowDrags() } else if !on { SystemTopDrag.restore() }
     }
 
     /// The shortcuts are taken only once they work, so the keys keep their usual meaning in other
@@ -641,6 +658,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         WorkspaceDock.enabled = on
         if setup.model.workspaceDock != on { setup.model.workspaceDock = on }
         if on, started { dock.start() } else if !on { dock.stop(restoreSystemDock: true) }
+        syncWindowDrags()
     }
 
     // MARK: Launcher
