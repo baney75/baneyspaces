@@ -348,7 +348,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         spaces.start()
         if WorkspaceDock.enabled { dock.start() }
         // macOS's own top-of-screen drag goes quiet first, so only one view answers the gesture.
-        if TopDragWatcher.enabled { SystemTopDrag.takeOver() }
+        // Off, settings left taken over (a crash, a change while it wasn't running) go back.
+        if TopDragWatcher.enabled { SystemTopDrag.takeOver() } else { SystemTopDrag.restore() }
         syncWindowDrags()
         startDeck()
         updateIcon()

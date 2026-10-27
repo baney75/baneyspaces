@@ -308,6 +308,15 @@ final class WorkspaceDock {
         // Sliding in, the panel isn't where it will be and the tiles may not have reported where
         // they are: nothing is lit, and a let-go then moves nothing.
         guard isShown, model.shown, !slidingIn, let p = panel, let carry = resolveCarry() else { return }
+        // A switch since the dock took it (one quick enough to start and end between two ticks)
+        // left the window parked on the workspace it came from: it's not being carried any more.
+        if carry.from != spaces.model.current {
+            carryRefused = grab.window
+            if let d = model.drag, d.carried { model.drag = nil }
+            windowCarry = nil
+            carryEntry = nil
+            return
+        }
         let location = DockCarry.point(NSEvent.mouseLocation, panel: p.frame, origin: model.origin)
         if var d = model.drag, d.carried, d.ids == [grab.window] {
             d.location = location
