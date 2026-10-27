@@ -179,6 +179,9 @@ final class TopDragWatcher {
             }
         } else if state.grab == nil {
             endTicks()
+        } else if top != nil {
+            // The overview is off: the drag goes on, for the dock, as if the top never fired.
+            state.rearm()
         } else if state.moving {
             carried = grab
             onCarry(grab, p)

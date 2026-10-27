@@ -2,9 +2,10 @@ import XCTest
 @testable import BaneySpacesCore
 
 final class DockCarryTests: XCTestCase {
-    func testTheTopEdgeIsTheOverviews() {
-        XCTAssertFalse(DockCarry.accepts(.top))
-        for e in [DockEdge.bottom, .left, .right] { XCTAssertTrue(DockCarry.accepts(e)) }
+    func testOnlyABottomDockTakesAWindow() {
+        // The top is the overview's; at the sides macOS tiles the window for the same drag.
+        XCTAssertTrue(DockCarry.accepts(.bottom))
+        for e in [DockEdge.top, .left, .right] { XCTAssertFalse(DockCarry.accepts(e)) }
     }
 
     func testThePointerLandsOnTheTileUnderIt() {

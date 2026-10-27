@@ -250,7 +250,7 @@ final class WorkspaceDock {
         let edge = WorkspaceDock.edge
         let screens = NSScreen.screens
         let screen = edge.screen(at: mouse, among: screens.map(\.frame)).map { screens[$0] }
-        guard let screen, NSEvent.pressedMouseButtons == 0 || carrying || windowCarry != nil else { edgeSince = nil; needsRearm = false; return }
+        guard let screen, NSEvent.pressedMouseButtons == 0 || carrying || windowCarry != nil && carryRefused == nil else { edgeSince = nil; needsRearm = false; return }
         if needsRearm, screen == rearmScreen { edgeSince = nil; return }
         needsRearm = false
         // Only along the dock itself; the corners and the rest of the edge stay free.
@@ -263,55 +263,78 @@ final class WorkspaceDock {
         let fresh = menuWindows.update(WorkspaceDock.menuLevelWindows(), now: ProcessInfo.processInfo.systemUptime)
         if DockEdge.menuInTheWay(fresh, pointer: mouse) { return }
         show(on: screen)
-        if let g = windowCarry { carryMoved(g) }
+        if let g = windowCarry?.grab { carryMoved(g) }
     }
 
     // MARK: A window dragged down to the dock
 
-    /// The window being dragged by its title bar, while the pointer could take it to the dock.
-    private var windowCarry: TopDrag.Grab?
+    /// The window being dragged by its title bar, while the pointer could take it to the dock:
+    /// only one on a workspace, looked up once per drag.
+    private var windowCarry: (grab: TopDrag.Grab, entry: Spaces.Entry, from: Int)?
+    /// A window dragged this time that isn't on a workspace: not asked about again until it's let go.
+    private var carryRefused: WindowID?
     private var carryTarget: Int?
+    /// The dock came up for the carried window, so it goes down when that drag ends.
+    private var shownForCarry = false
+    /// Where the panel comes to rest, read while it's still sliding in.
+    private var restingFrame: CGRect?
 
     /// Another app's window follows the pointer. The dock comes up when the pointer rests on its
     /// edge (the tick watches for that), and then the tile under the pointer lights.
     func carryMoved(_ grab: TopDrag.Grab) {
-        guard isRunning, DockCarry.accepts(WorkspaceDock.edge), !MissionControlKeys.viewerOpen else { return }
-        windowCarry = grab
-        guard isShown, model.shown, let p = panel else { return }
-        let location = DockCarry.point(NSEvent.mouseLocation, panel: p.frame, origin: model.origin)
+        guard isRunning, DockCarry.accepts(WorkspaceDock.edge), !MissionControlKeys.viewerOpen,
+              carryRefused != grab.window else { return }
+        if windowCarry?.grab.window != grab.window {
+            guard let (entry, from) = spaces.entry(for: grab.window) else { carryRefused = grab.window; return }
+            windowCarry = (grab, entry, from)
+            carryTarget = nil
+        }
+        guard let carry = windowCarry, isShown, model.shown, let p = panel,
+              // Before the tiles have reported where they are, nothing is under the pointer yet.
+              model.origin != .zero else { return }
+        let location = DockCarry.point(NSEvent.mouseLocation, panel: slidingIn ? restingFrame ?? p.frame : p.frame, origin: model.origin)
         if var d = model.drag, d.carried, d.ids == [grab.window] {
             d.location = location
             model.drag = d
-            // Each change, so trace.log (and scripts/dock-drag-probe.swift) shows what's lit.
-            let target = model.dropTarget
-            if target != carryTarget { Trace.log("dockCarry target=\(target.map(String.init) ?? "none")") }
-            carryTarget = target
-            return
+        } else {
+            guard model.drag == nil else { return }
+            shownForCarry = true
+            let e = carry.entry
+            let icon = NSRunningApplication(processIdentifier: e.pid)?.icon ?? NSWorkspace.shared.icon(for: .application)
+            let title = WindowTitle.clean(e.title, app: e.app)
+            model.drag = DockModel.Drag(ids: [grab.window], from: carry.from, icon: icon, name: title.isEmpty ? e.app : "“\(title)”",
+                                        location: location, carried: true)
+            Trace.log("dockCarry show window=\(grab.window) from=\(carry.from)")
         }
-        guard model.drag == nil, let (entry, from) = spaces.entry(for: grab.window) else { return }
-        carryTarget = nil
-        let icon = NSRunningApplication(processIdentifier: entry.pid)?.icon ?? NSWorkspace.shared.icon(for: .application)
-        let title = WindowTitle.clean(entry.title, app: entry.app)
-        model.drag = DockModel.Drag(ids: [grab.window], from: from, icon: icon, name: title.isEmpty ? entry.app : "“\(title)”",
-                                    location: location, carried: true)
-        Trace.log("dockCarry show window=\(grab.window) from=\(from)")
+        // Each change, so trace.log (and scripts/dock-drag-probe.swift) shows what's lit.
+        let target = model.dropTarget
+        if target != carryTarget { Trace.log("dockCarry target=\(target.map(String.init) ?? "none")") }
+        carryTarget = target
     }
 
     /// The drag ended. Let go at `p` (window-server space) over another workspace's tile: that
     /// workspace, for the window to go to. The dock goes down either way.
     func endCarry(_ grab: TopDrag.Grab, at p: CGPoint?) -> Int? {
         windowCarry = nil
-        guard let d = model.drag, d.carried, d.ids == [grab.window] else { return nil }
+        carryRefused = nil
+        let wasShown = shownForCarry
+        shownForCarry = false
         var target: Int?
-        if let p, let panel, let mainHeight = NSScreen.screens.first?.frame.maxY {
-            var last = d
-            last.location = DockCarry.point(CGPoint(x: p.x, y: mainHeight - p.y), panel: panel.frame, origin: model.origin)
-            model.drag = last
-            target = model.dropTarget
+        if let d = model.drag, d.carried, d.ids == [grab.window] {
+            if let p, let panel, let mainHeight = NSScreen.screens.first?.frame.maxY {
+                var last = d
+                last.location = DockCarry.point(CGPoint(x: p.x, y: mainHeight - p.y), panel: panel.frame, origin: model.origin)
+                model.drag = last
+                target = model.dropTarget
+            }
+            model.drag = nil
+            Trace.log("dockCarry release target=\(target.map(String.init) ?? "none")")
         }
-        model.drag = nil
-        Trace.log("dockCarry release target=\(target.map(String.init) ?? "none")")
-        if isShown, !pinned {
+        guard wasShown, isShown else { return target }
+        if pinned {
+            // A pinned dock stays up; it catches up on what changed while its tiles held still.
+            model.onDragDone()
+        } else {
             // The pointer is still on the edge; it has to leave it before the dock comes again.
             rearmScreen = panel?.screen
             needsRearm = true
@@ -406,6 +429,7 @@ final class WorkspaceDock {
         let size = p.contentView?.fittingSize ?? .zero
         let up = edge.frame(size: size, screen: screen.frame, visible: screen.visibleFrame)
         shownOn = screen
+        restingFrame = up
         spanLength = edge.isVertical ? size.height : size.width
         p.setFrame(up.offsetBy(dx: edge.away.dx, dy: edge.away.dy), display: false)
         slidingIn = true
