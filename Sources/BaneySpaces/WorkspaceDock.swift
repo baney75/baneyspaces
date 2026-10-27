@@ -1308,7 +1308,10 @@ struct DockView: View {
             shape.strokeBorder(Color.white.opacity(hovered ? 0.35 : 0.16), style: StrokeStyle(lineWidth: 1.2, dash: [4, 4]))
                 .background(shape.fill(Color.white.opacity(hovered ? 0.08 : 0.0)))
                 .overlay(Image(systemName: "plus").font(.system(size: 16, weight: .semibold)).foregroundStyle(.white.opacity(hovered ? 0.9 : 0.45)))
-                .frame(width: tileSize * 0.75, height: tileSize)
+                // Slimmer along the dock, full size across it: on a side dock it lines up with the
+                // column of tiles instead of sitting narrower than them.
+                .frame(width: model.edge.isVertical ? tileSize : tileSize * 0.75,
+                       height: model.edge.isVertical ? tileSize * 0.75 : tileSize)
                 .modifier(CenterReport(key: "btn:new"))
             Color.clear.frame(width: 18, height: 15)
         }
