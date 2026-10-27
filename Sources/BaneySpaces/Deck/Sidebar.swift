@@ -128,7 +128,11 @@ struct SidebarView: View {
     var layoutPicker: some View {
         HStack(spacing: 2) {
             ForEach([(Deck.Layout.stack, "Stack"), (.split, "Split"), (.free, "Free")], id: \.1) { layout, title in
-                LayoutSegment(title: title, selected: model.layout == layout) { model.onLayout(layout) }
+                // Like the Picker it replaces: only a change applies, so a click on the current layout
+                // doesn't re-tile the windows.
+                LayoutSegment(title: title, selected: model.layout == layout) {
+                    if model.layout != layout { model.onLayout(layout) }
+                }
             }
         }
         .padding(2)
@@ -136,6 +140,8 @@ struct SidebarView: View {
         .padding(.horizontal, 8).padding(.bottom, 8)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Layout")
+        // The selected layout as the group's value, as the segmented control exposed it.
+        .accessibilityValue(model.layout == .stack ? "Stack" : model.layout == .split ? "Split" : "Free")
         .help("Stack: every window fills the space beside the sidebar. Split: the one you pick and the one before it, side by side. Free: windows stay put.")
         .accessibilityIdentifier("deck.layout")
     }
