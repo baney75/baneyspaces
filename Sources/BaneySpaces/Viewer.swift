@@ -176,7 +176,8 @@ struct ViewerView: View {
     }
 
     private func tileHeader(_ n: Int, count: Int, isCurrent: Bool) -> some View {
-        HStack {
+        // On one baseline: centered, the small caption floats above the big number's foot.
+        HStack(alignment: .firstTextBaseline) {
             Text("\(n)").font(.system(size: 22, weight: .bold, design: .rounded))
             if count > 0 {
                 Text(count == 1 ? "1 window" : "\(count) windows").font(.caption).foregroundStyle(.secondary)
