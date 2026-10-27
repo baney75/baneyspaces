@@ -275,7 +275,7 @@ struct ItemRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            leading.frame(width: 16)
+            leading.frame(width: 16, height: 16)
             VStack(alignment: .leading, spacing: 1) {
                 Text(item.label).font(.system(size: 12, weight: unseen ? .semibold : .regular)).lineLimit(1)
                 if !item.notice.isEmpty {
@@ -489,6 +489,7 @@ struct LayoutSegment: View {
         .buttonStyle(.plain).onHover { hover = $0 }
         .accessibilityLabel(title)
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityIdentifier("deck.layout.\(title.lowercased())")
     }
 }
 
