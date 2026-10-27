@@ -276,23 +276,31 @@ final class WorkspaceDock {
     private var carryTarget: Int?
     /// The dock came up for the carried window, so it goes down when that drag ends.
     private var shownForCarry = false
-    /// Where the panel comes to rest, read while it's still sliding in.
-    private var restingFrame: CGRect?
 
     /// Another app's window follows the pointer. The dock comes up when the pointer rests on its
     /// edge (the tick watches for that), and then the tile under the pointer lights.
     func carryMoved(_ grab: TopDrag.Grab) {
         guard isRunning, DockCarry.accepts(WorkspaceDock.edge), !MissionControlKeys.viewerOpen,
               carryRefused != grab.window else { return }
+        // A file dragged out of the window, or a switch that parked it (one a spring started for
+        // that file): the window "moved" without being carried. Not for the dock, all this press.
+        if outsideDrag.active || model.fileDrag != nil || spaces.switching {
+            carryRefused = grab.window
+            if let d = model.drag, d.carried { model.drag = nil }
+            // A file drag keeps the dock it's using.
+            shownForCarry = false
+            windowCarry = nil
+            return
+        }
         if windowCarry?.grab.window != grab.window {
             guard let (entry, from) = spaces.entry(for: grab.window) else { carryRefused = grab.window; return }
             windowCarry = (grab, entry, from)
             carryTarget = nil
         }
-        guard let carry = windowCarry, isShown, model.shown, let p = panel,
-              // Before the tiles have reported where they are, nothing is under the pointer yet.
-              model.origin != .zero else { return }
-        let location = DockCarry.point(NSEvent.mouseLocation, panel: slidingIn ? restingFrame ?? p.frame : p.frame, origin: model.origin)
+        // Sliding in, the panel isn't where it will be and the tiles may not have reported where
+        // they are: nothing is lit, and a let-go then moves nothing.
+        guard let carry = windowCarry, isShown, model.shown, !slidingIn, let p = panel else { return }
+        let location = DockCarry.point(NSEvent.mouseLocation, panel: p.frame, origin: model.origin)
         if var d = model.drag, d.carried, d.ids == [grab.window] {
             d.location = location
             model.drag = d
@@ -321,7 +329,7 @@ final class WorkspaceDock {
         shownForCarry = false
         var target: Int?
         if let d = model.drag, d.carried, d.ids == [grab.window] {
-            if let p, let panel, let mainHeight = NSScreen.screens.first?.frame.maxY {
+            if let p, let panel, !slidingIn, let mainHeight = NSScreen.screens.first?.frame.maxY {
                 var last = d
                 last.location = DockCarry.point(CGPoint(x: p.x, y: mainHeight - p.y), panel: panel.frame, origin: model.origin)
                 model.drag = last
@@ -429,7 +437,6 @@ final class WorkspaceDock {
         let size = p.contentView?.fittingSize ?? .zero
         let up = edge.frame(size: size, screen: screen.frame, visible: screen.visibleFrame)
         shownOn = screen
-        restingFrame = up
         spanLength = edge.isVertical ? size.height : size.width
         p.setFrame(up.offsetBy(dx: edge.away.dx, dy: edge.away.dy), display: false)
         slidingIn = true
