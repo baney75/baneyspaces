@@ -8,6 +8,11 @@ import SwiftUI
 enum Render {
     static func run(into folder: URL) -> Int32 {
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        // Run from `swift build` rather than the app bundle, macOS hands out a generic folder for
+        // the app icon; settings would show that. Use the repo's icon when it's there.
+        if Bundle.main.bundleURL.pathExtension != "app", let icon = NSImage(contentsOfFile: "docs/icon.png") {
+            NSApp.applicationIconImage = icon
+        }
         let sample: [Int: [(String, String, String)]] = [
             1: [("Safari", "/Applications/Safari.app", "Swift documentation"),
                 ("Notes", "/System/Applications/Notes.app", "Launch checklist"),
@@ -234,7 +239,7 @@ enum Render {
         fresh.openAtLogin = false
         fresh.viewerKeys = true
         guard save(SetupView(model: fresh, close: {}).background(Color(nsColor: .windowBackgroundColor)),
-                   "setup-first-run.png", CGSize(width: 520, height: 0)) else { return 1 }
+                   "setup-first-run.png", CGSize(width: 560, height: 0)) else { return 1 }
 
         // The Deck: terminals, agents, browser tabs and phones on this workspace, one agent done.
         let deck = DeckModel()
