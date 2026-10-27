@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/icon.png" alt="BaneySpaces icon: nine tiles, one lit" width="128">
+  <img src="docs/banner.png" alt="BaneySpaces: nine workspaces, one row of keys. ⌘1 through ⌘9 switches; add ⇧ and the window comes with you." width="100%">
 </p>
 
 <h1 align="center">BaneySpaces</h1>

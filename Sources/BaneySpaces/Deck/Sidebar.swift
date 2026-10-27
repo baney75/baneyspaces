@@ -76,7 +76,7 @@ struct SidebarView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
                     if model.items.isEmpty {
-                        Text("Nothing wrapped is open. Open a terminal, your browser, Claude, ChatGPT or T3 Code.")
+                        Text("Nothing to show yet. Open a terminal, your browser, Claude, ChatGPT or T3 Code.")
                             .font(.system(size: 11)).foregroundStyle(.secondary).padding(.top, 6)
                     }
                     ForEach(model.sections(model.here), id: \.role) { s in
@@ -117,20 +117,31 @@ struct SidebarView: View {
             }
             .foregroundStyle(.secondary)
             .padding(.horizontal, 8).frame(height: 26)
-            .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.07)))
+            .background(RoundedRectangle(cornerRadius: DeckStyle.radius).fill(Color.primary.opacity(0.07)))
         }
         .buttonStyle(.plain).padding(.horizontal, 8).padding(.bottom, 8)
         .accessibilityIdentifier("deck.search").accessibilityLabel("Go to anything")
     }
 
+    /// Drawn like the search field and the toolbar below, not as the system's gray segmented
+    /// control, so the sidebar's three rows of controls share one height, fill and corner.
     var layoutPicker: some View {
-        Picker("", selection: Binding(get: { model.layout }, set: { model.onLayout($0) })) {
-            Text("Stack").tag(Deck.Layout.stack)
-            Text("Split").tag(Deck.Layout.split)
-            Text("Free").tag(Deck.Layout.free)
+        HStack(spacing: 2) {
+            ForEach([(Deck.Layout.stack, "Stack"), (.split, "Split"), (.free, "Free")], id: \.1) { layout, title in
+                // Like the Picker it replaces: only a change applies, so a click on the current layout
+                // doesn't re-tile the windows.
+                LayoutSegment(title: title, selected: model.layout == layout) {
+                    if model.layout != layout { model.onLayout(layout) }
+                }
+            }
         }
-        .pickerStyle(.segmented).labelsHidden().controlSize(.small)
+        .padding(2)
+        .background(RoundedRectangle(cornerRadius: DeckStyle.radius).fill(Color.primary.opacity(0.07)))
         .padding(.horizontal, 8).padding(.bottom, 8)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Layout")
+        // The selected layout as the group's value, as the segmented control exposed it.
+        .accessibilityValue(model.layout == .stack ? "Stack" : model.layout == .split ? "Split" : "Free")
         .help("Stack: every window fills the space beside the sidebar. Split: the one you pick and the one before it, side by side. Free: windows stay put.")
         .accessibilityIdentifier("deck.layout")
     }
@@ -264,7 +275,7 @@ struct ItemRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            leading.frame(width: 16)
+            leading.frame(width: 16, height: 16)
             VStack(alignment: .leading, spacing: 1) {
                 Text(item.label).font(.system(size: 12, weight: unseen ? .semibold : .regular)).lineLimit(1)
                 if !item.notice.isEmpty {
@@ -284,6 +295,11 @@ struct ItemRow: View {
         }
         .padding(.vertical, 4).padding(.horizontal, 6).padding(.leading, item.nested ? 12 : 0)
         .background(RoundedRectangle(cornerRadius: 6).fill(fill))
+        .overlay(alignment: .leading) {
+            if item.focused {
+                Capsule().fill(Color.accentColor).frame(width: 3).padding(.vertical, 7).padding(.leading, 1)
+            }
+        }
         .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(unseen ? Color.orange.opacity(0.7) : .clear, lineWidth: 1))
         .contentShape(Rectangle())
         .onTapGesture { model.onFocus(item) }
@@ -364,14 +380,17 @@ struct ItemRow: View {
         return parts.joined(separator: ", ")
     }
 
+    /// The focused row gets a neutral lift and a thin accent bar: a wide accent wash turned
+    /// muddy with some accent colors (yellow read as olive) and drowned out the "done" outline.
     var fill: Color {
-        if item.focused { return Color.accentColor.opacity(0.28) }
+        if item.focused { return Color.primary.opacity(hover ? 0.16 : 0.12) }
         return hover ? Color.primary.opacity(0.08) : .clear
     }
 
     @ViewBuilder var leading: some View {
         switch item.activity {
-        case .working: ProgressView().controlSize(.mini).scaleEffect(0.8)
+        // Mini at 80% was an 8-point gray smudge next to 15-point icons.
+        case .working: ProgressView().controlSize(.small).scaleEffect(0.75).frame(width: 16, height: 16)
         case .waiting: Image(systemName: "asterisk").font(.system(size: 11, weight: .bold))
             .foregroundStyle(unseen ? Color.orange : Color.secondary)
         case .shell:
@@ -440,10 +459,37 @@ struct ToolButton: View {
         Button(action: action) {
             Image(systemName: symbol).font(.system(size: 12, weight: .medium))
                 .frame(maxWidth: .infinity, minHeight: 26)
-                .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hover ? 0.14 : 0.07)))
+                .background(RoundedRectangle(cornerRadius: DeckStyle.radius).fill(Color.primary.opacity(hover ? 0.14 : 0.07)))
         }
         .buttonStyle(.plain).help(help).onHover { hover = $0 }
         .accessibilityLabel(help).accessibilityIdentifier(id)
+    }
+}
+
+enum DeckStyle {
+    /// One corner for the search field, the layout control and the toolbar buttons.
+    static let radius: CGFloat = 7
+}
+
+/// One choice in the Deck's layout control.
+struct LayoutSegment: View {
+    let title: String
+    let selected: Bool
+    let action: () -> Void
+    @State private var hover = false
+    var body: some View {
+        Button(action: action) {
+            Text(title).font(.system(size: 11, weight: selected ? .semibold : .regular))
+                .foregroundStyle(selected ? Color.primary : Color.secondary)
+                .frame(maxWidth: .infinity, minHeight: 22)
+                .background(RoundedRectangle(cornerRadius: DeckStyle.radius - 2)
+                    .fill(Color.primary.opacity(selected ? 0.16 : hover ? 0.06 : 0)))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).onHover { hover = $0 }
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityIdentifier("deck.layout.\(title.lowercased())")
     }
 }
 
