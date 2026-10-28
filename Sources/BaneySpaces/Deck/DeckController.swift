@@ -188,7 +188,8 @@ final class DeckController {
         model.onClose = { [weak self] item, what in self?.engine.close(item, what) }
         model.onNewHere = { [weak self] in self?.engine.newTerminal(in: $0.directory) }
         model.onTile = { [weak self] in self?.tile() }
-        model.onNewClaude = { [weak self] in self?.newClaude(); self?.send(.picked) }
+        // The sidebar stays while the pane opens, so "Opening…" is seen, then goes as for any pick.
+        model.onNewClaude = { [weak self] in self?.newClaude { self?.send(.picked) } }
         model.onNewTerminal = { [weak self] in
             self?.engine.newTerminal(in: self?.engine.items.first { $0.focused && !$0.directory.isEmpty }?.directory)
             self?.send(.picked)
@@ -446,16 +447,45 @@ final class DeckController {
         if palette.isOpen { palette.dismiss() } else { palette.show(on: DeckLayout.activeScreen()) }
     }
 
-    func newClaude() {
+    /// The sparkle button and the switcher's "New Claude session": another session tiled into
+    /// `claude-desk`'s Claude window, through a script compiled here (`Scripts.claudeDesk`).
+    /// Running `claude-desk` itself cost a bash and an `osascript` launch plus a 90 to 150 ms
+    /// compile on every press. It stays the fallback when the script never reached Ghostty, and a
+    /// plain terminal running `claude` without it. `done` runs once the pane is up or handed off.
+    func newClaude(then done: @escaping () -> Void = {}) {
+        guard !model.claudeOpening else { return }
         let desk = NSHomeDirectory() + "/.local/bin/claude-desk"
-        if FileManager.default.isExecutableFile(atPath: desk) {
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: desk)
-            try? p.run()
-        } else {
+        guard FileManager.default.isExecutableFile(atPath: desk) else {
             let dir = engine.items.first { $0.focused && !$0.directory.isEmpty }?.directory
             engine.newTerminal(in: dir, command: "claude")
+            return done()
         }
+        model.claudeOpening = true
+        let finish = { [weak self] in self?.model.claudeOpening = false; done() }
+        guard Automation.allowed(Catalog.known[0].bundleID) else { return runClaudeDesk(desk, then: finish) }
+        let script = claudeScript
+        script.queue.async { [weak self] in
+            let r = script.run("claudeTile", [ClaudeDesk.workDir, ClaudeDesk.paneCommand, ClaudeDesk.read().joined(separator: "\n")])
+            if let out = r.out { ClaudeDesk.write(ClaudeDesk.parse(out)) }
+            DispatchQueue.main.async {
+                // Only a script that never reached Ghostty is tried again through claude-desk; one
+                // that failed or timed out partway may already have opened the pane.
+                if Self.neverReached.contains(r.error) { self?.runClaudeDesk(desk, then: finish) } else { finish() }
+            }
+        }
+    }
+
+    private lazy var claudeScript = Scripts.claudeDesk()
+
+    /// Errors that mean Ghostty saw nothing: the script didn't compile, Automation isn't allowed,
+    /// Ghostty isn't running or its connection was gone.
+    static let neverReached: Set<Int> = [OSA.didNotCompile, -1743, -600, -609]
+
+    private func runClaudeDesk(_ path: String, then done: @escaping () -> Void) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: path)
+        p.terminationHandler = { _ in DispatchQueue.main.async(execute: done) }
+        do { try p.run() } catch { done() }
     }
 
     static func cliPath() -> String { Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/bin/baneyspaces").path }

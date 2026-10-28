@@ -7,18 +7,32 @@ import BaneySpacesCore
 /// All of it runs on one serial queue, off the main thread; every `tell` carries a timeout.
 final class OSA {
     static let queue = DispatchQueue(label: "deck.osa", qos: .userInitiated)
+    /// `run`'s error when the script didn't compile, so nothing was sent.
+    static let didNotCompile = 1
     private var compiled: NSAppleScript?
     private let source: String
+    /// The queue every call runs on: `OSA.queue` unless the script has one of its own.
+    let queue: DispatchQueue
 
-    init(_ source: String) { self.source = source }
+    init(_ source: String, queue: DispatchQueue = OSA.queue) { self.source = source; self.queue = queue }
 
-    /// Calls `handler` with string arguments. Must run on `OSA.queue`. Nil on any error.
+    /// Calls `handler` with string arguments. Must run on `queue`. Nil on any error.
     func call(_ handler: String, _ args: [String] = []) -> String? {
-        dispatchPrecondition(condition: .onQueue(OSA.queue))
+        let r = run(handler, args)
+        return r.error == 0 ? r.out : nil
+    }
+
+    /// `call`, with the AppleScript error number (0 for none) so a caller can tell a script that
+    /// never reached the app from one that failed partway.
+    func run(_ handler: String, _ args: [String] = []) -> (out: String?, error: Int) {
+        dispatchPrecondition(condition: .onQueue(queue))
         if compiled == nil {
             let s = NSAppleScript(source: source)
             var err: NSDictionary?
-            guard s?.compileAndReturnError(&err) == true else { NSLog("BaneySpaces deck: script didn't compile: %@", err ?? [:]); return nil }
+            guard s?.compileAndReturnError(&err) == true else {
+                NSLog("BaneySpaces deck: script didn't compile: %@", err ?? [:])
+                return (nil, Self.didNotCompile)
+            }
             compiled = s
         }
         let event = NSAppleEventDescriptor(eventClass: AEEventClass(kASAppleScriptSuite), eventID: AEEventID(kASSubroutineEvent),
@@ -30,8 +44,8 @@ final class OSA {
         event.setParam(list, forKeyword: keyDirectObject)
         var err: NSDictionary?
         let result = compiled?.executeAppleEvent(event, error: &err)
-        if err != nil { return nil }
-        return result?.stringValue ?? ""
+        if let err { return (nil, (err[NSAppleScript.errorNumber] as? Int) ?? -1) }
+        return (result?.stringValue ?? "", 0)
     }
 }
 
@@ -167,7 +181,103 @@ enum Scripts {
         	end tell
         	return "ok"
         end newWindow
+
         """)
+    }
+
+    /// `claude-desk`'s tiling (~/.local/bin/claude-desk, which points back here), compiled once so
+    /// the Deck's New Claude button skips bash, osascript and the compile. A script of its own on a
+    /// queue of its own: Ghostty can take seconds to open a window, which mustn't hold up the rows,
+    /// and a compile error here costs only the button, which then runs claude-desk.
+    static func claudeDesk() -> OSA {
+        OSA(header + """
+
+        -- claude-desk's tiling (~/.local/bin/claude-desk), compiled once here so the Deck's button
+        -- skips bash, osascript and the compile. `prior` is its state file: the Claude tab's ID,
+        -- then the terminals it made there. Returns the new state.
+        --   1st  a screen-filling window   2nd  split right   3rd  left pane down
+        --   4th  right pane down           5th  a new tab, and the grid starts again
+        on claudeTile(workDir, paneCmd, prior)
+        	set AppleScript's text item delimiters to linefeed
+        	set rows to text items of prior
+        	set AppleScript's text item delimiters to ""
+        	set tabID to ""
+        	set known to {}
+        	repeat with l in rows
+        		if (contents of l) is not "" then
+        			if tabID is "" then
+        				set tabID to contents of l
+        			else
+        				set end of known to (contents of l)
+        			end if
+        		end if
+        	end repeat
+        	with timeout of 10 seconds
+        		tell application id "com.mitchellh.ghostty"
+        			activate
+        			set cfg to new surface configuration
+        			set initial working directory of cfg to workDir
+        			set command of cfg to paneCmd
+        			set targetTab to missing value
+        			set targetWindow to missing value
+        			if tabID is not "" then
+        				repeat with w in windows
+        					repeat with t in tabs of w
+        						if (id of t) is tabID then
+        							set targetTab to contents of t
+        							set targetWindow to contents of w
+        						end if
+        					end repeat
+        				end repeat
+        			end if
+        			if targetTab is missing value then
+        				set w to new window with configuration cfg
+        				set t to selected tab of w
+        				-- Fill the screen so four tiles stay readable. Once the pane exists, a step
+        				-- that fails mustn't lose its ID (or start a second session).
+        				try
+        					perform action "toggle_maximize" on focused terminal of t
+        				end try
+        				return my joinLines({id of t, id of focused terminal of t})
+        			end if
+        			set liveIDs to {}
+        			set present to id of every terminal of targetTab
+        			repeat with k in known
+        				if present contains (contents of k) then set end of liveIDs to (contents of k)
+        			end repeat
+        			set n to count of liveIDs
+        			if n is 0 or n ≥ 4 then
+        				set t to new tab in targetWindow with configuration cfg
+        				return my joinLines({id of t, id of focused terminal of t})
+        			end if
+        			if n is 1 then
+        				set baseID to item 1 of liveIDs
+        				set dir to right
+        			else if n is 2 then
+        				set baseID to item 1 of liveIDs
+        				set dir to down
+        			else
+        				set baseID to item 2 of liveIDs
+        				set dir to down
+        			end if
+        			set base to first terminal of targetTab whose id is baseID
+        			set newTerm to split base direction dir with configuration cfg
+        			try
+        				perform action "equalize_splits" on newTerm
+        				focus newTerm
+        			end try
+        			return my joinLines({tabID} & liveIDs & {id of newTerm})
+        		end tell
+        	end timeout
+        end claudeTile
+
+        on joinLines(xs)
+        	set AppleScript's text item delimiters to linefeed
+        	set s to xs as text
+        	set AppleScript's text item delimiters to ""
+        	return s
+        end joinLines
+        """, queue: DispatchQueue(label: "deck.osa.claude", qos: .userInitiated))
     }
 
     static func chromium(_ bundle: String) -> OSA {

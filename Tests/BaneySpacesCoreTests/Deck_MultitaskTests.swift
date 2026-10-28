@@ -106,3 +106,17 @@ final class CorrelationTests: XCTestCase {
         XCTAssertEqual(Array(a.resolve([g("C", "✳ new")], now: 3).keys), ["C"])
     }
 }
+
+final class ClaudeDeskTests: XCTestCase {
+    func testReadsTheFileClaudeDeskWrites() {
+        // claude-desk writes `printf '%s\n'` of the script's lines.
+        XCTAssertEqual(ClaudeDesk.parse("tab-1\nterm-a\nterm-b\n"), ["tab-1", "term-a", "term-b"])
+        XCTAssertEqual(ClaudeDesk.parse("\n  tab-1 \n\n"), ["tab-1"])
+        XCTAssertEqual(ClaudeDesk.parse(""), [])
+    }
+
+    func testRunsClaudeTheWayClaudeDeskDoes() {
+        XCTAssertEqual(ClaudeDesk.paneCommand, "/bin/zsh -lic 'claude; exec /bin/zsh -l'",
+                       "-i loads .zshrc, whose PATH and keys Claude's tools need")
+    }
+}
