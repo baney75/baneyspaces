@@ -446,15 +446,40 @@ final class DeckController {
         if palette.isOpen { palette.dismiss() } else { palette.show(on: DeckLayout.activeScreen()) }
     }
 
+    /// The sparkle button and the switcher's "New Claude session": another session tiled into
+    /// `claude-desk`'s Claude window, through the Ghostty script compiled here. Running
+    /// `claude-desk` itself cost a bash and an `osascript` launch plus a 90 to 150 ms compile on every
+    /// press. It stays the fallback when Ghostty can't be scripted yet, and a plain terminal running
+    /// `claude` without it.
     func newClaude() {
+        guard !model.claudeOpening else { return }
         let desk = NSHomeDirectory() + "/.local/bin/claude-desk"
-        if FileManager.default.isExecutableFile(atPath: desk) {
+        let hasDesk = FileManager.default.isExecutableFile(atPath: desk)
+        guard hasDesk else {
+            let dir = engine.items.first { $0.focused && !$0.directory.isEmpty }?.directory
+            return engine.newTerminal(in: dir, command: "claude")
+        }
+        let ghostty = Catalog.known[0]
+        guard Automation.allowed(ghostty.bundleID), let script = engine.script(for: ghostty) else {
             let p = Process()
             p.executableURL = URL(fileURLWithPath: desk)
             try? p.run()
-        } else {
-            let dir = engine.items.first { $0.focused && !$0.directory.isEmpty }?.directory
-            engine.newTerminal(in: dir, command: "claude")
+            return
+        }
+        model.claudeOpening = true
+        OSA.queue.async { [weak self] in
+            let out = script.call("claudeTile", [ClaudeDesk.workDir, ClaudeDesk.paneCommand, ClaudeDesk.read().joined(separator: "\n")])
+            if let out { ClaudeDesk.write(ClaudeDesk.parse(out)) }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.model.claudeOpening = false
+                // The script failed (Ghostty mid-launch, say): claude-desk tries the same thing.
+                if out == nil {
+                    let p = Process()
+                    p.executableURL = URL(fileURLWithPath: desk)
+                    try? p.run()
+                }
+            }
         }
     }
 

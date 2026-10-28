@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **New Claude, front and center, and quicker.** The Deck's toolbar led with three identical gray
+  icons. Now "New Claude" leads in Claude's orange, with Tile and New Terminal as small buttons
+  beside it, and every button gives under the press. The session still tiles into your Claude
+  window the way ⌘⇧A does, sharing its state, but through a script BaneySpaces compiled once.
+  Running `claude-desk` cost a shell, an `osascript` launch and a fresh compile, about 160 to 220 ms,
+  on every press. Until the pane is up the button reads "Opening…" and a second press waits.
+
 - **Drag a window down to the dock to move it to another workspace.** Pulling a window by its
   title bar to the bottom edge used to do nothing: the dock stayed down while the button was held.
   Now it comes up for the window, the tile under the pointer lights, and the label says where it's

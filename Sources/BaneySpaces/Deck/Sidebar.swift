@@ -11,6 +11,8 @@ final class DeckModel: ObservableObject {
     @Published var layout: Deck.Layout = .stack
     @Published var collapsed: Set<String> = []
     @Published var hooksInstalled = true
+    /// A new Claude session's pane is on its way.
+    @Published var claudeOpening = false
 
     var onFocus: (Item) -> Void = { _ in }
     var onClose: (Item, Engine.CloseWhat) -> Void = { _, _ in }
@@ -154,11 +156,14 @@ struct SidebarView: View {
         }
     }
 
+    /// New Claude leads, named and in Claude's color: three equal gray icons made the action
+    /// you reach for most look like the other two.
     var toolbar: some View {
-        HStack(spacing: 4) {
-            ToolButton(symbol: "square.grid.2x2", help: "Tile every window on this screen (⌘⇧C in a terminal)", id: "deck.tile", action: model.onTile)
-            ToolButton(symbol: "sparkle", help: "New Claude Code session", id: "deck.new-claude", action: model.onNewClaude)
-            ToolButton(symbol: "plus", help: "New terminal in this folder", id: "deck.new-terminal", action: model.onNewTerminal)
+        HStack(spacing: 6) {
+            NewClaudeButton(opening: model.claudeOpening, action: model.onNewClaude)
+            ToolButton(symbol: "square.grid.2x2", help: "Tile every window on this screen (⌘⇧C in a terminal)", id: "deck.tile",
+                       width: 30, action: model.onTile)
+            ToolButton(symbol: "plus", help: "New terminal in this folder", id: "deck.new-terminal", width: 30, action: model.onNewTerminal)
         }
         .padding(8)
     }
@@ -453,16 +458,65 @@ struct ToolButton: View {
     let symbol: String
     let help: String
     let id: String
+    /// Fixed, or nil to share the row's width.
+    var width: CGFloat? = nil
     let action: () -> Void
     @State private var hover = false
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol).font(.system(size: 12, weight: .medium))
-                .frame(maxWidth: .infinity, minHeight: 26)
+                .foregroundStyle(hover ? Color.primary : Color.secondary)
+                .frame(width: width, height: 28).frame(maxWidth: width == nil ? .infinity : nil)
                 .background(RoundedRectangle(cornerRadius: DeckStyle.radius).fill(Color.primary.opacity(hover ? 0.14 : 0.07)))
+                .contentShape(Rectangle())
         }
-        .buttonStyle(.plain).help(help).onHover { hover = $0 }
+        .buttonStyle(DeckPress()).help(help).onHover { hover = $0 }
         .accessibilityLabel(help).accessibilityIdentifier(id)
+    }
+}
+
+/// The toolbar's lead button: a new Claude Code session, tiled into the Claude window like ⌘⇧A.
+/// Until its pane is up the sparkle turns into a spinner, and a second press waits.
+struct NewClaudeButton: View {
+    let opening: Bool
+    let action: () -> Void
+    @State private var hover = false
+    /// Anthropic's Claude orange, so the button reads as Claude's at a glance.
+    static let claude = Color(red: 0.85, green: 0.47, blue: 0.34)
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                ZStack {
+                    if opening {
+                        ProgressView().controlSize(.small).scaleEffect(0.6)
+                    } else {
+                        Image(systemName: "sparkle").font(.system(size: 12, weight: .semibold)).foregroundStyle(Self.claude)
+                    }
+                }
+                .frame(width: 14, height: 14)
+                Text(opening ? "Opening…" : "New Claude").font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.primary.opacity(opening ? 0.6 : 0.9))
+            }
+            .frame(maxWidth: .infinity, minHeight: 28)
+            .background(RoundedRectangle(cornerRadius: DeckStyle.radius).fill(Self.claude.opacity(hover ? 0.26 : 0.16)))
+            .overlay(RoundedRectangle(cornerRadius: DeckStyle.radius).strokeBorder(Self.claude.opacity(hover ? 0.55 : 0.32), lineWidth: 0.75))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(DeckPress()).disabled(opening).onHover { hover = $0 }
+        .help("New Claude Code session, tiled into your Claude window")
+        .accessibilityLabel(opening ? "Opening a Claude Code session" : "New Claude Code session")
+        .accessibilityIdentifier("deck.new-claude")
+    }
+}
+
+/// A press you can see: the button settles a little while held, and springs back.
+struct DeckPress: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.96 : 1)
+            .brightness(configuration.isPressed ? -0.04 : 0)
+            .animation(.spring(response: 0.18, dampingFraction: 0.7), value: configuration.isPressed)
     }
 }
 

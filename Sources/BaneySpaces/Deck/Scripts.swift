@@ -167,6 +167,86 @@ enum Scripts {
         	end tell
         	return "ok"
         end newWindow
+
+        -- claude-desk's tiling (~/.local/bin/claude-desk), compiled once here so the Deck's button
+        -- skips bash, osascript and the compile. `prior` is its state file: the Claude tab's ID,
+        -- then the terminals it made there. Returns the new state.
+        --   1st  a screen-filling window   2nd  split right   3rd  left pane down
+        --   4th  right pane down           5th  a new tab, and the grid starts again
+        on claudeTile(workDir, paneCmd, prior)
+        	set AppleScript's text item delimiters to linefeed
+        	set rows to text items of prior
+        	set AppleScript's text item delimiters to ""
+        	set tabID to ""
+        	set known to {}
+        	repeat with l in rows
+        		if (contents of l) is not "" then
+        			if tabID is "" then
+        				set tabID to contents of l
+        			else
+        				set end of known to (contents of l)
+        			end if
+        		end if
+        	end repeat
+        	with timeout of 10 seconds
+        		tell application id "com.mitchellh.ghostty"
+        			activate
+        			set cfg to new surface configuration
+        			set initial working directory of cfg to workDir
+        			set command of cfg to paneCmd
+        			set targetTab to missing value
+        			set targetWindow to missing value
+        			if tabID is not "" then
+        				repeat with w in windows
+        					repeat with t in tabs of w
+        						if (id of t) is tabID then
+        							set targetTab to contents of t
+        							set targetWindow to contents of w
+        						end if
+        					end repeat
+        				end repeat
+        			end if
+        			if targetTab is missing value then
+        				set w to new window with configuration cfg
+        				set t to selected tab of w
+        				perform action "toggle_maximize" on focused terminal of t
+        				return my joinLines({id of t, id of focused terminal of t})
+        			end if
+        			set liveIDs to {}
+        			set present to id of every terminal of targetTab
+        			repeat with k in known
+        				if present contains (contents of k) then set end of liveIDs to (contents of k)
+        			end repeat
+        			set n to count of liveIDs
+        			if n is 0 or n ≥ 4 then
+        				set t to new tab in targetWindow with configuration cfg
+        				return my joinLines({id of t, id of focused terminal of t})
+        			end if
+        			if n is 1 then
+        				set baseID to item 1 of liveIDs
+        				set dir to right
+        			else if n is 2 then
+        				set baseID to item 1 of liveIDs
+        				set dir to down
+        			else
+        				set baseID to item 2 of liveIDs
+        				set dir to down
+        			end if
+        			set base to first terminal of targetTab whose id is baseID
+        			set newTerm to split base direction dir with configuration cfg
+        			perform action "equalize_splits" on newTerm
+        			focus newTerm
+        			return my joinLines({tabID} & liveIDs & {id of newTerm})
+        		end tell
+        	end timeout
+        end claudeTile
+
+        on joinLines(xs)
+        	set AppleScript's text item delimiters to linefeed
+        	set s to xs as text
+        	set AppleScript's text item delimiters to ""
+        	return s
+        end joinLines
         """)
     }
 
