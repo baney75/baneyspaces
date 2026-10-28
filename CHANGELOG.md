@@ -7,7 +7,8 @@
   beside it, and every button gives under the press. The session still tiles into your Claude
   window the way ⌘⇧A does, sharing its state, but through a script BaneySpaces compiled once.
   Running `claude-desk` cost a shell, an `osascript` launch and a fresh compile, about 160 to 220 ms,
-  on every press. Until the pane is up the button reads "Opening…" and a second press waits.
+  on every press. Until the pane is up the button reads "Opening…", the sidebar stays, and a
+  second press waits.
 
 - **Drag a window down to the dock to move it to another workspace.** Pulling a window by its
   title bar to the bottom edge used to do nothing: the dock stayed down while the button was held.
