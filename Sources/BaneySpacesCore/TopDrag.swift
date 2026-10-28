@@ -103,3 +103,16 @@ public struct TopDrag: Sendable {
         return !screens.contains { $0.contains(above) }
     }
 }
+
+/// macOS's "Drag windows to menu bar to fill screen", which builds before 2026-10-28 turned off
+/// along with Mission Control when the overview took the drag to the top. BaneySpaces now leaves
+/// it to macOS, and gives it back once where an older build took it.
+public enum FillTheScreen {
+    /// Whether to turn it back on. `taken`: an older build's record of the settings it took
+    /// exists. `saved`: the value it recorded for fill-the-screen (nil when it wasn't set, the
+    /// macOS default, which is on). `now`: the value now (nil: not set). An explicit off saved
+    /// from before BaneySpaces was the person's own choice and stays.
+    public static func turnBackOn(taken: Bool, saved: Bool?, now: Bool?) -> Bool {
+        taken && saved != false && now == false
+    }
+}

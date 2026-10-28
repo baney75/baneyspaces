@@ -6,8 +6,8 @@ import BaneySpacesCore
 /// turned off or BaneySpaces is uninstalled. Not on quit: with BaneySpaces gone the gesture just
 /// does nothing, and putting it back would restart the Dock on every update.
 ///
-/// Filling the screen with that window stays macOS's: let go at the top before the overview
-/// opens and the window fills the screen (Donovan, 2026-10-28). Builds before then turned it off.
+/// Filling the screen with that window stays macOS's: let go at the top and the window fills
+/// the screen (Donovan, 2026-10-28). Builds before then turned it off.
 enum SystemTopDrag {
     private struct Setting {
         let domain: String
@@ -54,16 +54,19 @@ enum SystemTopDrag {
     private static let fillGivenBackKey = "systemTopDragFillGivenBack"
 
     /// Once, on a Mac where an older build took the drag over (and turned fill-the-screen off):
-    /// it comes back on, whatever was saved, since the drag to the top is meant to fill the
-    /// screen again. A setting saved as absent leaves no key, so the record's mere presence is
-    /// what counts. After this a change in System Settings is left alone.
+    /// it comes back on unless it was off before BaneySpaces (`FillTheScreen`). A setting saved
+    /// as absent leaves no key, so the record's mere presence is what counts. Done only once the
+    /// write reads back; after that a change in System Settings is left alone.
     private static func giveFillBack() {
         guard !UserDefaults.standard.bool(forKey: fillGivenBackKey) else { return }
+        var saved = UserDefaults.standard.dictionary(forKey: savedKey)
+        let was = saved?[fill.id] as? NSNumber
+        if FillTheScreen.turnBackOn(taken: saved != nil, saved: was?.boolValue, now: read(fill)?.boolValue) {
+            if write(fill, on) { restart([fill]) }
+            guard read(fill) == on else { return NSLog("BaneySpaces: fill-the-screen didn't turn back on; trying again next launch") }
+        }
+        if saved?.removeValue(forKey: fill.id) != nil { UserDefaults.standard.set(saved, forKey: savedKey) }
         UserDefaults.standard.set(true, forKey: fillGivenBackKey)
-        guard var saved = UserDefaults.standard.dictionary(forKey: savedKey) else { return }
-        saved.removeValue(forKey: fill.id)
-        UserDefaults.standard.set(saved, forKey: savedKey)
-        if read(fill) == off, write(fill, on) { restart([fill]) }
     }
 
     private static func read(_ s: Setting) -> NSNumber? {

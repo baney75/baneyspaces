@@ -21,7 +21,8 @@ final class UninstallTests: XCTestCase {
         try text.write(to: path(p), atomically: true, encoding: .utf8)
     }
 
-    private func uninstall(status: Int32 = 0, prefs: [String: Any]? = nil, macOS: String? = nil) throws -> String {
+    private func uninstall(status: Int32 = 0, prefs: [String: Any]? = nil, macOS: String? = nil,
+                           macOSKeys: [String: String] = [:]) throws -> String {
         let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("uninstall.sh")
         let p = Process()
@@ -34,6 +35,7 @@ final class UninstallTests: XCTestCase {
             env["BANEYSPACES_UNINSTALL_PREFS"] = file.path
         }
         if let macOS { env["BANEYSPACES_UNINSTALL_MACOS"] = macOS }
+        for (key, value) in macOSKeys { env["BANEYSPACES_UNINSTALL_MACOS_\(key)"] = value }
         p.environment = env
         let pipe = Pipe()
         p.standardOutput = pipe
@@ -135,6 +137,16 @@ final class UninstallTests: XCTestCase {
         let out = try uninstall(prefs: ["systemTopDragSaved": [String: Bool]()], macOS: "0")
         XCTAssertTrue(out.contains("would run: defaults write com.apple.WindowManager EnableTopTilingByEdgeDrag -bool true"), out)
         XCTAssertTrue(out.contains("would run: killall WindowManager"), out)
+    }
+
+    /// Fill-the-screen still on, or off before BaneySpaces, is left alone.
+    func testWithoutTheAppFillTheScreenOnOrOffBeforeIsLeftAlone() throws {
+        let on = try uninstall(prefs: ["systemTopDragSaved": [String: Bool]()], macOS: "0",
+                               macOSKeys: ["EnableTopTilingByEdgeDrag": "1"])
+        XCTAssertTrue(on.contains("enterMissionControlByTopWindowDrag"), on)
+        XCTAssertFalse(on.contains("EnableTopTilingByEdgeDrag") || on.contains("killall WindowManager"), on)
+        let offBefore = try uninstall(prefs: ["systemTopDragSaved": ["com.apple.WindowManager/EnableTopTilingByEdgeDrag": false]], macOS: "0")
+        XCTAssertFalse(offBefore.contains("EnableTopTilingByEdgeDrag") || offBefore.contains("killall WindowManager"), offBefore)
     }
 
     /// One switched back on since in System Settings is the person's choice and stays.

@@ -168,4 +168,15 @@ final class TopDragTests: XCTestCase {
         XCTAssertTrue(taken.contains("enterMissionControlByTopWindowDrag"), String(taken))
         XCTAssertFalse(taken.contains("EnableTopTilingByEdgeDrag"), "fill-the-screen must stay macOS's")
     }
+
+    /// Fill-the-screen comes back on where an older build turned it off, unless it was off
+    /// before BaneySpaces; on a Mac BaneySpaces never took over, or with it on, nothing changes.
+    func testFillTheScreenComesBackOnOnlyWhereBaneySpacesTookIt() {
+        XCTAssertTrue(FillTheScreen.turnBackOn(taken: true, saved: nil, now: false), "saved as absent: macOS's default, on")
+        XCTAssertTrue(FillTheScreen.turnBackOn(taken: true, saved: true, now: false))
+        XCTAssertFalse(FillTheScreen.turnBackOn(taken: true, saved: false, now: false), "off before BaneySpaces stays off")
+        XCTAssertFalse(FillTheScreen.turnBackOn(taken: true, saved: nil, now: true), "already on")
+        XCTAssertFalse(FillTheScreen.turnBackOn(taken: true, saved: nil, now: nil), "not set is on")
+        XCTAssertFalse(FillTheScreen.turnBackOn(taken: false, saved: nil, now: false), "never taken: the person's own off")
+    }
 }

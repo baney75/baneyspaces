@@ -251,15 +251,20 @@ let placedFiller = Date().addingTimeInterval(15)
 while workspace(of: fillID) == nil && Date() < placedFiller { usleep(200_000) }
 let visible = CGRect(x: screen.visibleFrame.minX, y: screen.frame.maxY - screen.visibleFrame.maxY,
                      width: screen.visibleFrame.width, height: screen.visibleFrame.height)
-func fills(_ r: CGRect?) -> Bool { r.map { abs($0.minY - visible.minY) < 4 && $0.width >= visible.width - 4 && $0.height >= visible.height - 4 } ?? false }
-for (hold, what) in [(0.5, "a short rest"), (1.4, "a rest long enough to open the overview")] {
+// Most of the visible screen, its top at the menu bar: macOS's fill, not an exact frame.
+func fills(_ r: CGRect?) -> Bool {
+    r.map { abs($0.minY - visible.minY) < 12 && $0.width >= visible.width * 0.9 && $0.height >= visible.height * 0.85 } ?? false
+}
+// TopDrag.dwell, the rest before the overview opens; the probe can't import it.
+let dwell = 0.25
+for (hold, what) in [(dwell * 0.4, "a short rest"), (dwell + 1.0, "a rest long enough to open the overview")] {
     DispatchQueue.main.sync { filler.setFrame(filler.frameRect(forContentRect: home), display: true); filler.makeKeyAndOrderFront(nil) }
     usleep(600_000)
     guard let f = onScreen(fillID) else { expect(false, "the fill window is on screen"); break }
     let edge = CGPoint(x: f.midX, y: 0)
     var opened = false
     drag(from: CGPoint(x: f.midX, y: f.minY + 12), to: edge, hold: hold, release: edge) { opened = overviewUp(screenRect) }
-    expect(hold < 1 ? !opened : opened, "after \(what) the overview \(opened ? "opened" : "stayed shut")")
+    expect(hold < dwell ? !opened : opened, "after \(what) the overview \(opened ? "opened" : "stayed shut")")
     expect(!missionControlUp(screenRect), "Mission Control stayed closed")
     expect(fills(onScreen(fillID)), "let go at the top after \(what), the window fills the screen (\(onScreen(fillID).map { "\($0)" } ?? "not on screen"), screen \(visible))")
     expect(workspace(of: fillID) == start.current, "and it stayed on workspace \(start.current)")
