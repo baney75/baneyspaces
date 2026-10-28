@@ -1,11 +1,13 @@
 import AppKit
 import BaneySpacesCore
 
-/// macOS's own answers to a window dragged to the top of the screen: Mission Control, and filling
-/// the screen with it. Both are off while the overview takes that gesture. Their settings are
-/// saved first and go back when the switch is turned off or BaneySpaces is uninstalled. Not on
-/// quit: with BaneySpaces gone the gesture just does nothing, and putting them back would
-/// restart the Dock on every update.
+/// macOS's Mission Control for a window dragged to the top of the screen. It's off while the
+/// overview takes that gesture. Its setting is saved first and goes back when the switch is
+/// turned off or BaneySpaces is uninstalled. Not on quit: with BaneySpaces gone the gesture just
+/// does nothing, and putting it back would restart the Dock on every update.
+///
+/// Filling the screen with that window stays macOS's: let go at the top before the overview
+/// opens and the window fills the screen (Donovan, 2026-10-28). Builds before then turned it off.
 enum SystemTopDrag {
     private struct Setting {
         let domain: String
@@ -17,14 +19,17 @@ enum SystemTopDrag {
 
     private static let settings = [
         Setting(domain: "com.apple.dock", key: "enterMissionControlByTopWindowDrag", process: "Dock"),
-        Setting(domain: "com.apple.WindowManager", key: "EnableTopTilingByEdgeDrag", process: "WindowManager"),
     ]
+    /// Fill-the-screen, which builds before 2026-10-28 turned off along with Mission Control.
+    private static let fill = Setting(domain: "com.apple.WindowManager", key: "EnableTopTilingByEdgeDrag", process: "WindowManager")
+    private static let on = true as NSNumber
     private static let savedKey = "systemTopDragSaved"
     private static let off = false as NSNumber
 
     static var isTakenByUs: Bool { UserDefaults.standard.dictionary(forKey: savedKey) != nil }
 
     static func takeOver() {
+        giveFillBack()
         // A setting that wasn't there is saved as absent, so restoring removes it again. One
         // not off any more since the last launch was changed in System Settings since: that's
         // the person's newer choice, and the one to put back later.
@@ -38,11 +43,27 @@ enum SystemTopDrag {
     }
 
     static func restore() {
+        giveFillBack()
         guard let saved = UserDefaults.standard.dictionary(forKey: savedKey) else { return }
         // Only a setting still off as BaneySpaces left it goes back; one switched on since in
         // System Settings is the person's newer choice and stays.
         restart(settings.filter { read($0) == off && write($0, saved[$0.id] as? NSNumber) })
         UserDefaults.standard.removeObject(forKey: savedKey)
+    }
+
+    private static let fillGivenBackKey = "systemTopDragFillGivenBack"
+
+    /// Once, on a Mac where an older build took the drag over (and turned fill-the-screen off):
+    /// it comes back on, whatever was saved, since the drag to the top is meant to fill the
+    /// screen again. A setting saved as absent leaves no key, so the record's mere presence is
+    /// what counts. After this a change in System Settings is left alone.
+    private static func giveFillBack() {
+        guard !UserDefaults.standard.bool(forKey: fillGivenBackKey) else { return }
+        UserDefaults.standard.set(true, forKey: fillGivenBackKey)
+        guard var saved = UserDefaults.standard.dictionary(forKey: savedKey) else { return }
+        saved.removeValue(forKey: fill.id)
+        UserDefaults.standard.set(saved, forKey: savedKey)
+        if read(fill) == off, write(fill, on) { restart([fill]) }
     }
 
     private static func read(_ s: Setting) -> NSNumber? {

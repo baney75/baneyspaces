@@ -70,9 +70,9 @@ workspaces in the same 3×3 grid as the number keys, with every window's app and
 - **Esc,** or the same key again, puts you back where you were.
 - **Drag a window up to the top of the screen** and the overview opens in place of Mission
   Control, with the window's card under your pointer. Let go over a workspace to send the window
-  there, in the same spot you picked it up from; let go anywhere else and it stays where it is.
-  While this is on, macOS's own Mission Control and fill-the-screen for that drag are off; turn
-  it off under **Settings › Keys** and they come back as they were.
+  there, in the same spot you picked it up from; let go at the top itself and macOS fills the
+  screen with it; let go anywhere else and it stays where it is. While this is on, Mission Control
+  for that drag is off; turn it off under **Settings › Keys** and it comes back as it was.
 
 <p align="center">
   <img src="docs/shots/overview-drag.jpg" alt="Dragging a Mail window card onto workspace 6 in the overview; the target tile is outlined" width="760">

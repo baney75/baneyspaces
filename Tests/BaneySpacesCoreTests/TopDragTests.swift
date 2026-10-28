@@ -153,4 +153,19 @@ final class TopDragTests: XCTestCase {
         XCTAssertFalse(TopDrag.atTop(CGPoint(x: 700, y: 3), screens: [main]))
         XCTAssertFalse(TopDrag.atTop(CGPoint(x: 700, y: -5), screens: [main]))
     }
+
+    /// A window dragged to the top and let go there fills the screen, as macOS does it
+    /// (Donovan, 2026-10-28): BaneySpaces may turn off Mission Control for that drag, never
+    /// fill-the-screen. `SystemTopDrag` lives in the app target, so this reads the source.
+    func testTheDragToTheTopLeavesFillTheScreenOn() throws {
+        let source = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/BaneySpaces/TopDragWatcher.swift")
+        let text = try String(contentsOf: source, encoding: .utf8)
+            .split(separator: "\n").map { $0.components(separatedBy: "//")[0] }.joined(separator: "\n")
+        let taken = try XCTUnwrap(text.range(of: "private static let settings = [").map { text[$0.upperBound...] }
+            .flatMap { rest in rest.range(of: "]").map { rest[..<$0.lowerBound] } })
+        XCTAssertTrue(taken.contains("enterMissionControlByTopWindowDrag"), String(taken))
+        XCTAssertFalse(taken.contains("EnableTopTilingByEdgeDrag"), "fill-the-screen must stay macOS's")
+    }
 }

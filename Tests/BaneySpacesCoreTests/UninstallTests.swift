@@ -119,14 +119,22 @@ final class UninstallTests: XCTestCase {
         XCTAssertFalse(out.contains("back as they were"), out)
     }
 
-    /// Without the app, Mission Control and fill-the-screen for a drag to the top still go back:
-    /// one saved as on is turned on, one that wasn't set is unset again.
+    /// Without the app, Mission Control for a drag to the top still goes back as saved, and
+    /// fill-the-screen the app already gave back is left alone.
     func testWithoutTheAppItPutsTheTopDragSettingsBack() throws {
         let saved = ["com.apple.dock/enterMissionControlByTopWindowDrag": true]
-        let out = try uninstall(prefs: ["systemTopDragSaved": saved], macOS: "0")
+        let out = try uninstall(prefs: ["systemTopDragSaved": saved, "systemTopDragFillGivenBack": true], macOS: "0")
         XCTAssertTrue(out.contains("would run: defaults write com.apple.dock enterMissionControlByTopWindowDrag -bool true"), out)
-        XCTAssertTrue(out.contains("would run: defaults delete com.apple.WindowManager EnableTopTilingByEdgeDrag"), out)
-        XCTAssertTrue(out.contains("would run: killall Dock") && out.contains("would run: killall WindowManager"), out)
+        XCTAssertTrue(out.contains("would run: killall Dock"), out)
+        XCTAssertFalse(out.contains("EnableTopTilingByEdgeDrag") || out.contains("killall WindowManager"), out)
+    }
+
+    /// Fill-the-screen an older build turned off comes back on, even when it was saved as
+    /// absent (Donovan, 2026-10-28: the drag to the top fills the screen again).
+    func testWithoutTheAppFillTheScreenComesBackOn() throws {
+        let out = try uninstall(prefs: ["systemTopDragSaved": [String: Bool]()], macOS: "0")
+        XCTAssertTrue(out.contains("would run: defaults write com.apple.WindowManager EnableTopTilingByEdgeDrag -bool true"), out)
+        XCTAssertTrue(out.contains("would run: killall WindowManager"), out)
     }
 
     /// One switched back on since in System Settings is the person's choice and stays.

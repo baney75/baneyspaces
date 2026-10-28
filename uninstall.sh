@@ -95,8 +95,10 @@ if [ -z "$TEST" ] && [ "$(defaults read com.apple.dock autohide-delay 2>/dev/nul
   killall Dock 2>/dev/null || true
 fi
 
-# Mission Control and fill-the-screen for a window dragged to the top, if the app wasn't there
-# to put them back. Only one still off as BaneySpaces left it goes back to its saved value.
+# Mission Control for a window dragged to the top, if the app wasn't there to put it back. Only
+# a setting still off as BaneySpaces left it goes back to its saved value. Fill-the-screen, which
+# builds before 2026-10-28 turned off too, comes back on whatever was saved, as the app does,
+# unless the app already gave it back.
 # The test reads this Mac's settings as BANEYSPACES_UNINSTALL_MACOS says, not for real.
 macos_pref() { if [ -n "$TEST" ]; then echo "${BANEYSPACES_UNINSTALL_MACOS:-}"; else defaults read "$1" "$2" 2>/dev/null || true; fi; }
 top_drag_back() {  # domain key process what
@@ -110,7 +112,11 @@ top_drag_back() {  # domain key process what
 saved=$(pref systemTopDragSaved)
 if [ -n "$saved" ]; then
   top_drag_back com.apple.dock enterMissionControlByTopWindowDrag Dock "Mission Control"
-  top_drag_back com.apple.WindowManager EnableTopTilingByEdgeDrag WindowManager "fill-the-screen"
+  if [ "$(pref systemTopDragFillGivenBack)" != 1 ] && [ "$(macos_pref com.apple.WindowManager EnableTopTilingByEdgeDrag)" = "0" ]; then
+    step "Turning fill-the-screen back on for a window dragged to the top"
+    sys defaults write com.apple.WindowManager EnableTopTilingByEdgeDrag -bool true
+    sys killall WindowManager 2>/dev/null || true
+  fi
 fi
 
 # AeroSpace: the installer stopped it opening at login so the two don't fight over the same keys.
