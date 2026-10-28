@@ -65,6 +65,7 @@ func post(_ type: CGEventType, _ p: CGPoint) {
     e?.post(tap: .cgSessionEventTap)
 }
 /// Presses on `from`, glides to `to`, rests there `hold` seconds, glides to `release`, lets go.
+/// `check` runs just before leaving `to`; letting go at `to` itself follows the rest at once.
 func drag(from: CGPoint, to: CGPoint, hold: TimeInterval, release: CGPoint, check: () -> Void) {
     post(.mouseMoved, from)
     usleep(100_000)
@@ -82,8 +83,10 @@ func drag(from: CGPoint, to: CGPoint, hold: TimeInterval, release: CGPoint, chec
     while Date() < end { post(.leftMouseDragged, to); usleep(30_000) }
     print("      held at \(to); the window is at \(onScreen(id).map { "\($0.origin)" } ?? "nowhere") (picked up at \(from))")
     check()
-    glide(to, release)
-    usleep(150_000)
+    if release != to {
+        glide(to, release)
+        usleep(150_000)
+    }
     post(.leftMouseUp, release)
     usleep(1_200_000)
 }
