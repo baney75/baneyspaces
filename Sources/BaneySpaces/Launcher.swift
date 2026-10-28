@@ -4,9 +4,9 @@ import Carbon.HIToolbox
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// One place to open, find, install, update and remove apps, and to run the Mac's everyday
-/// commands. Type to search everything at once, or pick a menu (Apps, Install, Remove, Update,
-/// System, Workspaces) and search inside it. It can take ⌘Space from Spotlight.
+/// One place to open, find, install, update and remove apps, find files, and run the Mac's
+/// everyday commands. Type to search everything at once, or pick a menu (Apps, Files, Install,
+/// Remove, Update, System, Workspaces) and search inside it. It can take ⌘Space from Spotlight.
 enum Launcher {
     /// ⌘Space opens the launcher instead of Spotlight. Off unless chosen.
     static var onCmdSpace: Bool {
@@ -266,13 +266,14 @@ struct LauncherItem: Identifiable {
 
 final class LauncherModel: ObservableObject {
     enum Scope: String, CaseIterable {
-        case root, web, apps, install, remove, update, system, workspaces
+        case root, web, apps, files, install, remove, update, system, workspaces
 
         var title: String {
             switch self {
             case .root: "Search"
             case .web: "Search the Web"
             case .apps: "Apps"
+            case .files: "Files"
             case .install: "Install"
             case .remove: "Remove"
             case .update: "Update"
@@ -285,6 +286,7 @@ final class LauncherModel: ObservableObject {
             case .root: "magnifyingglass"
             case .web: "globe"
             case .apps: "square.grid.2x2"
+            case .files: "doc.text.magnifyingglass"
             case .install: "arrow.down.circle"
             case .remove: "trash"
             case .update: "arrow.triangle.2.circlepath"
@@ -297,6 +299,7 @@ final class LauncherModel: ObservableObject {
             case .root: ""
             case .web: "Bangs like !yt and !i, and AI agents like !claude"
             case .apps: "Every app on this Mac"
+            case .files: "Any file or folder in your home folder and iCloud Drive, by name"
             case .install: "Thousands of apps from Homebrew and the App Store"
             case .remove: "Uninstall apps Homebrew installed"
             case .update: "Homebrew apps, macOS and BaneySpaces"
@@ -306,7 +309,8 @@ final class LauncherModel: ObservableObject {
         }
         var placeholder: String {
             switch self {
-            case .root: "Search apps, the web (!yt), or ask (?)"
+            case .root: "Search apps, files, the web (!yt), or ask (?)"
+            case .files: "Search files and folders by name"
             case .web: "Search the web, or !bang, or ? to ask"
             case .install: "Search for an app to install"
             default: "Search \(title.lowercased())"
@@ -316,7 +320,7 @@ final class LauncherModel: ObservableObject {
 
     enum Job: Equatable { case installing, removing, failed(String) }
 
-    @Published var query = "" { didSet { if query != oldValue { selected = 0; rebuild(); searchStore() } } }
+    @Published var query = "" { didSet { if query != oldValue { selected = 0; rebuild(); searchStore(); searchFiles() } } }
     @Published private(set) var scope = Scope.root
     @Published private(set) var items: [LauncherItem] = []
     @Published var selected = 0
@@ -334,6 +338,10 @@ final class LauncherModel: ObservableObject {
     private var iconCache: [String: NSImage] = [:]
     private let catalog = CaskCatalog()
     private var storeWork: DispatchWorkItem?
+    /// Files Spotlight found for the query, best first. A newer search makes an older one stale.
+    private var fileResults: [FileSearch.Hit] = []
+    private var fileWork: DispatchWorkItem?
+    private var fileSearches = 0
     private var bangs = Launcher.loadBangs()
     /// Terminal agents found on this Mac: command to path.
     var agents: [String: String] = [:]
@@ -350,6 +358,7 @@ final class LauncherModel: ObservableObject {
         selected = 0
         running = actions.workspacesByApp()
         storeResults = []
+        fileResults = []
         bangs = Launcher.loadBangs()
         rebuild()
         // Apps installed since the last look show up without a restart.
@@ -371,6 +380,7 @@ final class LauncherModel: ObservableObject {
         field?.stringValue = ""
         selected = 0
         storeResults = []
+        fileResults = []
         if s == .install || s == .remove { loadCatalog() }
         rebuild()
     }
@@ -443,12 +453,15 @@ final class LauncherModel: ObservableObject {
                 out += workspaceItems(q)
                 out += commandItems(q)
                 out += menuItems().filter { Fuzzy.score(q, $0.title) != nil }
+                // Files come in a moment after the rest, below them, so the row you're on stays put.
+                out += fileItems().prefix(5)
                 out += searchEverywhere(q).prefix(3)
                 out.append(LauncherItem(id: "find-install", section: "Install", title: "Install “\(q)”…",
                                         subtitle: "Search Homebrew and the App Store", icon: .symbol("arrow.down.circle"),
                                         badge: "⇥", run: { [weak self] in self?.enter(.install); self?.setQuery(q) }))
             }
         case .apps: out = appItems(q, limit: 500)
+        case .files: out = fileItems()
         case .install: out = installItems(q)
         case .remove: out = removeItems(q)
         case .update: out = updateItems().filter { q.isEmpty || Fuzzy.score(q, $0.title) != nil }
@@ -898,6 +911,83 @@ final class LauncherModel: ObservableObject {
         }
         storeWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+    }
+
+    // MARK: Files
+
+    /// Spotlight, a moment after typing stops: the top five in the main search, more in Files.
+    /// A bang or a question is for the web, not a file name.
+    private func searchFiles() {
+        fileWork?.cancel()
+        fileSearches += 1
+        let q = query.trimmingCharacters(in: .whitespaces)
+        let forFiles = scope == .files || scope == .root && !q.hasPrefix("!") && !q.hasPrefix("?") && Bangs.parse(q) == nil
+        guard forFiles, FileSearch.spotlightQuery(q) != nil else {
+            if !fileResults.isEmpty { fileResults = []; rebuild() }
+            return
+        }
+        let search = fileSearches, inScope = scope
+        let work = DispatchWorkItem {
+            FileFinder.find(q, limit: inScope == .files ? 60 : 5) { [weak self] hits in
+                guard let self, self.fileSearches == search, self.scope == inScope else { return }
+                self.fileResults = hits
+                self.rebuild()
+            }
+        }
+        fileWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+    }
+
+    private func fileItems() -> [LauncherItem] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return fileResults.map { f in
+            let url = URL(fileURLWithPath: f.path)
+            return LauncherItem(id: "file:\(f.path)", section: "Files", title: f.name,
+                                subtitle: FileSearch.folder(of: f.path, home: home) + " · ⌘↩ shows it in Finder",
+                                icon: .file(f.path), run: { [weak self] in
+                                    self?.close()
+                                    if !NSWorkspace.shared.open(url) { NSSound.beep() }
+                                }, reveal: url)
+        }
+    }
+}
+
+/// Runs `FileSearch`'s query through Spotlight over the home folder (iCloud Drive included),
+/// off the main thread, and ranks what it finds.
+enum FileFinder {
+    private static let queue = DispatchQueue(label: "BaneySpaces file search", qos: .userInitiated)
+    /// Spotlight's matches looked at per search. A two-letter search can match thousands; the
+    /// ranking only needs enough to find the few worth showing.
+    static let cap = 1000
+
+    static func find(_ typed: String, limit: Int, done: @escaping ([FileSearch.Hit]) -> Void) {
+        guard let text = FileSearch.spotlightQuery(typed) else { return done([]) }
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        queue.async {
+            let ranked = FileSearch.rank(typed, search(text, in: home), home: home, limit: limit)
+            DispatchQueue.main.async { done(ranked) }
+        }
+    }
+
+    /// Spotlight hands these back with the results; asking item by item took seconds. The path
+    /// isn't one it can (it isn't stored), so that one is asked of each item.
+    private static let attributes = [kMDItemFSName, kMDItemLastUsedDate, kMDItemFSContentChangeDate] as [CFString]
+
+    private static func search(_ text: String, in home: String) -> [FileSearch.Hit] {
+        guard let q = MDQueryCreate(kCFAllocatorDefault, text as CFString, attributes as CFArray, nil) else { return [] }
+        MDQuerySetSearchScope(q, [home] as CFArray, 0)
+        MDQuerySetMaxCount(q, cap)
+        guard MDQueryExecute(q, CFOptionFlags(kMDQuerySynchronous.rawValue)) else { return [] }
+        func value<T>(_ attr: CFString, _ i: Int) -> T? {
+            MDQueryGetAttributeValueOfResultAtIndex(q, attr, i).map { Unmanaged<AnyObject>.fromOpaque($0).takeUnretainedValue() } as? T
+        }
+        return (0..<MDQueryGetResultCount(q)).compactMap { i in
+            guard let raw = MDQueryGetResultAtIndex(q, i),
+                  let path = MDItemCopyAttribute(Unmanaged<MDItem>.fromOpaque(raw).takeUnretainedValue(), kMDItemPath) as? String
+            else { return nil }
+            return FileSearch.Hit(name: value(kMDItemFSName, i) ?? (path as NSString).lastPathComponent, path: path,
+                                  lastUsed: value(kMDItemLastUsedDate, i), modified: value(kMDItemFSContentChangeDate, i))
+        }
     }
 }
 
