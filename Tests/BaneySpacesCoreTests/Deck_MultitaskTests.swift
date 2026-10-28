@@ -191,4 +191,32 @@ final class SharedWindowTests: XCTestCase {
         XCTAssertNil(titles.since("g"))
         XCTAssertEqual(AgentSessions.activity(busy, e, now: 3600), .working, "a terminal still spinning keeps working")
     }
+
+    func testAnIncompatibleTerminalIsNeverPicked() {
+        var a = AgentSessions()
+        a.apply(AgentEvent(agent: "claude", session: "s", cwd: "/elsewhere", tty: "", app: "com.mitchellh.ghostty", state: .working, at: 0))
+        let t = Item(id: "g", bundleID: "com.mitchellh.ghostty", appName: "Ghostty", role: .terminal, kind: .terminal, group: "w",
+                     title: "◐ x", directory: "/p", activity: .working)
+        XCTAssertTrue(a.resolve([t], now: 1).isEmpty)
+        XCTAssertTrue(a.resolve([t], now: 2).isEmpty, "the pick rule and the keep rule agree")
+    }
+
+    func testWorkThatWentStaleThenFinishedIsAFinish() {
+        let e = ev("a", .working, at: 0)
+        var att = Attention()
+        att.update([("win:1", AgentSessions.forAttention(AgentSessions.activity(window, e, now: 10), e))], focused: nil)
+        att.update([("win:1", AgentSessions.forAttention(AgentSessions.activity(window, e, now: AgentSessions.stale + 1), e))], focused: nil)
+        let stop = ev("a", .waiting, at: AgentSessions.stale + 60)
+        att.update([("win:1", AgentSessions.forAttention(AgentSessions.activity(window, stop, now: AgentSessions.stale + 61), stop))], focused: nil)
+        XCTAssertEqual(att.unseen, ["win:1"])
+    }
+
+    func testAQuestionSeenOnASharedWindowStaysSeen() {
+        var q = AnsweredQuestions()
+        let c = ev("c", .waiting, at: 1, message: "c?"), d = ev("d", .waiting, at: 2, message: "d?")
+        _ = q.notice(for: "win:1", c, focused: true)
+        _ = q.notice(for: "win:1", d, focused: true)
+        XCTAssertEqual(q.notice(for: "win:1", c, focused: false), "", "seeing d doesn't bring c's question back")
+        XCTAssertEqual(q.notice(for: "win:1", d, focused: false), "")
+    }
 }

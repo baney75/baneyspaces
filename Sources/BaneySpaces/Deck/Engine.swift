@@ -276,7 +276,7 @@ final class Engine {
         }
         answered.keep(Set(bound.keys))
         let focused = all.first { $0.focused }?.id
-        attention.update(all.map { ($0.id, $0.activity) }, focused: focused)
+        attention.update(all.map { ($0.id, AgentSessions.forAttention($0.activity, bound[$0.id])) }, focused: focused)
         notices = notices.filter { k, _ in attention.unseen.contains(k) }
         if items != all { items = all }
         onUpdate()

@@ -123,7 +123,7 @@ public struct AgentSessions: Equatable, Sendable {
         }
         for (key, e) in sessions.sorted(by: { $0.value.at > $1.value.at }) where binding[key] == nil {
             let inApp = items.filter { e.app.isEmpty || $0.bundleID == e.app }
-            let pool = inApp.filter { $0.kind == .terminal && !taken.contains($0.id) }
+            let pool = inApp.filter { $0.kind == .terminal && !taken.contains($0.id) && Self.compatible($0, e) }
             var pick: Item?
             let exact = pool.filter { Self.exact($0, e) }
             if exact.count == 1 { pick = exact[0] }
@@ -196,6 +196,12 @@ public struct AgentSessions: Equatable, Sendable {
         return .working
     }
 
+    /// What "finished while you were away" should take a row's activity as: work that only went
+    /// stale is still work, so a turn that does end later counts as a finish.
+    public static func forAttention(_ shown: Activity, _ e: AgentEvent?) -> Activity {
+        shown == .shell && e?.state == .working ? .working : shown
+    }
+
 
     /// Nothing known about the row rules the session out: same app, and the same tty and folder
     /// wherever both sides know them.
@@ -262,12 +268,16 @@ public struct AnsweredQuestions: Equatable, Sendable {
     public init() {}
 
     /// The notice row `id` shows for its session's latest event `e`.
+    /// Kept per session as well as row: an agent app's window shows several sessions in turn.
     public mutating func notice(for id: String, _ e: AgentEvent, focused: Bool) -> String {
         guard e.state == .waiting, !e.message.isEmpty else { return "" }
-        if focused { seen[id] = e.at }
-        return seen[id] == e.at ? "" : e.message
+        let key = id + "|" + e.agent + ":" + e.session
+        if focused { seen[key] = e.at }
+        return seen[key] == e.at ? "" : e.message
     }
 
     /// Forgets rows no session is bound to any more.
-    public mutating func keep(_ ids: Set<String>) { seen = seen.filter { ids.contains($0.key) } }
+    public mutating func keep(_ ids: Set<String>) {
+        seen = seen.filter { k, _ in ids.contains(String(k.prefix { $0 != "|" })) }
+    }
 }
