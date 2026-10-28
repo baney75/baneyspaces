@@ -79,6 +79,8 @@ public struct AgentSessions: Equatable, Sendable {
     public private(set) var binding: [String: String] = [:]
     /// Rows still in the running for an unbound session, and the event they were last narrowed by.
     public private(set) var candidates: [String: Set<String>] = [:]
+    /// The question each session last showed on an app's window while you were looking at it.
+    private var answered: [String: Double] = [:]
     private var narrowedBy: [String: Double] = [:]
     /// How long a title takes to catch up with a hook event before it's compared.
     public static let settle = 0.5
@@ -95,7 +97,7 @@ public struct AgentSessions: Equatable, Sendable {
     }
 
     private mutating func forget(_ key: String) {
-        sessions[key] = nil; binding[key] = nil; candidates[key] = nil; narrowedBy[key] = nil
+        sessions[key] = nil; binding[key] = nil; candidates[key] = nil; narrowedBy[key] = nil; answered[key] = nil
     }
 
     /// Forgets sessions silent for longer than `maxAge` seconds (an agent killed without SessionEnd).
@@ -108,11 +110,11 @@ public struct AgentSessions: Equatable, Sendable {
         let byID = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         var out: [String: AgentEvent] = [:]
         var taken = Set<String>()
-        // An app's window is shared: every session in the app that has no terminal of its own
-        // reports to it (T3 Code runs a dozen in one window), so it never counts as taken.
+        // An agent app's window is shared: every session in the app reports to it (T3 Code runs a
+        // dozen in one window), so it never counts as taken.
         func show(_ e: AgentEvent, on item: Item) {
-            if item.kind == .window, let other = out[item.id], !Self.outranks(e, other, now: now) { return }
-            if item.kind != .window { taken.insert(item.id) }
+            if Self.shared(item), let other = out[item.id], !outranks(e, other, now: now) { return }
+            if !Self.shared(item) { taken.insert(item.id) }
             out[item.id] = e
         }
         for (key, itemID) in binding {
@@ -121,7 +123,7 @@ public struct AgentSessions: Equatable, Sendable {
         }
         for (key, e) in sessions.sorted(by: { $0.value.at > $1.value.at }) where binding[key] == nil {
             let inApp = items.filter { e.app.isEmpty || $0.bundleID == e.app }
-            let pool = inApp.filter { $0.kind == .terminal && !taken.contains($0.id) && Self.compatible($0, e) }
+            let pool = inApp.filter { $0.kind == .terminal && !taken.contains($0.id) }
             var pick: Item?
             let exact = pool.filter { Self.exact($0, e) }
             if exact.count == 1 { pick = exact[0] }
@@ -146,40 +148,54 @@ public struct AgentSessions: Equatable, Sendable {
             candidates[key] = nil
             show(e, on: p)
         }
+        // A question on a window you're looking at is answered, or let be: it stops outranking work.
+        for (id, e) in out where e.state == .waiting && !e.message.isEmpty {
+            if let item = byID[id], Self.shared(item), item.focused { answered[e.agent + ":" + e.session] = e.at }
+        }
         return out
     }
 
-    /// A working report with nothing after it for this long no longer counts on an app's window,
-    /// where no title can say otherwise. A turn stopped from T3 Code or with Esc sends no hook, and
+    /// A window that stands in for every session of an agent app. A terminal's window (a second
+    /// Ghostty, Terminal before it may be scripted) holds one session, like any terminal row.
+    static func shared(_ item: Item) -> Bool { item.kind == .window && item.role != .terminal }
+
+    /// A working report with nothing after it for this long no longer counts on a row whose title
+    /// can't say otherwise (an agent app's window, a terminal without Claude's status glyph). A turn stopped from T3 Code or with Esc sends no hook, and
     /// its spinner stayed on the dock for hours (Donovan, 2026-10-28). Long enough for a slow tool:
     /// a foreground Bash call times out at ten minutes.
     public static let stale: Double = 15 * 60
-    /// How long a terminal's title may say Claude is idle (✳) against a working report before the
-    /// title wins. Claude retitles the moment it stops, so an idle title that lasts means a turn
-    /// that ended without a hook.
+    /// How long a terminal's title must keep saying Claude is idle (✳), with no report since, before
+    /// it wins over a working report. Claude retitles the moment it stops, so an idle title that
+    /// lasts means a turn that ended without a hook.
     public static let titleWins: Double = 5
 
-    /// Which of two sessions sharing an app's window it shows: a question, then work, while fresh;
-    /// otherwise the latest report.
-    static func outranks(_ a: AgentEvent, _ b: AgentEvent, now: Double) -> Bool {
+    /// Which of two sessions sharing an app's window it shows: a question you haven't looked at,
+    /// then work that isn't stale, then the latest report.
+    func outranks(_ a: AgentEvent, _ b: AgentEvent, now: Double) -> Bool {
         func weight(_ e: AgentEvent) -> Int {
-            guard now - e.at <= stale else { return 0 }
-            if e.state == .waiting && !e.message.isEmpty { return 2 }
-            return e.state == .working ? 1 : 0
+            if e.state == .waiting && !e.message.isEmpty { return answered[e.agent + ":" + e.session] == e.at ? 0 : 2 }
+            return e.state == .working && now - e.at <= Self.stale ? 1 : 0
         }
         let wa = weight(a), wb = weight(b)
         return wa != wb ? wa > wb : a.at > b.at
     }
 
     /// What row `item` shows for its session's latest report `e`: what the report says, unless the
-    /// row shows the work stopped since.
-    public static func activity(_ item: Item, _ e: AgentEvent, now: Double) -> Activity {
+    /// row shows the work stopped since. `item.activity` is what its title says; `idleSince` is when
+    /// the title last started saying Claude is idle.
+    public static func activity(_ item: Item, _ e: AgentEvent, now: Double, idleSince: Double? = nil) -> Activity {
         guard e.state == .working else { return Activity(e.state) }
-        let quiet = now - e.at
-        if item.kind == .terminal, item.activity == .waiting, quiet > titleWins { return .waiting }
-        if item.kind == .window, quiet > stale { return .shell }
+        switch item.activity {
+        case .waiting:
+            if let since = idleSince, now - since > titleWins, now - e.at > titleWins { return .waiting }
+        case .shell:
+            if now - e.at > stale { return .shell }
+        case .working:
+            break
+        }
         return .working
     }
+
 
     /// Nothing known about the row rules the session out: same app, and the same tty and folder
     /// wherever both sides know them.
@@ -206,6 +222,24 @@ public struct AgentSessions: Equatable, Sendable {
         case .end: return false
         }
     }
+}
+
+
+/// When each row's title started saying Claude is idle (✳), to tell a title that stayed idle from
+/// one read that hadn't caught up.
+public struct IdleTitles: Equatable, Sendable {
+    private var since: [String: Double] = [:]
+
+    public init() {}
+
+    /// `rows` with their title's activity, before any hook speaks for them.
+    public mutating func update(_ rows: [Item], now: Double) {
+        var next: [String: Double] = [:]
+        for r in rows where r.activity == .waiting { next[r.id] = since[r.id] ?? now }
+        since = next
+    }
+
+    public func since(_ id: String) -> Double? { since[id] }
 }
 
 extension Activity {

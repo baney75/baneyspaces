@@ -35,6 +35,7 @@ final class Engine {
     /// Rows a hook or `notify` attached a message to.
     private var notices: [String: String] = [:]
     private var answered = AnsweredQuestions()
+    private var idleTitles = IdleTitles()
 
     /// Called on the main thread after every merge.
     var onUpdate: () -> Void = {}
@@ -263,10 +264,11 @@ final class Engine {
         }
         all += extraItems()
         let now = Date().timeIntervalSince1970
+        idleTitles.update(all, now: now)
         let bound = sessions.resolve(all, now: now)
         for i in all.indices {
             if let e = bound[all[i].id] {
-                all[i].activity = AgentSessions.activity(all[i], e, now: now)
+                all[i].activity = AgentSessions.activity(all[i], e, now: now, idleSince: idleTitles.since(all[i].id))
                 all[i].agent = e.agent
                 all[i].notice = answered.notice(for: all[i].id, e, focused: all[i].focused)
             }

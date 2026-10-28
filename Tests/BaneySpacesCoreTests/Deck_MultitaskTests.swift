@@ -137,20 +137,58 @@ final class SharedWindowTests: XCTestCase {
         XCTAssertEqual(a.resolve([window], now: 31)["win:1"]?.session, "c", "a question beats work")
     }
 
+    func testALookedAtQuestionStopsOutrankingWork() {
+        var a = AgentSessions()
+        a.apply(ev("a", .working, at: 10))
+        a.apply(ev("c", .waiting, at: 20, message: "Claude needs your permission to use Bash"))
+        var looking = window; looking.focused = true
+        XCTAssertEqual(a.resolve([looking], now: 21)["win:1"]?.session, "c")
+        XCTAssertEqual(a.resolve([window], now: 22)["win:1"]?.session, "a", "you looked at the question; the work shows again")
+    }
+
+    func testAnUnansweredQuestionNeverAgesOut() {
+        var a = AgentSessions()
+        a.apply(ev("c", .waiting, at: 0, message: "Claude needs your permission to use Bash"))
+        a.apply(ev("a", .working, at: AgentSessions.stale + 100))
+        XCTAssertEqual(a.resolve([window], now: AgentSessions.stale + 101)["win:1"]?.session, "c")
+    }
+
+    func testATerminalsWindowHoldsOneSession() {
+        var a = AgentSessions()
+        let term = { (n: Int) in Item(id: "win:\(n)", bundleID: "com.apple.Terminal", appName: "Terminal", role: .terminal, kind: .window,
+                                      group: "win:\(n)", title: "zsh") }
+        a.apply(AgentEvent(agent: "claude", session: "x", cwd: "/x", tty: "", app: "com.apple.Terminal", state: .working, at: 1))
+        a.apply(AgentEvent(agent: "claude", session: "y", cwd: "/y", tty: "", app: "com.apple.Terminal", state: .waiting, at: 2))
+        let r = a.resolve([term(1)], now: 3)
+        XCTAssertEqual(r.count, 1)
+        XCTAssertEqual(a.binding.count, 1, "a second session doesn't share one terminal window")
+    }
+
     func testAStaleReportOnAWindowStopsCountingAsWork() {
         let e = ev("a", .working, at: 0)
         XCTAssertEqual(AgentSessions.activity(window, e, now: 60), .working)
         XCTAssertEqual(AgentSessions.activity(window, e, now: AgentSessions.stale + 1), .shell,
                        "no badge, and not a false finish either")
+        let plain = Item(id: "g", bundleID: "com.mitchellh.ghostty", appName: "Ghostty", role: .terminal, kind: .terminal,
+                         group: "w", title: "zsh", activity: .shell)
+        XCTAssertEqual(AgentSessions.activity(plain, e, now: AgentSessions.stale + 1), .shell, "a title without a glyph says nothing either")
     }
 
-    func testAnIdleTitleWinsOverALateWorkingReport() {
+    func testAnIdleTitleWinsOnlyOnceItStaysIdle() {
         let idle = Item(id: "g", bundleID: "com.mitchellh.ghostty", appName: "Ghostty", role: .terminal, kind: .terminal,
                         group: "w", title: "✳ fix it", activity: .waiting)
         let e = AgentEvent(agent: "claude", session: "s", cwd: "", tty: "", app: "", state: .working, at: 0)
-        XCTAssertEqual(AgentSessions.activity(idle, e, now: 1), .working, "the title may not have caught up yet")
-        XCTAssertEqual(AgentSessions.activity(idle, e, now: 6), .waiting, "Esc sends no hook; Claude's title says it stopped")
+        var titles = IdleTitles()
+        titles.update([idle], now: 30)
+        XCTAssertEqual(AgentSessions.activity(idle, e, now: 30, idleSince: titles.since("g")), .working,
+                       "one idle read long after the report: the title may not have caught up")
+        titles.update([idle], now: 36)
+        XCTAssertEqual(titles.since("g"), 30)
+        XCTAssertEqual(AgentSessions.activity(idle, e, now: 36, idleSince: titles.since("g")), .waiting,
+                       "Esc sends no hook; Claude's title has said it stopped for over 5 s")
         var busy = idle; busy.activity = .working
+        titles.update([busy], now: 40)
+        XCTAssertNil(titles.since("g"))
         XCTAssertEqual(AgentSessions.activity(busy, e, now: 3600), .working, "a terminal still spinning keeps working")
     }
 }

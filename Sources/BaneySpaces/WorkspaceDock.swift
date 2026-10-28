@@ -1743,7 +1743,14 @@ final class SpinnerArcView: NSView {
                 self?.spin()
             }
         }
+        arc.contentsScale = window?.backingScaleFactor ?? 2
         spin()
+    }
+
+    /// Sharp on a Retina screen, and again after the dock moves to another display.
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        arc.contentsScale = window?.backingScaleFactor ?? 2
     }
 
     deinit { shownAgain.map(NotificationCenter.default.removeObserver) }
