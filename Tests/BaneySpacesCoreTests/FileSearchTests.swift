@@ -31,6 +31,8 @@ final class FileSearchTests: XCTestCase {
         XCTAssertTrue(FileSearch.isNoise("/Users/d/Documents/.secret", home: home))
         XCTAssertFalse(FileSearch.isNoise("/Users/d/Documents/Taxes/2025 Return.pdf", home: home))
         XCTAssertFalse(FileSearch.isNoise("/Users/d/Projects", home: home))
+        XCTAssertTrue(FileSearch.isNoise("/Users/d/Projects/silas/src-tauri/target/debug/deps/cfb.d", home: home))
+        XCTAssertFalse(FileSearch.isNoise("/Users/d/Documents/target/plan.md", home: home), "a folder named target with your own files")
     }
 
     /// iCloud Drive, apps' iCloud folders (Obsidian) and cloud drives live in Library but are yours.
@@ -70,5 +72,41 @@ final class FileSearchTests: XCTestCase {
         XCTAssertEqual(FileSearch.folder(of: "/Users/d/Library/CloudStorage/GoogleDrive-x/My Drive/plan.docx", home: home),
                        "GoogleDrive-x/My Drive")
         XCTAssertEqual(FileSearch.folder(of: "/Volumes/USB/a.txt", home: home), "/Volumes/USB")
+    }
+
+    /// One-letter words alone match most of the disk, however many there are.
+    func testOneLetterWordsAloneAreTooLittle() {
+        XCTAssertNil(FileSearch.spotlightQuery("a b"))
+        XCTAssertNil(FileSearch.spotlightQuery("x y z"))
+        XCTAssertNotNil(FileSearch.spotlightQuery("a tax"))
+    }
+
+    /// Words as Spotlight breaks them, so the check here agrees with the query.
+    func testWordsBreakLikeSpotlight() {
+        XCTAssertEqual(FileSearch.words("math_syllabus_page4.png"), ["math", "syllabus", "page", "4", "png"])
+        XCTAssertEqual(FileSearch.words("BaneySpacesCore"), ["baney", "spaces", "core"])
+        XCTAssertEqual(FileSearch.words("2025 Tax Return.pdf"), ["2025", "tax", "return", "pdf"])
+        XCTAssertTrue(FileSearch.matches("tax 2025", "2025 Tax Return.pdf"))
+        XCTAssertTrue(FileSearch.matches("ret tax", "2025 Tax Return.pdf"))
+        XCTAssertFalse(FileSearch.matches("tax 25", "2025 Tax Return.pdf"), "25 doesn't start a word of 2025")
+        XCTAssertTrue(FileSearch.matches("syllabus", "math_syllabus_page4.png"))
+        XCTAssertFalse(FileSearch.matches("budgetx", "Budget.xlsx"), "an older search's file that no longer matches")
+    }
+
+    /// Words typed in another order than the name's still score as words, never below a name
+    /// that only has the letters scattered in order.
+    func testWordsInAnotherOrderRankAsWords() {
+        let reversed = FileSearch.Hit(name: "2025 Tax Return.pdf", path: "/Users/d/Documents/2025 Tax Return.pdf")
+        let scattered = FileSearch.Hit(name: "Tax documents for the year of 2025.pdf", path: "/Users/d/Documents/Tax documents for the year of 2025.pdf")
+        XCTAssertEqual(FileSearch.rank("tax 2025", [scattered, reversed], home: home, limit: 2).first, reversed)
+    }
+
+    /// A file at the top of iCloud Drive is as near as one at the top of the home folder.
+    func testCloudFilesAreNotFartherAway() {
+        XCTAssertEqual(FileSearch.depth("/Users/d/Library/Mobile Documents/com~apple~CloudDocs/Plan.pdf", home: home), 0)
+        XCTAssertEqual(FileSearch.depth("/Users/d/Library/Mobile Documents/iCloud~md~obsidian/Documents/Vault/a.md", home: home), 1)
+        XCTAssertEqual(FileSearch.depth("/Users/d/Library/CloudStorage/OneDrive-X/Plan.pdf", home: home), 0)
+        XCTAssertEqual(FileSearch.depth("/Users/d/Plan.pdf", home: home), 0)
+        XCTAssertEqual(FileSearch.depth("/Users/d/Documents/Plan.pdf", home: home), 1)
     }
 }

@@ -167,8 +167,8 @@ Spotlight. Turning that off gives ⌘Space back to Spotlight, and so does quitti
 - **Type** to search apps, files, commands and workspaces at once. An app that's already open
   takes you to the workspace it's on.
 - **Files.** The best five files and folders whose names match come in under the apps; Tab into
-  **Files** for more. Every word you type must start a word of the name (`tax 25` finds
-  `2025 Tax Return.pdf`). It searches your home folder, iCloud Drive and other cloud drives
+  **Files** for more. Every word you type must start a word of the name (`tax 2025` or `ret tax`
+  finds `2025 Tax Return.pdf`; words also break at `_` and in camelCase). It searches your home folder, iCloud Drive and other cloud drives
   through Spotlight, skipping Library, hidden folders and build folders such as `node_modules`.
   Return opens the file, **⌘Return** shows it in Finder. A folder Spotlight doesn't index
   (System Settings › Spotlight) won't show up.

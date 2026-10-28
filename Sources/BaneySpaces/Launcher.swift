@@ -472,6 +472,14 @@ final class LauncherModel: ObservableObject {
         if selected >= items.count { selected = max(0, items.count - 1) }
     }
 
+    /// Rebuilds for results that came in after the typing (files, the App Store): the row you
+    /// were on stays selected wherever it moved, so Return still does what it showed.
+    private func rebuildKeepingSelection() {
+        let on = items.indices.contains(selected) ? items[selected].id : nil
+        rebuild()
+        if let on, let i = items.firstIndex(where: { $0.id == on }) { selected = i }
+    }
+
     // MARK: Web and agents
 
     /// "!yt cats", "cats !yt", "!y" while typing a bang, or "? a question". Nil for anything else.
@@ -906,7 +914,7 @@ final class LauncherModel: ObservableObject {
             StoreApp.search(q) { results in
                 guard let self, self.query.trimmingCharacters(in: .whitespaces) == q, self.scope == .install else { return }
                 self.storeResults = results
-                self.rebuild()
+                self.rebuildKeepingSelection()
             }
         }
         storeWork = work
@@ -928,10 +936,10 @@ final class LauncherModel: ObservableObject {
         }
         let search = fileSearches, inScope = scope
         let work = DispatchWorkItem {
-            FileFinder.find(q, limit: inScope == .files ? 60 : 5) { [weak self] hits in
+            FileFinder.find(q, limit: inScope == .files ? 60 : 5, search: search) { [weak self] hits in
                 guard let self, self.fileSearches == search, self.scope == inScope else { return }
                 self.fileResults = hits
-                self.rebuild()
+                self.rebuildKeepingSelection()
             }
         }
         fileWork = work
@@ -940,7 +948,8 @@ final class LauncherModel: ObservableObject {
 
     private func fileItems() -> [LauncherItem] {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return fileResults.map { f in
+        // An older search's files stay up while the newer one runs, only those that still match.
+        return fileResults.filter { FileSearch.matches(query, $0.name) }.map { f in
             let url = URL(fileURLWithPath: f.path)
             return LauncherItem(id: "file:\(f.path)", section: "Files", title: f.name,
                                 subtitle: FileSearch.folder(of: f.path, home: home) + " · ⌘↩ shows it in Finder",
@@ -952,20 +961,51 @@ final class LauncherModel: ObservableObject {
     }
 }
 
-/// Runs `FileSearch`'s query through Spotlight over the home folder (iCloud Drive included),
-/// off the main thread, and ranks what it finds.
+/// Runs `FileSearch`'s query through Spotlight over your own folders (iCloud Drive and cloud
+/// drives included, the rest of Library left out), off the main thread, and ranks what it finds.
 enum FileFinder {
     private static let queue = DispatchQueue(label: "BaneySpaces file search", qos: .userInitiated)
-    /// Spotlight's matches looked at per search. A two-letter search can match thousands; the
-    /// ranking only needs enough to find the few worth showing.
+    /// Spotlight's matches looked at per search, most recently used first. A two-letter search
+    /// can match thousands; the ranking only needs enough to find the few worth showing.
     static let cap = 1000
+    /// The newest search asked for. One queued behind it is stale and doesn't run.
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var newest = 0
+    private static func isNewest(_ n: Int) -> Bool { lock.lock(); defer { lock.unlock() }; return newest == n }
 
-    static func find(_ typed: String, limit: Int, done: @escaping ([FileSearch.Hit]) -> Void) {
+    static func find(_ typed: String, limit: Int, search n: Int, done: @escaping ([FileSearch.Hit]) -> Void) {
         guard let text = FileSearch.spotlightQuery(typed) else { return done([]) }
+        lock.lock(); newest = n; lock.unlock()
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         queue.async {
-            let ranked = FileSearch.rank(typed, search(text, in: home), home: home, limit: limit)
+            guard isNewest(n) else { return }
+            let hits = search(text, in: scopes(home), stale: { !isNewest(n) }) + topLevel(typed, home)
+            guard isNewest(n) else { return }
+            let ranked = FileSearch.rank(typed, hits, home: home, limit: limit)
             DispatchQueue.main.async { done(ranked) }
+        }
+    }
+
+    /// The home folder's own folders, without Library or hidden ones, plus iCloud Drive and the
+    /// cloud drives: noise never takes a place under the cap.
+    private static func scopes(_ home: String) -> [String] {
+        let fm = FileManager.default
+        let top = (try? fm.contentsOfDirectory(atPath: home)) ?? []
+        let own = top.filter { name in
+            var dir: ObjCBool = false
+            return !name.hasPrefix(".") && name != "Library"
+                && fm.fileExists(atPath: home + "/" + name, isDirectory: &dir) && dir.boolValue
+        }.map { home + "/" + $0 }
+        return own + FileSearch.cloudFolders.sorted().map { home + "/Library/" + $0 }.filter { fm.fileExists(atPath: $0) }
+    }
+
+    /// Files and folders right in the home folder, which no scope above covers.
+    private static func topLevel(_ typed: String, _ home: String) -> [FileSearch.Hit] {
+        let top = (try? FileManager.default.contentsOfDirectory(atPath: home)) ?? []
+        return top.filter { !$0.hasPrefix(".") && $0 != "Library" && FileSearch.matches(typed, $0) }.map { name in
+            let path = home + "/" + name
+            let attrs = try? FileManager.default.attributesOfItem(atPath: path)
+            return FileSearch.Hit(name: name, path: path, modified: attrs?[.modificationDate] as? Date)
         }
     }
 
@@ -973,11 +1013,13 @@ enum FileFinder {
     /// isn't one it can (it isn't stored), so that one is asked of each item.
     private static let attributes = [kMDItemFSName, kMDItemLastUsedDate, kMDItemFSContentChangeDate] as [CFString]
 
-    private static func search(_ text: String, in home: String) -> [FileSearch.Hit] {
-        guard let q = MDQueryCreate(kCFAllocatorDefault, text as CFString, attributes as CFArray, nil) else { return [] }
-        MDQuerySetSearchScope(q, [home] as CFArray, 0)
+    private static func search(_ text: String, in scopes: [String], stale: () -> Bool) -> [FileSearch.Hit] {
+        guard !scopes.isEmpty,
+              let q = MDQueryCreate(kCFAllocatorDefault, text as CFString, attributes as CFArray, [kMDItemLastUsedDate] as CFArray)
+        else { return [] }
+        MDQuerySetSearchScope(q, scopes as CFArray, 0)
         MDQuerySetMaxCount(q, cap)
-        guard MDQueryExecute(q, CFOptionFlags(kMDQuerySynchronous.rawValue)) else { return [] }
+        guard MDQueryExecute(q, CFOptionFlags(kMDQuerySynchronous.rawValue)), !stale() else { return [] }
         func value<T>(_ attr: CFString, _ i: Int) -> T? {
             MDQueryGetAttributeValueOfResultAtIndex(q, attr, i).map { Unmanaged<AnyObject>.fromOpaque($0).takeUnretainedValue() } as? T
         }
