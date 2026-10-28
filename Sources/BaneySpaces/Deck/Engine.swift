@@ -128,7 +128,10 @@ final class Engine {
     /// Scripted apps only: their background tabs change without any window notification.
     private func sweepScripted() {
         sessions.expire(now: Date().timeIntervalSince1970)
-        for (pid, t) in tracked where t.spec.adapter != .windows { refresh(pid) }
+        let scripted = tracked.filter { $0.value.spec.adapter != .windows }
+        for pid in scripted.keys { refresh(pid) }
+        // Each read merges; with none, merge anyway so a stale report on an app's window clears.
+        if scripted.isEmpty && !sessions.sessions.isEmpty { merge() }
     }
 
     func refreshAll() { for pid in tracked.keys { refresh(pid) } }
@@ -259,10 +262,11 @@ final class Engine {
             }
         }
         all += extraItems()
-        let bound = sessions.resolve(all, now: Date().timeIntervalSince1970)
+        let now = Date().timeIntervalSince1970
+        let bound = sessions.resolve(all, now: now)
         for i in all.indices {
             if let e = bound[all[i].id] {
-                all[i].activity = Activity(e.state)
+                all[i].activity = AgentSessions.activity(all[i], e, now: now)
                 all[i].agent = e.agent
                 all[i].notice = answered.notice(for: all[i].id, e, focused: all[i].focused)
             }

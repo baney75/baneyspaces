@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **An agent's spinner on the dock no longer gets stuck.** Every Claude session inside T3 Code
+  reports to T3's one window, but the first session to claim it kept it for good, so a turn you
+  stopped (which sends no hook) left the spinner turning for up to six hours while your other
+  sessions finished. Now the window shows all of them: a question first, then any session still
+  working, else the latest. A working report with nothing after it for 15 minutes stops counting,
+  and in a terminal Claude's own idle title wins after 5 seconds. The spinner itself now turns in
+  Core Animation, so it can't freeze mid-turn when the dock hides and comes back.
+
 - **Drag a window down to the dock to move it to another workspace.** Pulling a window by its
   title bar to the bottom edge used to do nothing: the dock stayed down while the button was held.
   Now it comes up for the window, the tile under the pointer lights, and the label says where it's

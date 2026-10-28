@@ -1674,20 +1674,92 @@ extension DockAgent.State {
 
 /// An agent at work: a short arc that turns, so it reads as "in progress", not "unread". With
 /// Reduce Motion on, it holds still.
+///
+/// The turn is a Core Animation layer's, not SwiftUI's: a `repeatForever` animation started in
+/// `onAppear` froze mid-turn after the dock panel hid and came back, and a frozen arc looks like a
+/// stuck agent (Donovan, 2026-10-28). The layer's animation runs in the window server, costs the
+/// app nothing per frame, and is put back whenever the view lands in a window.
 private struct AgentSpinner: View {
     let size: CGFloat
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var turning = false
 
     var body: some View {
-        Circle().trim(from: 0, to: 0.7)
-            .stroke(Color.white, style: StrokeStyle(lineWidth: max(1.5, size * 0.16), lineCap: .round))
-            .rotationEffect(.degrees(turning ? 360 : 0))
-            .animation(reduceMotion ? nil : .linear(duration: 1).repeatForever(autoreverses: false), value: turning)
+        SpinnerArc(lineWidth: max(1.5, size * 0.16), turning: !reduceMotion)
             .padding(size * 0.22)
             .frame(width: size, height: size)
             .background(Circle().fill(Color.blue))
             .overlay(Circle().strokeBorder(Color.black.opacity(0.35), lineWidth: 0.75))
-            .onAppear { turning = !reduceMotion }
     }
+}
+
+private struct SpinnerArc: NSViewRepresentable {
+    let lineWidth: CGFloat
+    let turning: Bool
+
+    func makeNSView(context: Context) -> SpinnerArcView { SpinnerArcView() }
+
+    func updateNSView(_ view: SpinnerArcView, context: Context) {
+        view.lineWidth = lineWidth
+        view.turning = turning
+    }
+}
+
+final class SpinnerArcView: NSView {
+    private let arc = CAShapeLayer()
+    static let turn = "turn"
+    var lineWidth: CGFloat = 2 { didSet { if lineWidth != oldValue { needsLayout = true } } }
+    var turning = true { didSet { if turning != oldValue { spin() } } }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        arc.fillColor = nil
+        arc.strokeColor = NSColor.white.cgColor
+        arc.lineCap = .round
+        arc.strokeEnd = 0.7
+        layer?.addSublayer(arc)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        arc.frame = bounds
+        arc.lineWidth = lineWidth
+        let inset = lineWidth / 2
+        arc.path = CGPath(ellipseIn: bounds.insetBy(dx: inset, dy: inset), transform: nil)
+        CATransaction.commit()
+    }
+
+    private var shownAgain: NSObjectProtocol?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        shownAgain.map(NotificationCenter.default.removeObserver)
+        shownAgain = window.map { w in
+            NotificationCenter.default.addObserver(forName: NSWindow.didChangeOcclusionStateNotification, object: w, queue: .main) { [weak self] _ in
+                self?.spin()
+            }
+        }
+        spin()
+    }
+
+    deinit { shownAgain.map(NotificationCenter.default.removeObserver) }
+
+    /// Ordering a window out can drop a layer's animations; this puts the turn back.
+    func spin() {
+        guard window != nil, turning else { arc.removeAnimation(forKey: Self.turn); return }
+        guard arc.animation(forKey: Self.turn) == nil else { return }
+        let a = CABasicAnimation(keyPath: "transform.rotation.z")
+        a.fromValue = 0
+        a.toValue = -2 * Double.pi
+        a.duration = 1
+        a.repeatCount = .infinity
+        a.isRemovedOnCompletion = false
+        arc.add(a, forKey: Self.turn)
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }

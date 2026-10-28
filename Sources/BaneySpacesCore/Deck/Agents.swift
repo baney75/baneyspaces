@@ -108,10 +108,16 @@ public struct AgentSessions: Equatable, Sendable {
         let byID = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         var out: [String: AgentEvent] = [:]
         var taken = Set<String>()
+        // An app's window is shared: every session in the app that has no terminal of its own
+        // reports to it (T3 Code runs a dozen in one window), so it never counts as taken.
+        func show(_ e: AgentEvent, on item: Item) {
+            if item.kind == .window, let other = out[item.id], !Self.outranks(e, other, now: now) { return }
+            if item.kind != .window { taken.insert(item.id) }
+            out[item.id] = e
+        }
         for (key, itemID) in binding {
             guard let e = sessions[key], let item = byID[itemID], Self.compatible(item, e) else { binding[key] = nil; continue }
-            taken.insert(itemID)
-            out[itemID] = e
+            show(e, on: item)
         }
         for (key, e) in sessions.sorted(by: { $0.value.at > $1.value.at }) where binding[key] == nil {
             let inApp = items.filter { e.app.isEmpty || $0.bundleID == e.app }
@@ -138,10 +144,41 @@ public struct AgentSessions: Equatable, Sendable {
             guard let p = pick else { continue }
             binding[key] = p.id
             candidates[key] = nil
-            taken.insert(p.id)
-            out[p.id] = e
+            show(e, on: p)
         }
         return out
+    }
+
+    /// A working report with nothing after it for this long no longer counts on an app's window,
+    /// where no title can say otherwise. A turn stopped from T3 Code or with Esc sends no hook, and
+    /// its spinner stayed on the dock for hours (Donovan, 2026-10-28). Long enough for a slow tool:
+    /// a foreground Bash call times out at ten minutes.
+    public static let stale: Double = 15 * 60
+    /// How long a terminal's title may say Claude is idle (✳) against a working report before the
+    /// title wins. Claude retitles the moment it stops, so an idle title that lasts means a turn
+    /// that ended without a hook.
+    public static let titleWins: Double = 5
+
+    /// Which of two sessions sharing an app's window it shows: a question, then work, while fresh;
+    /// otherwise the latest report.
+    static func outranks(_ a: AgentEvent, _ b: AgentEvent, now: Double) -> Bool {
+        func weight(_ e: AgentEvent) -> Int {
+            guard now - e.at <= stale else { return 0 }
+            if e.state == .waiting && !e.message.isEmpty { return 2 }
+            return e.state == .working ? 1 : 0
+        }
+        let wa = weight(a), wb = weight(b)
+        return wa != wb ? wa > wb : a.at > b.at
+    }
+
+    /// What row `item` shows for its session's latest report `e`: what the report says, unless the
+    /// row shows the work stopped since.
+    public static func activity(_ item: Item, _ e: AgentEvent, now: Double) -> Activity {
+        guard e.state == .working else { return Activity(e.state) }
+        let quiet = now - e.at
+        if item.kind == .terminal, item.activity == .waiting, quiet > titleWins { return .waiting }
+        if item.kind == .window, quiet > stale { return .shell }
+        return .working
     }
 
     /// Nothing known about the row rules the session out: same app, and the same tty and folder

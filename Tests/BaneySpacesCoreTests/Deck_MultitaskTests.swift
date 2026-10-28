@@ -106,3 +106,51 @@ final class CorrelationTests: XCTestCase {
         XCTAssertEqual(Array(a.resolve([g("C", "✳ new")], now: 3).keys), ["C"])
     }
 }
+
+/// The dock's spinner stuck on T3 Code (Donovan, 2026-10-28): every Claude session inside T3
+/// reports the same app, the first to claim its one window kept it, and a turn stopped from T3
+/// sends no hook.
+final class SharedWindowTests: XCTestCase {
+    let t3 = "com.t3tools.t3code"
+    var window: Item { Item(id: "win:1", bundleID: t3, appName: "T3 Code", role: .agent, kind: .window, group: "win:1", title: "T3 Code") }
+    func ev(_ session: String, _ state: AgentEvent.State, at: Double, message: String = "") -> AgentEvent {
+        AgentEvent(agent: "claude", session: session, cwd: "/p/" + session, tty: "", app: t3, state: state, message: message, at: at)
+    }
+
+    func testEverySessionInTheAppReportsToItsWindow() {
+        var a = AgentSessions()
+        a.apply(ev("old", .working, at: 0))
+        XCTAssertEqual(a.resolve([window], now: 1)["win:1"]?.state, .working)
+        // The old turn was stopped from T3 (no hook); a newer session finishes.
+        a.apply(ev("new", .working, at: 2000))
+        a.apply(ev("new", .waiting, at: 2100))
+        XCTAssertEqual(a.resolve([window], now: 2101)["win:1"]?.session, "new",
+                       "a session silent past `stale` no longer holds the window")
+    }
+
+    func testFreshWorkOutranksANewerFinish() {
+        var a = AgentSessions()
+        a.apply(ev("a", .working, at: 10))
+        a.apply(ev("b", .waiting, at: 20))
+        XCTAssertEqual(a.resolve([window], now: 21)["win:1"]?.session, "a", "one still working keeps the spinner")
+        a.apply(ev("c", .waiting, at: 30, message: "Claude needs your permission to use Bash"))
+        XCTAssertEqual(a.resolve([window], now: 31)["win:1"]?.session, "c", "a question beats work")
+    }
+
+    func testAStaleReportOnAWindowStopsCountingAsWork() {
+        let e = ev("a", .working, at: 0)
+        XCTAssertEqual(AgentSessions.activity(window, e, now: 60), .working)
+        XCTAssertEqual(AgentSessions.activity(window, e, now: AgentSessions.stale + 1), .shell,
+                       "no badge, and not a false finish either")
+    }
+
+    func testAnIdleTitleWinsOverALateWorkingReport() {
+        let idle = Item(id: "g", bundleID: "com.mitchellh.ghostty", appName: "Ghostty", role: .terminal, kind: .terminal,
+                        group: "w", title: "✳ fix it", activity: .waiting)
+        let e = AgentEvent(agent: "claude", session: "s", cwd: "", tty: "", app: "", state: .working, at: 0)
+        XCTAssertEqual(AgentSessions.activity(idle, e, now: 1), .working, "the title may not have caught up yet")
+        XCTAssertEqual(AgentSessions.activity(idle, e, now: 6), .waiting, "Esc sends no hook; Claude's title says it stopped")
+        var busy = idle; busy.activity = .working
+        XCTAssertEqual(AgentSessions.activity(busy, e, now: 3600), .working, "a terminal still spinning keeps working")
+    }
+}
