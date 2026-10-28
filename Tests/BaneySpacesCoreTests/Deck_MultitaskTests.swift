@@ -245,4 +245,21 @@ final class SharedWindowTests: XCTestCase {
         XCTAssertEqual(AgentSessions.forAttention(.waiting, late), .shell, "a background agent's late hook won't flag the row again")
         XCTAssertEqual(AgentSessions.forAttention(.waiting, AgentEvent(agent: "claude", session: "s", cwd: "", tty: "", app: "", state: .waiting, at: 0)), .waiting)
     }
+
+    func testOnlyAnAgentAppsWindowIsShared() {
+        var a = AgentSessions()
+        let other = Item(id: "win:7", bundleID: "com.example.Notes", appName: "Notes", role: .other, kind: .window, group: "win:7",
+                         title: "Notes", focused: true)
+        a.apply(AgentEvent(agent: "claude", session: "x", cwd: "", tty: "", app: "com.example.Notes", state: .working, at: 1))
+        a.apply(AgentEvent(agent: "claude", session: "y", cwd: "", tty: "", app: "com.example.Notes", state: .waiting, at: 2))
+        _ = a.resolve([other], now: 3)
+        XCTAssertEqual(a.binding.count, 1, "a plain app's window holds one session")
+    }
+
+    func testExpireSaysWhetherItForgot() {
+        var a = AgentSessions()
+        a.apply(ev("a", .working, at: 0))
+        XCTAssertFalse(a.expire(now: 10))
+        XCTAssertTrue(a.expire(now: 7 * 3600))
+    }
 }

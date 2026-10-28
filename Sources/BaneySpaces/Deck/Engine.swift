@@ -129,11 +129,11 @@ final class Engine {
 
     /// Scripted apps only: their background tabs change without any window notification.
     private func sweepScripted() {
-        sessions.expire(now: Date().timeIntervalSince1970)
+        let forgot = sessions.expire(now: Date().timeIntervalSince1970)
         let scripted = tracked.filter { $0.value.spec.adapter != .windows }
         for pid in scripted.keys { refresh(pid) }
         // Each read merges; with none, merge anyway so a stale report on an app's window clears.
-        if scripted.isEmpty && !sessions.sessions.isEmpty { merge() }
+        if scripted.isEmpty && (forgot || !sessions.sessions.isEmpty) { merge() }
     }
 
     func refreshAll() { for pid in tracked.keys { refresh(pid) } }

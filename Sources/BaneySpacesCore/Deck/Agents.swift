@@ -101,8 +101,12 @@ public struct AgentSessions: Equatable, Sendable {
     }
 
     /// Forgets sessions silent for longer than `maxAge` seconds (an agent killed without SessionEnd).
-    public mutating func expire(now: Double, maxAge: Double = 6 * 3600) {
-        for (k, e) in sessions where now - e.at > maxAge { forget(k) }
+    /// Whether it forgot any.
+    @discardableResult
+    public mutating func expire(now: Double, maxAge: Double = 6 * 3600) -> Bool {
+        let old = sessions.filter { now - $0.value.at > maxAge }.keys
+        for k in old { forget(k) }
+        return !old.isEmpty
     }
 
     /// Binds sessions to `items` and returns each bound item's state, keyed by item ID.
@@ -155,9 +159,9 @@ public struct AgentSessions: Equatable, Sendable {
         return out
     }
 
-    /// A window that stands in for every session of an agent app. A terminal's window (a second
-    /// Ghostty, Terminal before it may be scripted) holds one session, like any terminal row.
-    static func shared(_ item: Item) -> Bool { item.kind == .window && item.role != .terminal }
+    /// A window that stands in for every session of an agent app (T3 Code, Grok Bot). Any other
+    /// app's window, a terminal's above all, holds one session, like a terminal row.
+    static func shared(_ item: Item) -> Bool { item.kind == .window && item.role == .agent }
 
     /// A working report with nothing after it for this long no longer counts on a row whose title
     /// can't say otherwise (an agent app's window, a terminal without Claude's status glyph). A turn stopped from T3 Code or with Esc sends no hook, and
