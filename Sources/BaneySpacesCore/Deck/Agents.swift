@@ -196,10 +196,17 @@ public struct AgentSessions: Equatable, Sendable {
         return .working
     }
 
-    /// What "finished while you were away" should take a row's activity as: work that only went
-    /// stale is still work, so a turn that does end later counts as a finish.
+    /// What "finished while you were away" should take a row's activity as. Work that only went
+    /// stale is still work, so a turn that does end later counts as a finish. A stop only Claude's
+    /// title saw isn't one: it was interrupted, or a background agent's late hook keeps reporting
+    /// work after the turn ended, and each would flag the row (and toast) again.
     public static func forAttention(_ shown: Activity, _ e: AgentEvent?) -> Activity {
-        shown == .shell && e?.state == .working ? .working : shown
+        guard e?.state == .working else { return shown }
+        switch shown {
+        case .shell: return .working
+        case .waiting: return .shell
+        case .working: return .working
+        }
     }
 
 
@@ -246,6 +253,26 @@ public struct IdleTitles: Equatable, Sendable {
     }
 
     public func since(_ id: String) -> Double? { since[id] }
+}
+
+/// Which session each agent app's window showed at the last merge. A window that changes to
+/// another session (one went stale, a newer one reported) hasn't seen anyone finish: the session it
+/// now shows may have stopped long ago, so for that merge Attention sees no change of state.
+public struct ShownSessions: Equatable, Sendable {
+    private var shown: [String: String] = [:]
+
+    public init() {}
+
+    /// `activity` as Attention should take it for row `id`, now showing report `e`.
+    public mutating func attention(_ id: String, _ e: AgentEvent?, _ activity: Activity) -> Activity {
+        guard let e else { shown[id] = nil; return activity }
+        let key = e.agent + ":" + e.session
+        defer { shown[id] = key }
+        guard let before = shown[id], before != key else { return activity }
+        return .shell
+    }
+
+    public mutating func keep(_ ids: Set<String>) { shown = shown.filter { ids.contains($0.key) } }
 }
 
 extension Activity {

@@ -36,6 +36,7 @@ final class Engine {
     private var notices: [String: String] = [:]
     private var answered = AnsweredQuestions()
     private var idleTitles = IdleTitles()
+    private var shownSessions = ShownSessions()
 
     /// Called on the main thread after every merge.
     var onUpdate: () -> Void = {}
@@ -276,7 +277,11 @@ final class Engine {
         }
         answered.keep(Set(bound.keys))
         let focused = all.first { $0.focused }?.id
-        attention.update(all.map { ($0.id, AgentSessions.forAttention($0.activity, bound[$0.id])) }, focused: focused)
+        let forAttention = all.map { r in
+            (r.id, shownSessions.attention(r.id, bound[r.id], AgentSessions.forAttention(r.activity, bound[r.id])))
+        }
+        shownSessions.keep(Set(bound.keys))
+        attention.update(forAttention, focused: focused)
         notices = notices.filter { k, _ in attention.unseen.contains(k) }
         if items != all { items = all }
         onUpdate()

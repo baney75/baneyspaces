@@ -219,4 +219,30 @@ final class SharedWindowTests: XCTestCase {
         XCTAssertEqual(q.notice(for: "win:1", c, focused: false), "", "seeing d doesn't bring c's question back")
         XCTAssertEqual(q.notice(for: "win:1", d, focused: false), "")
     }
+
+    func testAnotherSessionTakingTheWindowIsNotAFinish() {
+        var a = AgentSessions(), shown = ShownSessions(), att = Attention()
+        func merge(_ now: Double) {
+            let e = a.resolve([window], now: now)["win:1"]
+            let act = e.map { AgentSessions.activity(window, $0, now: now) } ?? .shell
+            att.update([("win:1", shown.attention("win:1", e, AgentSessions.forAttention(act, e)))], focused: nil)
+        }
+        a.apply(ev("b", .waiting, at: 5))
+        a.apply(ev("a", .working, at: 10))
+        merge(11)
+        merge(AgentSessions.stale + 20)
+        XCTAssertEqual(a.resolve([window], now: AgentSessions.stale + 20)["win:1"]?.session, "a", "a's stale report is still the latest")
+        a.apply(ev("c", .waiting, at: AgentSessions.stale + 30))
+        merge(AgentSessions.stale + 31)
+        XCTAssertEqual(att.unseen, [], "the window turning to c, which stopped on its own, isn't a finish anyone saw")
+        a.apply(ev("c", .working, at: AgentSessions.stale + 40)); merge(AgentSessions.stale + 41)
+        a.apply(ev("c", .waiting, at: AgentSessions.stale + 50)); merge(AgentSessions.stale + 51)
+        XCTAssertEqual(att.unseen, ["win:1"], "c working then stopping is")
+    }
+
+    func testAStopOnlyTheTitleSawIsNotAFinish() {
+        let late = AgentEvent(agent: "claude", session: "s", cwd: "", tty: "", app: "", state: .working, at: 0)
+        XCTAssertEqual(AgentSessions.forAttention(.waiting, late), .shell, "a background agent's late hook won't flag the row again")
+        XCTAssertEqual(AgentSessions.forAttention(.waiting, AgentEvent(agent: "claude", session: "s", cwd: "", tty: "", app: "", state: .waiting, at: 0)), .waiting)
+    }
 }
