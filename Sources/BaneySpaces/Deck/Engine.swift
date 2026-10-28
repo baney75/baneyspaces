@@ -35,6 +35,8 @@ final class Engine {
     /// Rows a hook or `notify` attached a message to.
     private var notices: [String: String] = [:]
     private var answered = AnsweredQuestions()
+    private var idleTitles = IdleTitles()
+    private var shownSessions = ShownSessions()
 
     /// Called on the main thread after every merge.
     var onUpdate: () -> Void = {}
@@ -127,8 +129,11 @@ final class Engine {
 
     /// Scripted apps only: their background tabs change without any window notification.
     private func sweepScripted() {
-        sessions.expire(now: Date().timeIntervalSince1970)
-        for (pid, t) in tracked where t.spec.adapter != .windows { refresh(pid) }
+        let forgot = sessions.expire(now: Date().timeIntervalSince1970)
+        let scripted = tracked.filter { $0.value.spec.adapter != .windows }
+        for pid in scripted.keys { refresh(pid) }
+        // Each read merges; with none, merge anyway so a stale report on an app's window clears.
+        if scripted.isEmpty && (forgot || !sessions.sessions.isEmpty) { merge() }
     }
 
     func refreshAll() { for pid in tracked.keys { refresh(pid) } }
@@ -259,10 +264,12 @@ final class Engine {
             }
         }
         all += extraItems()
-        let bound = sessions.resolve(all, now: Date().timeIntervalSince1970)
+        let now = Date().timeIntervalSince1970
+        idleTitles.update(all, now: now)
+        let bound = sessions.resolve(all, now: now)
         for i in all.indices {
             if let e = bound[all[i].id] {
-                all[i].activity = Activity(e.state)
+                all[i].activity = AgentSessions.activity(all[i], e, now: now, idleSince: idleTitles.since(all[i].id))
                 all[i].agent = e.agent
                 all[i].notice = answered.notice(for: all[i].id, e, focused: all[i].focused)
             }
@@ -270,7 +277,11 @@ final class Engine {
         }
         answered.keep(Set(bound.keys))
         let focused = all.first { $0.focused }?.id
-        attention.update(all.map { ($0.id, $0.activity) }, focused: focused)
+        let forAttention = all.map { r in
+            (r.id, shownSessions.attention(r.id, bound[r.id], AgentSessions.forAttention(r.activity, bound[r.id])))
+        }
+        shownSessions.keep(Set(bound.keys))
+        attention.update(forAttention, focused: focused)
         notices = notices.filter { k, _ in attention.unseen.contains(k) }
         if items != all { items = all }
         onUpdate()

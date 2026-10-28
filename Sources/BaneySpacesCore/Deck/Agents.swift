@@ -79,6 +79,8 @@ public struct AgentSessions: Equatable, Sendable {
     public private(set) var binding: [String: String] = [:]
     /// Rows still in the running for an unbound session, and the event they were last narrowed by.
     public private(set) var candidates: [String: Set<String>] = [:]
+    /// The question each session last showed on an app's window while you were looking at it.
+    private var answered: [String: Double] = [:]
     private var narrowedBy: [String: Double] = [:]
     /// How long a title takes to catch up with a hook event before it's compared.
     public static let settle = 0.5
@@ -95,12 +97,16 @@ public struct AgentSessions: Equatable, Sendable {
     }
 
     private mutating func forget(_ key: String) {
-        sessions[key] = nil; binding[key] = nil; candidates[key] = nil; narrowedBy[key] = nil
+        sessions[key] = nil; binding[key] = nil; candidates[key] = nil; narrowedBy[key] = nil; answered[key] = nil
     }
 
     /// Forgets sessions silent for longer than `maxAge` seconds (an agent killed without SessionEnd).
-    public mutating func expire(now: Double, maxAge: Double = 6 * 3600) {
-        for (k, e) in sessions where now - e.at > maxAge { forget(k) }
+    /// Whether it forgot any.
+    @discardableResult
+    public mutating func expire(now: Double, maxAge: Double = 6 * 3600) -> Bool {
+        let old = sessions.filter { now - $0.value.at > maxAge }.keys
+        for k in old { forget(k) }
+        return !old.isEmpty
     }
 
     /// Binds sessions to `items` and returns each bound item's state, keyed by item ID.
@@ -108,10 +114,16 @@ public struct AgentSessions: Equatable, Sendable {
         let byID = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         var out: [String: AgentEvent] = [:]
         var taken = Set<String>()
+        // An agent app's window is shared: every session in the app reports to it (T3 Code runs a
+        // dozen in one window), so it never counts as taken.
+        func show(_ e: AgentEvent, on item: Item) {
+            if Self.shared(item), let other = out[item.id], !outranks(e, other, now: now) { return }
+            if !Self.shared(item) { taken.insert(item.id) }
+            out[item.id] = e
+        }
         for (key, itemID) in binding {
             guard let e = sessions[key], let item = byID[itemID], Self.compatible(item, e) else { binding[key] = nil; continue }
-            taken.insert(itemID)
-            out[itemID] = e
+            show(e, on: item)
         }
         for (key, e) in sessions.sorted(by: { $0.value.at > $1.value.at }) where binding[key] == nil {
             let inApp = items.filter { e.app.isEmpty || $0.bundleID == e.app }
@@ -138,11 +150,69 @@ public struct AgentSessions: Equatable, Sendable {
             guard let p = pick else { continue }
             binding[key] = p.id
             candidates[key] = nil
-            taken.insert(p.id)
-            out[p.id] = e
+            show(e, on: p)
+        }
+        // A question on a window you're looking at is answered, or let be: it stops outranking work.
+        for (id, e) in out where e.state == .waiting && !e.message.isEmpty {
+            if let item = byID[id], Self.shared(item), item.focused { answered[e.agent + ":" + e.session] = e.at }
         }
         return out
     }
+
+    /// A window that stands in for every session of an agent app (T3 Code, Grok Bot). Any other
+    /// app's window, a terminal's above all, holds one session, like a terminal row.
+    static func shared(_ item: Item) -> Bool { item.kind == .window && item.role == .agent }
+
+    /// A working report with nothing after it for this long no longer counts on a row whose title
+    /// can't say otherwise (an agent app's window, a terminal without Claude's status glyph). A turn stopped from T3 Code or with Esc sends no hook, and
+    /// its spinner stayed on the dock for hours (Donovan, 2026-10-28). Long enough for a slow tool:
+    /// a foreground Bash call times out at ten minutes.
+    public static let stale: Double = 15 * 60
+    /// How long a terminal's title must keep saying Claude is idle (✳), with no report since, before
+    /// it wins over a working report. Claude retitles the moment it stops, so an idle title that
+    /// lasts means a turn that ended without a hook.
+    public static let titleWins: Double = 5
+
+    /// Which of two sessions sharing an app's window it shows: a question you haven't looked at,
+    /// then work that isn't stale, then the latest report.
+    func outranks(_ a: AgentEvent, _ b: AgentEvent, now: Double) -> Bool {
+        func weight(_ e: AgentEvent) -> Int {
+            if e.state == .waiting && !e.message.isEmpty { return answered[e.agent + ":" + e.session] == e.at ? 0 : 2 }
+            return e.state == .working && now - e.at <= Self.stale ? 1 : 0
+        }
+        let wa = weight(a), wb = weight(b)
+        return wa != wb ? wa > wb : a.at > b.at
+    }
+
+    /// What row `item` shows for its session's latest report `e`: what the report says, unless the
+    /// row shows the work stopped since. `item.activity` is what its title says; `idleSince` is when
+    /// the title last started saying Claude is idle.
+    public static func activity(_ item: Item, _ e: AgentEvent, now: Double, idleSince: Double? = nil) -> Activity {
+        guard e.state == .working else { return Activity(e.state) }
+        switch item.activity {
+        case .waiting:
+            if let since = idleSince, now - since > titleWins, now - e.at > titleWins { return .waiting }
+        case .shell:
+            if now - e.at > stale { return .shell }
+        case .working:
+            break
+        }
+        return .working
+    }
+
+    /// What "finished while you were away" should take a row's activity as. Work that only went
+    /// stale is still work, so a turn that does end later counts as a finish. A stop only Claude's
+    /// title saw isn't one: it was interrupted, or a background agent's late hook keeps reporting
+    /// work after the turn ended, and each would flag the row (and toast) again.
+    public static func forAttention(_ shown: Activity, _ e: AgentEvent?) -> Activity {
+        guard e?.state == .working else { return shown }
+        switch shown {
+        case .shell: return .working
+        case .waiting: return .shell
+        case .working: return .working
+        }
+    }
+
 
     /// Nothing known about the row rules the session out: same app, and the same tty and folder
     /// wherever both sides know them.
@@ -171,6 +241,44 @@ public struct AgentSessions: Equatable, Sendable {
     }
 }
 
+
+/// When each row's title started saying Claude is idle (✳), to tell a title that stayed idle from
+/// one read that hadn't caught up.
+public struct IdleTitles: Equatable, Sendable {
+    private var since: [String: Double] = [:]
+
+    public init() {}
+
+    /// `rows` with their title's activity, before any hook speaks for them.
+    public mutating func update(_ rows: [Item], now: Double) {
+        var next: [String: Double] = [:]
+        for r in rows where r.activity == .waiting { next[r.id] = since[r.id] ?? now }
+        since = next
+    }
+
+    public func since(_ id: String) -> Double? { since[id] }
+}
+
+/// Which session each agent app's window showed at the last merge. A window that changes to
+/// another session (one went stale, a newer one reported) hasn't seen anyone finish: the session it
+/// now shows may have stopped long ago, so for that merge Attention sees no change of state.
+public struct ShownSessions: Equatable, Sendable {
+    private var shown: [String: String] = [:]
+
+    public init() {}
+
+    /// `activity` as Attention should take it for row `id`, now showing report `e`.
+    public mutating func attention(_ id: String, _ e: AgentEvent?, _ activity: Activity) -> Activity {
+        guard let e else { shown[id] = nil; return activity }
+        let key = e.agent + ":" + e.session
+        defer { shown[id] = key }
+        guard let before = shown[id], before != key else { return activity }
+        return .shell
+    }
+
+    public mutating func keep(_ ids: Set<String>) { shown = shown.filter { ids.contains($0.key) } }
+}
+
 extension Activity {
     /// What a row shows when a hook has spoken for it.
     public init(_ s: AgentEvent.State) {
@@ -191,12 +299,16 @@ public struct AnsweredQuestions: Equatable, Sendable {
     public init() {}
 
     /// The notice row `id` shows for its session's latest event `e`.
+    /// Kept per session as well as row: an agent app's window shows several sessions in turn.
     public mutating func notice(for id: String, _ e: AgentEvent, focused: Bool) -> String {
         guard e.state == .waiting, !e.message.isEmpty else { return "" }
-        if focused { seen[id] = e.at }
-        return seen[id] == e.at ? "" : e.message
+        let key = id + "|" + e.agent + ":" + e.session
+        if focused { seen[key] = e.at }
+        return seen[key] == e.at ? "" : e.message
     }
 
     /// Forgets rows no session is bound to any more.
-    public mutating func keep(_ ids: Set<String>) { seen = seen.filter { ids.contains($0.key) } }
+    public mutating func keep(_ ids: Set<String>) {
+        seen = seen.filter { k, _ in ids.contains(String(k.prefix { $0 != "|" })) }
+    }
 }
