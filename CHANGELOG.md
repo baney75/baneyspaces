@@ -6,9 +6,9 @@
   reports to T3's one window, but the first session to claim it kept it for good, so a turn you
   stopped (which sends no hook) left the spinner turning for up to six hours while your other
   sessions finished. Now the window shows all of them: a question first, then any session still
-  working, else the latest, so it clears as soon as another session reports. A turn stopped
-  without a hook clears within 15 minutes at most, and in a terminal Claude's own idle title wins
-  after 5 seconds. The spinner itself now turns in Core Animation, so it can't freeze mid-turn
+  working, else the latest. A turn stopped without a hook stops counting as work after 15 minutes,
+  and the spinner clears then unless another session is still working. In a terminal, Claude's own
+  idle title wins after 5 seconds. The spinner itself now turns in Core Animation, so it can't freeze mid-turn
   when the dock hides and comes back.
 - **New Claude, front and center, and quicker.** The Deck's toolbar led with three identical gray
   icons. Now "New Claude" leads in Claude's orange, with Tile and New Terminal as small buttons
