@@ -127,4 +127,16 @@ final class DisplaysTests: XCTestCase {
         let big = Geometry.carry(CGRect(x: 0, y: 0, width: 1000, height: 800), from: a, to: b)
         XCTAssertEqual(big, b, "too big: fills the new display")
     }
+
+    /// A layout saved before displays had their own workspaces: the second display's pick waits
+    /// until windows are back, so it gets a workspace that's really empty.
+    func testRedisplayPicksAnEmptyWorkspaceOnceWindowsAreBack() {
+        var m = Workspaces()
+        m.sync(seen: [1, 2, 3], alive: [1, 2, 3])
+        m.displays([laptop, ipad])
+        XCTAssertEqual(m.shown[ipad], 2, "every window is on 1 so far")
+        m.restore(current: 1, home: [2: 2, 3: 3], lastFocused: [:])
+        m.redisplay([laptop, ipad])
+        XCTAssertEqual(m.shown, [laptop: 1, ipad: 4])
+    }
 }

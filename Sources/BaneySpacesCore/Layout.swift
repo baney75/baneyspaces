@@ -16,9 +16,12 @@ public struct SavedLayout: Codable, Equatable {
     public var current = 1
     public var entries: [Entry] = []
     public var lastFocused: [Int: WindowID] = [:]
+    /// The workspace on each display, by display UUID. Absent in layouts saved before
+    /// 2026-10-28, which had one workspace for every display.
+    public var displays: [DisplayKey: Int]?
 
-    public init(current: Int = 1, entries: [Entry] = [], lastFocused: [Int: WindowID] = [:]) {
-        self.current = current; self.entries = entries; self.lastFocused = lastFocused
+    public init(current: Int = 1, entries: [Entry] = [], lastFocused: [Int: WindowID] = [:], displays: [DisplayKey: Int]? = nil) {
+        self.current = current; self.entries = entries; self.lastFocused = lastFocused; self.displays = displays
     }
 
     /// The saved workspace for each window that still belongs to the same process.

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Each display shows a workspace of its own.** With a second monitor or Sidecar, ⌘3 used to
+  change what every screen showed. Now it changes only the display you're working on (the one
+  with the window in front), and the other keeps its workspace and its windows. Press the
+  number of the workspace the other display shows and you go there instead, as in AeroSpace.
+  Drag a window onto the other display and it joins that display's workspace. A display you
+  plug in starts on an empty workspace, and the switch overlay shows on the display that
+  switched. With one display nothing changes.
 - **Find files from the launcher.** Type a name and the best five matching files and folders come
   in under the apps, from your home folder, iCloud Drive and other cloud drives; Tab into the new
   **Files** menu for more. Every word you type must start a word of the name, so `tax 2025` finds

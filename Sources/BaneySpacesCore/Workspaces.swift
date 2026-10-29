@@ -76,6 +76,13 @@ public struct Workspaces: Codable, Equatable {
         if let d = focusedDisplay, let n = shown[d] { current = n }
     }
 
+    /// Picks every display's workspace again, as `displays` does for new ones: for a layout
+    /// saved before displays had workspaces of their own, once windows are back where they were.
+    public mutating func redisplay(_ keys: [DisplayKey]) {
+        shown = [:]
+        displays(keys)
+    }
+
     /// Whether workspace `n` is on some display now.
     public func isShown(_ n: Int) -> Bool { shown.isEmpty ? n == current : shown.values.contains(n) }
 

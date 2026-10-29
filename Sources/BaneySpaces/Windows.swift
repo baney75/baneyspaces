@@ -388,6 +388,27 @@ enum Windows {
         return !shown.contains { ($0[kCGWindowNumber as String] as? NSNumber).map { ids.contains($0.uint32Value) } ?? false }
     }
 
+    /// Every display, the main one first: its UUID, and its whole and usable (no menu bar, no
+    /// Dock) areas in Accessibility coordinates.
+    static func displays() -> [(key: DisplayKey, frame: CGRect, visible: CGRect)] {
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        return NSScreen.screens.compactMap { s in
+            guard let n = s.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
+                  let uuid = CGDisplayCreateUUIDFromDisplayID(n.uint32Value)?.takeRetainedValue(),
+                  let key = CFUUIDCreateString(nil, uuid) as String? else { return nil }
+            return (key, Geometry.toAX(s.frame, primaryHeight: primaryHeight), Geometry.toAX(s.visibleFrame, primaryHeight: primaryHeight))
+        }
+    }
+
+    /// The screen for a display UUID from `displays()`.
+    static func screen(for key: DisplayKey) -> NSScreen? {
+        NSScreen.screens.first { s in
+            guard let n = s.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
+                  let uuid = CGDisplayCreateUUIDFromDisplayID(n.uint32Value)?.takeRetainedValue() else { return false }
+            return (CFUUIDCreateString(nil, uuid) as String?) == key
+        }
+    }
+
     /// Screen frames in Accessibility coordinates.
     static func screens() -> [CGRect] {
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
