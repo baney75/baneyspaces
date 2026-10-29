@@ -120,6 +120,15 @@ public struct MenuWindows {
         return windows.filter { now - (firstSeen[$0.id] ?? now) < staleAfter }.map(\.frame)
     }
 
+    /// How many of BaneySpaces' own windows at the menu level are on screen: its right-click
+    /// menus and their submenus, open now.
+    public static func ownCount(_ list: [[String: Any]], level: Int, ownPID: Int32) -> Int {
+        list.filter { w in
+            (w[kCGWindowLayer as String] as? Int) == level && (w[kCGWindowOwnerPID as String] as? Int32) == ownPID
+                && (w[kCGWindowIsOnscreen as String] as? Bool ?? true)
+        }.count
+    }
+
     /// The menu-level windows of other processes in a window server list, flipped from its
     /// top-left origin to AppKit's bottom-left one.
     public static func parse(_ list: [[String: Any]], level: Int, ownPID: Int32, primaryHeight: CGFloat) -> [(id: Int, frame: CGRect)] {
@@ -129,5 +138,35 @@ public struct MenuWindows {
                   let b = w[kCGWindowBounds as String] as? NSDictionary, let r = CGRect(dictionaryRepresentation: b) else { return nil }
             return (id, Geometry.toAX(r, primaryHeight: primaryHeight))
         }
+    }
+}
+
+/// Whether a right-click menu from the dock holds it up. AppKit's menu-tracking notifications set
+/// a flag, and nothing cleared it if an end never came, so the dock could stay up for good with
+/// the pointer far away (Donovan, 2026-10-29: "it keeps getting stuck"). The flag counts while
+/// the window server shows one of BaneySpaces' own menus, and for a moment after it was set,
+/// before the menu's window is listed.
+public enum DockMenu {
+    public static let grace: TimeInterval = 1
+
+    /// `setAt` and `now` are seconds of uptime. `ownMenusOnScreen` is asked only once the grace is over.
+    public static func holdsDock(flag: Bool, setAt: TimeInterval, now: TimeInterval, ownMenusOnScreen: () -> Int) -> Bool {
+        guard flag else { return false }
+        if now - setAt < grace { return true }
+        return ownMenusOnScreen() > 0
+    }
+}
+
+/// A dock that went down whose panel is still on screen once its slide-out is over: nothing else
+/// would ever take it away, since the dock only hides what it thinks is up.
+public enum DockStray {
+    /// The slide-out takes 0.14 s; past this, a panel still up is a stray.
+    public static let after: TimeInterval = 1
+
+    /// `hiddenAt` and `now` are seconds of uptime; `hiddenAt` is nil if it was never shown.
+    public static func isStray(shown: Bool, panelUp: Bool, hiddenAt: TimeInterval?, now: TimeInterval) -> Bool {
+        guard !shown, panelUp else { return false }
+        guard let hiddenAt else { return true }
+        return now - hiddenAt > after
     }
 }

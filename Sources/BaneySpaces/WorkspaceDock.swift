@@ -138,6 +138,10 @@ final class WorkspaceDock {
     /// How long other apps' menu-level windows have been up: an old one isn't a menu.
     private var menuWindows = MenuWindows()
     private var menusSeenAt: TimeInterval = 0
+    /// When a menu last began tracking, in seconds of uptime (`DockMenu`).
+    private var menuOpenedAt: TimeInterval = 0
+    /// When it last went down, in seconds of uptime (`DockStray`).
+    private var hiddenAt: TimeInterval?
 
     init(spaces: Spaces) {
         self.spaces = spaces
@@ -163,6 +167,7 @@ final class WorkspaceDock {
         // A tile's right-click menu keeps the dock up while it's open.
         NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { [weak self] _ in
             self?.model.menuOpen = true
+            self?.menuOpenedAt = ProcessInfo.processInfo.systemUptime
         }
         NotificationCenter.default.addObserver(forName: NSMenu.didEndTrackingNotification, object: nil, queue: .main) { [weak self] _ in
             self?.model.menuOpen = false
@@ -235,7 +240,7 @@ final class WorkspaceDock {
             // drag that strays off it on the way to a tile.
             let screenFrame = (shownOn ?? p.screen)?.frame ?? p.frame
             // A window carried down from another app has the pointer itself: off the dock, it's not for it.
-            let keep = WorkspaceDock.edge.keepZone(dock: p.frame, screen: screenFrame).contains(mouse) || model.menuOpen
+            let keep = WorkspaceDock.edge.keepZone(dock: p.frame, screen: screenFrame).contains(mouse) || menuHoldsDock()
                 || (model.drag != nil && model.drag?.carried == false)
             if keep { awaySince = nil; return }
             if awaySince == nil { awaySince = Date() }
@@ -245,6 +250,11 @@ final class WorkspaceDock {
                 needsRearm = true
             }
             return
+        }
+        // Down, yet its panel still up once the slide-out is over: nothing else would take it away.
+        if let p = panel, DockStray.isStray(shown: false, panelUp: p.isVisible, hiddenAt: hiddenAt, now: ProcessInfo.processInfo.systemUptime) {
+            Trace.log("dock panel still up after the dock went down; putting it away")
+            p.orderOut(nil)
         }
         // Resting on the dock's edge, buttons up (not dragging a selection) unless carrying
         // something from another app to drop, or a window by its title bar, on an edge with no
@@ -268,6 +278,21 @@ final class WorkspaceDock {
         if NSEvent.pressedMouseButtons != 0, !carrying, windowCarry != nil, resolveCarry() == nil { edgeSince = nil; return }
         show(on: screen)
         if let g = windowCarry { carryMoved(g) }
+    }
+
+    /// A right-click menu from the dock keeps it up while the window server shows it. A flag left
+    /// set with no menu on screen (an end of tracking that never came) is cleared, and says so.
+    private func menuHoldsDock() -> Bool {
+        guard model.menuOpen else { return false }
+        let held = DockMenu.holdsDock(flag: true, setAt: menuOpenedAt, now: ProcessInfo.processInfo.systemUptime) {
+            let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
+            return MenuWindows.ownCount(list, level: Int(CGWindowLevelForKey(.popUpMenuWindow)), ownPID: getpid())
+        }
+        if !held {
+            Trace.log("dock menu marked open with none on screen; letting the dock go down")
+            model.menuOpen = false
+        }
+        return held
     }
 
     // MARK: A window dragged down to the dock
@@ -517,6 +542,7 @@ final class WorkspaceDock {
     func hide(animated: Bool = true) {
         guard isShown, let p = panel else { return }
         isShown = false
+        hiddenAt = ProcessInfo.processInfo.systemUptime
         model.reset()
         let away = WorkspaceDock.edge.away
         let down = p.frame.offsetBy(dx: away.dx, dy: away.dy)
@@ -555,6 +581,10 @@ final class WorkspaceDock {
         p.isOpaque = false
         p.backgroundColor = .clear
         p.hasShadow = false
+        // AppKit hides a panel when its app deactivates and orders it back in when the app comes
+        // back. BaneySpaces activates itself on an empty workspace and in the overview, so the dock
+        // came and went behind `isShown`'s back. Only the dock shows and hides it.
+        p.hidesOnDeactivate = false
         // The window list's full titles show on hover though BaneySpaces is never the active app.
         p.allowsToolTipsWhenApplicationIsInactive = true
         // Not over full-screen apps: a video's controls or a game sit along that edge.
