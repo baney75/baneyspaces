@@ -141,10 +141,11 @@ final class WorkspaceDock {
 
     init(spaces: Spaces) {
         self.spaces = spaces
-        model.onPick = { [weak self] n in self?.spaces.switchTo(n, announce: false) }
-        model.onSendHere = { [weak self] n in self?.spaces.moveFocused(to: n) }
-        model.onFocusApp = { [weak self] pid, n in self?.spaces.focusApp(pid, on: n, cycle: true) }
-        model.onFocusWindow = { [weak self] id, n in self?.spaces.focus(id, on: n) }
+        // Every dock action changes the dock's own display, never the one a click left in use.
+        model.onPick = { [weak self] n in self?.onOwnDisplay { $0.switchTo(n, announce: false) } }
+        model.onSendHere = { [weak self] n in self?.onOwnDisplay { $0.moveFocused(to: n) } }
+        model.onFocusApp = { [weak self] pid, n in self?.onOwnDisplay { $0.focusApp(pid, on: n, cycle: true) } }
+        model.onFocusWindow = { [weak self] id, n in self?.onOwnDisplay { $0.focus(id, on: n) } }
         model.onMove = { [weak self] ids, n in self?.spaces.move(ids, to: n) }
         // Reloads wait out a drag; one that moved nothing catches up here.
         model.onDragDone = { [weak self] in self?.reload() }
@@ -396,6 +397,8 @@ final class WorkspaceDock {
         Trace.log("dock spring \(fire)")
         // The tiles hold still mid-drag; their "you're here" highlight follows the switch.
         defer { model.objectWillChange.send() }
+        // A file carried here from the other display: no click on the dock said which display.
+        spaces.useDisplay(of: shownOn)
         switch fire {
         case .app(let n, let id):
             guard let pid = pid_t(id) else { return }
@@ -405,10 +408,17 @@ final class WorkspaceDock {
         }
     }
 
+    /// Runs a dock action with the dock's display as the one in use.
+    private func onOwnDisplay(_ action: (Spaces) -> Void) {
+        spaces.useDisplay(of: shownOn)
+        action(spaces)
+    }
+
     /// Files or links dropped on an app's icon open in that app on that icon's workspace: you go
     /// there first, so the window they open in is the one in front of you.
     private func open(_ urls: [URL], with pid: pid_t, on n: Int) {
         guard let app = NSRunningApplication(processIdentifier: pid)?.bundleURL else { return }
+        spaces.useDisplay(of: shownOn)
         let openThem = {
             NSWorkspace.shared.open(urls, withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration()) { _, error in
                 if let error { Trace.log("dock drop: \(app.lastPathComponent) didn't open \(urls.count) item(s): \(error.localizedDescription)") }

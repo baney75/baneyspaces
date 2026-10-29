@@ -57,7 +57,8 @@ Prefer to keep ⌘1 for your browser's first tab? Pick ⌃, ⌥ or ⌃⌥ in set
 - **Empty means empty.** Go to a workspace with nothing on it and you get a clean desktop.
   Typing goes nowhere until you open something.
 - **Each display has a workspace of its own.** With a second monitor or Sidecar, ⌘1–⌘9 change
-  only the display with the window you're working in; the other keeps showing its workspace.
+  only the display you're on: the one you last clicked (a window, the desktop, the Workspace
+  Dock or the overview), or whose window you switched to. The other keeps showing its workspace.
   Press the number of the workspace the other display shows and you go there, as in AeroSpace.
   Drag a window onto the other display and it joins that display's workspace. A display you
   plug in shows an empty workspace; one you unplug takes its workspace out of sight until you
@@ -396,8 +397,6 @@ app as usual instead, and its menu entry says so.
 
 ## Limits
 
-- **⌘1–⌘9 follow the window in front, not the pointer.** On an empty workspace, click a window
-  on the other display (or press its workspace's number) to work there.
 - **Shortcuts stop while Secure Input is on.** When a password field or a terminal's secure
   keyboard entry holds Secure Input, macOS lets no other app see keystrokes. That applies to
   every global shortcut, not just these.

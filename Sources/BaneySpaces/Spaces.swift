@@ -201,7 +201,7 @@ final class Spaces {
             }
         }
         let added = model.sync(seen: list.map(\.id), alive: alive, on: appeared)
-        if model.shown.count > 1, !switching, Date() > displaysSettleUntil { noteMovedAcrossDisplays(list, frames: frames) }
+        if model.shown.count > 1, !switching { noteMovedAcrossDisplays(list, frames: frames, act: Date() > displaysSettleUntil) }
         prune(alive: alive)
         // A scan that skipped a busy app can't vouch for that app's windows. It's remembered, and
         // the next refresh scans again as soon as that app is willing to answer.
@@ -694,6 +694,18 @@ final class Spaces {
         guard let w = Windows.focused(of: pid, in: Array(windows.values)),
               let n = model.workspace(of: w.id) else { return }
         if model.isShown(n) && saved.frames[w.id] == nil {
+            // The app in front just closed its last window here, quit or hid, and macOS handed
+            // focus to an app on the other display: you're still on this one.
+            if model.shown.count > 1, let d = model.display(showing: n), d != model.focusedDisplay,
+               activatedAt.timeIntervalSince(max(leftAt, handedOffAt)) < 0.5 {
+                Trace.log("followFocus stayed on this display: \(w.appName) came forward after the front app left")
+                if let id = model.lastFocused[model.current], let t = windows[id], saved.frames[id] == nil, t.pid != pid {
+                    stay(on: t)
+                } else {
+                    takeFocus()
+                }
+                return
+            }
             lastKey[pid] = w.id
             noteFocusedDisplay(of: w.id)
             model.noteFocus(w.id)
@@ -1515,9 +1527,19 @@ final class Spaces {
     /// desktop, the Workspace Dock or the overview) makes it the one ⌘1–⌘9 change. Going by the
     /// window in front alone, the dock on the iPad switched the laptop (Donovan, 2026-10-28).
     func usePointerDisplay() {
-        guard active, !switching, model.shown.count > 1,
-              let s = NSScreen.screens.first(where: { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }),
-              let key = Windows.key(of: s), model.shown[key] != nil, key != model.focusedDisplay else { return }
+        useDisplay(of: NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) })
+    }
+
+    /// The display a BaneySpaces panel sits on (the Workspace Dock) is the one its actions change.
+    func useDisplay(of screen: NSScreen?) { use(display: screen.flatMap(Windows.key(of:))) }
+
+    /// Makes display `key` the one ⌘1–⌘9 change. During a switch it waits its turn in the queue,
+    /// ahead of whatever the same press asks for next, so a dock tile pressed mid-switch still
+    /// switches the dock's display.
+    func use(display key: DisplayKey?) {
+        guard active, model.shown.count > 1, let key, model.shown[key] != nil else { return }
+        if switching { return enqueue { [weak self] in self?.use(display: key) } }
+        guard key != model.focusedDisplay else { return }
         model.focus(display: key)
         Trace.log("display in use: \(key.prefix(8)) showing \(model.current)")
         onChange?()
@@ -1558,18 +1580,36 @@ final class Spaces {
 
     /// Windows you dragged onto another display join the workspace that display shows. Parked
     /// windows (off every display) and minimized ones are left alone.
-    private func noteMovedAcrossDisplays(_ list: [Window], frames: [DisplayKey: CGRect]) {
+    ///
+    /// Only movement seen counts as a drag: a window last seen on its workspace's display that's
+    /// now on another. One that turns up on the wrong display without being seen leave its own (a
+    /// carry that didn't land while its app was hidden) goes back to its display instead of
+    /// changing workspace. With `act` false (right after displays changed) it only takes note.
+    private func noteMovedAcrossDisplays(_ list: [Window], frames: [DisplayKey: CGRect], act: Bool) {
+        seenOn = seenOn.filter { windows[$0.key] != nil }
         var moved = false
+        let displays = Windows.displays()
         for w in list where saved.frames[w.id] == nil && !w.isMinimized {
             guard let n = model.workspace(of: w.id), model.isShown(n), let f = w.frame,
-                  let d = Geometry.display(of: f, in: frames), d != model.display(showing: n) else { continue }
-            if model.moved(w.id, to: d) {
-                Trace.log("window \(w.id) of \(w.appName) moved to the display showing \(model.shown[d] ?? 0)")
-                moved = true
+                  let d = Geometry.display(of: f, in: frames), let mine = model.display(showing: n) else { continue }
+            let before = seenOn[w.id]
+            seenOn[w.id] = d
+            guard act, d != mine else { continue }
+            if before == mine {
+                if model.moved(w.id, to: d) {
+                    Trace.log("window \(w.id) of \(w.appName) moved to the display showing \(model.shown[d] ?? 0)")
+                    moved = true
+                }
+            } else if let from = displays.first(where: { $0.key == d }), let to = displays.first(where: { $0.key == mine }) {
+                w.place(Geometry.carry(f, from: from.visible, to: to.visible), currentSize: f.size)
+                seenOn[w.id] = mine
+                Trace.log("window \(w.id) of \(w.appName) back to the display showing \(n) (it wasn't dragged there)")
             }
         }
         if moved { persist() }
     }
+    /// The display each window in sight was on at the last look.
+    private var seenOn: [WindowID: DisplayKey] = [:]
 
     /// `frame` on the display showing workspace `n`: carried there if it's on another one.
     private func onDisplayOf(_ n: Int, _ frame: CGRect) -> CGRect {

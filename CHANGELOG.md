@@ -3,8 +3,9 @@
 ## Unreleased
 
 - **Each display shows a workspace of its own.** With a second monitor or Sidecar, ⌘3 used to
-  change what every screen showed. Now it changes only the display you're working on (the one
-  with the window in front), and the other keeps its workspace and its windows. Press the
+  change what every screen showed. Now it changes only the display you're on: the one you last
+  clicked, anywhere on it (a window, the desktop, the Workspace Dock or the overview), or whose
+  window you switched to. The other keeps its workspace and its windows. Press the
   number of the workspace the other display shows and you go there instead, as in AeroSpace.
   Drag a window onto the other display and it joins that display's workspace. A display you
   plug in starts on an empty workspace, and the switch overlay shows on the display that
