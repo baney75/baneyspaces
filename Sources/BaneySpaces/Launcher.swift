@@ -1000,10 +1000,17 @@ enum FileFinder {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         queue.async {
             guard isNewest(n) else { return }
-            let hits = search(text, in: scopes(home), stale: { !isNewest(n) }) + topLevel(typed, home)
+            let start = Date()
+            let places = scopes(home)
+            let hits = search(text, in: places, stale: { !isNewest(n) }) + topLevel(typed, home)
             guard isNewest(n) else { return }
             let ranked = FileSearch.rank(typed, hits, home: home, limit: limit)
-            DispatchQueue.main.async { done(ranked) }
+            let ms = Int(Date().timeIntervalSince(start) * 1000)
+            DispatchQueue.main.async {
+                // One line a search, so an empty list can be told apart from a slow or blocked one.
+                Trace.log("files q=\(typed.count)ch places=\(places.count) kept=\(hits.count) shown=\(ranked.count) ms=\(ms)")
+                done(ranked)
+            }
         }
     }
 
