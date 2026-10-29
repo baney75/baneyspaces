@@ -129,14 +129,58 @@ final class DisplaysTests: XCTestCase {
     }
 
     /// A layout saved before displays had their own workspaces: the second display's pick waits
-    /// until windows are back, so it gets a workspace that's really empty.
-    func testRedisplayPicksAnEmptyWorkspaceOnceWindowsAreBack() {
+    /// until windows are back, so it gets a workspace that's really empty, and the main display
+    /// keeps the saved current one (round 1, first-F2).
+    func testFirstLaunchPicksAnEmptyWorkspaceOnceWindowsAreBack() {
         var m = Workspaces()
         m.sync(seen: [1, 2, 3], alive: [1, 2, 3])
         m.displays([laptop, ipad])
         XCTAssertEqual(m.shown[ipad], 2, "every window is on 1 so far")
-        m.restore(current: 1, home: [2: 2, 3: 3], lastFocused: [:])
-        m.redisplay([laptop, ipad])
+        m.restore(current: 2, home: [2: 2, 3: 3], lastFocused: [:])
+        XCTAssertEqual(m.shown, [laptop: 2, ipad: 4])
+        XCTAssertEqual(m.current, 2)
+        XCTAssertEqual(m.focusedDisplay, laptop)
+    }
+
+    /// A saved layout without the display connected now (round 1, second-F6).
+    func testADisplayMissingFromTheSavedLayoutGetsAReallyEmptyWorkspace() {
+        var m = Workspaces()
+        m.sync(seen: [1, 2, 3], alive: [1, 2, 3])
+        m.displays([laptop, ipad])
+        m.restore(current: 1, home: [2: 2, 3: 3], lastFocused: [:], displays: [laptop: 1])
         XCTAssertEqual(m.shown, [laptop: 1, ipad: 4])
+    }
+
+    /// Unplugged: macOS moves the display's windows to the laptop. That's not a drag, and they
+    /// keep their workspace (round 1, first-F1).
+    func testWindowsMacOSMovesOffAnUnpluggedDisplayKeepTheirWorkspace() {
+        var m = model()
+        m.displays([laptop, ipad])
+        m.focus(display: ipad)
+        _ = m.switchTo(4)
+        m.displays([laptop])
+        XCTAssertFalse(m.moved(4, to: laptop))
+        XCTAssertEqual(m.workspace(of: 4), 4)
+    }
+
+    /// Plugged back in, a display shows what it showed before (round 1, first-F3).
+    func testADisplayThatComesBackShowsItsWorkspaceAgain() {
+        var m = model()
+        m.displays([laptop, ipad])
+        m.focus(display: ipad)
+        _ = m.switchTo(4)
+        m.focus(display: laptop)
+        m.displays([laptop])
+        m.displays([laptop, ipad])
+        XCTAssertEqual(m.shown, [laptop: 1, ipad: 4])
+        XCTAssertEqual(m.focusedDisplay, laptop)
+    }
+
+    /// The agent workspace is never handed to a display on its own (round 1, second-F8).
+    func testANewDisplayNeverGetsAReservedWorkspace() {
+        var m = model()
+        m.reserved = [3]
+        m.displays([laptop, ipad])
+        XCTAssertEqual(m.shown[ipad], 5)
     }
 }

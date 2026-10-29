@@ -93,9 +93,12 @@ DispatchQueue.global().async {
     expect(current() == b, "⌘\(b) went to the other display's workspace (current \(current()))")
     expect(Set(displays().values) == Set([empty, b]), "neither display changed (\(displays()))")
 
-    // 3. Back as it was.
-    DispatchQueue.main.sync { app.activate(ignoringOtherApps: true); here.makeKeyAndOrderFront(nil) }
+    // 3. Back as it was: the main display first becomes the one in front again (its workspace's
+    // number goes there), then goes back to its own.
+    go(empty)
+    expect(Set(displays().values) == Set([empty, b]), "going to \(empty) went back to the main display (\(displays()))")
     go(a)
+    expect(displays() == start, "each display shows what it showed before (\(displays()) vs \(start))")
     expect(shownFraction(onScreen(hereID)) > 0.9, "back on \(a), the main display's window is in sight again")
     expect(shownFraction(onScreen(thereID)) > 0.9, "and the other display's window still is")
     DispatchQueue.main.sync { here.close(); there.close() }

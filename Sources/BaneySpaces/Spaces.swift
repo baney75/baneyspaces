@@ -125,9 +125,6 @@ final class Spaces {
         if let layout = SavedLayout.load(from: Spaces.layoutURL) {
             model.restore(current: layout.current, home: layout.homes(livePids: windows.mapValues(\.pid)),
                           lastFocused: layout.lastFocused, displays: layout.displays ?? [:])
-            // Saved before displays had workspaces of their own: a second display gets a workspace
-            // that's really empty now that every window is back on its own.
-            if layout.displays == nil { model.redisplay(Windows.displays().map(\.key)) }
             // Window numbers are reused after a restart, so a waiting window must still belong
             // to the same app; otherwise its entry would unhide a stranger.
             let server = Windows.serverWindows()
@@ -193,6 +190,9 @@ final class Spaces {
         windows = next
         placedBefore.formIntersection(snap.alive)
         let displays = Windows.displays()
+        // A display came or went before screensChanged's settled work ran: the model hears of it
+        // now, so a window macOS moved off an unplugged display isn't taken for one you dragged.
+        if !model.order.isEmpty, displays.map(\.key) != model.order { noteDisplays() }
         let frames = Dictionary(displays.map { ($0.key, $0.frame) }, uniquingKeysWith: { a, _ in a })
         var appeared: [WindowID: DisplayKey] = [:]
         if model.shown.count > 1 {
@@ -201,7 +201,7 @@ final class Spaces {
             }
         }
         let added = model.sync(seen: list.map(\.id), alive: alive, on: appeared)
-        if model.shown.count > 1, !switching { noteMovedAcrossDisplays(list, frames: frames) }
+        if model.shown.count > 1, !switching, Date() > displaysSettleUntil { noteMovedAcrossDisplays(list, frames: frames) }
         prune(alive: alive)
         // A scan that skipped a busy app can't vouch for that app's windows. It's remembered, and
         // the next refresh scans again as soon as that app is willing to answer.
@@ -915,6 +915,9 @@ final class Spaces {
             if self.switching { return self.enqueue { [weak self] in self?.screensChanged() } }
             // A display plugged in shows a workspace of its own; one unplugged stops showing its.
             self.noteDisplays()
+            // macOS moved windows around for the change; any on a shown workspace that landed on
+            // another display goes back to its workspace's display.
+            self.returnToDisplays()
             self.switchTo(self.model.current, takeFocus: false, announce: false)
         }
         screensWork = work
@@ -1152,7 +1155,10 @@ final class Spaces {
         parkAlongside(how, screens: screens)
         // An app on the parked list that BaneySpaces hid comes back once its windows from other
         // workspaces are parked, later in this switch (see `park`).
-        for pid in how.showApps {
+        // Going to a workspace shows its apps, even one hidden with ⌘H. An app on the other
+        // display's workspace comes back only if BaneySpaces hid it: one you hid stays hidden.
+        let going = Set(model.windows(on: model.current).compactMap { windows[$0]?.pid }).union(waiting)
+        for pid in how.showApps where going.contains(pid) || saved.hiddenApps.contains(pid) {
             if let app = NSRunningApplication(processIdentifier: pid), app.isHidden { app.unhide() }
             saved.hiddenApps.remove(pid)
         }
@@ -1495,18 +1501,41 @@ final class Spaces {
 
     // MARK: Displays
 
-    /// Tells the model which displays are connected now.
+    /// Tells the model which displays are connected now. After a change, windows macOS moves
+    /// for it aren't taken for ones you dragged, for `displaysSettle`.
     private func noteDisplays() {
         let keys = Windows.displays().map(\.key)
-        let before = model.shown
+        let before = (model.order, model.shown)
+        model.reserved = Self.agentWorkspace.map { [$0] } ?? []
         model.displays(keys)
-        if model.shown != before { Trace.log("displays \(model.shown.sorted { $0.value < $1.value }.map { "\($0.key.prefix(8))=\($0.value)" })") }
+        guard model.order != before.0 || model.shown != before.1 else { return }
+        displaysSettleUntil = Date().addingTimeInterval(Self.displaysSettle)
+        Trace.log("displays \(model.shown.sorted { $0.value < $1.value }.map { "\($0.key.prefix(8))=\($0.value)" })")
+    }
+
+    /// How long after displays change that windows moving between them are macOS's doing.
+    private static let displaysSettle: TimeInterval = 3
+    private var displaysSettleUntil = Date.distantPast
+
+    /// Windows on a shown workspace that sit on another display (macOS put them there when a
+    /// display came or went) go to their workspace's display.
+    private func returnToDisplays() {
+        guard model.shown.count > 1 else { return }
+        let displays = Windows.displays()
+        let frames = Dictionary(displays.map { ($0.key, $0.frame) }, uniquingKeysWith: { a, _ in a })
+        for w in windows.values where saved.frames[w.id] == nil && !w.isMinimized {
+            guard let n = model.workspace(of: w.id), let d = model.display(showing: n), let f = w.frame,
+                  let at = Geometry.display(of: f, in: frames), at != d,
+                  let from = displays.first(where: { $0.key == at }), let to = displays.first(where: { $0.key == d }) else { continue }
+            w.place(Geometry.carry(f, from: from.visible, to: to.visible), currentSize: f.size)
+            Trace.log("window \(w.id) of \(w.appName) back to the display showing \(n)")
+        }
     }
 
     /// The window with focus is on display `d`'s workspace: that display is the one ⌘N changes.
     private func noteFocusedDisplay(of id: WindowID) {
-        guard model.shown.count > 1, let n = model.workspace(of: id), let d = model.display(showing: n),
-              d != model.focusedDisplay else { return }
+        guard model.shown.count > 1, let n = model.workspace(of: id), n != Self.agentWorkspace,
+              let d = model.display(showing: n), d != model.focusedDisplay else { return }
         model.focus(display: d)
         onChange?()
     }

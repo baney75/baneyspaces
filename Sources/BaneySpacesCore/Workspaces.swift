@@ -36,6 +36,12 @@ public struct Workspaces: Codable, Equatable {
     public private(set) var shown: [DisplayKey: Int] = [:]
     /// The display `current` is on.
     public private(set) var focusedDisplay: DisplayKey?
+    /// The displays connected, the main one first.
+    public private(set) var order: [DisplayKey] = []
+    /// What each display showed last, so one that comes back shows it again.
+    private var lastShown: [DisplayKey: Int] = [:]
+    /// Workspaces a display never gets on its own (the agent workspace).
+    public var reserved: Set<Int> = []
     public private(set) var home: [WindowID: Int] = [:]
     /// The last window focused on each workspace, so coming back lands where you left off.
     public private(set) var lastFocused: [Int: WindowID] = [:]
@@ -61,26 +67,31 @@ public struct Workspaces: Codable, Equatable {
 
     /// The displays connected now, in order, the main one first. One that went away stops
     /// showing its workspace (macOS moves its windows to another display; the next switch puts
-    /// them out of sight). One that's new shows the first empty workspace nobody shows, or
-    /// failing that the first nobody shows. The first time, the main display shows `current`.
+    /// them out of sight). One that's new shows what it showed when it was last here, if nobody
+    /// shows that now; else the first empty workspace nobody shows, or failing that the first
+    /// nobody shows, never a `reserved` one. The first time, the main display shows `current`.
     public mutating func displays(_ keys: [DisplayKey]) {
+        order = keys
         shown = shown.filter { keys.contains($0.key) }
         if shown.isEmpty, let main = keys.first { shown[main] = current }
-        for key in keys where shown[key] == nil {
-            let free = Self.range.filter { !shown.values.contains($0) }
-            if let n = free.first(where: { windows(on: $0).isEmpty }) ?? free.first { shown[key] = n }
-        }
-        if focusedDisplay.map({ shown[$0] == nil }) ?? true {
-            focusedDisplay = shown.first { $0.value == current }?.key ?? keys.first
-        }
-        if let d = focusedDisplay, let n = shown[d] { current = n }
+        for key in keys where shown[key] == nil { shown[key] = pick(for: key, taken: Set(shown.values)) }
+        settleFocus()
     }
 
-    /// Picks every display's workspace again, as `displays` does for new ones: for a layout
-    /// saved before displays had workspaces of their own, once windows are back where they were.
-    public mutating func redisplay(_ keys: [DisplayKey]) {
-        shown = [:]
-        displays(keys)
+    /// The workspace a display without one gets: its last, else an empty one, else any free.
+    private func pick(for key: DisplayKey, taken: Set<Int>) -> Int? {
+        if let last = lastShown[key], !taken.contains(last) { return last }
+        let free = Self.range.filter { !taken.contains($0) && !reserved.contains($0) }
+        return free.first(where: { windows(on: $0).isEmpty }) ?? free.first ?? Self.range.first { !taken.contains($0) }
+    }
+
+    /// The focused display is one that's connected, and `current` is what it shows.
+    private mutating func settleFocus() {
+        if focusedDisplay.map({ shown[$0] == nil }) ?? true {
+            focusedDisplay = shown.first { $0.value == current }?.key ?? order.first { shown[$0] != nil }
+        }
+        if let d = focusedDisplay, let n = shown[d] { current = n }
+        for (key, n) in shown { lastShown[key] = n }
     }
 
     /// Whether workspace `n` is on some display now.
@@ -104,7 +115,9 @@ public struct Workspaces: Codable, Equatable {
     /// changed workspace.
     @discardableResult
     public mutating func moved(_ id: WindowID, to d: DisplayKey) -> Bool {
-        guard let n = shown[d], let old = home[id], old != n else { return false }
+        // Only a window in sight can be dragged: one whose workspace no display shows was moved
+        // by macOS (its display went away), not by you.
+        guard let n = shown[d], let old = home[id], old != n, isShown(old) else { return false }
         assign(id, to: n, focus: false)
         return true
     }
@@ -131,27 +144,30 @@ public struct Workspaces: Codable, Equatable {
 
     /// Puts windows back where a saved layout had them, after BaneySpaces restarts. Only windows
     /// the model already knows are moved; `current` becomes the saved workspace.
-    /// `displays` is what each display showed, for those still connected; the focused display
-    /// shows `current`.
+    /// `displays` is what each display showed, for those still connected. Every display's
+    /// workspace is picked again once windows are home: the saved one, else `current` for the
+    /// main display, else as a new display gets one. Picking before that saw every window on
+    /// the workspace a fresh launch put them all on, so "empty" meant nothing.
     public mutating func restore(current n: Int, home saved: [WindowID: Int], lastFocused focus: [Int: WindowID],
                                  displays: [DisplayKey: Int] = [:]) {
         for (id, ws) in saved where home[id] != nil && Self.range.contains(ws) { home[id] = ws }
-        if !displays.isEmpty {
+        let n = Self.range.contains(n) ? n : current
+        if !order.isEmpty {
             // Built fresh, so two displays that swapped workspaces don't block each other.
             var next: [DisplayKey: Int] = [:]
-            for key in displays.keys.sorted() where shown[key] != nil {
+            for key in order {
                 if let ws = displays[key], Self.range.contains(ws), !next.values.contains(ws) { next[key] = ws }
             }
-            for key in shown.keys.sorted() where next[key] == nil {
-                let keep = shown[key].flatMap { next.values.contains($0) ? nil : $0 }
-                if let ws = keep ?? Self.range.first(where: { !next.values.contains($0) }) { next[key] = ws }
+            if !next.values.contains(n), let main = order.first(where: { next[$0] == nil }) { next[main] = n }
+            for key in order where next[key] == nil {
+                lastShown[key] = nil
+                if let ws = pick(for: key, taken: Set(next.values)) { next[key] = ws }
             }
             shown = next
+            focusedDisplay = display(showing: n)
         }
-        if Self.range.contains(n) {
-            if let d = display(showing: n) { focusedDisplay = d } else if let d = focusedDisplay { shown[d] = n }
-            current = n
-        }
+        current = n
+        settleFocus()
         for (ws, id) in focus where home[id] == ws { lastFocused[ws] = id }
     }
 
@@ -165,8 +181,9 @@ public struct Workspaces: Codable, Equatable {
         precondition(Self.range.contains(n), "workspace \(n) is out of range")
         if let there = display(showing: n) {
             focusedDisplay = there
-        } else if let d = focusedDisplay ?? shown.keys.sorted().first {
+        } else if let d = focusedDisplay ?? order.first(where: { shown[$0] != nil }) {
             shown[d] = n
+            lastShown[d] = n
             focusedDisplay = d
         }
         current = n
