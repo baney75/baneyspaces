@@ -9,8 +9,6 @@
   come first, and Library, hidden and build folders stay out of the way. It asks Spotlight: most
   searches take a tenth of a second, a common two-letter one up to half a second. macOS may ask
   once to let BaneySpaces see your Documents, Desktop, Downloads or iCloud Drive.
-  come first, and Library, hidden and build folders stay out of the way. It asks Spotlight, so a
-  search takes about a tenth of a second.
 - **Dragging a window to the top fills the screen again.** Since the overview took over that
   drag, BaneySpaces had also switched off macOS's "Drag windows to menu bar to fill screen", so
   letting go at the top did nothing. It's back on, turned on once for you if BaneySpaces had
