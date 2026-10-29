@@ -57,6 +57,12 @@ final class FileSearchTests: XCTestCase {
         XCTAssertEqual(FileSearch.rank("report", [a, b], home: home, now: now, limit: 1), [b])
     }
 
+    func testTheSamePathTwiceIsOneRow() {
+        let spotlight = FileSearch.Hit(name: "Documents", path: "/Users/d/Documents", lastUsed: Date())
+        let listed = FileSearch.Hit(name: "Documents", path: "/Users/d/Documents")
+        XCTAssertEqual(FileSearch.rank("doc", [spotlight, listed], home: home, limit: 5), [spotlight])
+    }
+
     func testAShallowerFileWinsATie() {
         let deep = FileSearch.Hit(name: "notes.md", path: "/Users/d/a/b/c/d/notes.md")
         let shallow = FileSearch.Hit(name: "notes.md", path: "/Users/d/Documents/notes.md")
@@ -91,6 +97,13 @@ final class FileSearchTests: XCTestCase {
         XCTAssertFalse(FileSearch.matches("tax 25", "2025 Tax Return.pdf"), "25 doesn't start a word of 2025")
         XCTAssertTrue(FileSearch.matches("syllabus", "math_syllabus_page4.png"))
         XCTAssertFalse(FileSearch.matches("budgetx", "Budget.xlsx"), "an older search's file that no longer matches")
+        // Typed words break the same way (Opus D round 2, high): full names, digits, punctuation.
+        XCTAssertTrue(FileSearch.matches("readme.md", "README.md"))
+        XCTAssertTrue(FileSearch.matches("page4", "math_syllabus_page4.png"))
+        XCTAssertTrue(FileSearch.matches("q3", "Q3 Report.pdf"))
+        XCTAssertTrue(FileSearch.matches("my-file", "my-file.txt"))
+        XCTAssertTrue(FileSearch.matches("mp3", "song.mp3"))
+        XCTAssertFalse(FileSearch.matches("a b", "a b.txt"), "too little to search for")
     }
 
     /// Words typed in another order than the name's still score as words, never below a name

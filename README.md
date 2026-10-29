@@ -171,7 +171,8 @@ Spotlight. Turning that off gives ⌘Space back to Spotlight, and so does quitti
   finds `2025 Tax Return.pdf`; words also break at `_` and in camelCase). It searches your home folder, iCloud Drive and other cloud drives
   through Spotlight, skipping Library, hidden folders and build folders such as `node_modules`.
   Return opens the file, **⌘Return** shows it in Finder. A folder Spotlight doesn't index
-  (System Settings › Spotlight) won't show up.
+  (System Settings › Spotlight) won't show up. The first time a file in Documents, Desktop,
+  Downloads or iCloud Drive comes up, macOS may ask to let BaneySpaces see that folder.
 - **Tab** into a menu: **Apps**, **Files**, **Install**, **Remove**, **Update**, **System** (lock, sleep,
   restart, dark mode, screenshot) or **Workspaces**. Delete on an empty search goes back.
 - **Install** searches Homebrew's whole app list and the Mac App Store. Return installs a

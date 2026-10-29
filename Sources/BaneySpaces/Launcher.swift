@@ -340,6 +340,9 @@ final class LauncherModel: ObservableObject {
     private var storeWork: DispatchWorkItem?
     /// Files Spotlight found for the query, best first. A newer search makes an older one stale.
     private var fileResults: [FileSearch.Hit] = []
+    /// What `fileResults` were found for. Until a newer search answers, they're shown only while
+    /// they still match what's typed.
+    private var fileResultsQuery = ""
     private var fileWork: DispatchWorkItem?
     private var fileSearches = 0
     private var bangs = Launcher.loadBangs()
@@ -391,11 +394,17 @@ final class LauncherModel: ObservableObject {
     }
 
     func icon(for path: String) -> NSImage {
-        if let i = iconCache[path] { return i }
+        if let i = iconCache[path] ?? fileIcons.object(forKey: path as NSString) { return i }
         let i = NSWorkspace.shared.icon(forFile: path)
-        iconCache[path] = i
+        // Apps are a bounded list; files found by search aren't, so their icons can be let go.
+        if path.hasSuffix(".app") { iconCache[path] = i } else { fileIcons.setObject(i, forKey: path as NSString) }
         return i
     }
+    private let fileIcons: NSCache<NSString, NSImage> = {
+        let c = NSCache<NSString, NSImage>()
+        c.countLimit = 300
+        return c
+    }()
 
     // MARK: Keys
 
@@ -477,7 +486,8 @@ final class LauncherModel: ObservableObject {
     private func rebuildKeepingSelection() {
         let on = items.indices.contains(selected) ? items[selected].id : nil
         rebuild()
-        if let on, let i = items.firstIndex(where: { $0.id == on }) { selected = i }
+        // A row that went away leaves the top selected, never whatever moved into its place.
+        selected = on.flatMap { id in items.firstIndex { $0.id == id } } ?? 0
     }
 
     // MARK: Web and agents
@@ -939,6 +949,7 @@ final class LauncherModel: ObservableObject {
             FileFinder.find(q, limit: inScope == .files ? 60 : 5, search: search) { [weak self] hits in
                 guard let self, self.fileSearches == search, self.scope == inScope else { return }
                 self.fileResults = hits
+                self.fileResultsQuery = q
                 self.rebuildKeepingSelection()
             }
         }
@@ -949,7 +960,9 @@ final class LauncherModel: ObservableObject {
     private func fileItems() -> [LauncherItem] {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         // An older search's files stay up while the newer one runs, only those that still match.
-        return fileResults.filter { FileSearch.matches(query, $0.name) }.map { f in
+        let q = query.trimmingCharacters(in: .whitespaces)
+        let shown = q == fileResultsQuery ? fileResults : fileResults.filter { FileSearch.matches(q, $0.name) }
+        return shown.map { f in
             let url = URL(fileURLWithPath: f.path)
             return LauncherItem(id: "file:\(f.path)", section: "Files", title: f.name,
                                 subtitle: FileSearch.folder(of: f.path, home: home) + " · ⌘↩ shows it in Finder",
@@ -965,9 +978,17 @@ final class LauncherModel: ObservableObject {
 /// drives included, the rest of Library left out), off the main thread, and ranks what it finds.
 enum FileFinder {
     private static let queue = DispatchQueue(label: "BaneySpaces file search", qos: .userInitiated)
-    /// Spotlight's matches looked at per search, most recently used first. A two-letter search
-    /// can match thousands; the ranking only needs enough to find the few worth showing.
+    /// Files kept per search for ranking. A two-letter search can match thousands; the ranking
+    /// only needs enough to find the few worth showing.
     static let cap = 1000
+    /// Matches Spotlight gathers per search, most recently used first. Noise is skipped as it's
+    /// read, since Spotlight can't leave it out (it ignores kMDItemPath) and it can be most of
+    /// the matches: 4,887 of 5,159 for "ind" in ~/Projects on Donovan's Mac were in node_modules.
+    /// Measured there: 6,000 takes 80–580 ms a search; 20,000 took up to 1.9 s.
+    static let scanLimit = 6_000
+    /// Reading each match's path costs about 0.3 ms, so reading stops after this long with what
+    /// it has kept.
+    static let readBudget: TimeInterval = 0.3
     /// The newest search asked for. One queued behind it is stale and doesn't run.
     private static let lock = NSLock()
     nonisolated(unsafe) private static var newest = 0
@@ -1018,18 +1039,27 @@ enum FileFinder {
               let q = MDQueryCreate(kCFAllocatorDefault, text as CFString, attributes as CFArray, [kMDItemLastUsedDate] as CFArray)
         else { return [] }
         MDQuerySetSearchScope(q, scopes as CFArray, 0)
-        MDQuerySetMaxCount(q, cap)
+        MDQuerySetMaxCount(q, scanLimit)
         guard MDQueryExecute(q, CFOptionFlags(kMDQuerySynchronous.rawValue)), !stale() else { return [] }
         func value<T>(_ attr: CFString, _ i: Int) -> T? {
             MDQueryGetAttributeValueOfResultAtIndex(q, attr, i).map { Unmanaged<AnyObject>.fromOpaque($0).takeUnretainedValue() } as? T
         }
-        return (0..<MDQueryGetResultCount(q)).compactMap { i in
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        var out: [FileSearch.Hit] = []
+        let until = Date().addingTimeInterval(readBudget)
+        for i in 0..<MDQueryGetResultCount(q) where out.count < cap {
+            if i % 200 == 199 {
+                if stale() { return [] }
+                if Date() > until { break }
+            }
             guard let raw = MDQueryGetResultAtIndex(q, i),
-                  let path = MDItemCopyAttribute(Unmanaged<MDItem>.fromOpaque(raw).takeUnretainedValue(), kMDItemPath) as? String
-            else { return nil }
-            return FileSearch.Hit(name: value(kMDItemFSName, i) ?? (path as NSString).lastPathComponent, path: path,
-                                  lastUsed: value(kMDItemLastUsedDate, i), modified: value(kMDItemFSContentChangeDate, i))
+                  let path = MDItemCopyAttribute(Unmanaged<MDItem>.fromOpaque(raw).takeUnretainedValue(), kMDItemPath) as? String,
+                  !FileSearch.isNoise(path, home: home)
+            else { continue }
+            out.append(FileSearch.Hit(name: value(kMDItemFSName, i) ?? (path as NSString).lastPathComponent, path: path,
+                                      lastUsed: value(kMDItemLastUsedDate, i), modified: value(kMDItemFSContentChangeDate, i)))
         }
+        return out
     }
 }
 

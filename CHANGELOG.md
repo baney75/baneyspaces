@@ -6,6 +6,9 @@
   in under the apps, from your home folder, iCloud Drive and other cloud drives; Tab into the new
   **Files** menu for more. Every word you type must start a word of the name, so `tax 2025` finds
   `2025 Tax Return.pdf`. Return opens it, ⌘Return shows it in Finder. Files you opened lately
+  come first, and Library, hidden and build folders stay out of the way. It asks Spotlight: most
+  searches take a tenth of a second, a common two-letter one up to half a second. macOS may ask
+  once to let BaneySpaces see your Documents, Desktop, Downloads or iCloud Drive.
   come first, and Library, hidden and build folders stay out of the way. It asks Spotlight, so a
   search takes about a tenth of a second.
 - **Dragging a window to the top fills the screen again.** Since the overview took over that

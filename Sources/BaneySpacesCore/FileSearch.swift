@@ -68,10 +68,12 @@ public enum FileSearch {
     /// The same rule as `spotlightQuery`, checked here: for files Spotlight didn't return (the
     /// home folder's own) and for results of an older search while a newer one runs.
     public static func matches(_ typed: String, _ name: String) -> Bool {
-        let typedWords = typed.split(whereSeparator: \.isWhitespace).map { Fuzzy.fold(String($0)) }
-        guard typedWords.contains(where: { $0.count >= minimumQuery }) else { return false }
+        let typed = typed.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard typed.contains(where: { $0.count >= minimumQuery }) else { return false }
+        // Broken into words as the name is: "readme.md" is readme and md, "page4" page and 4.
+        let typedWords = typed.flatMap(words)
         let nameWords = words(name)
-        return typedWords.allSatisfy { t in nameWords.contains { $0.hasPrefix(t) } }
+        return !typedWords.isEmpty && typedWords.allSatisfy { t in nameWords.contains { $0.hasPrefix(t) } }
     }
 
     /// Places nobody means when they search for a file by name: inside Library (except iCloud
@@ -95,8 +97,10 @@ public enum FileSearch {
     /// (or, counting half, changed) more recently, then the one nearer the home folder.
     public static func rank(_ typed: String, _ hits: [Hit], home: String, now: Date = Date(), limit: Int) -> [Hit] {
         let q = typed.trimmingCharacters(in: .whitespaces)
+        // The same path twice (Spotlight and the home folder's own list) is one row, the first.
+        var seen = Set<String>()
         let scored = hits.compactMap { h -> (Hit, Int)? in
-            guard !isNoise(h.path, home: home) else { return nil }
+            guard seen.insert(h.path).inserted, !isNoise(h.path, home: home) else { return nil }
             let name = nameScore(q, h.name)
             let depth: Int = self.depth(h.path, home: home)
             let recent: Int = max(recency(h.lastUsed, now: now), recency(h.modified, now: now) / 2)
