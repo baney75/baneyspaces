@@ -515,8 +515,6 @@ final class Spaces {
         refresh()
         clock.mark(.scanned)
         let focused = Windows.focused(in: Array(windows.values))
-        // ⌘N changes the display you're working on: the one with the window in front.
-        if moveFocus, let f = focused { noteFocusedDisplay(of: f.id) }
         if let f = focused, model.workspace(of: f.id) == model.current { model.noteFocus(f.id) }
         let leaving = model.current
         let plan = model.switchTo(n)
@@ -1511,6 +1509,24 @@ final class Spaces {
         guard model.order != before.0 || model.shown != before.1 else { return }
         displaysSettleUntil = Date().addingTimeInterval(Self.displaysSettle)
         Trace.log("displays \(model.shown.sorted { $0.value < $1.value }.map { "\($0.key.prefix(8))=\($0.value)" })")
+    }
+
+    /// The display under the pointer is the one you're on: a click there (on a window, the
+    /// desktop, the Workspace Dock or the overview) makes it the one ⌘1–⌘9 change. Going by the
+    /// window in front alone, the dock on the iPad switched the laptop (Donovan, 2026-10-28).
+    func usePointerDisplay() {
+        guard active, !switching, model.shown.count > 1,
+              let s = NSScreen.screens.first(where: { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }),
+              let key = Windows.key(of: s), model.shown[key] != nil, key != model.focusedDisplay else { return }
+        model.focus(display: key)
+        Trace.log("display in use: \(key.prefix(8)) showing \(model.current)")
+        onChange?()
+        persist()
+    }
+
+    /// The workspace a screen shows (the current one with a single display).
+    func workspace(onScreen s: NSScreen?) -> Int {
+        s.flatMap(Windows.key(of:)).flatMap { model.shown[$0] } ?? model.current
     }
 
     /// How long after displays change that windows moving between them are macOS's doing.

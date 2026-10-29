@@ -393,20 +393,21 @@ enum Windows {
     static func displays() -> [(key: DisplayKey, frame: CGRect, visible: CGRect)] {
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
         return NSScreen.screens.compactMap { s in
-            guard let n = s.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
-                  let uuid = CGDisplayCreateUUIDFromDisplayID(n.uint32Value)?.takeRetainedValue(),
-                  let key = CFUUIDCreateString(nil, uuid) as String? else { return nil }
+            guard let key = key(of: s) else { return nil }
             return (key, Geometry.toAX(s.frame, primaryHeight: primaryHeight), Geometry.toAX(s.visibleFrame, primaryHeight: primaryHeight))
         }
     }
 
+    /// A screen's display UUID.
+    static func key(of s: NSScreen) -> DisplayKey? {
+        guard let n = s.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
+              let uuid = CGDisplayCreateUUIDFromDisplayID(n.uint32Value)?.takeRetainedValue() else { return nil }
+        return CFUUIDCreateString(nil, uuid) as String?
+    }
+
     /// The screen for a display UUID from `displays()`.
     static func screen(for key: DisplayKey) -> NSScreen? {
-        NSScreen.screens.first { s in
-            guard let n = s.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
-                  let uuid = CGDisplayCreateUUIDFromDisplayID(n.uint32Value)?.takeRetainedValue() else { return false }
-            return (CFUUIDCreateString(nil, uuid) as String?) == key
-        }
+        NSScreen.screens.first { Self.key(of: $0) == key }
     }
 
     /// Screen frames in Accessibility coordinates.

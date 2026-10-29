@@ -157,7 +157,8 @@ final class WorkspaceDock {
         model.onSetAgentStatus = { [weak self] on in self?.onSetAgentStatus(on) }
         model.onOpenFiles = { [weak self] urls, pid, n in self?.open(urls, with: pid, on: n) }
         model.openable = { [weak self] pid in self?.openable(by: pid) ?? [] }
-        model.liveCurrent = { [weak self] in self?.spaces.model.current ?? 0 }
+        // The workspace on the dock's own display, which a tile press changes.
+        model.liveCurrent = { [weak self] in self.map { $0.spaces.workspace(onScreen: $0.shownOn) } ?? 0 }
         // A tile's right-click menu keeps the dock up while it's open.
         NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { [weak self] _ in
             self?.model.menuOpen = true
@@ -310,7 +311,7 @@ final class WorkspaceDock {
         guard isShown, model.shown, !slidingIn, let p = panel, let carry = resolveCarry() else { return }
         // A switch since the dock took it (one quick enough to start and end between two ticks)
         // left the window parked on the workspace it came from: it's not being carried any more.
-        if carry.from != spaces.model.current {
+        if !spaces.model.isShown(carry.from) {
             carryRefused = grab.window
             if let d = model.drag, d.carried { model.drag = nil }
             windowCarry = nil
@@ -344,7 +345,8 @@ final class WorkspaceDock {
     private func resolveCarry() -> (entry: Spaces.Entry, from: Int)? {
         if let carryEntry { return carryEntry }
         guard let grab = windowCarry else { return nil }
-        guard let (entry, from) = spaces.entry(for: grab.window), from == spaces.model.current else {
+        // A window in sight on either display can be carried; one parked away can't.
+        guard let (entry, from) = spaces.entry(for: grab.window), spaces.model.isShown(from) else {
             carryRefused = grab.window
             windowCarry = nil
             return nil
@@ -399,7 +401,7 @@ final class WorkspaceDock {
             guard let pid = pid_t(id) else { return }
             spaces.focusApp(pid, on: n, announce: false)
         case .tile(let n):
-            if n != spaces.model.current { spaces.switchTo(n, announce: false) }
+            if !spaces.model.isShown(n) { spaces.switchTo(n, announce: false) }
         }
     }
 
@@ -753,7 +755,9 @@ final class DockModel: ObservableObject {
             entries[n] = spaces.entries(on: n)
             for e in entries[n]! { byPid["\(e.pid)"] = e }
         }
-        let current = spaces.model.current
+        // The dock's own display's workspace (set up by the controller), else the current one.
+        let live = liveCurrent()
+        let current = live > 0 ? live : spaces.model.current
         // Each agent sits on the tile that holds its window, so its badge marks the app it runs in.
         let placed = !agentStatus ? [:] : DockTiles.place(agents(), windows: entries.mapValues { $0.map(\.id) }, current: current)
         let last = spaces.model.lastFocused

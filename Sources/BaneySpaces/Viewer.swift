@@ -338,6 +338,8 @@ final class ViewerController {
         isOpen = true
         openCount += 1
         model.reset()
+        // Opened on the display under the pointer, it's about that display's workspace.
+        spaces.usePointerDisplay()
         spaces.rememberFocus()
         model.load(from: spaces)
         let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
