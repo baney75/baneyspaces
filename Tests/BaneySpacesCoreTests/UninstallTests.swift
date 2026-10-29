@@ -21,7 +21,8 @@ final class UninstallTests: XCTestCase {
         try text.write(to: path(p), atomically: true, encoding: .utf8)
     }
 
-    private func uninstall(status: Int32 = 0, prefs: [String: Any]? = nil, macOS: String? = nil) throws -> String {
+    private func uninstall(status: Int32 = 0, prefs: [String: Any]? = nil, macOS: String? = nil,
+                           macOSKeys: [String: String] = [:]) throws -> String {
         let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("uninstall.sh")
         let p = Process()
@@ -34,6 +35,7 @@ final class UninstallTests: XCTestCase {
             env["BANEYSPACES_UNINSTALL_PREFS"] = file.path
         }
         if let macOS { env["BANEYSPACES_UNINSTALL_MACOS"] = macOS }
+        for (key, value) in macOSKeys { env["BANEYSPACES_UNINSTALL_MACOS_\(key)"] = value }
         p.environment = env
         let pipe = Pipe()
         p.standardOutput = pipe
@@ -119,14 +121,32 @@ final class UninstallTests: XCTestCase {
         XCTAssertFalse(out.contains("back as they were"), out)
     }
 
-    /// Without the app, Mission Control and fill-the-screen for a drag to the top still go back:
-    /// one saved as on is turned on, one that wasn't set is unset again.
+    /// Without the app, Mission Control for a drag to the top still goes back as saved, and
+    /// fill-the-screen the app already gave back is left alone.
     func testWithoutTheAppItPutsTheTopDragSettingsBack() throws {
         let saved = ["com.apple.dock/enterMissionControlByTopWindowDrag": true]
-        let out = try uninstall(prefs: ["systemTopDragSaved": saved], macOS: "0")
+        let out = try uninstall(prefs: ["systemTopDragSaved": saved, "systemTopDragFillGivenBack": true], macOS: "0")
         XCTAssertTrue(out.contains("would run: defaults write com.apple.dock enterMissionControlByTopWindowDrag -bool true"), out)
-        XCTAssertTrue(out.contains("would run: defaults delete com.apple.WindowManager EnableTopTilingByEdgeDrag"), out)
-        XCTAssertTrue(out.contains("would run: killall Dock") && out.contains("would run: killall WindowManager"), out)
+        XCTAssertTrue(out.contains("would run: killall Dock"), out)
+        XCTAssertFalse(out.contains("EnableTopTilingByEdgeDrag") || out.contains("killall WindowManager"), out)
+    }
+
+    /// Fill-the-screen an older build turned off comes back on, even when it was saved as
+    /// absent (Donovan, 2026-10-28: the drag to the top fills the screen again).
+    func testWithoutTheAppFillTheScreenComesBackOn() throws {
+        let out = try uninstall(prefs: ["systemTopDragSaved": [String: Bool]()], macOS: "0")
+        XCTAssertTrue(out.contains("would run: defaults write com.apple.WindowManager EnableTopTilingByEdgeDrag -bool true"), out)
+        XCTAssertTrue(out.contains("would run: killall WindowManager"), out)
+    }
+
+    /// Fill-the-screen still on, or off before BaneySpaces, is left alone.
+    func testWithoutTheAppFillTheScreenOnOrOffBeforeIsLeftAlone() throws {
+        let on = try uninstall(prefs: ["systemTopDragSaved": [String: Bool]()], macOS: "0",
+                               macOSKeys: ["EnableTopTilingByEdgeDrag": "1"])
+        XCTAssertTrue(on.contains("enterMissionControlByTopWindowDrag"), on)
+        XCTAssertFalse(on.contains("EnableTopTilingByEdgeDrag") || on.contains("killall WindowManager"), on)
+        let offBefore = try uninstall(prefs: ["systemTopDragSaved": ["com.apple.WindowManager/EnableTopTilingByEdgeDrag": false]], macOS: "0")
+        XCTAssertFalse(offBefore.contains("EnableTopTilingByEdgeDrag") || offBefore.contains("killall WindowManager"), offBefore)
     }
 
     /// One switched back on since in System Settings is the person's choice and stays.

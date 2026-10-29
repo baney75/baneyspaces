@@ -95,10 +95,16 @@ if [ -z "$TEST" ] && [ "$(defaults read com.apple.dock autohide-delay 2>/dev/nul
   killall Dock 2>/dev/null || true
 fi
 
-# Mission Control and fill-the-screen for a window dragged to the top, if the app wasn't there
-# to put them back. Only one still off as BaneySpaces left it goes back to its saved value.
+# Mission Control for a window dragged to the top, if the app wasn't there to put it back. Only
+# a setting still off as BaneySpaces left it goes back to its saved value. Fill-the-screen, which
+# builds before 2026-10-28 turned off too, comes back on as the app does it, unless the app
+# already gave it back or it was off before BaneySpaces.
 # The test reads this Mac's settings as BANEYSPACES_UNINSTALL_MACOS says, not for real.
-macos_pref() { if [ -n "$TEST" ]; then echo "${BANEYSPACES_UNINSTALL_MACOS:-}"; else defaults read "$1" "$2" 2>/dev/null || true; fi; }
+# BANEYSPACES_UNINSTALL_MACOS_<key> sets one setting; BANEYSPACES_UNINSTALL_MACOS, every other.
+macos_pref() {
+  if [ -n "$TEST" ]; then v="BANEYSPACES_UNINSTALL_MACOS_$2"; echo "${!v-${BANEYSPACES_UNINSTALL_MACOS:-}}"
+  else defaults read "$1" "$2" 2>/dev/null || true; fi
+}
 top_drag_back() {  # domain key process what
   [ "$(macos_pref "$1" "$2")" = "0" ] || return 0
   step "Putting back $4 for a window dragged to the top"
@@ -110,7 +116,13 @@ top_drag_back() {  # domain key process what
 saved=$(pref systemTopDragSaved)
 if [ -n "$saved" ]; then
   top_drag_back com.apple.dock enterMissionControlByTopWindowDrag Dock "Mission Control"
-  top_drag_back com.apple.WindowManager EnableTopTilingByEdgeDrag WindowManager "fill-the-screen"
+  fill_was=$(printf '%s\n' "$saved" | sed -n 's|.*"com.apple.WindowManager/EnableTopTilingByEdgeDrag" = \([01]\);.*|\1|p')
+  if [ "$(pref systemTopDragFillGivenBack)" != 1 ] && [ "$fill_was" != 0 ] \
+    && [ "$(macos_pref com.apple.WindowManager EnableTopTilingByEdgeDrag)" = "0" ]; then
+    step "Turning fill-the-screen back on for a window dragged to the top"
+    sys defaults write com.apple.WindowManager EnableTopTilingByEdgeDrag -bool true
+    sys killall WindowManager 2>/dev/null || true
+  fi
 fi
 
 # AeroSpace: the installer stopped it opening at login so the two don't fight over the same keys.

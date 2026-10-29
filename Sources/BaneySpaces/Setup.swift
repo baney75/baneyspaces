@@ -459,7 +459,7 @@ struct SetupView: View {
                     .font(.callout).foregroundStyle(.secondary)
             }
             Toggle("Dragging a window to the top of the screen opens the overview", isOn: Binding(get: { model.topDrag }, set: { model.setTopDrag($0) }))
-            Text("Let go over a workspace to send the window there. macOS's own Mission Control and fill-the-screen for that drag stay off while this is on, and come back when you turn it off.")
+            Text("Let go over a workspace to send the window there; let go at the top and it fills the screen. Mission Control for that drag stays off while this is on, and comes back when you turn it off.")
                 .font(.callout).foregroundStyle(.secondary)
         }
 

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Dragging a window to the top fills the screen again.** Since the overview took over that
+  drag, BaneySpaces had also switched off macOS's "Drag windows to menu bar to fill screen", so
+  letting go at the top did nothing. It's back on, turned on once for you if BaneySpaces had
+  turned it off. Let go at the top and the window fills the screen, even with the overview up;
+  let go over a workspace and it moves there. Only Mission Control stays off for that drag.
 - **An agent's spinner on the dock no longer stays stuck.** Every Claude session inside T3 Code
   reports to T3's one window, but the first session to claim it kept it for good, so a turn you
   stopped (which sends no hook) left the spinner turning for up to six hours while your other

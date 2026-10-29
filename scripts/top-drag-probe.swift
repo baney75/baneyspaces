@@ -3,10 +3,11 @@
 // It opens a window of its own, drags it by its title bar to the top edge with real mouse events,
 // holds it there, checks that the overview is on screen, then lets go over the first empty
 // workspace. The window must leave this workspace, and on the target workspace it must sit where
-// the drag picked it up. A second drag lets go off the tiles: the window must stay here.
+// the drag picked it up. A second drag lets go off the tiles: the window must stay here. Let go
+// at the top itself, after a short rest or a long one, and macOS must fill the screen with it.
 // Run it with BaneySpaces installed and running.
 //   swift scripts/top-drag-probe.swift
-// It takes the pointer for about ten seconds, visits the target workspace, comes back, and
+// It takes the pointer for about fifteen seconds, visits the target workspace, comes back, and
 // closes its window. It needs no AppleScript, so no Automation prompt.
 import AppKit
 
@@ -232,7 +233,45 @@ if overviewHasKeys() {
     if overviewUp(screenRect) { run("/usr/bin/open", ["-g", "baneyspaces://viewer"]) }
 }
 go(start.current)
-if failures.isEmpty { print("top drag opens the overview and moves the window") } else { exit(1) }
+
+// 5. Let go at the top and macOS fills the screen with the window, whether the overview opened
+// or not (Donovan, 2026-10-28: the drag had stopped filling the screen).
+let home = NSRect(x: 360, y: screen.frame.height - 760, width: 700, height: 500)
+let filler = DispatchQueue.main.sync { () -> NSWindow in
+    let w = NSWindow(contentRect: home, styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
+    w.title = "BaneySpaces top-drag probe (fill)"
+    w.isReleasedWhenClosed = false
+    w.makeKeyAndOrderFront(nil)
+    NSApp.activate(ignoringOtherApps: true)
+    return w
+}
+usleep(1_000_000)
+let fillID = UInt32(filler.windowNumber)
+let placedFiller = Date().addingTimeInterval(15)
+while workspace(of: fillID) == nil && Date() < placedFiller { usleep(200_000) }
+let visible = CGRect(x: screen.visibleFrame.minX, y: screen.frame.maxY - screen.visibleFrame.maxY,
+                     width: screen.visibleFrame.width, height: screen.visibleFrame.height)
+// Most of the visible screen, its top at the menu bar: macOS's fill, not an exact frame.
+func fills(_ r: CGRect?) -> Bool {
+    r.map { abs($0.minY - visible.minY) < 12 && $0.width >= visible.width * 0.9 && $0.height >= visible.height * 0.85 } ?? false
+}
+// TopDrag.dwell, the rest before the overview opens; the probe can't import it.
+let dwell = 0.25
+for (hold, what) in [(dwell * 0.4, "a short rest"), (dwell + 1.0, "a rest long enough to open the overview")] {
+    DispatchQueue.main.sync { filler.setFrame(filler.frameRect(forContentRect: home), display: true); filler.makeKeyAndOrderFront(nil) }
+    usleep(600_000)
+    guard let f = onScreen(fillID) else { expect(false, "the fill window is on screen"); break }
+    let edge = CGPoint(x: f.midX, y: 0)
+    var opened = false
+    drag(from: CGPoint(x: f.midX, y: f.minY + 12), to: edge, hold: hold, release: edge) { opened = overviewUp(screenRect) }
+    expect(hold < dwell ? !opened : opened, "after \(what) the overview \(opened ? "opened" : "stayed shut")")
+    expect(!missionControlUp(screenRect), "Mission Control stayed closed")
+    expect(fills(onScreen(fillID)), "let go at the top after \(what), the window fills the screen (\(onScreen(fillID).map { "\($0)" } ?? "not on screen"), screen \(visible))")
+    expect(workspace(of: fillID) == start.current, "and it stayed on workspace \(start.current)")
+}
+DispatchQueue.main.sync { filler.close() }
+
+if failures.isEmpty { print("top drag opens the overview, moves the window, and fills the screen") } else { exit(1) }
 exit(0)
 }
 app.run()
