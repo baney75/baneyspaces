@@ -139,6 +139,13 @@ final class UninstallTests: XCTestCase {
         XCTAssertTrue(out.contains("would run: killall WindowManager"), out)
     }
 
+    /// The app's try that didn't read back is still owed after it dropped the record.
+    func testWithoutTheAppAPendingFillIsTurnedOn() throws {
+        let out = try uninstall(prefs: ["systemTopDragFillPending": true], macOS: "0")
+        XCTAssertTrue(out.contains("would run: defaults write com.apple.WindowManager EnableTopTilingByEdgeDrag -bool true"), out)
+        XCTAssertFalse(out.contains("enterMissionControlByTopWindowDrag"), out)
+    }
+
     /// Fill-the-screen still on, or off before BaneySpaces, is left alone.
     func testWithoutTheAppFillTheScreenOnOrOffBeforeIsLeftAlone() throws {
         let on = try uninstall(prefs: ["systemTopDragSaved": [String: Bool]()], macOS: "0",

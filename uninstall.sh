@@ -116,13 +116,14 @@ top_drag_back() {  # domain key process what
 saved=$(pref systemTopDragSaved)
 if [ -n "$saved" ]; then
   top_drag_back com.apple.dock enterMissionControlByTopWindowDrag Dock "Mission Control"
-  fill_was=$(printf '%s\n' "$saved" | sed -n 's|.*"com.apple.WindowManager/EnableTopTilingByEdgeDrag" = \([01]\);.*|\1|p')
-  if [ "$(pref systemTopDragFillGivenBack)" != 1 ] && [ "$fill_was" != 0 ] \
-    && [ "$(macos_pref com.apple.WindowManager EnableTopTilingByEdgeDrag)" = "0" ]; then
-    step "Turning fill-the-screen back on for a window dragged to the top"
-    sys defaults write com.apple.WindowManager EnableTopTilingByEdgeDrag -bool true
-    sys killall WindowManager 2>/dev/null || true
-  fi
+fi
+# Still owed when the record is there, or when the app's last try didn't read back.
+fill_was=$(printf '%s\n' "$saved" | sed -n 's|.*"com.apple.WindowManager/EnableTopTilingByEdgeDrag" = \([01]\);.*|\1|p')
+if { [ -n "$saved" ] || [ "$(pref systemTopDragFillPending)" = 1 ]; } && [ "$(pref systemTopDragFillGivenBack)" != 1 ] \
+  && [ "$fill_was" != 0 ] && [ "$(macos_pref com.apple.WindowManager EnableTopTilingByEdgeDrag)" = "0" ]; then
+  step "Turning fill-the-screen back on for a window dragged to the top"
+  sys defaults write com.apple.WindowManager EnableTopTilingByEdgeDrag -bool true
+  sys killall WindowManager 2>/dev/null || true
 fi
 
 # AeroSpace: the installer stopped it opening at login so the two don't fight over the same keys.
