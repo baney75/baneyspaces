@@ -36,9 +36,8 @@ final class DockStuckTests: XCTestCase {
         XCTAssertFalse(DockStray.isStray(shown: false, panelUp: false, hiddenAt: 100, now: 102))
     }
 
-    /// AppKit hides a panel when its app deactivates and shows it again when the app comes back,
-    /// unless told not to. BaneySpaces activates itself on every empty workspace and in the
-    /// overview, so the dock came and went behind its own back. Every other panel opts out.
+    /// Only the dock shows and hides its panel, never AppKit on activation, and the tick backs up
+    /// both holds: the menu flag against the screen, and a panel left up after the dock went down.
     func testTheDockPanelIsNeverHiddenOrShownByAppKit() throws {
         let source = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()

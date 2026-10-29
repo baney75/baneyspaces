@@ -140,6 +140,8 @@ final class WorkspaceDock {
     private var menusSeenAt: TimeInterval = 0
     /// When a menu last began tracking, in seconds of uptime (`DockMenu`).
     private var menuOpenedAt: TimeInterval = 0
+    /// BaneySpaces' own menus on screen at the last look, and when (`menuHoldsDock`).
+    private var ownMenusSeen: (at: TimeInterval, count: Int)?
     /// When it last went down, in seconds of uptime (`DockStray`).
     private var hiddenAt: TimeInterval?
 
@@ -223,6 +225,12 @@ final class WorkspaceDock {
             menusSeenAt = uptime
             menuWindows.update(WorkspaceDock.menuLevelWindows(), now: uptime)
         }
+        // Down, yet its panel still up once the slide-out is over (seen once in a scratch test: the
+        // animated hide stalled with the panel at full alpha): nothing else would take it away.
+        if let p = panel, DockStray.isStray(shown: isShown, panelUp: p.isVisible, hiddenAt: hiddenAt, now: uptime) {
+            Trace.log("dock panel still up after the dock went down; putting it away")
+            p.orderOut(nil)
+        }
         // The overview already shows every workspace; the dock stays down while it's open.
         if MissionControlKeys.viewerOpen { if isShown { hide() }; edgeSince = nil; return }
         let mouse = NSEvent.mouseLocation
@@ -250,11 +258,6 @@ final class WorkspaceDock {
                 needsRearm = true
             }
             return
-        }
-        // Down, yet its panel still up once the slide-out is over: nothing else would take it away.
-        if let p = panel, DockStray.isStray(shown: false, panelUp: p.isVisible, hiddenAt: hiddenAt, now: ProcessInfo.processInfo.systemUptime) {
-            Trace.log("dock panel still up after the dock went down; putting it away")
-            p.orderOut(nil)
         }
         // Resting on the dock's edge, buttons up (not dragging a selection) unless carrying
         // something from another app to drop, or a window by its title bar, on an edge with no
@@ -284,9 +287,14 @@ final class WorkspaceDock {
     /// set with no menu on screen (an end of tracking that never came) is cleared, and says so.
     private func menuHoldsDock() -> Bool {
         guard model.menuOpen else { return false }
-        let held = DockMenu.holdsDock(flag: true, setAt: menuOpenedAt, now: ProcessInfo.processInfo.systemUptime) {
+        let now = ProcessInfo.processInfo.systemUptime
+        let held = DockMenu.holdsDock(flag: true, setAt: menuOpenedAt, now: now) {
+            // A few times a second, not every tick, so a menu being tracked doesn't stutter.
+            if let seen = ownMenusSeen, now - seen.at < 0.25 { return seen.count }
             let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
-            return MenuWindows.ownCount(list, level: Int(CGWindowLevelForKey(.popUpMenuWindow)), ownPID: getpid())
+            let count = MenuWindows.ownCount(list, level: Int(CGWindowLevelForKey(.popUpMenuWindow)), ownPID: getpid())
+            ownMenusSeen = (now, count)
+            return count
         }
         if !held {
             Trace.log("dock menu marked open with none on screen; letting the dock go down")
@@ -581,9 +589,9 @@ final class WorkspaceDock {
         p.isOpaque = false
         p.backgroundColor = .clear
         p.hasShadow = false
-        // AppKit hides a panel when its app deactivates and orders it back in when the app comes
-        // back. BaneySpaces activates itself on an empty workspace and in the overview, so the dock
-        // came and went behind `isShown`'s back. Only the dock shows and hides it.
+        // Only the dock shows and hides it, never AppKit when BaneySpaces activates or deactivates
+        // (on an empty workspace, in the overview). Already the default for this panel on macOS 27;
+        // said outright, as every other panel here does.
         p.hidesOnDeactivate = false
         // The window list's full titles show on hover though BaneySpaces is never the active app.
         p.allowsToolTipsWhenApplicationIsInactive = true
