@@ -116,6 +116,8 @@ final class WorkspaceDock {
     var onSetEdge: (DockEdge) -> Void = { _ in }
     /// Turning agent badges on or off from a tile's menu; the app delegate keeps setup in step.
     var onSetAgentStatus: (Bool) -> Void = { _ in }
+    /// BaneySpaces' own windows at the menu level that aren't menus (the ⌘Tab window bar).
+    var notMenus: () -> Set<Int> = { [] }
     let model = DockModel()
     private var panel: DockPanel?
     private var timer: Timer?
@@ -292,7 +294,7 @@ final class WorkspaceDock {
             // A few times a second, not every tick, so a menu being tracked doesn't stutter.
             if let seen = ownMenusSeen, now - seen.at < 0.25 { return seen.count }
             let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
-            let count = MenuWindows.ownCount(list, level: Int(CGWindowLevelForKey(.popUpMenuWindow)), ownPID: getpid())
+            let count = MenuWindows.ownCount(list, level: Int(CGWindowLevelForKey(.popUpMenuWindow)), ownPID: getpid(), excluding: notMenus())
             ownMenusSeen = (now, count)
             return count
         }

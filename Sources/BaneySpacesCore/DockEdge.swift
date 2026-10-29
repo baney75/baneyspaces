@@ -121,10 +121,11 @@ public struct MenuWindows {
     }
 
     /// How many of BaneySpaces' own windows at the menu level are on screen: its right-click
-    /// menus and their submenus, open now.
-    public static func ownCount(_ list: [[String: Any]], level: Int, ownPID: Int32) -> Int {
+    /// menus and their submenus, open now. `excluding` names its windows at that level that aren't menus.
+    public static func ownCount(_ list: [[String: Any]], level: Int, ownPID: Int32, excluding: Set<Int> = []) -> Int {
         list.filter { w in
             (w[kCGWindowLayer as String] as? Int) == level && (w[kCGWindowOwnerPID as String] as? Int32) == ownPID
+                && !excluding.contains(w[kCGWindowNumber as String] as? Int ?? -1)
                 && (w[kCGWindowIsOnscreen as String] as? Bool ?? true)
         }.count
     }

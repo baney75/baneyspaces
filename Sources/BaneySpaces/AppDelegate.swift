@@ -24,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         d.onSetEdge = { [weak self] e in self?.setDockEdge(e) }
         d.onTurnOff = { [weak self] in self?.setWorkspaceDock(false) }
         d.onSetAgentStatus = { [weak self] on in self?.setDockAgentStatus(on) }
+        d.notMenus = { [weak self] in self?.switcher.windowNumber.map { [$0] } ?? [] }
         d.model.agents = { [weak self] in
             guard let self, self.deck.started else { return [] }
             return self.deck.dockAgents()

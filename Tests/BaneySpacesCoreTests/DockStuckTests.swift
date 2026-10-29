@@ -28,6 +28,15 @@ final class DockStuckTests: XCTestCase {
         XCTAssertEqual(MenuWindows.ownCount(list, level: 101, ownPID: 42), 1)
     }
 
+    /// The ⌘Tab window bar sits at the menu level too; left on screen, it mustn't pass for a menu.
+    func testTheWindowBarIsNotAMenu() {
+        let list: [[String: Any]] = [
+            [kCGWindowNumber as String: 9, kCGWindowLayer as String: 101, kCGWindowOwnerPID as String: Int32(42), kCGWindowIsOnscreen as String: true],
+        ]
+        XCTAssertEqual(MenuWindows.ownCount(list, level: 101, ownPID: 42, excluding: [9]), 0)
+        XCTAssertEqual(MenuWindows.ownCount(list, level: 101, ownPID: 42), 1)
+    }
+
     func testAPanelStillUpAfterTheDockWentDownIsAStray() {
         XCTAssertTrue(DockStray.isStray(shown: false, panelUp: true, hiddenAt: 100, now: 102))
         XCTAssertTrue(DockStray.isStray(shown: false, panelUp: true, hiddenAt: nil, now: 102))
