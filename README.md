@@ -160,20 +160,27 @@ in `~/.grok/hooks`. Without hooks the Deck reads Claude's terminal title instead
 
 ## Launcher
 
-One box to open, find, install and remove apps. Open it from the menu bar menu or the Workspace
+One box to open, find, install and remove apps, and find files. Open it from the menu bar menu or the Workspace
 Dock, or turn on **⌘Space opens the BaneySpaces launcher** in setup to use it in place of
 Spotlight. Turning that off gives ⌘Space back to Spotlight, and so does quitting BaneySpaces.
 
-- **Type** to search apps, commands and workspaces at once. An app that's already open takes you
-  to the workspace it's on.
-- **Tab** into a menu: **Apps**, **Install**, **Remove**, **Update**, **System** (lock, sleep,
+- **Type** to search apps, files, commands and workspaces at once. An app that's already open
+  takes you to the workspace it's on.
+- **Files.** The best five files and folders whose names match come in under the apps; Tab into
+  **Files** for more. Every word you type must start a word of the name (`tax 2025` or `ret tax`
+  finds `2025 Tax Return.pdf`; words also break at `_` and in camelCase). It searches your home folder, iCloud Drive and other cloud drives
+  through Spotlight, skipping Library, hidden folders and build folders such as `node_modules`.
+  Return opens the file, **⌘Return** shows it in Finder. A folder Spotlight doesn't index
+  (System Settings › Spotlight) won't show up. The first time a file in Documents, Desktop,
+  Downloads or iCloud Drive comes up, macOS may ask to let BaneySpaces see that folder.
+- **Tab** into a menu: **Apps**, **Files**, **Install**, **Remove**, **Update**, **System** (lock, sleep,
   restart, dark mode, screenshot) or **Workspaces**. Delete on an empty search goes back.
 - **Install** searches Homebrew's whole app list and the Mac App Store. Return installs a
   Homebrew app in the background and tells you when it's ready; an installer that needs your
   password finishes in Terminal, where you can see it. App Store results open in the App Store.
   No Homebrew yet? The first row installs it, in Terminal.
 - **Remove** lists apps Homebrew installed and asks before uninstalling one.
-- **⌘Return** shows an app in Finder, or a Homebrew app's web page.
+- **⌘Return** shows an app or file in Finder, or a Homebrew app's web page.
 - **Search the web and ask agents.** Type anything and the launcher offers your search engine,
   an image search and your agent. Start with **?** to ask your agent (Claude unless you pick
   another in setup); it opens a new chat in your default browser with the question asked.
