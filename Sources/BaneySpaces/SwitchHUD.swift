@@ -1,4 +1,5 @@
 import AppKit
+import BaneySpacesCore
 import SwiftUI
 
 /// A brief, quiet confirmation on every keyboard switch: the 3×3 grid with the new workspace
@@ -14,7 +15,8 @@ final class SwitchHUD {
     private let model = HUDModel()
 
     /// `occupied` lights the workspaces that have windows; `icons` are the apps on `n`.
-    func show(_ n: Int, occupied: Set<Int> = [], icons: [NSImage] = []) {
+    /// `display`: the display the workspace went to (with several), else the one under the pointer.
+    func show(_ n: Int, occupied: Set<Int> = [], icons: [NSImage] = [], display: DisplayKey? = nil) {
         guard SwitchHUD.enabled else { return }
         model.current = n
         model.occupied = occupied
@@ -22,7 +24,7 @@ final class SwitchHUD {
         let p = panel ?? makePanel()
         panel = p
         if let host = p.contentView { host.layoutSubtreeIfNeeded(); p.setContentSize(host.fittingSize) }
-        if let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main {
+        if let screen = display.flatMap(Windows.screen(for:)) ?? NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main {
             let size = p.frame.size
             p.setFrameOrigin(NSPoint(x: screen.frame.midX - size.width / 2, y: screen.frame.minY + screen.frame.height * 0.16))
         }

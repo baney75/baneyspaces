@@ -17,6 +17,8 @@ A change is done when all of these pass on the installed build (`make install`):
    `swift scripts/top-drag-probe.swift`. It takes the pointer for ten seconds; run it while Donovan is away.
    For a window dragged down to the dock (`DockCarry`, `WorkspaceDock.carryMoved`/`endCarry`, the watcher's
    `onCarry`): `swift scripts/dock-drag-probe.swift`, also while he's away.
+   For anything that decides what each display shows (`Workspaces.shown`, `displays`, `carry`,
+   `noteMovedAcrossDisplays`): `swift scripts/displays-probe.swift` with two displays (Sidecar counts).
 4. The gesture Donovan reported, done live through cua-driver on his Mac (the real keys, the
    real hold, the real click), with the result read back from the screen, `trace.log` or
    `state.json`.

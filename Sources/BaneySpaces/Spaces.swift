@@ -119,11 +119,12 @@ final class Spaces {
         }
         saved = SavedFrames()
         saved.frames = unreached
+        noteDisplays()
         // Put every window back on the workspace it had before this launch (an update, a crash,
-        // a restart), and return to the workspace you were on.
+        // a restart), and return to the workspace you were on, on each display.
         if let layout = SavedLayout.load(from: Spaces.layoutURL) {
             model.restore(current: layout.current, home: layout.homes(livePids: windows.mapValues(\.pid)),
-                          lastFocused: layout.lastFocused)
+                          lastFocused: layout.lastFocused, displays: layout.displays ?? [:])
             // Window numbers are reused after a restart, so a waiting window must still belong
             // to the same app; otherwise its entry would unhide a stranger.
             let server = Windows.serverWindows()
@@ -188,7 +189,19 @@ final class Spaces {
         for w in list { next[w.id] = w }
         windows = next
         placedBefore.formIntersection(snap.alive)
-        let added = model.sync(seen: list.map(\.id), alive: alive)
+        let displays = Windows.displays()
+        // A display came or went before screensChanged's settled work ran: the model hears of it
+        // now, so a window macOS moved off an unplugged display isn't taken for one you dragged.
+        if !model.order.isEmpty, displays.map(\.key) != model.order { noteDisplays() }
+        let frames = Dictionary(displays.map { ($0.key, $0.frame) }, uniquingKeysWith: { a, _ in a })
+        var appeared: [WindowID: DisplayKey] = [:]
+        if model.shown.count > 1 {
+            for w in list where model.workspace(of: w.id) == nil {
+                if let f = w.frame, let d = Geometry.display(of: f, in: frames) { appeared[w.id] = d }
+            }
+        }
+        let added = model.sync(seen: list.map(\.id), alive: alive, on: appeared)
+        if model.shown.count > 1, !switching { noteMovedAcrossDisplays(list, frames: frames, act: Date() > displaysSettleUntil) }
         prune(alive: alive)
         // A scan that skipped a busy app can't vouch for that app's windows. It's remembered, and
         // the next refresh scans again as soon as that app is willing to answer.
@@ -207,15 +220,15 @@ final class Spaces {
                 let sibling = closed.compactMap { dormant[$0] }.first { $0.pid == d.pid }
                 let home = sibling?.workspace ?? d.workspace
                 model.assign(id, to: home, focus: false)
-                if home != model.current, let frame = sibling?.frame ?? d.frame { saved.frames[id] = frame }
+                if !model.isShown(home), let frame = sibling?.frame ?? d.frame { saved.frames[id] = frame }
                 fromLayout.insert(id)
-                returned = returned || home != model.current
+                returned = returned || !model.isShown(home)
                 continue
             }
             guard let entry = pendingLayout.removeValue(forKey: id), windows[id]?.pid == entry.pid else { continue }
             model.assign(id, to: entry.workspace, focus: false)
             fromLayout.insert(id)
-            returned = returned || entry.workspace != model.current
+            returned = returned || !model.isShown(entry.workspace)
         }
         // At launch every window is new; the saved layout decides where they go. A window that sat
         // unplaced in plain sight while Accessibility was out isn't new either.
@@ -237,12 +250,12 @@ final class Spaces {
         for id in added {
             guard let w = windows[id], !w.isMinimized, let f = w.frame, Geometry.isStranded(f, screens: screens) else { continue }
             let to = Geometry.restoreFrame(saved: nil, size: f.size, screens: screens)
-            if model.workspace(of: id) == model.current { w.setFrame(to) } else if saved.frames[id] == nil { saved.frames[id] = to }
+            if model.workspace(of: id).map(model.isShown) == true { w.setFrame(to) } else if saved.frames[id] == nil { saved.frames[id] = to }
         }
         // A window recorded as parked on the workspace being shown, yet back in plain sight
         // (an app that applied our move late), is simply shown. Its old record would otherwise
         // send it back to a stale spot later.
-        for id in saved.frames.keys where model.workspace(of: id) == model.current {
+        for id in saved.frames.keys where model.workspace(of: id).map(model.isShown) == true {
             if let f = windows[id]?.frame, !Geometry.isStranded(f, screens: screens) { saved.frames[id] = nil }
         }
         unplaced.scanned(unplaced: ScanCheck.unplaced(onScreen: snap.onScreen, placed: Set(model.home.keys),
@@ -271,16 +284,16 @@ final class Spaces {
             let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
             var moved = false
             for id in candidates {
-                guard let w = self.windows[id], w.pid != front, self.model.workspace(of: id) == self.model.current else { continue }
+                guard let w = self.windows[id], w.pid != front, let here = self.model.workspace(of: id), self.model.isShown(here) else { continue }
                 let others = self.windows.values.filter { $0.pid == w.pid && $0.id != id }.compactMap { self.model.workspace(of: $0.id) }
                 if let to = AgentWorkspace.homeForNewWindow(appFront: false, appWorkspaces: Set(others), claimed: nil,
-                                                            current: self.model.current, agent: agent) {
+                                                            current: here, agent: agent) {
                     Trace.log("agent window \(id) of \(w.appName) joins workspace \(to)")
                     self.model.assign(id, to: to, focus: false)
                     moved = true
                     continue
                 }
-                guard !others.contains(self.model.current),
+                guard !others.contains(here),
                       let home = self.recent.first(where: others.contains) ?? others.min() else { continue }
                 self.model.assign(id, to: home, focus: false)
                 moved = true
@@ -377,7 +390,7 @@ final class Spaces {
             drop(c, of: w.pid)
             model.assign(id, to: c.workspace, focus: false)
             Trace.log("claimed window \(id) of \(windows[id]?.appName ?? "?") for workspace \(c.workspace)")
-            away = away || c.workspace != model.current
+            away = away || !model.isShown(c.workspace)
         }
         return away
     }
@@ -465,7 +478,7 @@ final class Spaces {
 
     private func prune(alive: Set<WindowID>) {
         // The app in front closing its window here (⌘W) hands focus to another app.
-        if windows.contains(where: { !alive.contains($0.key) && $0.value.pid == frontPid && model.workspace(of: $0.key) == model.current }) {
+        if windows.contains(where: { !alive.contains($0.key) && $0.value.pid == frontPid && model.workspace(of: $0.key).map(model.isShown) == true }) {
             leftAt = Date()
         }
         windows = windows.filter { alive.contains($0.key) }
@@ -493,7 +506,8 @@ final class Spaces {
                 var seen = Set<pid_t>()
                 let icons = model.windows(on: n).compactMap { windows[$0]?.pid }.filter { seen.insert($0).inserted }
                     .prefix(5).compactMap { NSRunningApplication(processIdentifier: $0)?.icon }
-                hud.show(n, occupied: Set(Workspaces.range.filter { !model.windows(on: $0).isEmpty }), icons: Array(icons))
+                hud.show(n, occupied: Set(Workspaces.range.filter { !model.windows(on: $0).isEmpty }), icons: Array(icons),
+                         display: model.shown.count > 1 ? model.display(showing: n) : nil)
             }
         }
         generation += 1
@@ -645,14 +659,20 @@ final class Spaces {
     /// The app's window on this workspace that should take focus, if it has one: the one used
     /// last here, or any visible one.
     private func windowHere(of pid: pid_t) -> Window? {
-        let here = model.windows(on: model.current).compactMap { windows[$0] }
-            .filter { $0.pid == pid && !$0.isMinimized && saved.frames[$0.id] == nil }
-        if let last = model.lastFocused[model.current], let w = here.first(where: { $0.id == last }) { return w }
-        return here.first
+        // This display's workspace first, then the other displays'.
+        let order = [model.current] + model.shown.values.sorted().filter { $0 != model.current }
+        for n in order {
+            let here = model.windows(on: n).compactMap { windows[$0] }
+                .filter { $0.pid == pid && !$0.isMinimized && saved.frames[$0.id] == nil }
+            if let last = model.lastFocused[n], let w = here.first(where: { $0.id == last }) { return w }
+            if let w = here.first { return w }
+        }
+        return nil
     }
 
     /// Focuses a window on this workspace, marking the activation as BaneySpaces' own.
     private func stay(on w: Window) {
+        noteFocusedDisplay(of: w.id)
         expectedFront = w.pid
         settleUntil = Date().addingTimeInterval(0.3)
         model.noteFocus(w.id)
@@ -673,8 +693,21 @@ final class Spaces {
         let pid = app.processIdentifier
         guard let w = Windows.focused(of: pid, in: Array(windows.values)),
               let n = model.workspace(of: w.id) else { return }
-        if n == model.current && saved.frames[w.id] == nil {
+        if model.isShown(n) && saved.frames[w.id] == nil {
+            // The app in front just closed its last window here, quit or hid, and macOS handed
+            // focus to an app on the other display: you're still on this one.
+            if model.shown.count > 1, let d = model.display(showing: n), d != model.focusedDisplay,
+               activatedAt.timeIntervalSince(max(leftAt, handedOffAt)) < 0.5 {
+                Trace.log("followFocus stayed on this display: \(w.appName) came forward after the front app left")
+                if let id = model.lastFocused[model.current], let t = windows[id], saved.frames[id] == nil, t.pid != pid {
+                    stay(on: t)
+                } else {
+                    takeFocus()
+                }
+                return
+            }
             lastKey[pid] = w.id
+            noteFocusedDisplay(of: w.id)
             model.noteFocus(w.id)
             // An app BaneySpaces hid, opening a window here: macOS unhid all of it, so its windows
             // from other workspaces are in sight too. They go back out of view.
@@ -746,7 +779,7 @@ final class Spaces {
     /// then (one it opened).
     private func hideOnceBehind(_ pid: pid_t) {
         waitUntil(timeout: 0.3, interval: 0.01, { NSWorkspace.shared.frontmostApplication?.processIdentifier != pid }) { [self] in
-            guard active, !model.windows(on: model.current).contains(where: { windows[$0]?.pid == pid }) else { return }
+            guard active, !model.visibleWindows.contains(where: { windows[$0]?.pid == pid }) else { return }
             // Still in front (focus didn't move here): the workspace is applied again instead,
             // which hides it the usual way.
             guard NSWorkspace.shared.frontmostApplication?.processIdentifier != pid else {
@@ -770,7 +803,7 @@ final class Spaces {
     /// The app has windows on other workspaces that aren't out of view: it was unhidden.
     private func strayed(_ pid: pid_t) -> Bool {
         guard NSRunningApplication(processIdentifier: pid)?.isHidden == false else { return false }
-        return windows.values.contains { $0.pid == pid && model.workspace(of: $0.id).map { $0 != model.current } == true
+        return windows.values.contains { $0.pid == pid && model.workspace(of: $0.id).map { !model.isShown($0) } == true
             && saved.frames[$0.id] == nil && !$0.isMinimized }
     }
 
@@ -805,14 +838,17 @@ final class Spaces {
               NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
         refresh()
         guard let w = Windows.focused(of: pid, in: Array(windows.values)), let n = model.workspace(of: w.id) else { return }
-        if let i = intended[pid], Date() < i.until, i.id != w.id, model.workspace(of: i.id) == model.current,
-           n != model.current || saved.frames[w.id] != nil, let target = windows[i.id] {
+        if let i = intended[pid], Date() < i.until, i.id != w.id, model.workspace(of: i.id).map(model.isShown) == true,
+           !model.isShown(n) || saved.frames[w.id] != nil, let target = windows[i.id] {
             return stay(on: target)
         }
         intended[pid] = nil
         let previous = lastKey[pid]
         lastKey[pid] = w.id
-        guard n != model.current || saved.frames[w.id] != nil else { return model.noteFocus(w.id) }
+        guard !model.isShown(n) || saved.frames[w.id] != nil else {
+            noteFocusedDisplay(of: w.id)
+            return model.noteFocus(w.id)
+        }
         // A window minimized or closed (even one an app only hid) is one you left, not chose from.
         let chosen = previous.map { $0 != w.id && windows[$0].map { !$0.isMinimized } == true && Windows.lists($0, pid: pid) } ?? false
         if chosen {
@@ -887,6 +923,11 @@ final class Spaces {
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.active else { return }
             if self.switching { return self.enqueue { [weak self] in self?.screensChanged() } }
+            // A display plugged in shows a workspace of its own; one unplugged stops showing its.
+            self.noteDisplays()
+            // macOS moved windows around for the change; any on a shown workspace that landed on
+            // another display goes back to its workspace's display.
+            self.returnToDisplays()
             self.switchTo(self.model.current, takeFocus: false, announce: false)
         }
         screensWork = work
@@ -924,7 +965,7 @@ final class Spaces {
         if switching { return enqueue { [weak self] in self?.moveCarried(id, to: n, from: frame, wanted: wanted) } }
         // Already gone to `n` while the drop settled: the window is out of sight on the workspace
         // just left, so it goes back to its spot now, before the switch below shows it here.
-        if n == model.current, let w = windows[id] { w.place(frame, currentSize: w.frame?.size ?? .zero) }
+        if model.isShown(n), let w = windows[id] { w.place(onDisplayOf(n, frame), currentSize: w.frame?.size ?? .zero) }
         // The window had the keyboard (it was just dragged) and the overview never took it, so
         // this workspace's next window takes it, or the empty-workspace holder when none is left.
         model.assign(id, to: n, focus: false)
@@ -937,7 +978,7 @@ final class Spaces {
     /// A window on another workspace will come back at `frame`: a parked one's record says so,
     /// and one whose app is hidden moves there unseen.
     private func placeAway(_ id: WindowID, at frame: CGRect) {
-        guard active, let n = model.workspace(of: id), n != model.current else { return }
+        guard active, let n = model.workspace(of: id), !model.isShown(n) else { return }
         if saved.frames[id] != nil {
             saved.frames[id] = frame
             persist()
@@ -972,7 +1013,7 @@ final class Spaces {
         if let w = windows[id], w.isMinimized { w.unminimize() }
         // Already here: raise it directly. A switch would first record the window in front (the
         // app you're leaving, since docks and switchers never take focus) and land back on it.
-        if n == model.current, let w = windows[id] {
+        if model.isShown(n), let w = windows[id] {
             // A window still parked off screen here (an earlier restore didn't land) comes back first.
             if let frame = saved.frames[id], restore(w, to: frame, screens: Windows.screens()) { saved.frames[id] = nil }
             stay(on: w)
@@ -1052,7 +1093,7 @@ final class Spaces {
         // A full scan: the window server may already have counted the window before
         // Accessibility listed it, and a quick refresh would then never look again.
         refresh(full: true)
-        guard let new = windows.values.first(where: { $0.pid == pid && !known.contains($0.id) && model.workspace(of: $0.id) == model.current }) else {
+        guard let new = windows.values.first(where: { $0.pid == pid && !known.contains($0.id) && model.workspace(of: $0.id).map(model.isShown) == true }) else {
             return false
         }
         lastKey[pid] = new.id
@@ -1103,8 +1144,14 @@ final class Spaces {
         // still brings its app back when you go to its workspace.
         // An app that also has known windows elsewhere stays hidden: it isn't answering, so those
         // windows couldn't be parked. The retry scan brings the waiting window home instead.
-        let elsewhere = Set(windows.values.filter { model.workspace(of: $0.id) != model.current }.map(\.pid))
-        let waiting = Set(pendingLayout.values.filter { $0.workspace == model.current }.map(\.pid)).subtracting(elsewhere)
+        let elsewhere = Set(windows.values.filter { model.workspace(of: $0.id).map(model.isShown) != true }.map(\.pid))
+        let waiting = Set(pendingLayout.values.filter { model.isShown($0.workspace) }.map(\.pid)).subtracting(elsewhere)
+        // A workspace that went to another display takes its windows there, unseen: parked ones by
+        // their record, ones whose app is hidden moved while it still is. Every shown workspace's,
+        // so one that came back with a display lands on it.
+        if model.shown.count > 1 {
+            for (d, n) in model.shown { carry(model.windows(on: n), to: d) }
+        }
         let parkedApps = parkedPids()
         let how = Concealment(plan: plan, owner: windows.mapValues(\.pid), alsoShown: waiting, neverHidden: parkedApps)
         let home = plan.show.compactMap { id -> (Window, CGRect)? in
@@ -1118,7 +1165,10 @@ final class Spaces {
         parkAlongside(how, screens: screens)
         // An app on the parked list that BaneySpaces hid comes back once its windows from other
         // workspaces are parked, later in this switch (see `park`).
-        for pid in how.showApps {
+        // Going to a workspace shows its apps, even one hidden with ⌘H. An app on the other
+        // display's workspace comes back only if BaneySpaces hid it: one you hid stays hidden.
+        let going = Set(model.windows(on: model.current).compactMap { windows[$0]?.pid }).union(waiting)
+        for pid in how.showApps where going.contains(pid) || saved.hiddenApps.contains(pid) {
             if let app = NSRunningApplication(processIdentifier: pid), app.isHidden { app.unhide() }
             saved.hiddenApps.remove(pid)
         }
@@ -1459,6 +1509,139 @@ final class Spaces {
         Windows.makeFrontmost(finder)
     }
 
+    // MARK: Displays
+
+    /// Tells the model which displays are connected now. After a change, windows macOS moves
+    /// for it aren't taken for ones you dragged, for `displaysSettle`.
+    private func noteDisplays() {
+        let keys = Windows.displays().map(\.key)
+        let before = (model.order, model.shown)
+        model.reserved = Self.agentWorkspace.map { [$0] } ?? []
+        model.displays(keys)
+        guard model.order != before.0 || model.shown != before.1 else { return }
+        displaysSettleUntil = Date().addingTimeInterval(Self.displaysSettle)
+        Trace.log("displays \(model.shown.sorted { $0.value < $1.value }.map { "\($0.key.prefix(8))=\($0.value)" })")
+    }
+
+    /// The display under the pointer is the one you're on: a click there (on a window, the
+    /// desktop, the Workspace Dock or the overview) makes it the one ⌘1–⌘9 change. Going by the
+    /// window in front alone, the dock on the iPad switched the laptop (Donovan, 2026-10-28).
+    func usePointerDisplay() {
+        useDisplay(of: NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) })
+    }
+
+    /// The display a BaneySpaces panel sits on (the Workspace Dock) is the one its actions change.
+    func useDisplay(of screen: NSScreen?) { use(display: screen.flatMap(Windows.key(of:))) }
+
+    /// Makes display `key` the one ⌘1–⌘9 change. During a switch it waits its turn in the queue,
+    /// ahead of whatever the same press asks for next, so a dock tile pressed mid-switch still
+    /// switches the dock's display.
+    func use(display key: DisplayKey?) {
+        guard active, model.shown.count > 1, let key, model.shown[key] != nil else { return }
+        if switching { return enqueue { [weak self] in self?.use(display: key) } }
+        guard key != model.focusedDisplay else { return }
+        model.focus(display: key)
+        Trace.log("display in use: \(key.prefix(8)) showing \(model.current)")
+        onChange?()
+        persist()
+    }
+
+    /// The workspace a screen shows (the current one with a single display).
+    func workspace(onScreen s: NSScreen?) -> Int {
+        s.flatMap(Windows.key(of:)).flatMap { model.shown[$0] } ?? model.current
+    }
+
+    /// How long after displays change that windows moving between them are macOS's doing.
+    private static let displaysSettle: TimeInterval = 3
+    private var displaysSettleUntil = Date.distantPast
+
+    /// Windows on a shown workspace that sit on another display (macOS put them there when a
+    /// display came or went) go to their workspace's display.
+    private func returnToDisplays() {
+        guard model.shown.count > 1 else { return }
+        let displays = Windows.displays()
+        let frames = Dictionary(displays.map { ($0.key, $0.frame) }, uniquingKeysWith: { a, _ in a })
+        for w in windows.values where saved.frames[w.id] == nil && !w.isMinimized {
+            guard let n = model.workspace(of: w.id), let d = model.display(showing: n), let f = w.frame,
+                  let at = Geometry.display(of: f, in: frames), at != d,
+                  let from = displays.first(where: { $0.key == at }), let to = displays.first(where: { $0.key == d }) else { continue }
+            w.place(Geometry.carry(f, from: from.visible, to: to.visible), currentSize: f.size)
+            Trace.log("window \(w.id) of \(w.appName) back to the display showing \(n)")
+        }
+    }
+
+    /// The window with focus is on display `d`'s workspace: that display is the one ⌘N changes.
+    private func noteFocusedDisplay(of id: WindowID) {
+        guard model.shown.count > 1, let n = model.workspace(of: id), n != Self.agentWorkspace,
+              let d = model.display(showing: n), d != model.focusedDisplay else { return }
+        model.focus(display: d)
+        onChange?()
+    }
+
+    /// Windows you dragged onto another display join the workspace that display shows. Parked
+    /// windows (off every display) and minimized ones are left alone.
+    ///
+    /// Only movement seen counts as a drag: a window last seen on its workspace's display that's
+    /// now on another. One that turns up on the wrong display without being seen leave its own (a
+    /// carry that didn't land while its app was hidden) goes back to its display instead of
+    /// changing workspace. With `act` false (right after displays changed) it only takes note.
+    private func noteMovedAcrossDisplays(_ list: [Window], frames: [DisplayKey: CGRect], act: Bool) {
+        seenOn = seenOn.filter { windows[$0.key] != nil }
+        var moved = false
+        let displays = Windows.displays()
+        for w in list where saved.frames[w.id] == nil && !w.isMinimized {
+            guard let n = model.workspace(of: w.id), model.isShown(n), let f = w.frame,
+                  let d = Geometry.display(of: f, in: frames), let mine = model.display(showing: n) else { continue }
+            let before = seenOn[w.id]
+            seenOn[w.id] = d
+            guard act, d != mine else { continue }
+            if before == mine {
+                if model.moved(w.id, to: d) {
+                    Trace.log("window \(w.id) of \(w.appName) moved to the display showing \(model.shown[d] ?? 0)")
+                    moved = true
+                }
+            } else if let from = displays.first(where: { $0.key == d }), let to = displays.first(where: { $0.key == mine }) {
+                w.place(Geometry.carry(f, from: from.visible, to: to.visible), currentSize: f.size)
+                seenOn[w.id] = mine
+                Trace.log("window \(w.id) of \(w.appName) back to the display showing \(n) (it wasn't dragged there)")
+            }
+        }
+        if moved { persist() }
+    }
+    /// The display each window in sight was on at the last look.
+    private var seenOn: [WindowID: DisplayKey] = [:]
+
+    /// `frame` on the display showing workspace `n`: carried there if it's on another one.
+    private func onDisplayOf(_ n: Int, _ frame: CGRect) -> CGRect {
+        let displays = Windows.displays()
+        let frames = Dictionary(displays.map { ($0.key, $0.frame) }, uniquingKeysWith: { a, _ in a })
+        guard let d = model.display(showing: n), let to = displays.first(where: { $0.key == d }),
+              let fromKey = Geometry.display(of: frame, in: frames), fromKey != d,
+              let from = displays.first(where: { $0.key == fromKey }) else { return frame }
+        return Geometry.carry(frame, from: from.visible, to: to.visible)
+    }
+
+    /// Moves `ids` that sit on another display onto display `d`, never in sight: a parked
+    /// window's record changes, and a window whose app BaneySpaces hid moves while hidden.
+    /// Anything else is on screen already and stays put.
+    private func carry(_ ids: [WindowID], to d: DisplayKey) {
+        let displays = Windows.displays()
+        let frames = Dictionary(displays.map { ($0.key, $0.frame) }, uniquingKeysWith: { a, _ in a })
+        guard let to = displays.first(where: { $0.key == d }) else { return }
+        func across(_ f: CGRect) -> CGRect? {
+            guard let k = Geometry.display(of: f, in: frames), k != d, let from = displays.first(where: { $0.key == k }) else { return nil }
+            return Geometry.carry(f, from: from.visible, to: to.visible)
+        }
+        for id in ids {
+            if let f = saved.frames[id] {
+                if let moved = across(f) { saved.frames[id] = moved }
+            } else if let w = windows[id], let f = w.frame, NSRunningApplication(processIdentifier: w.pid)?.isHidden == true,
+                      let moved = across(f) {
+                w.place(moved, currentSize: f.size)
+            }
+        }
+    }
+
     /// Saves the parked-window record and state.json. The snapshot is taken here; the disk
     /// writes happen off the main thread so they never delay a switch.
     private func persist() {
@@ -1466,6 +1649,8 @@ final class Spaces {
         // state.json is for scripts and checks: the current workspace and where each window lives.
         let state: [String: Any] = [
             "current": model.current,
+            // The workspace on each display, by display UUID (one entry with one display).
+            "displays": model.shown,
             // The agent workspace (0 when off). Cua's driver reads it and refuses foreground
             // delivery to a window there, which would pull you onto it.
             "agentWorkspace": Self.agentWorkspace ?? 0,
@@ -1483,7 +1668,7 @@ final class Spaces {
         let known = model.home.compactMap { id, ws in windows[id].map { SavedLayout.Entry(window: id, pid: $0.pid, workspace: ws) } }
         let layout = SavedLayout(current: model.current,
                                  entries: known + pendingLayout.values.filter { model.workspace(of: $0.window) == nil },
-                                 lastFocused: model.lastFocused)
+                                 lastFocused: model.lastFocused, displays: model.shown)
         Spaces.writer.async {
             frames.save(to: Spaces.framesURL)
             layout.save(to: Spaces.layoutURL)

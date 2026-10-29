@@ -42,6 +42,33 @@ public enum Geometry {
         return CGRect(x: s.midX - w / 2, y: s.midY - h / 2, width: w, height: h).integral
     }
 
+    /// The display a window is on: the one holding most of it. Nil for a window on none (one
+    /// parked off every display).
+    public static func display<Key>(of frame: CGRect, in displays: [Key: CGRect]) -> Key? {
+        var best: (Key, CGFloat)?
+        for (key, rect) in displays {
+            let i = rect.intersection(frame)
+            guard !i.isNull, i.width * i.height > 0 else { continue }
+            let area = i.width * i.height
+            if best.map({ area > $0.1 }) ?? true { best = (key, area) }
+        }
+        guard let best, best.1 >= frame.width * frame.height * 0.25 else { return nil }
+        return best.0
+    }
+
+    /// A window's frame carried from one display to another: the same place relative to the
+    /// display's visible area, shrunk to fit if the new display is smaller.
+    public static func carry(_ frame: CGRect, from a: CGRect, to b: CGRect) -> CGRect {
+        let w = min(frame.width, b.width), h = min(frame.height, b.height)
+        // Where the window's middle sat, as a fraction of the old display, placed the same on
+        // the new one and kept inside it.
+        let fx = a.width > 0 ? (frame.midX - a.minX) / a.width : 0.5
+        let fy = a.height > 0 ? (frame.midY - a.minY) / a.height : 0.5
+        let x = min(max(b.minX + fx * b.width - w / 2, b.minX), b.maxX - w)
+        let y = min(max(b.minY + fy * b.height - h / 2, b.minY), b.maxY - h)
+        return CGRect(x: x, y: y, width: w, height: h).integral
+    }
+
     /// Whether `rects` together leave no part of `area` showing. Exact: the rects' edges cut
     /// the area into cells, and the middle of every cell must be inside some rect, so even a
     /// one-point gap between two windows counts as showing.

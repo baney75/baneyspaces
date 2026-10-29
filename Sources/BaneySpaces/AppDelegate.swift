@@ -339,6 +339,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private var canStart: Bool { AXIsProcessTrusted() && !aeroSpaceRunning }
 
+    /// A press anywhere tells Spaces which display you're on: in other apps and on the desktop
+    /// (global), and on BaneySpaces' own dock, overview and launcher (local, before the press is
+    /// handled, so a dock tile switches the dock's display).
+    private var clickMonitors: [Any] = []
+    private func watchClicksForDisplay() {
+        guard clickMonitors.isEmpty else { return }
+        if let g = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown, handler: { [weak self] _ in self?.spaces.usePointerDisplay() }) {
+            clickMonitors.append(g)
+        }
+        if let l = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown, handler: { [weak self] e in self?.spaces.usePointerDisplay(); return e }) {
+            clickMonitors.append(l)
+        }
+    }
+
     private func start() {
         // Applies to every Accessibility call, so one frozen app can't stall a switch.
         AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 0.25)
@@ -346,6 +360,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         registerShortcuts()
         missionControlKeys.start()
         spaces.start()
+        watchClicksForDisplay()
         if WorkspaceDock.enabled { dock.start() }
         // macOS's own top-of-screen drag goes quiet first, so only one view answers the gesture.
         // Off, settings left taken over (a crash, a change while it wasn't running) go back.
