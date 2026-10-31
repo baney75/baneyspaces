@@ -4,6 +4,16 @@
 
 ## 0.3.0 (2026-10-30)
 
+- **Install without building, and a disk image.** A stable release now carries the finished,
+  signed app. The one-line install downloads a few MB instead of building on your Mac, and needs no
+  command line tools. Browser users get `BaneySpaces.dmg` with the drag-to-Applications window;
+  the first open needs **System Settings › Privacy & Security › Open Anyway**, because
+  BaneySpaces isn't notarized. The installer checks the app against BaneySpaces' release key
+  and refuses anything else. Updating from 0.2.2 to 0.3.0 still builds on your Mac, so keep the
+  command line tools until then; updates after 0.3.0 download the ready-made app. A copy you built
+  yourself keeps building from source while the tools are installed, so macOS keeps its
+  Accessibility permission. If the prebuilt app replaces it, allow BaneySpaces again in
+  **System Settings › Privacy & Security › Accessibility**. Nightly builds still build from source.
 - **Change the colors and looks in Settings › Appearance.** Pick an accent (nine colors, System
   to follow macOS, or any color you choose), a palette for the nine workspace colors (Rainbow,
   Accent, Calm or Mono) and a color of your own for any one workspace, a panel style (Glass,
@@ -11,215 +21,114 @@
   to the dock, ⌘Tab, the launcher, the overview and the switch overlay as you change it, and a
   strip at the top of the tab previews it. A workspace color that's too bright for the white
   numbers is dimmed. The defaults are the look it has always had.
-- **The Deck sidebar is gone; the launcher is the one search.** The sidebar, its switcher, its
-  window layouts (stack, split, free, tile) and docking, the left-edge trigger, the back and
-  forward keys and the Deck setting and menu item are removed. **⌃⌘K** now opens the launcher
-  from any app, and the launcher finds terminal tabs and splits, browser tabs, agent windows and
-  files. **New Claude Session** and **New Terminal** are launcher commands. Agent badges stay on
-  the Workspace Dock, the notice when an agent finishes and **⌃⌘U** (now from any app) still work,
-  and so do the `baneyspaces` command and phones. Agent tracking is always on now; it has no
-  setting of its own. If you kept the sidebar pinned, the windows beside it keep the size they
-  had; widen them once. The command's `layout`, `tile`, `sidebar` and `palette`
-  subcommands are gone. The Install Hooks button moved to the Dock tab in setup. A phone's shell
-  and screenshot are in the command (`baneyspaces phone shell`, `baneyspaces phone shot`), and **New
-  Terminal** opens in the folder of the terminal you were in.
-- **Install and update without building.** A stable release now carries the finished, signed app,
-  so the one-line install and the updater download a few MB instead of building on your Mac,
-  and need no command line tools. The installer checks the app against BaneySpaces' release key
-  and refuses anything else. Browser users get `BaneySpaces.dmg` with the drag-to-Applications
-  window; the first open needs **System Settings › Privacy & Security › Open Anyway**, because
-  BaneySpaces isn't notarized. The Nightly build and older releases still build from source, and so does an update of a copy
-  you built yourself (while the command line tools are installed), so macOS keeps its
-  Accessibility permission.
-- **Each display shows a workspace of its own.** With a second monitor or Sidecar, ⌘3 used to
-  change what every screen showed. Now it changes only the display you're on: the one you last
-  clicked, anywhere on it (a window, the desktop, the Workspace Dock or the overview), or whose
-  window you switched to. The other keeps its workspace and its windows. Press the
-  number of the workspace the other display shows and you go there instead, as in AeroSpace.
-  Drag a window onto the other display and it joins that display's workspace. A display you
-  plug in starts on an empty workspace, and the switch overlay shows on the display that
-  switched. With one display nothing changes.
+- **One search for everything: ⌃⌘K.** The launcher opens from any app and finds apps, files,
+  workspaces, Ghostty splits and tabs, Helium and other Chromium tabs, Terminal and iTerm2
+  sessions, and the Claude, ChatGPT, T3 Code and Grok Bot windows, each with its folder and
+  whether an agent there is working, waiting or done. It reads every app's tabs as it opens.
+  **New Claude Session** and **New Terminal** are launcher commands and open in the folder of the
+  terminal you were in. If you used Ghostdeck, this replaces it: Ghostdeck.app goes to the Trash
+  on install.
 - **Find files from the launcher.** Type a name and the best five matching files and folders come
-  in under the apps, from your home folder, iCloud Drive and other cloud drives; Tab into the new
+  in under the apps, from your home folder, iCloud Drive and other cloud drives; Tab into the
   **Files** menu for more. Every word you type must start a word of the name, so `tax 2025` finds
   `2025 Tax Return.pdf`. Return opens it, ⌘Return shows it in Finder. Files you opened lately
-  come first, and Library, hidden and build folders stay out of the way. It asks Spotlight: most
-  searches take a tenth of a second, a common two-letter one up to half a second. macOS may ask
-  once to let BaneySpaces see your Documents, Desktop, Downloads or iCloud Drive.
-- **Dragging a window to the top fills the screen again.** Since the overview took over that
-  drag, BaneySpaces had also switched off macOS's "Drag windows to menu bar to fill screen", so
-  letting go at the top did nothing. It's back on, turned on once for you if BaneySpaces had
-  turned it off. Let go at the top and the window fills the screen, even with the overview up;
-  let go over a workspace and it moves there. Only Mission Control stays off for that drag.
-- **An agent's spinner on the dock no longer stays stuck.** Every Claude session inside T3 Code
-  reports to T3's one window, but the first session to claim it kept it for good, so a turn you
-  stopped (which sends no hook) left the spinner turning for up to six hours while your other
-  sessions finished. Now the window shows all of them: a question first, then any session still
-  working, else the latest. A turn stopped without a hook stops counting as work after 15 minutes,
-  and the spinner clears then unless another session is still working. In a terminal, Claude's own
-  idle title wins after 5 seconds. The spinner itself now turns in Core Animation, so it can't freeze mid-turn
-  when the dock hides and comes back.
-- **New Claude, front and center, and quicker.** The Deck's toolbar led with three identical gray
-  icons. Now "New Claude" leads in Claude's orange, with Tile and New Terminal as small buttons
-  beside it, and every button gives under the press. The session still tiles into your Claude
-  window the way ⌘⇧A does, sharing its state, but through a script BaneySpaces compiled once.
-  Running `claude-desk` cost a shell, an `osascript` launch and a fresh compile, about 160 to 220 ms,
-  on every press. Until the pane is up the button reads "Opening…", the sidebar stays, and a
-  second press waits.
-- **Drag a window down to the dock to move it to another workspace.** Pulling a window by its
-  title bar to the bottom edge used to do nothing: the dock stayed down while the button was held.
-  Now it comes up for the window, the tile under the pointer lights, and the label says where it's
-  going. Let go on a tile, or on the dashed one for an empty workspace, and the window moves there,
-  back in the spot you picked it up from; you stay where you are. Let go anywhere else and it stays
-  where you dropped it. This needs the dock on the bottom edge: at the top the drag opens the
-  overview, and at the sides macOS tiles the window to half the screen.
-- **The dock comes up from the edge again.** It waits while another app's menu is open, but it
-  counted any menu-level window anywhere on screen, and macOS sometimes leaves an empty one
-  under the menu bar for hours. Now only a menu near the pointer that came up in the last 30 seconds
-  holds it back.
-- **Drag a window to the top of the screen and the overview opens, not Mission Control.**
-  Pulling a window up against the menu bar used to throw you into macOS's Mission Control.
-  Now, after a quarter second at the top, BaneySpaces' own 3×3 overview opens with the window's
-  card under your pointer. Let go over a workspace and the window goes there, back in the spot
-  you picked it up from; let go anywhere else and it stays where you dropped it. macOS's own
-  answers to that drag (Mission Control and fill-the-screen) stay off while it's on. Their
-  settings are saved first and put back when you turn it off in **Settings › Keys** or uninstall.
-- **Arrow keys in the overview.** The arrows move the highlight from workspace to workspace in
-  the 3×3 grid, and Return goes there, so you can pick one without the mouse or a number key.
-- **Dock tiles stay put under the pointer.** Hovering a tile could slide it sideways over the
-  tile beside it or the "+", because the grow-on-hover spring also animated the dock re-centering
-  itself as the label above it changed width. Now hover only grows the tile, icon or button.
-- **Drag a file to the dock to drop it in a window on another workspace.** The Workspace Dock
-  used to stay down while a mouse button was held, so a file, link or image dragged from Finder or
-  a browser couldn't reach it. Now it comes up for the drag. Hold over an app's icon and that app's
-  window there comes forward; hold over a tile and you go to that workspace. Then carry the file
-  up into the window and let go. Drop on an app's icon and the app opens the file or link, when
-  it's one that app can open, as in the macOS Dock.
-- **The dock says which app an agent is working in.** The blue dot on a tile meant a coding
-  agent was at work on that workspace, but it looked like an unread badge and didn't say where.
-  Now a small turning ring sits on the icon of the app the agent runs in (Ghostty, T3 Code), the
-  hover label names it ("Claude working: Fix the flaky upload test"), and its window is marked
-  in the window strip. An app with an agent is never hidden behind a tile's "+N".
-- **A finished agent is one click away.** Click the orange count on a tile, or the app's icon,
-  and you land on the agent's own window instead of the app's last one.
-- **Shorter menus.** The menu bar menu lists only the workspaces in use, the one you're on and
-  one empty workspace, and shortens a long app list ("Helium, Ghostty, Obsidian +2"). The
-  switches, Keep Usable by Automation and Bring Every Window Back moved under **Options**;
-  **Check for Updates** lives in the **Updates** submenu unless an update is waiting. The Deck's
-  submenu shows its real shortcuts and groups its layouts.
-- **Shorter dock menus.** Right-click an app in the Workspace Dock for Show and Quit; hold ⌥ and
-  Quit becomes Force Quit, as in the macOS Dock. A tile offers Go to and Move Front Window Here.
-  Position and Turn Off sit in one **Dock** submenu, and the menu no longer repeats the dock's
-  own buttons.
-- **See every app on a full tile.** Rest on a tile's "+2" (or click it) and the apps it stands
-  for open in a list over the tile; click one to go straight to it.
-- **A lighter dock.** The launcher and overview buttons share one tile's room, so the workspaces
-  carry the bar, and the hover label says only what the icon can't.
+  come first, and Library, hidden and build folders stay out of the way. macOS may ask once to
+  let BaneySpaces see your Documents, Desktop, Downloads or iCloud Drive.
+- **Agents tell you when they're done.** `baneyspaces hooks install` (or the button in
+  **Settings › Dock**) adds Claude Code and Grok hooks. A small turning ring sits on the icon of
+  the app an agent works in (Ghostty, T3 Code), the hover label names it ("Claude working: Fix the
+  flaky upload test"), a finished agent gets an orange count and a notice in the corner, and
+  **⌃⌘U** from any app goes to it. With several sessions in one T3 Code window, the window shows a
+  question first, then any session still working, else the latest; a turn stopped without a hook
+  stops counting after 15 minutes, so the spinner no longer sticks for hours.
+- **Each display shows a workspace of its own.** With a second monitor or Sidecar, ⌘3 changes
+  only the display you're on: the one you last clicked, anywhere on it, or whose window you
+  switched to. Press the number of the workspace the other display shows and you go there
+  instead, as in AeroSpace. Drag a window onto the other display and it joins that display's
+  workspace. A display you plug in starts on an empty workspace. With one display nothing changes.
+- **Drag a window to the top of the screen.** After a quarter second at the top, BaneySpaces' 3×3
+  overview opens instead of Mission Control, with the window's card under your pointer. Let go
+  over a workspace and the window goes there, back in the spot you picked it up from. Let go at
+  the top and macOS fills the screen with it, as before. Only Mission Control stays off for that
+  drag, and its setting comes back when you turn this off in **Settings › Keys** or uninstall.
+  Arrow keys and Return pick a workspace in the overview.
+- **Drag a window down to the dock to move it to another workspace.** Pull a window by its title
+  bar to the bottom edge, and the dock comes up for it, the tile under the pointer lights, and the
+  label says where it's going. Let go on a tile, or the dashed one for an empty workspace, and the
+  window moves there; you stay where you are. This needs the dock on the bottom edge.
+- **Drag a file to the dock to drop it in a window on another workspace.** Hold over an app's icon
+  and that app's window there comes forward; hold over a tile and you go to that workspace. Drop
+  on an app's icon and the app opens the file or link, as in the macOS Dock.
+- **The Workspace Dock stays put and goes away when it should.** It comes up when the pointer
+  rests on its edge under it, waits while a menu near the pointer is open, and goes back down as
+  soon as the pointer leaves, even after a right-click menu. An empty menu window macOS leaves
+  under the menu bar no longer keeps it down, and hovered tiles no longer slide over each other.
 - **BaneySpaces stops crashing while the Workspace Dock is up.** When the dock's label or window
   strip made it wider, SwiftUI and the dock both resized its window inside one layout pass, and
-  macOS gave up and quit the app. The dock now resizes itself just after the layout settles.
-- **The Deck: every terminal, browser tab and agent window in one sidebar.** Ghostdeck is now
-  part of BaneySpaces. Ghostty splits and tabs, Helium and other Chromium tabs, Terminal and
-  iTerm2 sessions, and the Claude, ChatGPT, T3 Code and Grok Bot windows each get a row with
-  their folder and whether an agent there is working, waiting or done. ⌃⌘K finds any of them,
-  ⌃⌘[ and ⌃⌘] go back and forth, and Deck rows show up in the launcher. Stack, Split and Free
-  arrange the window you pick next to the sidebar. Ghostdeck.app goes to the Trash on install.
-- **Agents tell you when they're done.** `baneyspaces hooks install` adds Claude Code and Grok
-  hooks. A finished or waiting agent gets a toast and a badge on its Workspace Dock tile, and
-  the row it ran in lights up.
+  macOS quit the app. The dock now resizes itself just after the layout settles.
+- **Easier on the battery.** BaneySpaces reads Ghostty and your browser by AppleScript only when
+  there's a reason: the terminal an agent runs in, while it works, and every app at most once a
+  minute or when you search. An agent's events no longer make it read every app, an app whose
+  script keeps failing waits instead of being retried every few seconds, and an agent started
+  from Terminal no longer makes it read Terminal for nothing.
+- **The Workspace Dock can sit on any side:** bottom, left, right or top, from setup, the menu
+  bar menu, or a tile's right-click menu. The label and window strip open on its inner side, and
+  a dock too long for the screen shrinks to fit. At the top it sits under the menu bar and waits
+  half a second, so reaching for a menu doesn't bring it up.
+- **Drag windows between workspaces in the Workspace Dock.** Drag an app's icon onto another
+  tile and its windows on that workspace move there; drag a window out of the strip to move just
+  that one. Dropping on the dashed tile sends it to the first empty workspace.
+- **Shorter menus.** The menu bar menu lists only the workspaces in use, the one you're on and
+  one empty one, and shortens a long app list. The switches moved under **Options**, and **Check
+  for Updates** lives in **Updates** unless one is waiting. Right-click an app in the dock for
+  Show and Quit (hold ⌥ for Force Quit); a tile offers Go to and Move Front Window Here; Position
+  and Turn Off sit in one **Dock** submenu.
+- **See every app on a full tile.** Rest on a tile's "+2" and the apps it stands for open in a
+  list; click one to go straight to it. Rest on an app with more than one window and a strip of
+  its windows opens, each labeled with its title.
 - **An agent workspace.** `baneyspaces agent on 9` gives agents and Cua a workspace of their own.
   Its apps are parked instead of hidden so background clicks still land, nothing on it ever pulls
   you there, and a window an agent opens from behind joins it instead of yours. `agent run`
   starts a command there in a Terminal window of its own; `agent open` opens a file or app there.
-- **Phones in the Deck.** Android over adb (`baneyspaces phone tap|type|swipe|ui|shot`) and
-  iPhones through devicectl and iPhone Mirroring.
-- **Remote machines, off by default.** `baneyspaces remote on` lets another Mac on your tailnet
-  give this one's agent workspace work, with a token. It listens only on the tailnet address and
-  can't focus, type into or move anything you see.
-- `baneyspaces` is a command-line tool too (`ls`, `focus`, `send`, `notify`, `agent`, `phone`,
-  `remote`, `doctor`), and a Claude Code skill teaches agents to use it.
-
-- **Apps come forward again.** Ghostty, and some other apps, keep a window alive after you
-  close it, and a tab behind another tab looks the same. BaneySpaces kept those on their
-  workspace for good, so ⌘Tab, the Dock and the launcher sent you to a workspace (Ghostty "on
-  workspace 2") and picked a window that couldn't come forward. They leave the workspaces now,
-  and a tab that comes forward again lands where its window is.
-- **Quit and Force Quit from the Workspace Dock.** Right-click an app's icon.
-- **Windows no longer slide to the corner.** An app split across workspaces (Ghostty with
-  windows on two) had its other windows glide across the screen on every switch, because apps
-  with the accessibility setting AXEnhancedUserInterface on animate every move. It's off for
-  the moment of each move now, and the move is instant. Switches with one went from about 300 ms
-  to under 100.
-- Going to an empty workspace no longer bounces you back. macOS hands focus to some other app
-  when the one in front hides, and BaneySpaces had been following it.
-- Opening an app here that's open on another workspace opens it here. The launcher opens a new
-  window of it on the workspace you're on (a row still goes to its other workspace), and a new
-  window an app makes right after coming forward (Ghostty's global New Window key) stays here.
-- **Start Claude Code or Codex from the launcher.** Type `claude` or `codex` and Return opens it
-  in your terminal (Ghostty, iTerm2, WezTerm or Warp before Terminal), in your home folder.
-  Only agents installed on this Mac are offered.
-- The Workspace Dock's ring around the hovered icon now traces the icon itself instead of a box
-  around it, so it no longer runs into the tile's edge.
-- **Drag windows between workspaces in the Workspace Dock.** Drag an app's icon onto another
-  tile and its windows on that workspace move there; drag a window out of the strip to move just
-  that one. The tile it will land on lights up in its color, and dropping on the dashed tile
-  sends it to the first empty workspace. You stay on the workspace you're on.
-- **The Workspace Dock can sit on any side:** bottom, left, right or top, from setup, the menu
-  bar menu, or a tile's right-click menu. It opens when the pointer rests on that edge under it,
-  the label and window strip open on its inner side, and a dock too long for the screen shrinks
-  to fit. At the top it sits under the menu bar and waits half a second, and never opens from
-  the corners, so reaching for a menu doesn't bring it up.
-- Holding Tab in ⌘Tab now takes 0.6 s; a slow tap in the window bar no longer drops back to
-  the apps.
-- Holding Tab stays on the highlighted app and opens its windows. A Tab press now steps when
-  you let it go, so a hold never jumps to the next app and back.
-
+- **`baneyspaces` is a command-line tool too** (`ls`, `focus`, `send`, `notify`, `event`, `agent`,
+  `phone`, `remote`, `doctor`), and a Claude Code skill teaches agents to use it. Phones: Android
+  over adb (`baneyspaces phone tap|type|swipe|ui|shot|shell`) and iPhones through devicectl and
+  iPhone Mirroring. `baneyspaces remote on` (off by default) lets another Mac on your tailnet give
+  this one's agent workspace work, with a token; it can't focus, type into or move anything you see.
+- **Apps come forward again.** Ghostty, and some other apps, keep a window alive after you close
+  it, and a tab behind another tab looks the same. BaneySpaces kept those on their workspace, so
+  ⌘Tab, the dock and the launcher sent you to a window that couldn't come forward. They leave the
+  workspaces now.
+- **Windows no longer slide to the corner.** Apps with the accessibility setting
+  AXEnhancedUserInterface on animated every move, so an app split across workspaces had its other
+  windows glide across the screen on every switch. The move is instant now, and those switches went
+  from about 300 ms to under 100.
+- Going to an empty workspace no longer bounces you back, and opening an app here that's open on
+  another workspace opens it here.
 - **Bangs, web search and agents in the launcher.** `!yt cats`, `!i sunsets`, `cats !yt`, and
-  about 35 more built in; any other bang goes to DuckDuckGo. Plain words offer your search
-  engine, images and your agent; `?` asks your agent (Claude, ChatGPT, Perplexity, Grok,
-  Copilot or Le Chat, picked in setup) in a new browser tab with the question filled in.
-  Add your own bangs in setup, or from a script or agent with `BaneySpaces --bangs add`.
-
-- **Pick a window, not just an app.** In ⌘Tab, hold Tab on an app with more than one window to
-  open its window bar: every window of that app, on any workspace, labeled with its title (a
-  browser's tab, a player's video) and its workspace color. Tab through it and let go of ⌘ to go
-  to that window; hold Tab again to go back to the apps.
-- The switch HUD is redrawn: solid glass, the workspace you went to filled in its color with its
-  number, workspaces with windows lit, and its apps underneath.
-- The Workspace Dock appears only when the pointer rests on the bottom edge under it, and a
-  pointer parked on the edge beside it no longer makes it pop up and down.
-- In the Workspace Dock, rest the pointer on an app with more than one window and a strip of its
-  windows opens over it, each labeled with its title. Click one to go to it.
-
-- **Launcher** (menu bar menu, the Workspace Dock, or ⌘Space if you choose): one box to open,
-  find, install, update and remove apps. Type to search apps, commands and workspaces at once,
-  or Tab into a menu: Apps, Install, Remove, Update, System, Workspaces. Install searches
-  Homebrew's full app list and the Mac App Store, installs a Homebrew app in the background and
-  says when it's done; an installer that wants your password finishes in Terminal. Picking an app
-  that's already open goes to the workspace it's on. Setup's **⌘Space opens the BaneySpaces
-  launcher** switch takes ⌘Space from Spotlight and gives it back when turned off, when
-  BaneySpaces quits, and in the uninstaller.
+  about 35 more built in; any other bang goes to DuckDuckGo. `?` asks your agent (Claude, ChatGPT,
+  Perplexity, Grok, Copilot or Le Chat, picked in setup) in a new browser tab. Type `claude` or
+  `codex` to start it in your terminal. Add your own bangs in setup or with `BaneySpaces --bangs add`.
+- **Pick a window, not just an app.** In ⌘Tab, hold Tab (0.6 s) on an app with more than one
+  window to open its window bar: every window of that app, on any workspace, labeled with its
+  title and its workspace color. Tab through it and let go of ⌘ to go to that window.
 - **⌘Tab across workspaces.** Setup's ⌘Tab choice is now macOS, Apps on every workspace, or
   Workspaces. Apps steps through every app with a window, most recently used first, each marked
-  with its workspace number; let go and you land on that app's window wherever it is.
-- **Apps open on more than one workspace.** Every workspace has its own color, used the same in
-  the dock, ⌘Tab and the launcher. An app with windows on two workspaces shows once for each in
-  ⌘Tab, tinted in that workspace's color; hovering it in the dock rings its copy on the other
-  workspace and says where else it is; the launcher lists a row for each workspace. Clicking an
-  app with several windows in a dock tile steps through them, one dot per window.
-- Picking an app on the workspace you're on (dock, ⌘Tab, launcher) brings it forward. Before,
-  focus went back to the app you were in.
-- Installing from the launcher asks first, the same as removing. A launcher opened by a link
-  doesn't take the keyboard until clicked.
-- **Workspace Dock, redrawn.** Click any app icon in a tile to go straight to that app; click
-  the tile around it to go to the workspace. Numbers sit under the tiles, the current one lit,
-  and a dashed tile goes to the first empty workspace. A search button opens the launcher.
-
-- **Workspace Dock** (optional, in setup and the menu bar menu): a dock of your workspaces in
-  place of the macOS Dock. It slides up when the pointer rests on the bottom edge, shows each
-  workspace in use with its apps, and switches with a click; right-click sends the front window
-  there. The macOS Dock's own settings are saved and restored exactly when it's turned off or
-  BaneySpaces quits, and after a crash by the next launch or the uninstaller.
+  with its workspace; let go and you land on that app's window wherever it is.
+- **Launcher** (menu bar menu, the Workspace Dock, ⌃⌘K, or ⌘Space if you choose): one box to
+  open, find, install, update and remove apps. Install searches Homebrew's full app list and the
+  Mac App Store and asks first; picking an app that's already open goes to the workspace it's on.
+  The **⌘Space opens the BaneySpaces launcher** switch takes ⌘Space from Spotlight and gives it back
+  when turned off, when BaneySpaces quits, and in the uninstaller.
+- **Every workspace has its own color**, used the same in the dock, ⌘Tab and the launcher. An app
+  with windows on two workspaces shows once for each.
+- **Workspace Dock** (optional, in setup and the menu bar menu): a dock of your workspaces in place
+  of the macOS Dock. Click an app icon to go to that app, or the tile to go to the workspace;
+  numbers sit under the tiles and a dashed tile goes to the first empty workspace. The macOS
+  Dock's own settings are saved and restored when it's turned off or BaneySpaces quits, and after
+  a crash by the next launch or the uninstaller.
+- The switch overlay is redrawn: the workspace you went to filled in its color with its number,
+  workspaces with windows lit, and its apps underneath.
 
 ## 0.2.2 (2026-10-11)
 
