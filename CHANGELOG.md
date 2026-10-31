@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.0 (2026-10-30)
+
 - **Change the colors and looks in Settings › Appearance.** Pick an accent (nine colors, System
   to follow macOS, or any color you choose), a palette for the nine workspace colors (Rainbow,
   Accent, Calm or Mono) and a color of your own for any one workspace, a panel style (Glass,
