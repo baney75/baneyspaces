@@ -23,6 +23,18 @@ func state() -> (current: Int, workspaces: [Int: [UInt32]]) {
 }
 func workspace(of id: UInt32) -> Int? { state().workspaces.first { $0.value.contains(id) }?.key }
 
+/// trace.log's lines written after `offset`, and the new end (as dock-drag-probe reads them).
+let traceURL = FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent("Library/Application Support/BaneySpaces/trace.log")
+func traceSince(_ offset: UInt64) -> (lines: [String], end: UInt64) {
+    guard let h = try? FileHandle(forReadingFrom: traceURL) else { return ([], offset) }
+    defer { try? h.close() }
+    try? h.seek(toOffset: offset)
+    let data = h.readDataToEndOfFile()
+    return (String(decoding: data, as: UTF8.self).split(separator: "\n").map(String.init), offset + UInt64(data.count))
+}
+func traceEnd() -> UInt64 { traceSince(0).end }
+
 func windows() -> [[String: Any]] {
     CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
 }
@@ -84,14 +96,15 @@ func drag(from: CGPoint, to: CGPoint, hold: TimeInterval, release: CGPoint, chec
     let arrived = Date()
     let end = arrived.addingTimeInterval(hold)
     while Date() < end { post(.leftMouseDragged, to); usleep(30_000) }
-    lastHold = Date().timeIntervalSince(arrived)
-    print("      held at \(to) for \(Int(lastHold * 1000)) ms; the window is at \(onScreen(id).map { "\($0.origin)" } ?? "nowhere") (picked up at \(from))")
     check()
     if release != to {
         glide(to, release)
         usleep(150_000)
     }
+    // Recorded right before the mouse-up: the rest macOS saw runs from arriving to letting go.
+    lastHold = Date().timeIntervalSince(arrived)
     post(.leftMouseUp, release)
+    print("      held at \(to) for \(Int(lastHold * 1000)) ms (picked up at \(from))")
     usleep(1_200_000)
 }
 
@@ -275,10 +288,21 @@ for (hold, what) in [(dwell * 0.72, "a short rest"), (dwell + 1.0, "a rest long 
     guard let f = onScreen(fillID) else { expect(false, "the fill window is on screen"); break }
     let edge = CGPoint(x: f.midX, y: 0)
     var opened = false
+    let mark = traceEnd()
     drag(from: CGPoint(x: f.midX, y: f.minY + 12), to: edge, hold: hold, release: edge) { opened = overviewUp(screenRect) }
-    // Judged on the rest that really happened: a short rest that ran past the dwell proves nothing.
-    if hold < dwell && lastHold >= dwell { expect(false, "the short rest stayed under the \(Int(dwell * 1000)) ms dwell (it took \(Int(lastHold * 1000)) ms)"); continue }
-    expect(hold < dwell ? !opened : opened, "after \(what) (\(Int(lastHold * 1000)) ms) the overview \(opened ? "opened" : "stayed shut")")
+    // Judged on what BaneySpaces logged, not on the probe's clock: a drag whose dwell started
+    // and which got an "overview open" line rested long enough; one with no such line didn't.
+    let lines = traceSince(mark).lines.filter { $0.contains("topDrag ") }
+    let dwellStarted = lines.contains { $0.contains("topDrag dwell start window=\(fillID)") }
+    let openLine = lines.first { $0.contains("topDrag overview open after") && $0.hasSuffix("window=\(fillID)") }
+    expect(dwellStarted, "after \(what) the app logged the dwell at the top starting (\(lines.count) topDrag lines)")
+    if hold < dwell {
+        expect(openLine == nil, "after \(what) (\(Int(lastHold * 1000)) ms held) the app logged no overview open\(openLine.map { ": \($0)" } ?? "")")
+        expect(!opened, "and the overview stayed shut")
+    } else {
+        expect(openLine != nil, "after \(what) (\(Int(lastHold * 1000)) ms held) the app logged the overview opening\(openLine.map { ": \($0)" } ?? "")")
+        expect(opened, "and the overview was up")
+    }
     expect(!missionControlUp(screenRect), "Mission Control stayed closed")
     // macOS animates the fill; give it up to 2 s.
     let fillBy = Date().addingTimeInterval(2)

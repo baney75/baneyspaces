@@ -211,7 +211,11 @@ final class TopDragWatcher {
             // Once per drag, so trace.log shows the drags the watcher saw.
             if !wasDragging, state.moving || state.pinned { Trace.log("topDrag \(state.moving ? "moving" : "pinned") window=\(grab.window)") }
         }
-        let top = state.tick(cursor: p, frame: frame, screens: TopDragWatcher.screens(), now: ProcessInfo.processInfo.systemUptime)
+        let now = ProcessInfo.processInfo.systemUptime
+        let resting = state.topSince != nil
+        let top = state.tick(cursor: p, frame: frame, screens: TopDragWatcher.screens(), now: now)
+        // The rest at the top and the decision it leads to, for top-drag-probe to read.
+        if !resting, state.topSince != nil { Trace.log("topDrag dwell start window=\(grab.window)") }
         if let g = top, topEnabled {
             // A window against the top that didn't move: a tab torn off its title bar makes a
             // new window of the same app in front of it, and that drag isn't this one.
@@ -219,10 +223,15 @@ final class TopDragWatcher {
             switch onOpen(g, p) {
             case true?:
                 // The overview has it now, not the dock.
+                Trace.log("topDrag overview open after \(Int(((now - (state.topSince ?? now)) * 1000).rounded())) ms window=\(g.window)")
                 endCarry(at: nil)
                 open = g
-            case false?: endTicks()
-            case nil: state.rearm()
+            case false?:
+                Trace.log("topDrag overview declined window=\(g.window)")
+                endTicks()
+            case nil:
+                Trace.log("topDrag overview deferred window=\(g.window)")
+                state.rearm()
             }
         } else if state.grab == nil {
             endTicks()

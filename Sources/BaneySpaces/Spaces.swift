@@ -963,7 +963,13 @@ final class Spaces {
     /// waiting there where it was instead of pressed against the menu bar.
     /// `wanted` is asked again when the move runs, which may be after a switch in progress.
     func moveCarried(_ id: WindowID, to n: Int, from frame: CGRect, wanted: @escaping () -> Bool = { true }) {
-        guard active, Workspaces.range.contains(n), wanted() else { Trace.log("drop not wanted window=\(id)"); return }
+        let inRange = Workspaces.range.contains(n)
+        // `wanted` runs only once the first two hold.
+        let want = active && inRange ? wanted() : nil
+        guard want == true else {
+            Trace.log("drop not wanted window=\(id) active=\(active) inRange=\(inRange) wanted=\(want.map { "\($0)" } ?? "unasked")")
+            return
+        }
         if switching { Trace.log("drop waits for a switch window=\(id)"); return enqueue { [weak self] in self?.moveCarried(id, to: n, from: frame, wanted: wanted) } }
         Trace.log("drop moves window=\(id) to=\(n)")
         // Already gone to `n` while the drop settled: the window is out of sight on the workspace
