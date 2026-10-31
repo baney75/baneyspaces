@@ -223,7 +223,9 @@ enum Scripts {
         			end if
         		end if
         	end repeat
-        	with timeout of 10 seconds
+        	-- Ghostty can take a while to open a window. The pane opens either way, so a timeout is
+        	-- handled by the caller (`frontTab`), but a long one keeps that rare.
+        	with timeout of 30 seconds
         		tell application id "com.mitchellh.ghostty"
         			activate
         			set cfg to new surface configuration
@@ -273,14 +275,44 @@ enum Scripts {
         			end if
         			set base to first terminal of targetTab whose id is baseID
         			set newTerm to split base direction dir with configuration cfg
+        			-- Each step on its own: a failed equalize still focuses the new pane.
         			try
         				perform action "equalize_splits" on newTerm
+        			end try
+        			try
         				focus newTerm
         			end try
         			return my joinLines({tabID} & liveIDs & {id of newTerm})
         		end tell
         	end timeout
         end claudeTile
+
+        -- After a timeout in `claudeTile`: the tab `priorTab` and every terminal in it, one ID per line,
+        -- so the pane that opened late is still written to the state file. The front tab only stands in
+        -- when there is no `priorTab` (the first window) or it's gone: you may have switched tabs since.
+        -- Apple events are handled in order, so this answers after the late pane exists, which is why
+        -- its timeout is as long as the tile's.
+        on frontTab(priorTab)
+        	with timeout of 30 seconds
+        		tell application id "com.mitchellh.ghostty"
+        			if (count of windows) is 0 then return ""
+        			set t to missing value
+        			if priorTab is not "" then
+        				repeat with w in windows
+        					repeat with x in tabs of w
+        						if (id of x) is priorTab then set t to contents of x
+        					end repeat
+        				end repeat
+        			end if
+        			if t is missing value then set t to selected tab of front window
+        			set ids to {id of t}
+        			repeat with x in (id of every terminal of t)
+        				set end of ids to (contents of x)
+        			end repeat
+        			return my joinLines(ids)
+        		end tell
+        	end timeout
+        end frontTab
 
         on joinLines(xs)
         	set AppleScript's text item delimiters to linefeed
