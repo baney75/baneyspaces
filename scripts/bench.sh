@@ -17,7 +17,8 @@ LOG="$DIR/timing.log"
 pgrep -f "BaneySpaces.app/Contents/MacOS/BaneySpaces" >/dev/null || { echo "BaneySpaces isn't running." >&2; exit 2; }
 current=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['current'])" "$DIR/state.json")
 start=$(date +%s)
-status=0
+noop=0
+real=0
 # When the running build started: only its switches count toward the real-use budget.
 lstart=$(LC_ALL=C ps -o lstart= -p "$(pgrep -f "BaneySpaces.app/Contents/MacOS/BaneySpaces" | head -1)" | tr -s ' ' | sed 's/^ //; s/ $//')
 launched=$(LC_ALL=C date -j -f "%a %b %d %T %Y" "$lstart" +%s)
@@ -35,7 +36,7 @@ median = statistics.median(done)
 print(f"median {median:.0f} ms, slowest {max(done)} ms over {len(done)} switches (budget {budget} ms)")
 if parked: print(f"with parking: median {statistics.median(parked):.0f} ms, slowest {max(parked)} ms")
 sys.exit(0 if median <= budget else 1)
-' "$BUDGET_MS" "$start" "$LOG" || status=$?
+' "$BUDGET_MS" "$start" "$LOG" || noop=$?
 python3 -c '
 import math, re, statistics, sys
 budget, launched = int(sys.argv[1]), int(sys.argv[3])
@@ -66,5 +67,7 @@ for r in rows:
 order = sorted(steps, key=lambda k: (phases.index(k.split("->")[1]), phases.index(k.split("->")[0])))
 print("  per step, median/p90 ms: " + ", ".join(f"{k} {statistics.median(steps[k]):.0f}/{pct(steps[k], 0.9)}" for k in order if len(steps[k]) >= 10))
 sys.exit(0 if p90 <= budget else 1)
-' "$REAL_P90_MS" "$LOG" "$launched" || status=$?
-exit $status
+' "$REAL_P90_MS" "$LOG" "$launched" || real=$?
+# A failure (over budget, too few no-op switches logged) outranks "real use not checked" (3).
+if [ "$noop" -ne 0 ]; then exit "$noop"; fi
+exit "$real"

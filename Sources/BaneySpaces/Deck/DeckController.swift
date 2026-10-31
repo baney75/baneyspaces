@@ -39,7 +39,6 @@ final class DeckController {
     /// The rows changed, so an open launcher can show them.
     var onItemsChange: () -> Void = {}
     private var lastItems: [Item] = []
-    /// Claude Code and Grok report to BaneySpaces (their hooks are installed).
     /// A new Claude session's pane is on its way.
     private var claudeOpening = false
     var trustTimer: Timer?
@@ -299,7 +298,7 @@ final class DeckController {
     // MARK: socket
 
     func handle(_ r: Wire.Request) -> Wire.Reply {
-        guard started else { return .init(ok: false, error: "the Deck hasn't started") }
+        guard started else { return .init(ok: false, error: "BaneySpaces hasn't finished starting (it needs Accessibility)") }
         switch r.op {
         case .ping:
             var info = engine.statusInfo
