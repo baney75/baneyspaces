@@ -25,9 +25,11 @@ usage: \(me) <command>
   remote on|off|status|token  let your other machines (tailnet only) send agent work here
   --on HOST <command>         run ls or agent status|open|run on another machine
   hook claude|grok            for agent hooks: reads the hook JSON on stdin
-  event --state S [--agent A] [--session ID] [--cwd DIR] [--message M] [--started]
+  event --state S [--agent A] [--session ID] [--cwd DIR] [--message M] [--started] [--at SECS]
                               report any agent's state (working, waiting, idle, end);
-                              --started with working: a prompt was just submitted
+                              --started with working: a prompt was just submitted;
+                              --at SECS: when it happened (unix seconds, default now;
+                              how long a prompt counts is timed from when the app gets it)
   hooks install|uninstall|status   Claude Code and Grok hooks
   skill install               the agent skill into ~/.claude/skills/baneyspaces
   doctor                      what's working and what isn't
@@ -194,16 +196,21 @@ case "hook":
 
 case "event":
     guard let s = flag("--state", in: rest), let state = AgentEvent.State(rawValue: s) else {
-        fail("usage: \(me) event --state working|waiting|idle|end [--agent A] [--session ID] [--cwd DIR] [--message M] [--started]", code: 2)
+        fail("usage: \(me) event --state working|waiting|idle|end [--agent A] [--session ID] [--cwd DIR] [--message M] [--started] [--at SECS]", code: 2)
     }
-    let started = hasSwitch("--started", in: rest, valued: ["--state", "--agent", "--session", "--cwd", "--message"])
+    let started = hasSwitch("--started", in: rest, valued: ["--state", "--agent", "--session", "--cwd", "--message", "--at"])
     if started && state != .working { fail("--started goes with --state working: it says a prompt was just submitted", code: 2) }
+    var at = Date().timeIntervalSince1970
+    if hasSwitch("--at", in: rest, valued: ["--state", "--agent", "--session", "--cwd", "--message"]) {
+        guard let v = flag("--at", in: rest), let t = Double(v), t > 0 else { fail("--at takes unix seconds, like 1761864000", code: 2) }
+        at = t
+    }
     let tty = controllingTTY()
     let ev = AgentEvent(agent: flag("--agent", in: rest) ?? "agent",
                         session: flag("--session", in: rest) ?? (tty.isEmpty ? "default" : tty),
                         cwd: flag("--cwd", in: rest) ?? FileManager.default.currentDirectoryPath,
                         tty: tty, app: launchingApp, state: state, message: flag("--message", in: rest) ?? "",
-                        at: Date().timeIntervalSince1970, started: started)
+                        at: at, started: started)
     _ = Wire.call(Wire.Request(op: .event, event: ev), timeout: 0.5)
 
 case "hooks":

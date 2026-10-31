@@ -2,7 +2,7 @@ import Foundation
 
 /// One report from a coding agent's hook. Claude Code sends its hook JSON on stdin; `ghostdeck hook`
 /// adds the tty it ran under and forwards it here. Any other agent can send the same shape with
-/// `ghostdeck event --state working|waiting|idle|end [--started]`.
+/// `ghostdeck event --state working|waiting|idle|end [--started] [--at SECS]`.
 public struct AgentEvent: Codable, Equatable, Sendable {
     public enum State: String, Codable, Sendable { case working, waiting, idle, end }
 
@@ -126,14 +126,16 @@ public struct AgentSessions: Equatable, Sendable {
 
     public init() {}
 
-    public mutating func apply(_ e: AgentEvent) {
+    /// `receivedAt` is when this process got the report (the sender's `at` may come from another
+    /// machine's clock, or be stamped late); a prompt's life runs from it. Tests leave it to `e.at`.
+    public mutating func apply(_ e: AgentEvent, receivedAt: Double? = nil) {
         let key = e.agent + ":" + e.session
         if e.state == .end {
             forget(key)
         } else {
             sessions[key] = e
             // Only work can start from a prompt; a decoded or remote report saying otherwise is ignored.
-            if e.started && e.state == .working { prompted[key] = e.at }
+            if e.started && e.state == .working { prompted[key] = receivedAt ?? e.at }
         }
     }
 
@@ -213,7 +215,9 @@ public struct AgentSessions: Equatable, Sendable {
                     if let p = pick, windows.count > 1, Self.shared(p) {
                         follows = true
                         // A prompt submitted with this window in front is evidence the session is in it.
-                        byFocus = pending ? false : (p.id != there?.id || last?.byFocus == true)
+                        // Only that: a prompt pending while focus is elsewhere proves nothing.
+                        let typedHere = pending && p.focused
+                        byFocus = typedHere ? false : (p.id != there?.id || last?.byFocus == true)
                     } else if pick == nil, let w = there {
                         // Focus decided nothing, so the prompt stays pending.
                         pick = w; follows = true; byFocus = last?.byFocus ?? false
