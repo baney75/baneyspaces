@@ -58,17 +58,25 @@ enum Automation {
     private static var asked: Set<String> = []
     private static let askQueue = DispatchQueue(label: "baneyspaces.deck.consent")
 
+    /// A yes, remembered for a while: asking costs a round trip to the system on every read.
+    private static var yes: [String: Date] = [:]
+    static let remember: TimeInterval = 60
+
     static func allowed(_ bundleID: String) -> Bool {
+        if let at = lock.withLock({ yes[bundleID] }), Date().timeIntervalSince(at) < remember { return true }
         let target = NSAppleEventDescriptor(bundleIdentifier: bundleID)
         let status = AEDeterminePermissionToAutomateTarget(target.aeDesc, typeWildCard, typeWildCard, false)
         switch status {
-        case noErr: return true
+        case noErr:
+            lock.withLock { yes[bundleID] = Date() }
+            return true
         case OSStatus(errAEEventWouldRequireUserConsent):
             let first = lock.withLock { asked.insert(bundleID).inserted }
             if first { askQueue.async { _ = AEDeterminePermissionToAutomateTarget(target.aeDesc, typeWildCard, typeWildCard, true) } }
             return false
         default:
             // Denied in System Settings, or not running: rows come from Accessibility instead.
+            lock.withLock { yes[bundleID] = nil }
             return false
         }
     }

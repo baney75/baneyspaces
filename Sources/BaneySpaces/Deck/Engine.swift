@@ -16,6 +16,8 @@ final class Engine {
         var dirty = false
         var last = Date.distantPast
         var ms = 0
+        /// Reads since launch, for `deck.json`: how often the engine wakes this app.
+        var reads = 0
     }
 
     private(set) var specs: [AppSpec] = []
@@ -119,21 +121,27 @@ final class Engine {
     /// Re-adds Accessibility observers once the permission arrives.
     func retryWatching() { for pid in tracked.keys where !watcher.watching.contains(pid) { watcher.watch(pid) } ; refreshAll() }
 
+    /// The engine's own timer (see `Sweep`). `visible` is no longer used: what's on screen is
+    /// announced through Accessibility, and a search reads everything first.
     func scheduleSweep(visible: Bool) {
-        let interval: TimeInterval = visible ? 2 : 5
-        guard sweep?.timeInterval != interval else { return }
-        sweep?.invalidate()
-        sweep = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in self?.sweepScripted() }
-        sweep?.tolerance = interval / 4
+        guard sweep == nil else { return }
+        sweep = Timer.scheduledTimer(withTimeInterval: Sweep.tick, repeats: true) { [weak self] _ in self?.sweepScripted() }
+        sweep?.tolerance = Sweep.tick / 2
     }
 
     /// Scripted apps only: their background tabs change without any window notification.
     private func sweepScripted() {
         let forgot = sessions.expire(now: Date().timeIntervalSince1970)
-        let scripted = tracked.filter { $0.value.spec.adapter != .windows }
-        for pid in scripted.keys { refresh(pid) }
+        let working = items.contains { $0.activity == .working }
+        let now = Date()
+        let due = tracked.filter { pid, t in
+            t.spec.adapter != .windows
+                && Sweep.reads(role: t.spec.role, agentWorking: working, lastRead: t.last.timeIntervalSinceReferenceDate,
+                               now: now.timeIntervalSinceReferenceDate)
+        }
+        for pid in due.keys { refresh(pid) }
         // Each read merges; with none, merge anyway so a stale report on an app's window clears.
-        if scripted.isEmpty && (forgot || !sessions.sessions.isEmpty) { merge() }
+        if due.isEmpty && (forgot || !sessions.sessions.isEmpty) { merge() }
     }
 
     func refreshAll() { for pid in tracked.keys { refresh(pid) } }
@@ -234,6 +242,7 @@ final class Engine {
                 t.refreshing = false
                 t.last = Date()
                 t.ms = ms
+                t.reads += 1
                 let again = t.dirty
                 self.tracked[pid] = t
                 self.merge()
@@ -447,7 +456,7 @@ final class Engine {
 
     var statusInfo: [String: String] {
         var info: [String: String] = [:]
-        for t in tracked.values { info["read.\(t.spec.name)"] = "\(t.ms) ms, \(t.items.count) rows" }
+        for t in tracked.values { info["read.\(t.spec.name)"] = "\(t.ms) ms, \(t.items.count) rows, \(t.reads) reads" }
         info["sessions"] = "\(sessions.sessions.count) agent sessions"
         info["accessibility"] = AX.isTrusted ? "allowed" : "not allowed"
         info["browser"] = defaultBrowser ?? "unknown"
