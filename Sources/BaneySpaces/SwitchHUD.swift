@@ -67,6 +67,8 @@ final class HUDModel: ObservableObject {
 /// color with its number, workspaces with windows lit, empty ones faint. Below, its name and apps.
 struct HUDView: View {
     @ObservedObject var model: HUDModel
+    /// Redraws when Settings › Appearance changes.
+    @ObservedObject private var appearance = Appearance.shared
 
     var body: some View {
         VStack(spacing: 12) {
@@ -92,7 +94,7 @@ struct HUDView: View {
             .frame(height: 18)
         }
         .padding(.horizontal, 18).padding(.vertical, 16)
-        .background(Chrome.panel(cornerRadius: 22))
+        .background(Chrome.panelBackground(cornerRadius: 22))
         .padding(28)
         .environment(\.colorScheme, .dark)
         .accessibilityElement(children: .ignore)

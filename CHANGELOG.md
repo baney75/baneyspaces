@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Change the colors and looks in Settings › Appearance.** Pick an accent (nine colors, System
+  to follow macOS, or any color you choose), a palette for the nine workspace colors (Rainbow,
+  Accent, Calm or Mono) and a color of your own for any one workspace, a panel style (Glass,
+  Tinted or Solid) with an opacity slider, and a Small, Medium or Large Workspace Dock. It applies
+  to the dock, ⌘Tab, the launcher, the overview and the switch overlay as you change it, and a
+  strip at the top of the tab previews it. A workspace color that's too bright for the white
+  numbers is dimmed. The defaults are the look it has always had.
 - **The Deck sidebar is gone; the launcher is the one search.** The sidebar, its switcher, its
   window layouts (stack, split, free, tile) and docking, the left-edge trigger, the back and
   forward keys and the Deck setting and menu item are removed. **⌃⌘K** now opens the launcher

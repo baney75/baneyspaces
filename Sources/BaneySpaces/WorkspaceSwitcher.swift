@@ -326,13 +326,15 @@ final class SwitcherModel: ObservableObject {
 
 struct SwitcherView: View {
     @ObservedObject var model: SwitcherModel
+    /// Redraws when Settings › Appearance changes.
+    @ObservedObject private var appearance = Appearance.shared
 
     var body: some View {
         Group {
             if let bar = model.windowBar { windowRow(bar) } else if model.mode == .apps { appRow } else { workspaceRow }
         }
         .padding(14)
-        .background(Chrome.panel(cornerRadius: 26))
+        .background(Chrome.panelBackground(cornerRadius: 26))
         .environment(\.colorScheme, .dark)
     }
 
@@ -449,6 +451,8 @@ struct SwitcherView: View {
 struct WorkspaceBadge: View {
     let n: Int
     var size: CGFloat = 20
+    /// Redraws when Settings › Appearance changes.
+    @ObservedObject private var appearance = Appearance.shared
     var body: some View {
         Text("\(n)")
             .font(.system(size: size * 0.55, weight: .bold, design: .rounded))
@@ -460,29 +464,15 @@ struct WorkspaceBadge: View {
 }
 
 /// The look shared by the dock, the switcher and the launcher: a dark glass panel and one accent.
+/// All of it comes from `Appearance`, which Settings › Appearance changes.
 enum Chrome {
-    static let accent = Color(red: 0.91, green: 0.26, blue: 0.29)
+    static var accent: Color { Appearance.shared.accent }
 
-    /// One color per workspace, around the color wheel so neighbors never look alike. White
-    /// text reads on all of them.
-    static func workspace(_ n: Int) -> Color {
-        let hues: [Double] = [0.0, 0.07, 0.12, 0.33, 0.47, 0.55, 0.62, 0.74, 0.86]
-        let h = hues[(max(1, min(9, n)) - 1)]
-        // Yellow-green hues read lighter, so they get a little less brightness for white text.
-        let dim = (0.10...0.36).contains(h) ? 0.68 : 0.80
-        return Color(hue: h, saturation: 0.62, brightness: dim)
-    }
+    /// One color per workspace; by default around the color wheel so neighbors never look
+    /// alike. White text reads on all of them.
+    static func workspace(_ n: Int) -> Color { Appearance.shared.workspace(n) }
 
-    static func panel(cornerRadius r: CGFloat) -> some View {
-        let shape = RoundedRectangle(cornerRadius: r, style: .continuous)
-        return shape.fill(.ultraThinMaterial)
-            // Dark enough that text in the windows behind never reads through.
-            .overlay(shape.fill(Color(white: 0.07).opacity(0.88)))
-            // A light top edge and a faint outline, like glass catching light.
-            .overlay(shape.strokeBorder(LinearGradient(colors: [Color.white.opacity(0.22), Color.white.opacity(0.06)],
-                                                       startPoint: .top, endPoint: .bottom), lineWidth: 1))
-            .shadow(color: .black.opacity(0.45), radius: 24, y: 10)
-    }
+    static func panelBackground(cornerRadius r: CGFloat) -> PanelBackground { PanelBackground(cornerRadius: r) }
 }
 
 extension NSWindow {

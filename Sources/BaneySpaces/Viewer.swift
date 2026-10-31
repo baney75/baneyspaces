@@ -82,16 +82,21 @@ private struct TileFrames: PreferenceKey {
 
 struct ViewerView: View {
     @ObservedObject var model: ViewerModel
+    /// Redraws when Settings › Appearance changes.
+    @ObservedObject private var appearance = Appearance.shared
     /// Rendered images can't capture a live blur, so they draw a still backdrop instead.
     var stillBackdrop = false
-    private let accent = Color(red: 0.91, green: 0.26, blue: 0.29)
+    private var accent: Color { Chrome.accent }
 
     // The body is split into small pieces so every Swift compiler type-checks it quickly.
     var body: some View {
         ZStack {
             backdrop
             // Clicking the backdrop closes the viewer, like clicking the desktop in Mission Control.
-            Color.black.opacity(0.35).ignoresSafeArea().onTapGesture { model.onClose() }
+            Color.black.opacity(appearance.settings.overviewDim).ignoresSafeArea().onTapGesture { model.onClose() }
+            if appearance.settings.panelStyle == .tinted {
+                Chrome.accent.opacity(AppearanceSettings.tintWash).ignoresSafeArea().allowsHitTesting(false)
+            }
             GeometryReader { g in grid(in: g.size) }
             liftedCard
         }
@@ -100,7 +105,9 @@ struct ViewerView: View {
     }
 
     @ViewBuilder private var backdrop: some View {
-        if stillBackdrop {
+        if appearance.settings.panelStyle == .solid {
+            Color(white: 0.07).ignoresSafeArea()
+        } else if stillBackdrop {
             LinearGradient(colors: [Color(red: 0.05, green: 0.06, blue: 0.11), Color(red: 0.11, green: 0.07, blue: 0.13)],
                            startPoint: .topLeading, endPoint: .bottomTrailing)
         } else {

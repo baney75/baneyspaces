@@ -109,6 +109,8 @@ final class WorkspaceDock {
     }
 
     private let spaces: Spaces
+    private var appearanceObserver: NSObjectProtocol?
+    deinit { appearanceObserver.map(NotificationCenter.default.removeObserver) }
     var onShowOverview: () -> Void = {}
     var onShowLauncher: () -> Void = {}
     var onTurnOff: () -> Void = {}
@@ -151,6 +153,11 @@ final class WorkspaceDock {
         model.onDragDone = { [weak self] in self?.reload() }
         // After SwiftUI has laid out the strip, so the new size is the real one.
         model.onLayoutChange = { [weak self] in DispatchQueue.main.async { self?.resize() } }
+        // A new dock size changes what SwiftUI measures; the panel (and the keep-zone, which is
+        // taken from its frame) follows.
+        appearanceObserver = NotificationCenter.default.addObserver(forName: Appearance.didChange, object: nil, queue: .main) { [weak self] _ in
+            self?.scheduleResize()
+        }
         model.onShowOverview = { [weak self] in self?.hide(); self?.onShowOverview() }
         model.onShowLauncher = { [weak self] in self?.hide(); self?.onShowLauncher() }
         model.onTurnOff = { [weak self] in self?.onTurnOff() }
@@ -968,7 +975,11 @@ struct DockView: View {
     /// target reads it as a tile or an icon.
     static let originKey = "origin"
     @ObservedObject var model: DockModel
-    private let tileSize: CGFloat = 64
+    /// Redraws when Settings › Appearance changes.
+    @ObservedObject private var appearance = Appearance.shared
+    /// Settings › Appearance › Dock size: every tile, icon and button below scales by this.
+    private var k: CGFloat { CGFloat(appearance.settings.dockSize.scale) }
+    private var tileSize: CGFloat { 64 * k }
     /// Where each tile, app icon and button sits in the dock, so the strip and label line up with it.
     @State private var frames: [String: CGRect] = [:]
     @State private var sideSize: CGSize = .zero
@@ -988,7 +999,7 @@ struct DockView: View {
         // The icon being dragged follows the pointer.
         .overlay(alignment: .topLeading) {
             if let drag = model.drag, !drag.carried {
-                Image(nsImage: drag.icon).resizable().interpolation(.high).frame(width: 36, height: 36)
+                Image(nsImage: drag.icon).resizable().interpolation(.high).frame(width: 36 * k, height: 36 * k)
                     .shadow(color: .black.opacity(0.45), radius: 6, y: 2)
                     .position(drag.location)
                     .allowsHitTesting(false)
@@ -1038,14 +1049,14 @@ struct DockView: View {
             ForEach(model.tiles) { tile in tileView(tile) }
             if let n = model.firstEmpty, !model.tiles.contains(where: { $0.id == n }) { newWorkspaceButton(n) }
             Capsule().fill(Color.white.opacity(0.14))
-                .frame(width: vertical ? 44 : 1, height: vertical ? 1 : 44)
+                .frame(width: vertical ? 44 * k : 1, height: vertical ? 1 : 44 * k)
                 .padding(vertical ? .vertical : .horizontal, 4).padding(.bottom, vertical ? 0 : 14)
             utilityButtons
         }
         .padding(.horizontal, 10)
         .padding(.top, 10)
         .padding(.bottom, vertical ? 10 : 4)
-        .background(Chrome.panel(cornerRadius: 24))
+        .background(Chrome.panelBackground(cornerRadius: 24))
         .modifier(SizeReport(size: $barSize))
     }
 
@@ -1164,7 +1175,7 @@ struct DockView: View {
         }
         .padding(6).padding(.top, 4)
         .frame(width: 240)
-        .background(Chrome.panel(cornerRadius: 14))
+        .background(Chrome.panelBackground(cornerRadius: 14))
         .onHover { inside in model.onStrip = inside }
     }
 
@@ -1203,7 +1214,7 @@ struct DockView: View {
         }
         .padding(6).padding(.top, 4)
         .frame(width: 320)
-        .background(Chrome.panel(cornerRadius: 14))
+        .background(Chrome.panelBackground(cornerRadius: 14))
         .onHover { inside in model.onStrip = inside }
     }
 
@@ -1356,22 +1367,22 @@ struct DockView: View {
     @ViewBuilder private func icons(_ tile: DockModel.Tile) -> some View {
         let apps = tile.apps
         if apps.isEmpty {
-            Image(systemName: "plus").font(.system(size: 15, weight: .medium)).foregroundStyle(.white.opacity(0.3))
+            Image(systemName: "plus").font(.system(size: 15 * k, weight: .medium)).foregroundStyle(.white.opacity(0.3))
                 .allowsHitTesting(false)
         } else if apps.count == 1 {
-            appIcon(apps[0], in: tile, size: 42)
+            appIcon(apps[0], in: tile, size: 42 * k)
         } else if apps.count == 2 {
-            HStack(spacing: 2) { ForEach(apps) { appIcon($0, in: tile, size: 28) } }
+            HStack(spacing: 2) { ForEach(apps) { appIcon($0, in: tile, size: 28 * k) } }
         } else {
             let shown = apps.count > 4 ? Array(apps.prefix(DockModel.iconsShown)) : apps
-            LazyVGrid(columns: [GridItem(.fixed(24), spacing: 3), GridItem(.fixed(24), spacing: 3)], spacing: 3) {
-                ForEach(shown) { appIcon($0, in: tile, size: 24) }
+            LazyVGrid(columns: [GridItem(.fixed(24 * k), spacing: 3), GridItem(.fixed(24 * k), spacing: 3)], spacing: 3) {
+                ForEach(shown) { appIcon($0, in: tile, size: 24 * k) }
                 if apps.count > 4 {
                     // Rest on it (or click it) to list the apps it stands for, each one clickable.
                     let open = model.hover == .more(tile.id) || model.more == tile.id
                     Text("+\(apps.count - DockModel.iconsShown)")
                         .font(.system(size: 10, weight: .bold, design: .rounded)).foregroundStyle(.white.opacity(open ? 1 : 0.85))
-                        .frame(width: 24, height: 24)
+                        .frame(width: 24 * k, height: 24 * k)
                         .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.white.opacity(open ? 0.24 : 0.12)))
                         .modifier(CenterReport(key: "more:\(tile.id)"))
                         .contentShape(Rectangle())
@@ -1383,7 +1394,7 @@ struct DockView: View {
                         .accessibilityAction { model.more = tile.id }
                 }
             }
-            .frame(width: 51)
+            .frame(width: 48 * k + 3)
         }
     }
 
@@ -1481,7 +1492,7 @@ struct DockView: View {
     private var utilityButtons: some View {
         let vertical = model.edge.isVertical
         let pair = vertical ? AnyLayout(HStackLayout(spacing: 4)) : AnyLayout(VStackLayout(spacing: 4))
-        let size = vertical ? CGSize(width: (tileSize - 4) / 2, height: 44) : CGSize(width: 44, height: (tileSize - 4) / 2)
+        let size = vertical ? CGSize(width: (tileSize - 4) / 2, height: 44 * k) : CGSize(width: 44 * k, height: (tileSize - 4) / 2)
         return VStack(spacing: 5) {
             pair {
                 smallButton(.launcher, "magnifyingglass", "Find or Install an App", size: size) { model.onShowLauncher() }
