@@ -59,24 +59,50 @@ fi
 ZIP="${BANEYSPACES_ZIP:-}"
 TAG="${BANEYSPACES_REF:-}"
 SHA_URL=""
-# Prints the HTTP status and the final address; a connection that fails prints 000.
-fetch() { curl -sSL -w '%{http_code} %{url_effective}' -o "$2" "$1" 2>/dev/null || true; }
+# BANEYSPACES_RELEASES_BASE is for tests: a stand-in for GitHub's releases address.
+BASE="${BANEYSPACES_RELEASES_BASE:-https://github.com/baney75/baneyspaces/releases}"
+# Prints the HTTP status; a connection that fails prints 000.
+fetch() { curl -sSL -w '%{http_code}' -o "$2" "$1" 2>/dev/null || true; }
+
+# Which release is the latest stable: GitHub's /releases/latest answers with a redirect to
+# /releases/tag/<tag>. The tag is read from that redirect alone, before anything is downloaded, so
+# the zip, its checksum and the version check all name the same release.
+LATEST_TAG=""
+LATEST_STATE=""   # ok, none (no releases yet) or error
+if [ -z "$TAG" ] && [ -z "$ZIP" ]; then
+  for attempt in 1 2; do
+    reply=$(curl -sSI -o /dev/null -w '%{http_code} %{redirect_url}' "$BASE/latest" 2>/dev/null || true)
+    code=${reply%% *}; target=${reply#* }
+    if [ "$code" = 404 ]; then LATEST_STATE=none; break; fi
+    if [[ "$code" =~ ^30[0-9]$ ]]; then
+      found=$(printf '%s' "$target" | sed -n 's#.*/releases/tag/\([A-Za-z0-9._-]*\)$#\1#p')
+      if [ -n "$found" ]; then LATEST_TAG=$found; LATEST_STATE=ok; break; fi
+      case "$target" in */releases|*/releases/) LATEST_STATE=none; break ;; esac
+    fi
+    [ "$attempt" = 2 ] || sleep 2
+  done
+  [ -n "$LATEST_STATE" ] || LATEST_STATE=error
+fi
+
 if [ -z "$ZIP" ] && [ "$FROM_SOURCE" != 1 ] && [[ "$TAG" =~ ^[A-Za-z0-9._-]*$ ]]; then
-  BASE="https://github.com/baney75/baneyspaces/releases"
-  if [ -n "$TAG" ]; then ZIP_URL="$BASE/download/$TAG/BaneySpaces.zip"; else ZIP_URL="$BASE/latest/download/BaneySpaces.zip"; fi
-  step "Downloading BaneySpaces (${TAG:-the latest release})"
-  reply=$(fetch "$ZIP_URL" "$WORK/BaneySpaces.zip")
-  [ "${reply%% *}" = 200 ] || { sleep 2; reply=$(fetch "$ZIP_URL" "$WORK/BaneySpaces.zip"); }
-  case "${reply%% *}" in
-    200)
-      ZIP="$WORK/BaneySpaces.zip"
-      # The final address names the release, which also settles what "latest" meant.
-      resolved=$(printf '%s' "${reply#* }" | sed -n 's#.*/releases/download/\([^/]*\)/BaneySpaces\.zip.*#\1#p')
-      TAG="${resolved:-$TAG}"
-      SHA_URL="$BASE/download/$TAG/BaneySpaces.zip.sha256" ;;
-    404) echo "  There is no ready-made app for this release; building it." ;;
-    *) fail "the download didn't work (HTTP ${reply%% *}). Try again, or build it on this Mac with BANEYSPACES_FROM_SOURCE=1." ;;
-  esac
+  if [ -z "$TAG" ]; then
+    case "$LATEST_STATE" in
+      ok) TAG="$LATEST_TAG" ;;
+      none) echo "  There are no releases yet; building it." ;;
+      *) fail "couldn't tell which release is the latest. Try again, or build it on this Mac with BANEYSPACES_FROM_SOURCE=1." ;;
+    esac
+  fi
+  if [ -n "$TAG" ]; then
+    step "Downloading BaneySpaces ($TAG)"
+    ZIP_URL="$BASE/download/$TAG/BaneySpaces.zip"
+    reply=$(fetch "$ZIP_URL" "$WORK/BaneySpaces.zip")
+    [ "$reply" = 200 ] || [ "$reply" = 404 ] || { sleep 2; reply=$(fetch "$ZIP_URL" "$WORK/BaneySpaces.zip"); }
+    case "$reply" in
+      200) ZIP="$WORK/BaneySpaces.zip"; SHA_URL="$BASE/download/$TAG/BaneySpaces.zip.sha256" ;;
+      404) echo "  There is no ready-made app for this release; building it." ;;
+      *) fail "the download didn't work (HTTP $reply). Try again, or build it on this Mac with BANEYSPACES_FROM_SOURCE=1." ;;
+    esac
+  fi
 fi
 
 if [ -n "$ZIP" ] && [ "$FROM_SOURCE" != 1 ]; then
@@ -84,11 +110,11 @@ if [ -n "$ZIP" ] && [ "$FROM_SOURCE" != 1 ]; then
   # The checksum file is optional: a release without one is checked by its signature alone.
   if [ -n "$SHA_URL" ]; then
     reply=$(fetch "$SHA_URL" "$WORK/BaneySpaces.zip.sha256")
-    case "${reply%% *}" in
+    case "$reply" in
       200) [ "$(awk '{print $1}' "$WORK/BaneySpaces.zip.sha256")" = "$(shasum -a 256 "$ZIP" | awk '{print $1}')" ] \
              || fail "the download doesn't match its checksum, so it was not installed." ;;
       404) ;;
-      *) fail "couldn't fetch the checksum (HTTP ${reply%% *}). Try again, or build it on this Mac with BANEYSPACES_FROM_SOURCE=1." ;;
+      *) fail "couldn't fetch the checksum (HTTP $reply). Try again, or build it on this Mac with BANEYSPACES_FROM_SOURCE=1." ;;
     esac
   fi
   mkdir "$WORK/app"
@@ -129,6 +155,10 @@ fi
 # No prebuilt app for this release (or BANEYSPACES_FROM_SOURCE=1): build it here.
 # The build needs Apple's free command line tools (Swift and git). Check before anything else.
 if ! have_tools; then
+  # An update runs in the background with nobody to click Install, so it only says what to do.
+  if [ -n "${BANEYSPACES_COMMIT:-}" ]; then
+    fail "this update is built on your Mac and needs Apple's command line tools (Nightly builds always do; Stable releases install ready-made). Run xcode-select --install in Terminal, then update again."
+  fi
   step "BaneySpaces needs Apple's free command line tools first"
   xcode-select --install >/dev/null 2>&1 || true
   echo "  A macOS window just opened. Click Install and agree to the license."
@@ -137,8 +167,9 @@ if ! have_tools; then
   exit 1
 fi
 
-# The newest release tag, or main if there isn't one yet.
-REF="${BANEYSPACES_REF:-$(git ls-remote --tags --refs --sort=-v:refname "$REPO_URL" 'v*' 2>/dev/null | head -1 | sed 's#.*refs/tags/##')}"
+# The latest release's tag (looked up above), else the newest v* tag, else main if there isn't one yet.
+REF="${BANEYSPACES_REF:-$LATEST_TAG}"
+[ -n "$REF" ] || REF=$(git ls-remote --tags --refs --sort=-v:refname "$REPO_URL" 'v*' 2>/dev/null | head -1 | sed 's#.*refs/tags/##' || true)
 REF="${REF:-main}"
 
 step "Downloading BaneySpaces ($REF)"
@@ -150,7 +181,16 @@ fi
 step "Building (about a minute the first time)"
 # The whole build log is kept, so a failure shows its real cause instead of the last few lines.
 LOG="${TMPDIR:-/tmp}/baneyspaces-install.log"
-if ! "$WORK/baneyspaces/scripts/bundle.sh" --install >"$LOG" 2>&1; then
+SRC="$WORK/baneyspaces"
+if [ -f "$SRC/scripts/install-app.sh" ]; then
+  # Build, then place the app with that build's own install step, which knows where to put it.
+  if ! { "$SRC/scripts/bundle.sh" && bash "$SRC/build/BaneySpaces.app/Contents/Resources/install-app.sh" "$SRC/build/BaneySpaces.app" </dev/null; } >"$LOG" 2>&1; then
+    echo
+    grep -E "error:|Error|failed|still running" "$LOG" | head -20 || tail -20 "$LOG"
+    fail "the build stopped. The full log is at $LOG"
+  fi
+elif ! "$SRC/scripts/bundle.sh" --install >"$LOG" 2>&1; then
+  # An older revision has no separate install step.
   echo
   grep -E "error:|Error|failed|still running" "$LOG" | head -20 || tail -20 "$LOG"
   fail "the build stopped. The full log is at $LOG"

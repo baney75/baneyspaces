@@ -25,7 +25,14 @@ fail() { echo "release.sh: $*" >&2; exit 1; }
 if [ "$DRY" = 0 ]; then
   TAG_COMMIT=$(git rev-parse --verify --quiet "refs/tags/$TAG^{commit}") || fail "tag $TAG doesn't exist. Tag the release commit first."
   [ "$TAG_COMMIT" = "$(git rev-parse HEAD)" ] || fail "HEAD isn't the commit of $TAG. Check out the tag, or move VERSION to match."
-  gh release view "$TAG" >/dev/null 2>&1 || fail "GitHub has no release $TAG yet. Push the tag and let the Release workflow finish."
+  # The remote must have the same tag on the same commit (an annotated tag shows its commit on the ^{} line).
+  REMOTE=$(git ls-remote origin "refs/tags/$TAG^{}" "refs/tags/$TAG" | awk '{print $1}' | head -1)
+  [ "$REMOTE" = "$TAG_COMMIT" ] || fail "origin doesn't have $TAG on this commit. Push the tag first (git push origin $TAG)."
+  # Only the draft the Release workflow made: a published release is already being offered, so its
+  # files must never change under people. Fix forward with a new patch version.
+  # (Listed through the API: a draft has no public page, and `gh release view` may not find it by tag.)
+  [ "$(gh api "repos/{owner}/{repo}/releases?per_page=100" --jq "[.[] | select(.tag_name == \"$TAG\") | .draft] | first" 2>/dev/null)" = true ] \
+    || fail "$TAG is already published (or has no draft release yet). Release a new patch version, or let the Release workflow finish first."
   # A real release is universal and uses the stable identity, whatever this shell has set.
   unset BANEYSPACES_ARM64_ONLY BANEYSPACES_ADHOC
 fi

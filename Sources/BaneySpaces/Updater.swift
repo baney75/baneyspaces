@@ -41,6 +41,21 @@ final class Updater: NSObject {
         build.commit.map { "\(build.version) (\($0.prefix(7)))" } ?? build.version
     }
 
+    /// Whether Apple's command line tools are installed. A Nightly build is built on this Mac, so it
+    /// needs them; a Stable release installs ready-made.
+    static var hasCommandLineTools: Bool {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select")
+        p.arguments = ["-p"]
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        guard (try? p.run()) != nil else { return false }
+        p.waitUntilExit()
+        return p.terminationStatus == 0
+    }
+
+    static let nightlyNeedsToolsMessage = "Nightly builds need Apple's command line tools, which this Mac doesn't have. Stable installs ready-made. To follow Nightly, run xcode-select --install in Terminal."
+
     var channel: UpdateChannel {
         get { UserDefaults.standard.string(forKey: "updateChannel").flatMap(UpdateChannel.init) ?? .stable }
         set {
@@ -91,13 +106,18 @@ final class Updater: NSObject {
                     return
                 }
                 self.lastCheck = Date()
-                let candidates = Updates.candidates(from: Release.list(fromGitHubJSON: data), channel: self.channel, build: Self.build)
+                // A nightly is built on this Mac, so it isn't offered without the command line tools.
+                let toolsMissing = !Self.hasCommandLineTools
+                let releases = Release.list(fromGitHubJSON: data).filter { !(toolsMissing && $0.isNightly) }
+                let candidates = Updates.candidates(from: releases, channel: self.channel, build: Self.build)
                 self.firstContainingBuild(candidates) { release in
                     self.available = release
                     self.onChange()
                     guard manual else { return }
                     if let release {
                         self.offer(release)
+                    } else if toolsMissing && self.channel == .nightly {
+                        self.tell("Nightly needs Apple's command line tools", Self.nightlyNeedsToolsMessage)
                     } else {
                         self.tell("BaneySpaces is up to date", "You have \(Self.buildDescription), the newest \(self.channel == .stable ? "stable release" : "build on the Nightly channel").")
                     }
@@ -203,6 +223,9 @@ final class Updater: NSObject {
     /// exact commit whose notes were shown is installed, or nothing is.
     func install(_ release: Release) {
         guard installing == nil, release.isInstallable else { return }
+        guard !release.isNightly || Self.hasCommandLineTools else {
+            return tell("Nightly needs Apple's command line tools", Self.nightlyNeedsToolsMessage)
+        }
         guard !Self.installerRunning else {
             return tell("An update is already installing", "It installs in the background and restarts BaneySpaces when it's done.")
         }
@@ -234,8 +257,12 @@ final class Updater: NSObject {
         var env = ProcessInfo.processInfo.environment
         env["BANEYSPACES_REF"] = release.tag
         // The new copy goes where this one is, so an /Applications copy isn't left beside a new
-        // one in ~/Applications.
-        env["BANEYSPACES_INSTALL_DIR"] = Bundle.main.bundleURL.deletingLastPathComponent().path
+        // one in ~/Applications. Only those two folders count: a copy run from anywhere else
+        // (a build folder, the disk image) leaves it unset, and the installer finds the installed copy.
+        let parent = Bundle.main.bundleURL.deletingLastPathComponent().path
+        if parent == "/Applications" || parent == "\(NSHomeDirectory())/Applications" {
+            env["BANEYSPACES_INSTALL_DIR"] = parent
+        }
         if let commit = release.commit { env["BANEYSPACES_COMMIT"] = commit }
         env["BANEYSPACES_STATUS_FILE"] = Self.statusURL.path
         env["BANEYSPACES_PID_FILE"] = Self.pidURL.path

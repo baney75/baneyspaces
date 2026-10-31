@@ -752,7 +752,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         current.isEnabled = false
         sub.addItem(current)
         sub.addItem(.separator())
-        for (channel, title) in [(UpdateChannel.stable, "Stable: tested releases"), (.nightly, "Nightly: newest changes, every night")] {
+        for (channel, title) in [(UpdateChannel.stable, "Stable: tested releases"), (.nightly, Updater.hasCommandLineTools ? "Nightly: newest changes, every night" : "Nightly: needs Apple's command line tools")] {
             let it = item(title, #selector(pickChannel(_:)))
             it.representedObject = channel.rawValue
             it.state = updater.channel == channel ? .on : .off

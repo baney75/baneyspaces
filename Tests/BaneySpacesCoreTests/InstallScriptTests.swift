@@ -64,14 +64,14 @@ final class InstallScriptTests: XCTestCase {
         let check = try index(of: #"codesign -v -R "=$REQUIREMENT" "$EXISTING""#, in: install)
         let source = try index(of: "FROM_SOURCE=1\n", in: install)
         XCTAssertLessThan(check, source)
-        XCTAssertLessThan(source, try index(of: "latest/download/BaneySpaces.zip", in: install), "decided before any download")
+        XCTAssertLessThan(source, try index(of: #"ZIP_URL="$BASE/download/$TAG/BaneySpaces.zip""#, in: install), "decided before any download")
         XCTAssertTrue(install.contains("macOS will ask for the Accessibility permission once more"))
     }
 
     func testTheDownloadUsesNoAPIAndTellsAMissingAppFromAFailure() throws {
         let install = try read("install.sh")
         XCTAssertFalse(install.contains("api.github.com"))
-        XCTAssertTrue(install.contains("$BASE/latest/download/BaneySpaces.zip"))
+        XCTAssertTrue(install.contains("$BASE/latest"))
         XCTAssertTrue(install.contains("$BASE/download/$TAG/BaneySpaces.zip"))
         XCTAssertTrue(install.contains("%{http_code}"))
         XCTAssertTrue(install.contains("404) echo"))
@@ -90,7 +90,9 @@ final class InstallScriptTests: XCTestCase {
         XCTAssertTrue(installApp.contains("BANEYSPACES_INSTALL_DIR"))
         XCTAssertLessThan(try index(of: #""$HOME/Applications" /Applications"#, in: installApp), try index(of: #"DEST="$DEST_DIR/BaneySpaces.app""#, in: installApp))
         let updater = try read("Sources/BaneySpaces/Updater.swift")
-        XCTAssertTrue(updater.contains(#"env["BANEYSPACES_INSTALL_DIR"] = Bundle.main.bundleURL.deletingLastPathComponent().path"#))
+        // Only an Applications folder is passed on; anywhere else the installer finds the installed copy.
+        XCTAssertTrue(updater.contains(#"parent == "/Applications" || parent == "\(NSHomeDirectory())/Applications""#))
+        XCTAssertTrue(updater.contains(#"env["BANEYSPACES_INSTALL_DIR"] = parent"#))
     }
 
     func testTheAppRunsTheInPlaceStepsAtLaunch() throws {
@@ -125,6 +127,113 @@ final class InstallScriptTests: XCTestCase {
         XCTAssertFalse(fm.fileExists(atPath: dest.path), "nothing was copied")
         let script = try read("scripts/install-app.sh")
         XCTAssertLessThan(try index(of: "if [ \"$IN_PLACE\" = 0 ]; then\n  rm -rf \"$DEST\"", in: script), try index(of: #"cp -R "$APP" "$DEST""#, in: script))
+    }
+
+    func testTheLatestReleaseIsReadFromTheRedirectBeforeDownloading() throws {
+        let install = try read("install.sh")
+        XCTAssertTrue(install.contains("%{redirect_url}"))
+        XCTAssertTrue(install.contains("/releases/tag/"))
+        XCTAssertFalse(install.contains("url_effective"))
+        XCTAssertLessThan(try index(of: "%{redirect_url}", in: install), try index(of: #"ZIP_URL="$BASE/download/$TAG/BaneySpaces.zip""#, in: install))
+        // The source build uses that tag too.
+        XCTAssertTrue(install.contains(#"REF="${BANEYSPACES_REF:-$LATEST_TAG}""#))
+    }
+
+    func testABackgroundUpdateNeverOpensAppleInstallerAndTheSourceBuildUsesItsOwnInstallStep() throws {
+        let install = try read("install.sh")
+        let gate = try index(of: "if ! have_tools; then", in: install)
+        let failFast = try index(of: "needs Apple's command line tools (Nightly builds always do", in: install)
+        XCTAssertLessThan(gate, failFast)
+        XCTAssertLessThan(failFast, try index(of: "xcode-select --install", in: install))
+        XCTAssertTrue(install.contains(#"Resources/install-app.sh" "$SRC/build/BaneySpaces.app""#))
+        XCTAssertTrue(install.contains(#"bundle.sh" --install"#), "older revisions only")
+    }
+
+    func testNightlyIsNotOfferedWithoutTheCommandLineTools() throws {
+        let updater = try read("Sources/BaneySpaces/Updater.swift")
+        XCTAssertTrue(updater.contains("!(toolsMissing && $0.isNightly)"))
+        XCTAssertTrue(updater.contains("guard !release.isNightly || Self.hasCommandLineTools"))
+        XCTAssertTrue(updater.contains("Stable installs ready-made"))
+    }
+
+    func testReleaseRefusesAPublishedReleaseAndAnUnpushedTag() throws {
+        let release = try read("scripts/release.sh")
+        let upload = try index(of: "gh release upload", in: release)
+        XCTAssertLessThan(try index(of: ".draft", in: release), upload)
+        XCTAssertLessThan(try index(of: "git ls-remote origin", in: release), upload)
+        XCTAssertTrue(release.contains("is already published"))
+        let workflow = try read(".github/workflows/release.yml")
+        XCTAssertFalse(workflow.contains("--prerelease=false --latest"), "only make release publishes")
+    }
+
+    private func runSigningRestore(home: URL) throws -> String {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/bash")
+        p.arguments = [root.appendingPathComponent("scripts/signing-identity.sh").path]
+        p.environment = ["HOME": home.path, "PATH": "/usr/bin:/bin", "BANEYSPACES_SIGNING_RESTORE_ONLY": "1"]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = pipe
+        try p.run()
+        let out = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        p.waitUntilExit()
+        XCTAssertEqual(p.terminationStatus, 0, out)
+        return out
+    }
+
+    private func signingSandbox(kept: [String: String], existingDir: Bool = false, existingFile: String? = nil) throws -> URL {
+        let fm = FileManager.default
+        let home = fm.temporaryDirectory.appendingPathComponent("bs-sign-\(UUID().uuidString)").resolvingSymlinksInPath()
+        try fm.createDirectory(at: home.appendingPathComponent("Library"), withIntermediateDirectories: true)
+        for (folder, key) in kept {
+            let dir = home.appendingPathComponent("Library/\(folder)")
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            try key.write(to: dir.appendingPathComponent("baneyspaces-signing.keychain-db"), atomically: true, encoding: .utf8)
+            try "pw".write(to: dir.appendingPathComponent(".hidden"), atomically: true, encoding: .utf8)
+        }
+        let target = home.appendingPathComponent("Library/Application Support/BaneySpaces/Signing")
+        if existingDir { try fm.createDirectory(at: target, withIntermediateDirectories: true) }
+        if let existingFile { try "x".write(to: target.appendingPathComponent(existingFile), atomically: true, encoding: .utf8) }
+        return home
+    }
+
+    private func restored(_ home: URL, _ name: String) -> String? {
+        try? String(contentsOf: home.appendingPathComponent("Library/Application Support/BaneySpaces/Signing/\(name)"), encoding: .utf8)
+    }
+
+    func testSigningRestoresTheKeptFolder() throws {
+        let home = try signingSandbox(kept: ["BaneySpaces Release Signing": "key"])
+        defer { try? FileManager.default.removeItem(at: home) }
+        let out = try runSigningRestore(home: home)
+        XCTAssertTrue(out.contains("restored the BaneySpaces release signing key"), out)
+        XCTAssertEqual(restored(home, "baneyspaces-signing.keychain-db"), "key")
+        XCTAssertEqual(restored(home, ".hidden"), "pw", "dotfiles come back too")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent("Library/BaneySpaces Release Signing").path))
+    }
+
+    func testSigningRestoresIntoAnExistingEmptyFolder() throws {
+        let home = try signingSandbox(kept: ["BaneySpaces Release Signing": "key"], existingDir: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        _ = try runSigningRestore(home: home)
+        XCTAssertEqual(restored(home, "baneyspaces-signing.keychain-db"), "key")
+    }
+
+    func testSigningMergesIntoAFolderThatHasOtherFiles() throws {
+        let home = try signingSandbox(kept: ["BaneySpaces Release Signing": "key"], existingDir: true, existingFile: "stray")
+        defer { try? FileManager.default.removeItem(at: home) }
+        _ = try runSigningRestore(home: home)
+        XCTAssertEqual(restored(home, "baneyspaces-signing.keychain-db"), "key")
+        XCTAssertEqual(restored(home, ".hidden"), "pw")
+        XCTAssertEqual(restored(home, "stray"), "x")
+    }
+
+    func testSigningRestoresTheNewestDatedFolderWhenThereIsNoPlainOne() throws {
+        let home = try signingSandbox(kept: ["BaneySpaces Release Signing 20261030-101010": "old",
+                                             "BaneySpaces Release Signing 20261031-090000": "new"])
+        defer { try? FileManager.default.removeItem(at: home) }
+        _ = try runSigningRestore(home: home)
+        XCTAssertEqual(restored(home, "baneyspaces-signing.keychain-db"), "new")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: home.appendingPathComponent("Library/BaneySpaces Release Signing 20261030-101010").path), "the older one is left alone")
     }
 
     func testReleaseIsADraftUntilTheUploadIsCheckedAndPublished() throws {

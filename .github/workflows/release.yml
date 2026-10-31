@@ -1,12 +1,11 @@
 name: Release
+# Pushing a version tag (git tag v0.2.2 && git push origin v0.2.2) creates the release as a DRAFT,
+# with notes taken from that version's CHANGELOG section. Nobody is offered a draft.
 # The prebuilt app (BaneySpaces.zip, its .sha256 and BaneySpaces.dmg) is not made here: it is
-# signed with the release key, which never leaves the owner's Mac. This workflow creates the
-# release as a DRAFT, which nobody is offered. Then `make release` on that Mac uploads the files,
-# checks them again as uploaded and publishes the release (`gh release edit --draft=false --latest`).
-# A release already published keeps its state when this runs again.
-# Pushing a version tag (git tag v0.2.2 && git push origin v0.2.2) publishes the stable release,
-# with notes taken from that version's CHANGELOG section. The app offers it to everyone on the
-# Stable channel; nothing installs until they press Update.
+# signed with the release key, which never leaves the owner's Mac. `make release` on that Mac
+# uploads the files, checks them again as uploaded and publishes the release
+# (`gh release edit --draft=false --latest`), and only then the Stable channel offers it. Running
+# this workflow again on an existing release only updates its notes.
 on:
   push:
     tags: ['v*']
@@ -31,12 +30,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            if [ "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = true ]; then
-              gh release edit "$GITHUB_REF_NAME" --notes-file notes.md
-            else
-              gh release edit "$GITHUB_REF_NAME" --notes-file notes.md --prerelease=false --latest
-            fi
+          # Listed through the API: a draft has no public page, and `gh release view` may not find it by tag.
+          if [ "$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq "[.[] | select(.tag_name == \"$GITHUB_REF_NAME\")] | length")" -gt 0 ]; then
+            gh release edit "$GITHUB_REF_NAME" --notes-file notes.md
           else
             gh release create "$GITHUB_REF_NAME" --title "BaneySpaces $(cat VERSION)" --notes-file notes.md --draft --verify-tag
           fi

@@ -244,10 +244,11 @@ final class UninstallTests: XCTestCase {
 
     /// A stand-in `security` that reports the certificate's SHA-1 and nothing else; no real key is read.
     private func fakeSecurity(sha1: String) throws -> String {
+        let line = sha1.isEmpty ? "echo 'security: could not read the keychain' >&2; exit 44" : "echo 'SHA-1 hash: \(sha1)'"
         let dir = home.appendingPathComponent("fakebin")
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         let file = dir.appendingPathComponent("security")
-        try "#!/bin/sh\necho 'SHA-1 hash: \(sha1)'\n".write(to: file, atomically: true, encoding: .utf8)
+        try "#!/bin/sh\n\(line)\n".write(to: file, atomically: true, encoding: .utf8)
         try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
         return dir.path
     }
@@ -270,5 +271,14 @@ final class UninstallTests: XCTestCase {
         XCTAssertTrue(out.contains("would run: security delete-keychain"), out)
         XCTAssertFalse(fm.fileExists(atPath: path("Library/BaneySpaces Release Signing").path))
         XCTAssertFalse(fm.fileExists(atPath: path("Library/Application Support/BaneySpaces").path))
+    }
+
+    /// If the fingerprint can't be read the key might be the release key, so it is kept, not deleted.
+    func testAnUnreadableSigningKeyIsKeptNotDeleted() throws {
+        try write("Library/Application Support/BaneySpaces/Signing/baneyspaces-signing.keychain-db", "keychain")
+        let out = try uninstall(extraPath: try fakeSecurity(sha1: ""))
+        XCTAssertTrue(out.contains("fingerprint couldn't be read"), out)
+        XCTAssertFalse(out.contains("would run: security delete-keychain"), out)
+        XCTAssertTrue(fm.fileExists(atPath: path("Library/BaneySpaces Release Signing/baneyspaces-signing.keychain-db").path))
     }
 }
