@@ -26,7 +26,9 @@ if [ "$DRY" = 0 ]; then
   TAG_COMMIT=$(git rev-parse --verify --quiet "refs/tags/$TAG^{commit}") || fail "tag $TAG doesn't exist. Tag the release commit first."
   [ "$TAG_COMMIT" = "$(git rev-parse HEAD)" ] || fail "HEAD isn't the commit of $TAG. Check out the tag, or move VERSION to match."
   # The remote must have the same tag on the same commit (an annotated tag shows its commit on the ^{} line).
-  REMOTE=$(git ls-remote origin "refs/tags/$TAG^{}" "refs/tags/$TAG" | awk '{print $1}' | head -1)
+  # ls-remote lists the tag itself before its peeled ^{} line, so take the ^{} line when there is one
+  # (v0.3.0, 2026-10-30: taking the first line compared a tag object with the commit).
+  REMOTE=$(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}" | awk '$2 ~ /\^\{\}$/ { peeled = $1 } { first = first ? first : $1 } END { print peeled ? peeled : first }')
   [ "$REMOTE" = "$TAG_COMMIT" ] || fail "origin doesn't have $TAG on this commit. Push the tag first (git push origin $TAG)."
   # Only the draft the Release workflow made: a published release is already being offered, so its
   # files must never change under people. Fix forward with a new patch version.
