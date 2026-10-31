@@ -76,7 +76,7 @@ func call(_ r: Wire.Request, timeout: Double = 2) -> Wire.Reply {
         if !reply.ok { fail(reply.error ?? "failed") }
         return reply
     }
-    guard let reply = Wire.call(r, timeout: timeout) else { fail("BaneySpaces isn't running, or hasn't started its Deck yet.") }
+    guard let reply = Wire.call(r, timeout: timeout) else { fail("BaneySpaces isn't running, or hasn't finished starting (it needs Accessibility).") }
     if !reply.ok { fail(reply.error ?? "failed") }
     return reply
 }

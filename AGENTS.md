@@ -9,7 +9,8 @@ sees twice costs more than a slow release.
 A change is done when all of these pass on the installed build (`make install`):
 
 1. `swift test`
-2. `scripts/bench.sh` (median no-op switch under 40 ms; p90 of your real switches in `timing.log` under 250 ms)
+2. `scripts/bench.sh` (median no-op switch under 40 ms; p90 of your real switches in `timing.log` under 250 ms).
+   Exit 3 means fewer than 20 real switches since the build started: make them, or report "real-use budget unchecked".
 3. For anything that hides, parks, moves or restores windows: `swift scripts/motion-probe.swift <a> <b>`
    with Helium or Ghostty on one of the two workspaces. It must print "no window slid".
    For anything that decides which windows exist or where they live: `swift scripts/closed-window-probe.swift <empty n>`.

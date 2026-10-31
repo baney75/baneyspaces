@@ -48,6 +48,6 @@ final class DeckSidebarRemovedTests: XCTestCase {
         XCTAssertTrue(launcher.contains("\"New Claude Session\"") && launcher.contains("\"New Terminal\""))
         let app = try code(root.appendingPathComponent("Sources/BaneySpaces/AppDelegate.swift"))
         XCTAssertTrue(app.contains("a.newClaude = { [weak self] in self?.deck.newClaude() }"))
-        XCTAssertTrue(app.contains("a.newTerminal = { [weak self] in self?.deck.engine.newTerminal(in: nil) }"))
+        XCTAssertTrue(app.contains("a.newTerminal = { [weak self] in self?.deck.engine.newTerminal(in: self?.terminalFolder) }"), "New Terminal opens in the folder you were in")
     }
 }

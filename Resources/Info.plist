@@ -14,7 +14,7 @@
   <key>BaneySpacesCommitDate</key><string>@COMMIT_DATE@</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
-  <key>NSAppleEventsUsageDescription</key><string>The Deck reads the tabs and splits of your terminals and browser to list them in the launcher, brings forward the one you pick, and types into a terminal only when you or an agent asks it to.</string>
+  <key>NSAppleEventsUsageDescription</key><string>BaneySpaces reads the tabs and splits of your terminals and browser to list them in the launcher, brings forward the one you pick, and types into a terminal only when you or an agent asks it to.</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSHumanReadableCopyright</key><string>© 2026 Donovan Baney (@baney75). MIT License.</string>

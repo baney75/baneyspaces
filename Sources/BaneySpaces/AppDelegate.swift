@@ -102,6 +102,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     /// Building the launcher scans every app, so the Deck's updates don't build it early.
     private var launcherBuilt = false
+    /// The focused terminal's folder when the launcher opened, for New Terminal.
+    private var terminalFolder: String?
     private lazy var launcher: LauncherController = {
         launcherBuilt = true
         var a = LauncherActions()
@@ -125,9 +127,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         a.showOverview = { [weak self] in self?.viewer.open() }
         a.deckItems = { [weak self] q in self?.deck.launcherItems(q) ?? [] }
-        a.willShow = { [weak self] in self?.deck.engine.refreshAll() }
+        a.willShow = { [weak self] in
+            guard let self else { return }
+            // New Terminal opens where you were working, read before the launcher takes focus.
+            // Only a terminal in front says where you were working; a focused row in another app doesn't.
+            let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+            self.terminalFolder = self.deck.engine.items.first {
+                $0.focused && $0.kind == .terminal && $0.bundleID == front && !$0.directory.isEmpty
+            }?.directory
+            self.deck.engine.refreshAll()
+        }
         a.newClaude = { [weak self] in self?.deck.newClaude() }
-        a.newTerminal = { [weak self] in self?.deck.engine.newTerminal(in: nil) }
+        a.newTerminal = { [weak self] in self?.deck.engine.newTerminal(in: self?.terminalFolder) }
         a.bringBack = { [weak self] in self?.bringBack() }
         a.toggleDock = { [weak self] in self?.toggleWorkspaceDock() }
         a.dockOn = { WorkspaceDock.enabled }

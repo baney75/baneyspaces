@@ -541,6 +541,7 @@ final class Spaces {
         // macOS puts each window back where it was before full screen.
         leaveFullScreen(asking, fill: false) { [self] refused in
             guard gen == generation, active else { return }
+            clock.mark(.fullscreen)
             for w in refused { model.assign(w.id, to: n, focus: false) }
             // Back on the regular desktop, Accessibility can list windows it couldn't see from the
             // full-screen one. Those opened while you were on the workspace you just left.
@@ -1161,8 +1162,8 @@ final class Spaces {
         }
         // Parked windows go home first, unseen; only then do their apps show.
         bringHome(home, screens: screens, gen: gen) { [self] in
-        // From scanned to here: planning the switch, carrying windows between displays and
-        // bringing parked windows home.
+        // From scanned (or fullscreen, after leaving full screen and scanning again) to here:
+        // planning the switch, carrying windows between displays and bringing parked windows home.
         clock.mark(.home)
         // An app with a window here parks its other windows now, before it shows (a hidden one
         // parks them unseen), so they never linger among this workspace's windows.
@@ -1705,7 +1706,7 @@ final class KeyablePanel: NSPanel {
 /// How long one switch takes, phase by phase. Appended to timing.log so speed changes are
 /// measured on real use, not guessed.
 struct SwitchClock {
-    enum Phase: String { case snap, scanned, home, alongside, unhidden, concealed, shown, focused, done, parked }
+    enum Phase: String { case snap, scanned, fullscreen, home, alongside, unhidden, concealed, shown, focused, done, parked }
     var target = 0
     /// The workspace being left: a switch to the one you're on (`bench.sh`) moves nothing.
     var from = 0
