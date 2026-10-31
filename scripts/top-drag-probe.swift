@@ -66,6 +66,8 @@ func post(_ type: CGEventType, _ p: CGPoint) {
 }
 /// Presses on `from`, glides to `to`, rests there `hold` seconds, glides to `release`, lets go.
 /// `check` runs just before leaving `to`; letting go at `to` itself follows the rest at once.
+/// How long the last drag really rested at its target, from arriving to letting go.
+var lastHold: TimeInterval = 0
 func drag(from: CGPoint, to: CGPoint, hold: TimeInterval, release: CGPoint, check: () -> Void) {
     post(.mouseMoved, from)
     usleep(100_000)
@@ -79,9 +81,11 @@ func drag(from: CGPoint, to: CGPoint, hold: TimeInterval, release: CGPoint, chec
         }
     }
     glide(from, to)
-    let end = Date().addingTimeInterval(hold)
+    let arrived = Date()
+    let end = arrived.addingTimeInterval(hold)
     while Date() < end { post(.leftMouseDragged, to); usleep(30_000) }
-    print("      held at \(to); the window is at \(onScreen(id).map { "\($0.origin)" } ?? "nowhere") (picked up at \(from))")
+    lastHold = Date().timeIntervalSince(arrived)
+    print("      held at \(to) for \(Int(lastHold * 1000)) ms; the window is at \(onScreen(id).map { "\($0.origin)" } ?? "nowhere") (picked up at \(from))")
     check()
     if release != to {
         glide(to, release)
@@ -231,6 +235,8 @@ if overviewHasKeys() {
     key(36)                     // Return
     let switchedBy = Date().addingTimeInterval(2)
     while state().current != expected && Date() < switchedBy { usleep(100_000) }
+    // A Return that didn't land leaves the overview up; close it so the next case starts clean.
+    if state().current != expected && overviewUp(screenRect) { run("/usr/bin/open", ["-g", "baneyspaces://viewer"]) }
     expect(state().current == expected, "→/← then Return went from workspace \(from) to \(expected) (on \(state().current))")
 } else {
     expect(false, "the overview took the keyboard (in front: \(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"), overview \(overviewUp(screenRect) ? "up" : "not up"))")
@@ -270,7 +276,9 @@ for (hold, what) in [(dwell * 0.72, "a short rest"), (dwell + 1.0, "a rest long 
     let edge = CGPoint(x: f.midX, y: 0)
     var opened = false
     drag(from: CGPoint(x: f.midX, y: f.minY + 12), to: edge, hold: hold, release: edge) { opened = overviewUp(screenRect) }
-    expect(hold < dwell ? !opened : opened, "after \(what) the overview \(opened ? "opened" : "stayed shut")")
+    // Judged on the rest that really happened: a short rest that ran past the dwell proves nothing.
+    if hold < dwell && lastHold >= dwell { expect(false, "the short rest stayed under the \(Int(dwell * 1000)) ms dwell (it took \(Int(lastHold * 1000)) ms)"); continue }
+    expect(hold < dwell ? !opened : opened, "after \(what) (\(Int(lastHold * 1000)) ms) the overview \(opened ? "opened" : "stayed shut")")
     expect(!missionControlUp(screenRect), "Mission Control stayed closed")
     // macOS animates the fill; give it up to 2 s.
     let fillBy = Date().addingTimeInterval(2)
