@@ -326,4 +326,11 @@ final class AppearanceTests: XCTestCase {
     func testRenderShotsUseTheDefaultLook() throws {
         XCTAssertTrue(try appSource("Render.swift").contains("Appearance.shared.useDefaultLookWithoutSaving()"))
     }
+
+    func testHexMustBeSixHexDigits() {
+        XCTAssertNil(RGB(hex: "+FFFFF"))
+        XCTAssertNil(RGB(hex: "-00000"))
+        XCTAssertNil(RGB(hex: "12345G"))
+        XCTAssertEqual(RGB(hex: "#FF0000"), RGB(r: 1, g: 0, b: 0))
+    }
 }

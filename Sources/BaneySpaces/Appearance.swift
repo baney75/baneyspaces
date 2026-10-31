@@ -14,9 +14,19 @@ final class Appearance: ObservableObject {
     @Published var settings: AppearanceSettings {
         didSet {
             guard settings != oldValue else { return }
-            if persists { settings.save() }
-            NotificationCenter.default.post(name: Appearance.didChange, object: nil)
+            if persists { scheduleSave() }
+            NotificationCenter.default.post(name: Appearance.didChange, object: nil,
+                                            userInfo: ["dockSizeChanged": settings.dockSize != oldValue.dockSize])
         }
+    }
+
+    /// A slider drag changes the settings many times a second; they're written once it settles.
+    private var saveWork: DispatchWorkItem?
+    private func scheduleSave() {
+        saveWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.settings.save() }
+        saveWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
     }
 
     /// Off for `--render`, whose shots must show the default look and never touch saved settings.
@@ -58,7 +68,8 @@ final class Appearance: ObservableObject {
     static func color(_ c: RGB) -> Color { Color(red: c.r, green: c.g, blue: c.b) }
 
     static func rgb(_ color: Color) -> RGB {
-        let c = NSColor(color).usingColorSpace(.sRGB) ?? .gray
+        // An sRGB gray, not NSColor.gray: reading components of a non-RGB color raises.
+        let c = NSColor(color).usingColorSpace(.sRGB) ?? NSColor(srgbRed: 0.5, green: 0.5, blue: 0.5, alpha: 1)
         return RGB(r: Double(c.redComponent), g: Double(c.greenComponent), b: Double(c.blueComponent))
     }
 }
