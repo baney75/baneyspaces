@@ -79,7 +79,7 @@ if [ -z "$ZIP" ] && [ "$FROM_SOURCE" != 1 ] && [[ "$TAG" =~ ^[A-Za-z0-9._-]*$ ]]
   esac
 fi
 
-if [ -n "$ZIP" ]; then
+if [ -n "$ZIP" ] && [ "$FROM_SOURCE" != 1 ]; then
   [ -f "$ZIP" ] || fail "$ZIP doesn't exist."
   # The checksum file is optional: a release without one is checked by its signature alone.
   if [ -n "$SHA_URL" ]; then
