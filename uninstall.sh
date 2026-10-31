@@ -117,9 +117,10 @@ saved=$(pref systemTopDragSaved)
 if [ -n "$saved" ]; then
   top_drag_back com.apple.dock enterMissionControlByTopWindowDrag Dock "Mission Control"
 fi
-# Still owed when the record is there, or when the app's last try didn't read back.
+# Still owed when the record is there, when the app's last try didn't read back, or when it
+# gave up (that's one last write here, not a reason to skip it).
 fill_was=$(printf '%s\n' "$saved" | sed -n 's|.*"com.apple.WindowManager/EnableTopTilingByEdgeDrag" = \([01]\);.*|\1|p')
-if { [ -n "$saved" ] || [ "$(pref systemTopDragFillPending)" = 1 ]; } && [ "$(pref systemTopDragFillGivenBack)" != 1 ] \
+if { [ -n "$saved" ] || [ "$(pref systemTopDragFillPending)" = 1 ] || [ "$(pref systemTopDragFillGaveUp)" = 1 ]; } && [ "$(pref systemTopDragFillGivenBack)" != 1 ] \
   && [ "$fill_was" != 0 ] && [ "$(macos_pref com.apple.WindowManager EnableTopTilingByEdgeDrag)" = "0" ]; then
   step "Turning fill-the-screen back on for a window dragged to the top"
   sys defaults write com.apple.WindowManager EnableTopTilingByEdgeDrag -bool true

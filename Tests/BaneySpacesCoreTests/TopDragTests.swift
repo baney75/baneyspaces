@@ -179,4 +179,55 @@ final class TopDragTests: XCTestCase {
         XCTAssertFalse(FillTheScreen.turnBackOn(taken: true, saved: nil, now: nil), "not set is on")
         XCTAssertFalse(FillTheScreen.turnBackOn(taken: false, saved: nil, now: false), "never taken: the person's own off")
     }
+
+    private func decide(record: Bool = true, pending: Bool = false, saved: Bool? = nil, now: Bool? = false,
+                        tries: Int = 0, triedThisLaunch: Bool = false, readBack: Bool = false) -> FillTheScreen.Decision {
+        FillTheScreen.decide(record: record, pending: pending, saved: saved, now: now,
+                             tries: tries, triedThisLaunch: triedThisLaunch, readBack: readBack)
+    }
+
+    /// Three launches that each fail to turn it on spend the three tries; the third gives up.
+    func testFillTheScreenGivesUpOnTheThirdLaunchThatFails() {
+        XCTAssertEqual(decide(tries: 0), .retry(tries: 1))
+        XCTAssertEqual(decide(record: false, pending: true, tries: 1), .retry(tries: 2))
+        XCTAssertEqual(decide(record: false, pending: true, tries: 2), .giveUp)
+    }
+
+    /// A try that reads back ends it at any count.
+    func testFillTheScreenSettlesOnceItReadsBack() {
+        XCTAssertEqual(decide(tries: 0, readBack: true), .settled)
+        XCTAssertEqual(decide(record: false, pending: true, tries: 2, readBack: true), .settled)
+    }
+
+    /// First-F1: a hiccup plus toggling the switch calls it again in the same launch. That
+    /// isn't another try, however many times it runs.
+    func testFillTheScreenCountsOneTryPerLaunch() {
+        XCTAssertEqual(decide(tries: 1, triedThisLaunch: true), .retry(tries: 1))
+        XCTAssertEqual(decide(tries: 2, triedThisLaunch: true), .retry(tries: 2), "the third try needs a new launch")
+        XCTAssertEqual(decide(tries: 2, triedThisLaunch: true, readBack: true), .settled, "but reading back still settles")
+    }
+
+    /// First-F2: the pending flag alone keeps it owed once `restore()` drops the record.
+    func testFillTheScreenPendingWithoutARecordIsStillOwed() {
+        XCTAssertEqual(decide(record: false, pending: true, tries: 1), .retry(tries: 2))
+        XCTAssertEqual(decide(record: false, pending: false, tries: 0), .settled, "no record, not pending: never ours")
+    }
+
+    /// First-F2: the record dropped by `restore()`, with nothing left saying it was off before,
+    /// still gets its tries; one saying it was off before never does.
+    func testFillTheScreenSurvivesTheRecordBeingDropped() {
+        XCTAssertEqual(decide(record: false, pending: true, saved: nil, tries: 0), .retry(tries: 1))
+        XCTAssertEqual(decide(record: true, pending: true, saved: false, tries: 1), .settled, "off before BaneySpaces")
+    }
+
+    /// Second-S1: giving up is its own record, apart from giving back, so the uninstaller still
+    /// writes once more. The app source keeps the two keys apart.
+    func testGivingUpIsRecordedApartFromGivingBack() throws {
+        let source = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/BaneySpaces/TopDragWatcher.swift")
+        let text = try String(contentsOf: source, encoding: .utf8)
+        XCTAssertTrue(text.contains("\"systemTopDragFillGaveUp\""))
+        XCTAssertTrue(text.contains("decision == .giveUp ? fillGaveUpKey : fillGivenBackKey"), "giving up must not set the given-back flag")
+    }
 }
