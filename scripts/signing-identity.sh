@@ -21,6 +21,16 @@ healthy() {
     && security find-identity -p codesigning "$KC" 2>/dev/null | grep -q "$NAME"
 }
 
+# Uninstalling on the Mac that signs releases keeps the key beside the app's data instead of
+# deleting it (uninstall.sh). Bring it back before anything decides the key is gone: a new key
+# wouldn't match the requirement every release is checked against.
+KEPT="$HOME/Library/BaneySpaces Release Signing"
+if [ ! -f "$KC" ] && [ ! -s "$PASS_FILE" ] && [ -f "$KEPT/baneyspaces-signing.keychain-db" ]; then
+  mkdir -p "$DIR" && chmod 700 "$DIR"
+  mv "$KEPT"/* "$DIR"/ && rmdir "$KEPT"
+  echo "note: restored the BaneySpaces release signing key from $KEPT" >&2
+fi
+
 # A new certificate means macOS no longer recognizes the app and its Accessibility switch stops
 # working, so an existing identity is only replaced when it is really gone. A failed unlock gets a
 # second try first: `security` can fail once right after login or while the keychain is busy.

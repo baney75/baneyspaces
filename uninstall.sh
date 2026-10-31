@@ -218,7 +218,7 @@ if [ -n "$KEEP_SIGNING" ]; then
   [ ! -e "$KEPT" ] || KEPT="$KEPT $(date +%Y%m%d-%H%M%S)"
   if mv "$DATA/Signing" "$KEPT"; then
     echo "Kept the signing key because it signs BaneySpaces releases: moved to $KEPT"
-    echo "To sign releases again, put it back at $DATA/Signing."
+    echo "The next BaneySpaces build on this Mac puts it back by itself."
   else
     problem "The signing key signs BaneySpaces releases and couldn't be moved aside, so it stays in $DATA/Signing."
   fi
