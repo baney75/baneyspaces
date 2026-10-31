@@ -13,6 +13,8 @@ final class WorkspaceSwitcher {
     private let spaces: Spaces
     private let model = SwitcherModel()
     private var panel: NSPanel?
+    /// Its panel sits at the pop-up menu level without being a menu; the dock doesn't count it as one.
+    var windowNumber: Int? { panel?.windowNumber }
     private var watchdog: Timer?
     /// Apps in the order they were last brought forward, most recent first.
     private var appOrder: [pid_t] = []
