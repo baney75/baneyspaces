@@ -314,7 +314,9 @@ Pick what you follow under **Updates** in the menu:
 
 - **Stable** (the default): tagged releases, each one tested and described in the
   [changelog](CHANGELOG.md).
-- **Nightly**: a build of the newest code, published each night something changed. Its notes
+- **Nightly**: a build of the newest code, published each night something changed. It is built
+  on your Mac, so it needs Apple's command line tools; without them the menu says so and Stable
+  keeps working. Its notes
   list what's coming in the next release and every change since the last one. Switching back
   to Stable waits for a stable release newer than the nightly you have, so you never go
   backwards.
