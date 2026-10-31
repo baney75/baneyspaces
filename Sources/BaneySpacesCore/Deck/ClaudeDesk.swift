@@ -45,14 +45,15 @@ public enum ClaudeDesk {
         }
     }
 
-    /// Whether a pane may still land after `claudeTile` timed out. `progress` is `tileProgress`'s
-    /// answer: this press's token, then the last step the script reached. A timeout stops the script
-    /// at the Apple event that timed out and sends nothing after it, so only "creating" (the event
-    /// that opens the pane) can still produce one. Any step before it, or another press's token,
-    /// means nothing opened and nothing is owed to the state.
+    /// Whether a pane may still land, or already has, after `claudeTile` timed out. `progress` is
+    /// `tileProgress`'s answer: this press's token, then the last step the script reached. A timeout
+    /// stops the script at the Apple event that timed out and sends nothing after it. "creating"
+    /// means that event opens the pane; "done" means the pane opened and a later read timed out, so
+    /// it's there but not in the state. Any step before them, or another press's token, means
+    /// nothing opened and nothing is owed to the state.
     public static func paneMayLand(progress: String, token: String) -> Bool {
         let lines = parse(progress)
-        return lines.count == 2 && lines[0] == token && lines[1] == "creating"
+        return lines.count == 2 && lines[0] == token && (lines[1] == "creating" || lines[1] == "done")
     }
 
     public static func read() -> [String] {

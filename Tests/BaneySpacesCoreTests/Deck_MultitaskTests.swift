@@ -531,7 +531,9 @@ final class ClaudeDeskTests: XCTestCase {
         XCTAssertTrue(ClaudeDesk.paneMayLand(progress: "tok\ncreating", token: "tok"))
         // Stopped before the pane-opening event: nothing opened, nothing to recover.
         XCTAssertFalse(ClaudeDesk.paneMayLand(progress: "tok\nstarted", token: "tok"))
-        XCTAssertFalse(ClaudeDesk.paneMayLand(progress: "tok\ndone", token: "tok"))
+        // The pane opened and a later read timed out: it exists but isn't in the state yet.
+        XCTAssertTrue(ClaudeDesk.paneMayLand(progress: "tok\ndone", token: "tok"))
+        XCTAssertFalse(ClaudeDesk.paneMayLand(progress: "other\ndone", token: "tok"))
         // Another press's progress, or none.
         XCTAssertFalse(ClaudeDesk.paneMayLand(progress: "other\ncreating", token: "tok"))
         XCTAssertFalse(ClaudeDesk.paneMayLand(progress: "", token: "tok"))
@@ -604,7 +606,7 @@ final class ClaudeDeskTests: XCTestCase {
         XCTAssertFalse(scripts.contains("windowCount"))
         // The new tab never appeared: nothing is adopted.
         XCTAssertTrue(front.contains("if (id of t) is priorTab then return \"\""))
-        // Progress is recorded for the caller: only "creating" can still land a pane.
+        // Progress is recorded for the caller: only "creating" or "done" can have a pane owed to the state.
         XCTAssertTrue(tile.contains("property tileToken") || scripts.contains("property tileToken"))
         XCTAssertEqual(tile.components(separatedBy: "set my tileStep to \"creating\"").count - 1, 3, "each of the three ways to open a pane")
         XCTAssertEqual(tile.components(separatedBy: "set my tileStep to \"done\"").count - 1, 3)

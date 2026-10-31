@@ -218,7 +218,6 @@ final class Engine {
         // The last good snapshots: what the rows keep showing while a script is backing off or failing.
         let lastGhostty = t.ghostty, lastScripted = t.scripted
         let lastGhosttyAt = t.ghosttyAt, lastScriptedAt = t.scriptedAt
-        let now = Date().timeIntervalSinceReferenceDate
         let started = Date()
         DispatchQueue.global(qos: .userInitiated).async {
             let wins = NativeWindow.list(pid: pid)
@@ -239,7 +238,7 @@ final class Engine {
                 refused = raw?.refused ?? false
                 ranAt = raw?.ranAt
                 ghostty = raw?.out.map(Snapshot.parse)
-                if let g = Sweep.snapshotToShow(answered: ghostty, last: lastGhostty, lastAt: lastGhosttyAt, now: now, backingOff: backingOff, scriptable: scriptable, refused: refused) {
+                if let g = Sweep.snapshotToShow(answered: ghostty, last: lastGhostty, lastAt: lastGhosttyAt, now: Date().timeIntervalSinceReferenceDate, backingOff: backingOff, scriptable: scriptable, refused: refused) {
                     items = Build.ghostty(spec, g, numbers: WindowMatch.pair(scripted: g.windowTitles, native: native), front: front)
                 } else {
                     items = Build.windows(spec, native, front: front, frontWindowNumber: frontNumber)
@@ -249,7 +248,7 @@ final class Engine {
                 refused = raw?.refused ?? false
                 ranAt = raw?.ranAt
                 scripted = raw?.out.map(ScriptedSnapshot.parse)
-                if let s = Sweep.snapshotToShow(answered: scripted, last: lastScripted, lastAt: lastScriptedAt, now: now, backingOff: backingOff, scriptable: scriptable, refused: refused) {
+                if let s = Sweep.snapshotToShow(answered: scripted, last: lastScripted, lastAt: lastScriptedAt, now: Date().timeIntervalSinceReferenceDate, backingOff: backingOff, scriptable: scriptable, refused: refused) {
                     let pairs = WindowMatch.pair(scripted: s.windows.map { ($0.id, $0.title) }, native: native)
                     items = Build.scripted(spec, s, numbers: pairs, front: front, frontWindowNumber: frontNumber)
                 } else {

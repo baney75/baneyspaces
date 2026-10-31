@@ -232,17 +232,18 @@ final class DeckController {
                 // opens the pane can one still land; otherwise nothing opened and nothing is owed.
                 // `frontTab` queues behind it in Ghostty, so its answer means the pane exists. It
                 // reads the tab `claudeTile` worked in, so the next press splits it.
-                let timedOutAt = Date().timeIntervalSinceReferenceDate
                 if ClaudeDesk.paneMayLand(progress: script.run("tileProgress").out ?? "", token: token) {
                     if let tab = script.run("frontTab", [prior.joined(separator: "\n")]).out {
                         ClaudeDesk.write(ClaudeDesk.recovered(prior: prior, front: ClaudeDesk.parse(tab)))
                     } else {
-                        landing = timedOutAt
+                        // From when `frontTab` gave up, not when the tile did: its timeout shows the
+                        // pane's event was still unanswered then.
+                        landing = Date().timeIntervalSinceReferenceDate
                     }
                 }
             }
             DispatchQueue.main.async {
-                // No answer from `frontTab` either: presses wait out `TileGate.limit` from the timeout.
+                // No answer from `frontTab` either: presses wait out `TileGate.limit` from then.
                 if let landing { self?.tileGate.timedOut(at: landing) } else { self?.tileGate.settled() }
                 // Only a script that never reached Ghostty is tried again through claude-desk; one
                 // that failed or timed out partway may already have opened the pane.
