@@ -82,9 +82,13 @@ public struct AgentSessions: Equatable, Sendable {
     /// The question each session last showed on an app's window while you were looking at it.
     private var answered: [String: Double] = [:]
     private var narrowedBy: [String: Double] = [:]
-    /// The shared window each session last showed on while it had no binding. Only a fallback for
-    /// when none of the app's windows is focused.
-    private var lastShared: [String: String] = [:]
+    /// The shared window each unbound session last showed on, and the report (`at`) that put it there.
+    /// A session stays on it until it reports again; only then does the focused window take it.
+    private var lastShared: [String: Pick] = [:]
+    struct Pick: Equatable, Sendable { var id: String; var at: Double }
+    /// Rows the last `resolve` filled by following focus. Being in front of such a row isn't
+    /// looking at its session, so its question isn't answered by it.
+    public private(set) var followed: Set<String> = []
     /// How long a title takes to catch up with a hook event before it's compared.
     public static let settle = 0.5
 
@@ -116,6 +120,7 @@ public struct AgentSessions: Equatable, Sendable {
     /// Binds sessions to `items` and returns each bound item's state, keyed by item ID.
     public mutating func resolve(_ items: [Item], now: Double = .infinity) -> [String: AgentEvent] {
         let byID = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        followed = []
         var out: [String: AgentEvent] = [:]
         var taken = Set<String>()
         // An agent app's window is shared: every session in the app reports to it (T3 Code runs a
@@ -127,6 +132,13 @@ public struct AgentSessions: Equatable, Sendable {
         }
         for (key, itemID) in binding {
             guard let e = sessions[key], let item = byID[itemID], Self.compatible(item, e) else { binding[key] = nil; continue }
+            // Bound while its app had one window; a second window makes that a guess. Let it follow
+            // from here, staying put if none is in front.
+            if Self.shared(item), items.filter({ $0.kind == .window && $0.bundleID == item.bundleID }).count > 1 {
+                lastShared[key] = Pick(id: item.id, at: -1)
+                binding[key] = nil
+                continue
+            }
             show(e, on: item)
         }
         for (key, e) in sessions.sorted(by: { $0.value.at > $1.value.at }) where binding[key] == nil {
@@ -150,18 +162,24 @@ public struct AgentSessions: Equatable, Sendable {
             var follows = false
             if pick == nil, !e.app.isEmpty, pool.isEmpty {
                 let windows = inApp.filter { $0.kind == .window && !taken.contains($0.id) }
-                pick = windows.first { $0.focused } ?? (windows.count == 1 ? windows[0] : nil)
-                // Focus is weak evidence when the app has several windows: the session may run in
-                // any of them. Don't pin it to the one that happened to be in front; pick again
-                // each merge, and fall back to the last pick while none of them is focused.
-                if let p = pick, windows.count > 1, Self.shared(p) { follows = true }
-                else if pick == nil, let id = lastShared[key], let w = windows.first(where: { $0.id == id && Self.shared($0) }) {
+                let last = lastShared[key]
+                let there = last.flatMap { l in windows.first { $0.id == l.id && Self.shared($0) } }
+                if windows.count > 1, let w = there, last?.at == e.at {
+                    // No new report since it was placed: focus moving about doesn't move it.
                     pick = w; follows = true
+                } else {
+                    pick = windows.first { $0.focused } ?? (windows.count == 1 ? windows[0] : nil)
+                    // Focus is weak evidence when the app has several windows: the session may run in
+                    // any of them. Don't pin it to the one in front; re-pick at its next report, and
+                    // fall back to its last window while none of them is focused.
+                    if let p = pick, windows.count > 1, Self.shared(p) { follows = true }
+                    else if pick == nil, let w = there { pick = w; follows = true }
                 }
             }
             guard let p = pick else { continue }
             if follows {
-                lastShared[key] = p.id
+                lastShared[key] = Pick(id: p.id, at: e.at)
+                followed.insert(p.id)
                 show(e, on: p)
                 continue
             }
@@ -171,7 +189,7 @@ public struct AgentSessions: Equatable, Sendable {
         }
         // A question on a window you're looking at is answered, or let be: it stops outranking work.
         for (id, e) in out where e.state == .waiting && !e.message.isEmpty {
-            if let item = byID[id], Self.shared(item), item.focused { answered[e.agent + ":" + e.session] = e.at }
+            if let item = byID[id], Self.shared(item), item.focused, !followed.contains(id) { answered[e.agent + ":" + e.session] = e.at }
         }
         return out
     }

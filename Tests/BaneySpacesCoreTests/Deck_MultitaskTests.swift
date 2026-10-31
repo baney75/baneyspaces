@@ -304,12 +304,80 @@ final class SharedWindowTests: XCTestCase {
         a.apply(ev("a", .working, at: 1))
         XCTAssertEqual(Array(a.resolve([win(1, focused: true), win(2, focused: false)], now: 2).keys), ["win:1"])
         XCTAssertNil(a.binding["claude:a"], "focus among several windows isn't evidence enough to bind")
-        XCTAssertEqual(Array(a.resolve([win(1, focused: false), win(2, focused: true)], now: 3).keys), ["win:2"],
-                       "the window in front now shows it")
-        XCTAssertEqual(Array(a.resolve([win(1, focused: false), win(2, focused: false)], now: 4).keys), ["win:2"],
+        XCTAssertEqual(Array(a.resolve([win(1, focused: false), win(2, focused: true)], now: 3).keys), ["win:1"],
+                       "no new report: focus moving doesn't move it")
+        a.apply(ev("a", .working, at: 3.5))
+        XCTAssertEqual(Array(a.resolve([win(1, focused: false), win(2, focused: true)], now: 4).keys), ["win:2"],
+                       "its next report lands on the window in front")
+        XCTAssertEqual(Array(a.resolve([win(1, focused: false), win(2, focused: false)], now: 4.5).keys), ["win:2"],
                        "with none in front it stays where it last showed instead of vanishing")
         XCTAssertEqual(a.resolve([win(1, focused: false)], now: 5)["win:1"]?.session, "a", "the other closed: now the app's only window")
         XCTAssertEqual(a.binding["claude:a"], "win:1")
+    }
+
+    private func win(_ n: Int, focused: Bool) -> Item {
+        Item(id: "win:\(n)", bundleID: t3, appName: "T3 Code", role: .agent, kind: .window, group: "win:\(n)", title: "T3 Code", focused: focused)
+    }
+    private func rows(_ a: inout AgentSessions, _ items: [Item], now: Double) -> [String] {
+        a.resolve(items, now: now).keys.sorted()
+    }
+
+    func testAQuestionOnAWindowItFollowedFocusToIsNotAnswered() {
+        var a = AgentSessions()
+        a.apply(ev("q", .waiting, at: 1, message: "Claude needs your permission to use Bash"))
+        a.apply(ev("w", .working, at: 0))
+        XCTAssertEqual(a.resolve([win(1, focused: true), win(2, focused: false)], now: 2)["win:1"]?.session, "q")
+        XCTAssertEqual(a.followed, ["win:1"], "focus put it there; nobody chose it")
+        // Had the question counted as seen, work would outrank it now.
+        XCTAssertEqual(a.resolve([win(1, focused: true), win(2, focused: false)], now: 3)["win:1"]?.session, "q")
+        // The only window of the app is a real binding, so looking at it does answer.
+        var b = AgentSessions()
+        b.apply(ev("q", .waiting, at: 1, message: "?")); b.apply(ev("w", .working, at: 0))
+        _ = b.resolve([win(1, focused: true)], now: 2)
+        XCTAssertEqual(b.followed, [])
+        XCTAssertEqual(b.resolve([win(1, focused: false)], now: 3)["win:1"]?.session, "w", "looked at, so work shows again")
+    }
+
+    func testABindingFromOneWindowIsDroppedWhenASecondOpens() {
+        var a = AgentSessions()
+        a.apply(ev("a", .working, at: 1))
+        _ = a.resolve([win(1, focused: true)], now: 2)
+        XCTAssertEqual(a.binding["claude:a"], "win:1")
+        XCTAssertEqual(rows(&a, [win(1, focused: false), win(2, focused: true)], now: 3), ["win:2"], "the second window is in front")
+        a.apply(ev("a", .working, at: 4))
+        _ = a.resolve([win(1, focused: false), win(2, focused: true)], now: 5)
+        XCTAssertNil(a.binding["claude:a"])
+        XCTAssertEqual(rows(&a, [win(1, focused: false), win(2, focused: false)], now: 6), ["win:2"])
+    }
+
+    func testAFollowingSessionStaysUntilItReportsAgain() {
+        var a = AgentSessions()
+        a.apply(ev("a", .working, at: 1))
+        XCTAssertEqual(rows(&a, [win(1, focused: true), win(2, focused: false)], now: 2), ["win:1"])
+        XCTAssertEqual(a.resolve([win(1, focused: false), win(2, focused: true)], now: 3).keys.sorted(), ["win:1"],
+                       "focus moved, the session didn't report: it stays")
+        a.apply(ev("a", .working, at: 4))
+        XCTAssertEqual(a.resolve([win(1, focused: false), win(2, focused: true)], now: 5).keys.sorted(), ["win:2"], "a new report follows focus")
+    }
+
+    func testTheSameSessionOnAnotherRowIsNotASwitch() {
+        // The row-keyed switch check already treats a session arriving on a row that showed nothing as no switch.
+        var shown = ShownSessions()
+        let a = ev("a", .working, at: 1)
+        _ = shown.attention("win:1", a, .working)
+        XCTAssertEqual(shown.attention("win:2", a, .waiting), .waiting)
+    }
+
+    func testASessionTakingTheWindowThenStoppingWhileTheOldOneIsStaleIsAFinish() {
+        var a = AgentSessions(), shown = ShownSessions(), att = Attention()
+        a.apply(ev("a", .working, at: 0))
+        mergeRow(&a, &shown, &att, [window], now: 1)
+        a.apply(ev("b", .working, at: 100))
+        mergeRow(&a, &shown, &att, [window], now: 101)
+        XCTAssertEqual(att.unseen, [])
+        a.apply(ev("b", .waiting, at: AgentSessions.stale + 50))
+        mergeRow(&a, &shown, &att, [window], now: AgentSessions.stale + 51)
+        XCTAssertEqual(att.unseen, ["win:1"], "b started on the window and stopped there")
     }
 
     func testAStopOnlyTheTitleSawIsNotAFinish() {

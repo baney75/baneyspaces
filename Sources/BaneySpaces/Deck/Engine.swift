@@ -271,7 +271,7 @@ final class Engine {
             if let e = bound[all[i].id] {
                 all[i].activity = AgentSessions.activity(all[i], e, now: now, idleSince: idleTitles.since(all[i].id))
                 all[i].agent = e.agent
-                all[i].notice = answered.notice(for: all[i].id, e, focused: all[i].focused)
+                all[i].notice = answered.notice(for: all[i].id, e, focused: all[i].focused && !sessions.followed.contains(all[i].id))
             }
             if let n = notices[all[i].id] { all[i].notice = n }
         }
