@@ -541,7 +541,7 @@ struct SetupView: View {
                     get: { Appearance.color(appearance.settings.accentRGB(system: Appearance.systemAccent)) },
                     set: { picked in
                         // The picker also answers with the color it was shown; that isn't a pick.
-                        let rgb = Appearance.rgb(picked)
+                        guard let rgb = Appearance.rgb(picked) else { return }
                         let shown = appearance.accentRGB
                         guard abs(rgb.r - shown.r) + abs(rgb.g - shown.g) + abs(rgb.b - shown.b) > 0.01 else { return }
                         appearance.settings.accent = .custom(rgb)
@@ -553,7 +553,7 @@ struct SetupView: View {
 
         section("Workspace colors") {
             HStack(spacing: 12) {
-                Picker("", selection: Binding(get: { appearance.settings.palette }, set: { appearance.settings.palette = $0 })) {
+                Picker("Workspace colors", selection: Binding(get: { appearance.settings.palette }, set: { appearance.settings.palette = $0 })) {
                     ForEach(WorkspacePalette.allCases, id: \.self) { Text($0.title).tag($0) }
                 }
                 .pickerStyle(.segmented).labelsHidden().frame(width: 280)
@@ -569,7 +569,7 @@ struct SetupView: View {
                             get: { Chrome.workspace(n) },
                             set: { picked in
                                 // The picker also answers with the color it was shown; that isn't a pick.
-                                let rgb = Appearance.rgb(picked)
+                                guard let rgb = Appearance.rgb(picked) else { return }
                                 let shown = appearance.settings.workspaceColor(n, accent: appearance.accentRGB).rgb
                                 guard abs(rgb.r - shown.r) + abs(rgb.g - shown.g) + abs(rgb.b - shown.b) > 0.01 else { return }
                                 appearance.settings.overrides[n] = rgb
@@ -585,12 +585,13 @@ struct SetupView: View {
 
         section("Panels") {
             HStack(spacing: 12) {
-                Picker("", selection: Binding(get: { appearance.settings.panelStyle }, set: { appearance.settings.panelStyle = $0 })) {
+                Picker("Panel style", selection: Binding(get: { appearance.settings.panelStyle }, set: { appearance.settings.panelStyle = $0 })) {
                     ForEach(PanelStyle.allCases, id: \.self) { Text($0.title).tag($0) }
                 }
                 .pickerStyle(.segmented).labelsHidden().frame(width: 220)
                 Slider(value: Binding(get: { appearance.settings.panelOpacity }, set: { appearance.settings.panelOpacity = $0 }),
                        in: AppearanceSettings.panelOpacityRange)
+                    .accessibilityLabel("Panel opacity")
                     .frame(width: 120)
                     .disabled(appearance.settings.panelStyle == .solid)
                 Text("\(Int((appearance.settings.effectivePanelOpacity * 100).rounded()))%")
@@ -601,7 +602,7 @@ struct SetupView: View {
         }
 
         section("Dock size") {
-            Picker("", selection: Binding(get: { appearance.settings.dockSize }, set: { appearance.settings.dockSize = $0 })) {
+            Picker("Dock size", selection: Binding(get: { appearance.settings.dockSize }, set: { appearance.settings.dockSize = $0 })) {
                 ForEach(DockSize.allCases, id: \.self) { Text($0.title).tag($0) }
             }
             .pickerStyle(.segmented).labelsHidden().frame(width: 220)

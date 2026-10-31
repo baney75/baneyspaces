@@ -14,17 +14,44 @@ final class Appearance: ObservableObject {
     @Published var settings: AppearanceSettings {
         didSet {
             guard settings != oldValue else { return }
-            if persists { settings.save() }
-            NotificationCenter.default.post(name: Appearance.didChange, object: nil)
+            if persists { scheduleSave() }
+            NotificationCenter.default.post(name: Appearance.didChange, object: nil,
+                                            userInfo: [Appearance.dockSizeChangedKey: settings.dockSize != oldValue.dockSize])
         }
+    }
+
+    /// A slider drag changes the settings many times a second; they're written once it settles.
+    private var saveWork: DispatchWorkItem?
+    private func scheduleSave() {
+        saveWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.persists else { return }
+            self.saveWork = nil
+            self.settings.save()
+        }
+        saveWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
     }
 
     /// Off for `--render`, whose shots must show the default look and never touch saved settings.
     private var persists = true
     private var systemObserver: NSObjectProtocol?
 
+    /// A change still waiting to be saved is written as BaneySpaces quits.
+    private var quitObserver: NSObjectProtocol?
+
+    /// `didChange`'s userInfo key: true when the dock size changed, so the dock re-frames.
+    static let dockSizeChangedKey = "dockSizeChanged"
+
     private init() {
         settings = AppearanceSettings.load()
+        quitObserver = NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification,
+                                                              object: nil, queue: .main) { [weak self] _ in
+            guard let self, let work = self.saveWork else { return }
+            work.cancel()
+            self.saveWork = nil
+            if self.persists { self.settings.save() }
+        }
         // "System" follows the accent color chosen in System Settings.
         systemObserver = NotificationCenter.default.addObserver(forName: NSColor.systemColorsDidChangeNotification,
                                                                 object: nil, queue: .main) { [weak self] _ in
@@ -37,6 +64,8 @@ final class Appearance: ObservableObject {
 
     /// The default look for this run only, saved nowhere.
     func useDefaultLookWithoutSaving() {
+        saveWork?.cancel()
+        saveWork = nil
         persists = false
         settings = AppearanceSettings()
     }
@@ -57,8 +86,10 @@ final class Appearance: ObservableObject {
 
     static func color(_ c: RGB) -> Color { Color(red: c.r, green: c.g, blue: c.b) }
 
-    static func rgb(_ color: Color) -> RGB {
-        let c = NSColor(color).usingColorSpace(.sRGB) ?? .gray
+    /// Nil for a color with no sRGB form (a pattern): nothing is saved for it. Reading the
+    /// components of a color that isn't RGB raises.
+    static func rgb(_ color: Color) -> RGB? {
+        guard let c = NSColor(color).usingColorSpace(.sRGB) else { return nil }
         return RGB(r: Double(c.redComponent), g: Double(c.greenComponent), b: Double(c.blueComponent))
     }
 }

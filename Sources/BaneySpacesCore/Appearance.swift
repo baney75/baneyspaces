@@ -30,7 +30,7 @@ public struct RGB: Codable, Equatable, Hashable {
     public init?(hex text: String) {
         var s = text.trimmingCharacters(in: .whitespaces)
         if s.hasPrefix("#") { s.removeFirst() }
-        guard s.count == 6, let v = UInt32(s, radix: 16) else { return nil }
+        guard s.count == 6, s.allSatisfy(\.isHexDigit), let v = UInt32(s, radix: 16) else { return nil }
         self.init(r: Double((v >> 16) & 0xFF) / 255, g: Double((v >> 8) & 0xFF) / 255, b: Double(v & 0xFF) / 255)
     }
 

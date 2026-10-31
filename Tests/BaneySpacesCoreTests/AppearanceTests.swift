@@ -326,4 +326,20 @@ final class AppearanceTests: XCTestCase {
     func testRenderShotsUseTheDefaultLook() throws {
         XCTAssertTrue(try appSource("Render.swift").contains("Appearance.shared.useDefaultLookWithoutSaving()"))
     }
+
+    func testHexMustBeSixHexDigits() {
+        XCTAssertNil(RGB(hex: "+FFFFF"))
+        XCTAssertNil(RGB(hex: "-00000"))
+        XCTAssertNil(RGB(hex: "12345G"))
+        XCTAssertEqual(RGB(hex: "#FF0000"), RGB(r: 1, g: 0, b: 0))
+    }
+
+    func testTheDockReframesOnTheSameKeyAppearancePosts() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let app = try String(contentsOf: root.appendingPathComponent("Sources/BaneySpaces/Appearance.swift"), encoding: .utf8)
+        let dock = try String(contentsOf: root.appendingPathComponent("Sources/BaneySpaces/WorkspaceDock.swift"), encoding: .utf8)
+        XCTAssertTrue(app.contains("userInfo: [Appearance.dockSizeChangedKey:"), "Appearance posts the shared key")
+        XCTAssertTrue(dock.contains("note.userInfo?[Appearance.dockSizeChangedKey]"), "the dock reads the shared key")
+        XCTAssertTrue(app.contains("NSApplication.willTerminateNotification"), "a pending save is flushed on quit")
+    }
 }
