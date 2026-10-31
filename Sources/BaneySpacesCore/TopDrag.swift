@@ -115,4 +115,32 @@ public enum FillTheScreen {
     public static func turnBackOn(taken: Bool, saved: Bool?, now: Bool?) -> Bool {
         taken && saved != false && now == false
     }
+
+    /// Attempts before giving up on a setting something else keeps off (a profile, say).
+    public static let maxTries = 3
+
+    /// What to do once the write to turn it back on has been tried.
+    public enum Decision: Equatable {
+        /// Nothing more owed (it's on, or wasn't ours to turn on): drop the record, the pending
+        /// flag and the count, and remember it was given back.
+        case settled
+        /// Still off: store this many tries and keep the pending flag so a later launch (or the
+        /// uninstaller) tries again.
+        case retry(tries: Int)
+        /// Still off after `maxTries`: drop the record, the pending flag and the count, and
+        /// remember giving up apart from giving back, so the uninstaller still tries once more.
+        case giveUp
+    }
+
+    /// The decision after a write. `record`: the older build's saved settings exist. `pending`:
+    /// an earlier try didn't read back, which `restore()` doesn't clear with the record. `saved`
+    /// and `now` as in `turnBackOn`. `tries`: the count stored so far. `triedThisLaunch`: a try
+    /// was already counted since BaneySpaces started, so a brief hiccup plus toggling the
+    /// switch can't spend every try in one session. `readBack`: the setting reads back on.
+    public static func decide(record: Bool, pending: Bool, saved: Bool?, now: Bool?,
+                              tries: Int, triedThisLaunch: Bool, readBack: Bool) -> Decision {
+        guard turnBackOn(taken: record || pending, saved: saved, now: now), !readBack else { return .settled }
+        guard !triedThisLaunch else { return .retry(tries: tries) }
+        return tries + 1 >= maxTries ? .giveUp : .retry(tries: tries + 1)
+    }
 }
