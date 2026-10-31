@@ -21,13 +21,8 @@ public enum Wire {
             case open
             /// Type `text` into the terminal `target`, as if pasted. Ghostty only.
             case send
-            /// Show a banner on the sidebar and mark `target` (or the caller's row) as needing you.
+            /// Mark `target` (or the caller's row) as needing you.
             case notify
-            case tile
-            /// Set the layout: `text` is free, stack or split.
-            case layout
-            case sidebar
-            case palette
             case ping
             /// The agent workspace: `text` is status, on, off, open, run or move; `args` the rest.
             case agent

@@ -51,39 +51,45 @@ enum SystemTopDrag {
         UserDefaults.standard.removeObject(forKey: savedKey)
     }
 
-    private static let fillGivenBackKey = "systemTopDragFillGivenBack"
     /// Turning it back on didn't read back yet: still owed even once `restore()` drops the record.
     private static let fillPendingKey = "systemTopDragFillPending"
     private static let fillTriesKey = "systemTopDragFillTries"
-    /// Attempts before giving up on a setting something else keeps off (a profile, say).
-    private static let fillTries = 3
+    /// A try was counted since this launch: at most one is, however often this runs.
+    private static var fillTriedThisLaunch = false
 
     /// Once, on a Mac where an older build took the drag over (and turned fill-the-screen off):
     /// it comes back on unless it was off before BaneySpaces (`FillTheScreen`). A setting saved
     /// as absent leaves no key, so the record's mere presence is what counts. Done once the write
-    /// reads back, or after `fillTries` attempts that didn't; after that a change in System
-    /// Settings is left alone.
+    /// reads back, or after `FillTheScreen.maxTries` launches' tries that didn't; after that a
+    /// change in System Settings is left alone, with one exception: a give-up is recorded as
+    /// `FillTheScreen.gaveUpKey`, not as given back, so uninstalling makes one last write. Give-ups
+    /// recorded by builds before #50 set the given-back flag, and get no last write.
     private static func giveFillBack() {
         let d = UserDefaults.standard
-        guard !d.bool(forKey: fillGivenBackKey) else { return }
+        guard !d.bool(forKey: FillTheScreen.givenBackKey), !d.bool(forKey: FillTheScreen.gaveUpKey) else { return }
         var saved = d.dictionary(forKey: savedKey)
         let was = saved?[fill.id] as? NSNumber
-        let taken = saved != nil || d.bool(forKey: fillPendingKey)
-        if FillTheScreen.turnBackOn(taken: taken, saved: was?.boolValue, now: read(fill)?.boolValue) {
-            if write(fill, on) { restart([fill]) }
-            if read(fill) != on {
-                let tries = d.integer(forKey: fillTriesKey) + 1
-                d.set(tries, forKey: fillTriesKey)
-                guard tries >= fillTries else {
-                    d.set(true, forKey: fillPendingKey)
-                    return NSLog("BaneySpaces: fill-the-screen didn't turn back on (try \(tries) of \(fillTries))")
-                }
-                NSLog("BaneySpaces: fill-the-screen stays off after \(tries) tries; something else keeps it off. Leaving it.")
-            }
+        let pending = d.bool(forKey: fillPendingKey)
+        let now = read(fill)?.boolValue
+        let due = FillTheScreen.turnBackOn(taken: saved != nil || pending, saved: was?.boolValue, now: now)
+        if due, write(fill, on) { restart([fill]) }
+        let step = FillTheScreen.decide(
+            record: saved != nil, pending: pending, saved: was?.boolValue, now: now,
+            tries: d.integer(forKey: fillTriesKey), triedThisLaunch: fillTriedThisLaunch, readBack: read(fill) == on)
+        fillTriedThisLaunch = step.triedThisLaunch
+        switch step.decision {
+        case .retry(let tries):
+            d.set(tries, forKey: fillTriesKey)
+            d.set(true, forKey: fillPendingKey)
+            return NSLog("BaneySpaces: fill-the-screen didn't turn back on (try \(tries) of \(FillTheScreen.maxTries))")
+        case .giveUp:
+            NSLog("BaneySpaces: fill-the-screen stays off after \(FillTheScreen.maxTries) tries; something else keeps it off. Leaving it.")
+        case .settled:
+            break
         }
         if saved?.removeValue(forKey: fill.id) != nil { d.set(saved, forKey: savedKey) }
         for key in [fillPendingKey, fillTriesKey] { d.removeObject(forKey: key) }
-        d.set(true, forKey: fillGivenBackKey)
+        if let key = step.decision.flagKey { d.set(true, forKey: key) }
     }
 
     private static func read(_ s: Setting) -> NSNumber? {

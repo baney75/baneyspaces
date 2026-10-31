@@ -179,4 +179,74 @@ final class TopDragTests: XCTestCase {
         XCTAssertFalse(FillTheScreen.turnBackOn(taken: true, saved: nil, now: nil), "not set is on")
         XCTAssertFalse(FillTheScreen.turnBackOn(taken: false, saved: nil, now: false), "never taken: the person's own off")
     }
+
+    private func decide(record: Bool = true, pending: Bool = false, saved: Bool? = nil, now: Bool? = false,
+                        tries: Int = 0, triedThisLaunch: Bool = false, readBack: Bool = false) -> FillTheScreen.Decision {
+        FillTheScreen.decide(record: record, pending: pending, saved: saved, now: now,
+                             tries: tries, triedThisLaunch: triedThisLaunch, readBack: readBack).decision
+    }
+
+    /// Three launches that each fail to turn it on spend the three tries; the third gives up.
+    func testFillTheScreenGivesUpOnTheThirdLaunchThatFails() {
+        XCTAssertEqual(decide(tries: 0), .retry(tries: 1))
+        XCTAssertEqual(decide(record: false, pending: true, tries: 1), .retry(tries: 2))
+        XCTAssertEqual(decide(record: false, pending: true, tries: 2), .giveUp)
+    }
+
+    /// A try that reads back ends it at any count.
+    func testFillTheScreenSettlesOnceItReadsBack() {
+        XCTAssertEqual(decide(tries: 0, readBack: true), .settled)
+        XCTAssertEqual(decide(record: false, pending: true, tries: 2, readBack: true), .settled)
+    }
+
+    /// First-F1: a hiccup plus toggling the switch calls it again in the same launch. That
+    /// isn't another try, however many times it runs.
+    func testFillTheScreenCountsOneTryPerLaunch() {
+        XCTAssertEqual(decide(tries: 1, triedThisLaunch: true), .retry(tries: 1))
+        XCTAssertEqual(decide(tries: 2, triedThisLaunch: true), .retry(tries: 2), "the third try needs a new launch")
+        XCTAssertEqual(decide(tries: 2, triedThisLaunch: true, readBack: true), .settled, "but reading back still settles")
+    }
+
+    /// First-F2: the pending flag alone keeps it owed once `restore()` drops the record.
+    func testFillTheScreenPendingWithoutARecordIsStillOwed() {
+        XCTAssertEqual(decide(record: false, pending: true, tries: 1), .retry(tries: 2))
+        XCTAssertEqual(decide(record: false, pending: false, tries: 0), .settled, "no record, not pending: never ours")
+    }
+
+    /// First-F2: the record dropped by `restore()`, with nothing left saying it was off before,
+    /// still gets its tries; one saying it was off before never does.
+    func testFillTheScreenSurvivesTheRecordBeingDropped() {
+        XCTAssertEqual(decide(record: false, pending: true, saved: nil, tries: 0), .retry(tries: 1))
+        XCTAssertEqual(decide(record: true, pending: true, saved: false, tries: 1), .settled, "off before BaneySpaces")
+    }
+
+    /// Second-S1 / first-F1: giving up is its own record, apart from giving back, so the
+    /// uninstaller still writes once more. The pure layer names the flag; uninstall.sh reads the
+    /// same names.
+    func testGivingUpIsRecordedApartFromGivingBack() throws {
+        XCTAssertEqual(FillTheScreen.Decision.settled.flagKey, "systemTopDragFillGivenBack")
+        XCTAssertEqual(FillTheScreen.Decision.giveUp.flagKey, "systemTopDragFillGaveUp")
+        XCTAssertNil(FillTheScreen.Decision.retry(tries: 1).flagKey, "a retry sets no flag")
+        let script = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("uninstall.sh")
+        let text = try String(contentsOf: script, encoding: .utf8)
+        XCTAssertTrue(text.contains(FillTheScreen.gaveUpKey) && text.contains(FillTheScreen.givenBackKey), "uninstall.sh reads both flags")
+    }
+
+    /// Second-F4: two calls in one launch, the way a hiccup plus toggling the switch makes them.
+    /// The first spends a try, the second doesn't, and the flag comes from the pure layer.
+    func testTheLaunchFlagComesBackFromTheStep() {
+        func call(tries: Int, tried: Bool, readBack: Bool = false) -> FillTheScreen.Step {
+            FillTheScreen.decide(record: true, pending: tries > 0, saved: nil, now: false,
+                                 tries: tries, triedThisLaunch: tried, readBack: readBack)
+        }
+        let first = call(tries: 1, tried: false)
+        XCTAssertEqual(first, FillTheScreen.Step(decision: .retry(tries: 2), triedThisLaunch: true))
+        let second = call(tries: 2, tried: first.triedThisLaunch)
+        XCTAssertEqual(second, FillTheScreen.Step(decision: .retry(tries: 2), triedThisLaunch: true), "no second try in the launch")
+        let nothingDue = FillTheScreen.decide(record: false, pending: false, saved: nil, now: false,
+                                              tries: 0, triedThisLaunch: false, readBack: false)
+        XCTAssertFalse(nothingDue.triedThisLaunch, "a call with nothing due is not a try")
+    }
 }

@@ -146,6 +146,16 @@ final class UninstallTests: XCTestCase {
         XCTAssertFalse(out.contains("enterMissionControlByTopWindowDrag"), out)
     }
 
+    /// Second-S1: the app gave up (its record and pending flag are gone): uninstalling still makes
+    /// one last write. Given back is the only flag that stops it.
+    func testWithoutTheAppAGivenUpFillGetsOneLastWrite() throws {
+        let out = try uninstall(prefs: ["systemTopDragFillGaveUp": true], macOS: "0")
+        XCTAssertTrue(out.contains("would run: defaults write com.apple.WindowManager EnableTopTilingByEdgeDrag -bool true"), out)
+        XCTAssertTrue(out.contains("would run: killall WindowManager"), out)
+        let givenBack = try uninstall(prefs: ["systemTopDragFillGaveUp": true, "systemTopDragFillGivenBack": true], macOS: "0")
+        XCTAssertFalse(givenBack.contains("EnableTopTilingByEdgeDrag"), givenBack)
+    }
+
     /// Fill-the-screen still on, or off before BaneySpaces, is left alone.
     func testWithoutTheAppFillTheScreenOnOrOffBeforeIsLeftAlone() throws {
         let on = try uninstall(prefs: ["systemTopDragSaved": [String: Bool]()], macOS: "0",

@@ -25,4 +25,3 @@ shots: build
 	sips -s format jpeg -s formatOptions 90 build/shots/overview.png --out docs/shots/overview.jpg >/dev/null
 	sips -s format jpeg -s formatOptions 90 build/shots/overview-drag.png --out docs/shots/overview-drag.jpg >/dev/null
 	sips -s format jpeg -s formatOptions 90 build/shots/setup-first-run.png --out docs/shots/setup.jpg >/dev/null
-	cp build/shots/deck.png build/shots/deck-toast.png docs/shots/

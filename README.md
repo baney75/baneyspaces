@@ -14,7 +14,7 @@
 <p align="center">
   <b>Nine workspaces. One row of keys. Nothing to configure.</b><br>
   ⌘1 through ⌘9 takes you there. Add ⇧ and the window comes with you.<br>
-  The Deck lists every terminal, tab and coding agent, and agents get a workspace of their own.<br>
+  The launcher finds every terminal, tab and coding agent, and agents get a workspace of their own.<br>
   <sub><a href="https://dbaney.com/baneyspaces/">dbaney.com/baneyspaces</a> · Made by <a href="https://dbaney.com">Donovan Baney</a> · <a href="https://x.com/baney75">@baney75</a> · macOS 13 or later</sub>
 </p>
 
@@ -121,6 +121,15 @@ settings first and puts them back exactly when you turn the Workspace Dock off o
 BaneySpaces ever crashed with it on, open BaneySpaces again (or run the uninstaller) and the
 Dock comes back; by hand, `defaults delete com.apple.dock autohide-delay; killall Dock` gives the Dock its usual delay.
 
+### Colors and looks
+
+**Settings › Appearance** changes how every panel looks, and the open ones change as you click. Pick
+an accent (nine colors, **System** to follow macOS, or any color of your own), a palette for the
+nine workspace colors (**Rainbow**, **Accent**, **Calm** or **Mono**) and your own color for any one
+workspace, a panel style (**Glass**, **Tinted** or **Solid**) with an opacity slider, and a **Small**,
+**Medium** or **Large** Workspace Dock. A strip at the top of the tab previews it. White numbers stay
+readable: a workspace color that's too bright is dimmed. The defaults are the look BaneySpaces always had.
+
 ## ⌘Tab across workspaces
 
 macOS's ⌘Tab only reaches apps on the workspace you're on. In setup, set **⌘Tab switches** to
@@ -132,47 +141,34 @@ On an app with more than one window, **hold Tab** to open its window bar (the hi
 (a browser's tab, a player's video) and workspace. Tab through it and let go to land on that
 window; hold Tab again to go back to the apps.
 
-## The Deck
+## Agent status
 
-<img src="docs/shots/deck.png" alt="The Deck: a sidebar listing Ghostty terminals with one Claude session working and one done, Claude, ChatGPT, T3 Code and Grok Bot windows, Helium tabs, and two phones" width="264" align="right">
+BaneySpaces knows what your coding agents are doing. On the Workspace Dock, a turning ring on an
+app's icon means a Claude Code or Grok session is working, a yellow **?** means it's asking you
+something, a red **!** means it stopped on an error, and an orange count means agents finished
+while you were looking somewhere else. When that happens in another app, a small notice says so
+in the corner of the screen; click it, or press **⌃⌘U**, to go there. The menu bar icon counts
+them too. Click a badged app on the dock and you land on that agent's tab or split.
 
-The Deck is a sidebar for everything you work in on this workspace: each terminal split, each
-browser tab, and each coding agent's window, in one list. It works with the apps you already
-use. Ghostty, Terminal and iTerm show their tabs and splits; your default browser (Helium,
-Chrome, Arc, Brave, Edge or Vivaldi) shows its tabs; Claude, ChatGPT, T3 Code, Cursor and Grok
-Bot show their windows; any other app can be added by bundle ID. Phones are on it too.
-
-In a terminal, browser or agent app, rest the pointer on the left edge of the screen, or press
-**⌃⌘B**. Click a row to go there: the window comes forward at once, then the tab or split
-inside it. It hides when you leave it. Pin it and it stays, docked beside your windows:
-
-- **Stack** puts every wrapped window in the same frame beside the sidebar, so picking a row
-  works like picking a tab.
-- **Split** puts the row you pick on the right and the one before it on the left.
-- **Free** leaves your windows where they are.
-
-It knows what your agents are doing. A spinner means a Claude Code or Grok session is working,
-✱ means it's waiting for you, and an orange **done** means it finished while you were looking
-somewhere else. When that happens in another app, a small notice says so in the corner of the
-screen; click it, or press **⌃⌘U** from anywhere in the deck, to go there. The menu bar icon
-counts them, and each Workspace Dock tile shows an orange count for agents done there and a
-blue dot while one works. ⌃⌘[ and ⌃⌘] go back and forward through the rows you've visited.
-
-**⌃⌘K** finds anything by name: a split, a tab, an agent, a command. The launcher (⌘Space)
-finds them too, with finished agents listed first.
-
-Agents report their state through hooks. Turn them on once, from the sidebar's banner or with
+Agents report their state through hooks. Turn them on once, from setup (Dock tab) or with
 `baneyspaces hooks install`, which adds them beside your own in `~/.claude/settings.json` and
-in `~/.grok/hooks`. Without hooks the Deck reads Claude's terminal title instead.
+in `~/.grok/hooks`. Without hooks BaneySpaces reads Claude's terminal title instead.
 
 ## Launcher
 
-One box to open, find, install and remove apps, and find files. Open it from the menu bar menu or the Workspace
+One box to open, find, install and remove apps, and find files, terminal tabs and splits,
+browser tabs and agent windows. **⌃⌘K** opens it from any app. You can also open it from the menu bar menu or the Workspace
 Dock, or turn on **⌘Space opens the BaneySpaces launcher** in setup to use it in place of
 Spotlight. Turning that off gives ⌘Space back to Spotlight, and so does quitting BaneySpaces.
 
 - **Type** to search apps, files, commands and workspaces at once. An app that's already open
   takes you to the workspace it's on.
+- **Terminals, tabs and agents.** Type part of a name and the launcher lists matching Ghostty,
+  Terminal and iTerm tabs and splits, tabs in your default browser (Helium, Chrome, Arc, Brave,
+  Edge or Vivaldi), and windows of Claude, ChatGPT, T3 Code, Cursor and Grok Bot. Return goes
+  to it: the window comes forward at once, then the tab or split inside it. With nothing typed,
+  the agents that finished or need you come first. **New Claude Session** and **New Terminal**
+  are commands here too.
 - **Files.** The best five files and folders whose names match come in under the apps; Tab into
   **Files** for more. Every word you type must start a word of the name (`tax 2025` or `ret tax`
   finds `2025 Tax Return.pdf`; words also break at `_` and in camelCase). It searches your home folder, iCloud Drive and other cloud drives
@@ -352,7 +348,7 @@ open baneyspaces://viewer       # show or hide the overview
 `~/Library/Application Support/BaneySpaces/state.json` always holds the current workspace and
 the apps on each one.
 
-The `baneyspaces` command (installed in `~/.local/bin`) talks to the Deck in a few milliseconds:
+The `baneyspaces` command (installed in `~/.local/bin`) talks to BaneySpaces in a few milliseconds:
 
 ```sh
 baneyspaces ls                     # every split, tab, agent and phone, with IDs
@@ -378,7 +374,7 @@ baneyspaces agent status                          # what's there, with window ID
 
 Three rules keep it from ever taking your screen. Its apps are parked out of view instead of
 hidden, so automation that works from behind (Cua's driver) can click and type in them. Nothing
-on it coming forward takes you there: you go with ⌘9, its Dock tile or a Deck row. And a window
+on it coming forward takes you there: you go with ⌘9, its Dock tile or a launcher row. And a window
 an agent opens in the background lands there, not on your workspace. `agent run` starts a
 Ghostty of its own for the agent, a separate process from yours, so nothing the agent does
 there can stall your terminals. `scripts/agent-workspace-probe.sh` proves it on your Mac: an
@@ -390,7 +386,7 @@ The window IDs are the ones cua-driver uses, so an agent drives a window there w
 driver](https://github.com/baney75/cua/tree/baneyspaces) goes one step further: it refuses
 foreground delivery to a window on the agent workspace while you're elsewhere.
 
-**Phones.** Android phones (USB debugging on) and iPhones show in the Deck the moment they're
+**Phones.** Android phones (USB debugging on) and iPhones show in `baneyspaces ls` and the launcher the moment they're
 plugged in. A row opens the phone's screen: scrcpy for Android, iPhone Mirroring for an iPhone.
 Agents get `baneyspaces phone ui` (the screen's UI tree, to find a button by its text), `tap`,
 `swipe`, `type`, `key`, `shot` and `shell` for Android. An iPhone is driven through its iPhone

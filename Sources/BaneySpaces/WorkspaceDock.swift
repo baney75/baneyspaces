@@ -109,6 +109,8 @@ final class WorkspaceDock {
     }
 
     private let spaces: Spaces
+    private var appearanceObserver: NSObjectProtocol?
+    deinit { appearanceObserver.map(NotificationCenter.default.removeObserver) }
     var onShowOverview: () -> Void = {}
     var onShowLauncher: () -> Void = {}
     var onTurnOff: () -> Void = {}
@@ -116,6 +118,8 @@ final class WorkspaceDock {
     var onSetEdge: (DockEdge) -> Void = { _ in }
     /// Turning agent badges on or off from a tile's menu; the app delegate keeps setup in step.
     var onSetAgentStatus: (Bool) -> Void = { _ in }
+    /// BaneySpaces' own windows at the menu level that aren't menus (the ⌘Tab window bar).
+    var notMenus: () -> Set<Int> = { [] }
     let model = DockModel()
     private var panel: DockPanel?
     private var timer: Timer?
@@ -138,6 +142,12 @@ final class WorkspaceDock {
     /// How long other apps' menu-level windows have been up: an old one isn't a menu.
     private var menuWindows = MenuWindows()
     private var menusSeenAt: TimeInterval = 0
+    /// When a menu last began tracking, in seconds of uptime (`DockMenu`).
+    private var menuOpenedAt: TimeInterval = 0
+    /// BaneySpaces' own menus on screen at the last look, and when (`menuHoldsDock`).
+    private var ownMenusSeen: (at: TimeInterval, count: Int)?
+    /// When it last went down, in seconds of uptime (`DockStray`).
+    private var hiddenAt: TimeInterval?
 
     init(spaces: Spaces) {
         self.spaces = spaces
@@ -151,6 +161,11 @@ final class WorkspaceDock {
         model.onDragDone = { [weak self] in self?.reload() }
         // After SwiftUI has laid out the strip, so the new size is the real one.
         model.onLayoutChange = { [weak self] in DispatchQueue.main.async { self?.resize() } }
+        // A new dock size changes what SwiftUI measures; the panel (and the keep-zone, which is
+        // taken from its frame) follows.
+        appearanceObserver = NotificationCenter.default.addObserver(forName: Appearance.didChange, object: nil, queue: .main) { [weak self] note in
+            if note.userInfo?[Appearance.dockSizeChangedKey] as? Bool == true { self?.scheduleResize() }
+        }
         model.onShowOverview = { [weak self] in self?.hide(); self?.onShowOverview() }
         model.onShowLauncher = { [weak self] in self?.hide(); self?.onShowLauncher() }
         model.onTurnOff = { [weak self] in self?.onTurnOff() }
@@ -163,6 +178,7 @@ final class WorkspaceDock {
         // A tile's right-click menu keeps the dock up while it's open.
         NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { [weak self] _ in
             self?.model.menuOpen = true
+            self?.menuOpenedAt = ProcessInfo.processInfo.systemUptime
         }
         NotificationCenter.default.addObserver(forName: NSMenu.didEndTrackingNotification, object: nil, queue: .main) { [weak self] _ in
             self?.model.menuOpen = false
@@ -218,6 +234,12 @@ final class WorkspaceDock {
             menusSeenAt = uptime
             menuWindows.update(WorkspaceDock.menuLevelWindows(), now: uptime)
         }
+        // Down, yet its panel still up once the slide-out is over (seen once in a scratch test: the
+        // animated hide stalled with the panel at full alpha): nothing else would take it away.
+        if let p = panel, DockStray.isStray(shown: isShown, panelUp: p.isVisible, hiddenAt: hiddenAt, now: uptime) {
+            Trace.log("dock panel still up after the dock went down; putting it away")
+            p.orderOut(nil)
+        }
         // The overview already shows every workspace; the dock stays down while it's open.
         if MissionControlKeys.viewerOpen { if isShown { hide() }; edgeSince = nil; return }
         let mouse = NSEvent.mouseLocation
@@ -235,7 +257,7 @@ final class WorkspaceDock {
             // drag that strays off it on the way to a tile.
             let screenFrame = (shownOn ?? p.screen)?.frame ?? p.frame
             // A window carried down from another app has the pointer itself: off the dock, it's not for it.
-            let keep = WorkspaceDock.edge.keepZone(dock: p.frame, screen: screenFrame).contains(mouse) || model.menuOpen
+            let keep = WorkspaceDock.edge.keepZone(dock: p.frame, screen: screenFrame).contains(mouse) || menuHoldsDock()
                 || (model.drag != nil && model.drag?.carried == false)
             if keep { awaySince = nil; return }
             if awaySince == nil { awaySince = Date() }
@@ -268,6 +290,26 @@ final class WorkspaceDock {
         if NSEvent.pressedMouseButtons != 0, !carrying, windowCarry != nil, resolveCarry() == nil { edgeSince = nil; return }
         show(on: screen)
         if let g = windowCarry { carryMoved(g) }
+    }
+
+    /// A right-click menu from the dock keeps it up while the window server shows it. A flag left
+    /// set with no menu on screen (an end of tracking that never came) is cleared, and says so.
+    private func menuHoldsDock() -> Bool {
+        guard model.menuOpen else { return false }
+        let now = ProcessInfo.processInfo.systemUptime
+        let held = DockMenu.holdsDock(flag: true, setAt: menuOpenedAt, now: now) {
+            // A few times a second, not every tick, so a menu being tracked doesn't stutter.
+            if let seen = ownMenusSeen, now - seen.at < 0.25 { return seen.count }
+            let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
+            let count = MenuWindows.ownCount(list, level: Int(CGWindowLevelForKey(.popUpMenuWindow)), ownPID: getpid(), excluding: notMenus())
+            ownMenusSeen = (now, count)
+            return count
+        }
+        if !held {
+            Trace.log("dock menu marked open with none on screen; letting the dock go down")
+            model.menuOpen = false
+        }
+        return held
     }
 
     // MARK: A window dragged down to the dock
@@ -517,6 +559,7 @@ final class WorkspaceDock {
     func hide(animated: Bool = true) {
         guard isShown, let p = panel else { return }
         isShown = false
+        hiddenAt = ProcessInfo.processInfo.systemUptime
         model.reset()
         let away = WorkspaceDock.edge.away
         let down = p.frame.offsetBy(dx: away.dx, dy: away.dy)
@@ -555,6 +598,10 @@ final class WorkspaceDock {
         p.isOpaque = false
         p.backgroundColor = .clear
         p.hasShadow = false
+        // Only the dock shows and hides it, never AppKit when BaneySpaces activates or deactivates
+        // (on an empty workspace, in the overview). Already the default for this panel on macOS 27;
+        // said outright, as every other panel here does.
+        p.hidesOnDeactivate = false
         // The window list's full titles show on hover though BaneySpaces is never the active app.
         p.allowsToolTipsWhenApplicationIsInactive = true
         // Not over full-screen apps: a video's controls or a game sit along that edge.
@@ -968,7 +1015,11 @@ struct DockView: View {
     /// target reads it as a tile or an icon.
     static let originKey = "origin"
     @ObservedObject var model: DockModel
-    private let tileSize: CGFloat = 64
+    /// Redraws when Settings › Appearance changes.
+    @ObservedObject private var appearance = Appearance.shared
+    /// Settings › Appearance › Dock size: every tile, icon and button below scales by this.
+    private var k: CGFloat { CGFloat(appearance.settings.dockSize.scale) }
+    private var tileSize: CGFloat { 64 * k }
     /// Where each tile, app icon and button sits in the dock, so the strip and label line up with it.
     @State private var frames: [String: CGRect] = [:]
     @State private var sideSize: CGSize = .zero
@@ -988,7 +1039,7 @@ struct DockView: View {
         // The icon being dragged follows the pointer.
         .overlay(alignment: .topLeading) {
             if let drag = model.drag, !drag.carried {
-                Image(nsImage: drag.icon).resizable().interpolation(.high).frame(width: 36, height: 36)
+                Image(nsImage: drag.icon).resizable().interpolation(.high).frame(width: 36 * k, height: 36 * k)
                     .shadow(color: .black.opacity(0.45), radius: 6, y: 2)
                     .position(drag.location)
                     .allowsHitTesting(false)
@@ -1038,14 +1089,14 @@ struct DockView: View {
             ForEach(model.tiles) { tile in tileView(tile) }
             if let n = model.firstEmpty, !model.tiles.contains(where: { $0.id == n }) { newWorkspaceButton(n) }
             Capsule().fill(Color.white.opacity(0.14))
-                .frame(width: vertical ? 44 : 1, height: vertical ? 1 : 44)
+                .frame(width: vertical ? 44 * k : 1, height: vertical ? 1 : 44 * k)
                 .padding(vertical ? .vertical : .horizontal, 4).padding(.bottom, vertical ? 0 : 14)
             utilityButtons
         }
         .padding(.horizontal, 10)
         .padding(.top, 10)
         .padding(.bottom, vertical ? 10 : 4)
-        .background(Chrome.panel(cornerRadius: 24))
+        .background(Chrome.panelBackground(cornerRadius: 24))
         .modifier(SizeReport(size: $barSize))
     }
 
@@ -1164,7 +1215,7 @@ struct DockView: View {
         }
         .padding(6).padding(.top, 4)
         .frame(width: 240)
-        .background(Chrome.panel(cornerRadius: 14))
+        .background(Chrome.panelBackground(cornerRadius: 14))
         .onHover { inside in model.onStrip = inside }
     }
 
@@ -1203,7 +1254,7 @@ struct DockView: View {
         }
         .padding(6).padding(.top, 4)
         .frame(width: 320)
-        .background(Chrome.panel(cornerRadius: 14))
+        .background(Chrome.panelBackground(cornerRadius: 14))
         .onHover { inside in model.onStrip = inside }
     }
 
@@ -1356,22 +1407,22 @@ struct DockView: View {
     @ViewBuilder private func icons(_ tile: DockModel.Tile) -> some View {
         let apps = tile.apps
         if apps.isEmpty {
-            Image(systemName: "plus").font(.system(size: 15, weight: .medium)).foregroundStyle(.white.opacity(0.3))
+            Image(systemName: "plus").font(.system(size: 15 * k, weight: .medium)).foregroundStyle(.white.opacity(0.3))
                 .allowsHitTesting(false)
         } else if apps.count == 1 {
-            appIcon(apps[0], in: tile, size: 42)
+            appIcon(apps[0], in: tile, size: 42 * k)
         } else if apps.count == 2 {
-            HStack(spacing: 2) { ForEach(apps) { appIcon($0, in: tile, size: 28) } }
+            HStack(spacing: 2) { ForEach(apps) { appIcon($0, in: tile, size: 28 * k) } }
         } else {
             let shown = apps.count > 4 ? Array(apps.prefix(DockModel.iconsShown)) : apps
-            LazyVGrid(columns: [GridItem(.fixed(24), spacing: 3), GridItem(.fixed(24), spacing: 3)], spacing: 3) {
-                ForEach(shown) { appIcon($0, in: tile, size: 24) }
+            LazyVGrid(columns: [GridItem(.fixed(24 * k), spacing: 3), GridItem(.fixed(24 * k), spacing: 3)], spacing: 3) {
+                ForEach(shown) { appIcon($0, in: tile, size: 24 * k) }
                 if apps.count > 4 {
                     // Rest on it (or click it) to list the apps it stands for, each one clickable.
                     let open = model.hover == .more(tile.id) || model.more == tile.id
                     Text("+\(apps.count - DockModel.iconsShown)")
                         .font(.system(size: 10, weight: .bold, design: .rounded)).foregroundStyle(.white.opacity(open ? 1 : 0.85))
-                        .frame(width: 24, height: 24)
+                        .frame(width: 24 * k, height: 24 * k)
                         .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.white.opacity(open ? 0.24 : 0.12)))
                         .modifier(CenterReport(key: "more:\(tile.id)"))
                         .contentShape(Rectangle())
@@ -1383,7 +1434,7 @@ struct DockView: View {
                         .accessibilityAction { model.more = tile.id }
                 }
             }
-            .frame(width: 51)
+            .frame(width: 48 * k + 3)
         }
     }
 
@@ -1481,7 +1532,7 @@ struct DockView: View {
     private var utilityButtons: some View {
         let vertical = model.edge.isVertical
         let pair = vertical ? AnyLayout(HStackLayout(spacing: 4)) : AnyLayout(VStackLayout(spacing: 4))
-        let size = vertical ? CGSize(width: (tileSize - 4) / 2, height: 44) : CGSize(width: 44, height: (tileSize - 4) / 2)
+        let size = vertical ? CGSize(width: (tileSize - 4) / 2, height: 44 * k) : CGSize(width: 44 * k, height: (tileSize - 4) / 2)
         return VStack(spacing: 5) {
             pair {
                 smallButton(.launcher, "magnifyingglass", "Find or Install an App", size: size) { model.onShowLauncher() }

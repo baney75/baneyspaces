@@ -517,6 +517,7 @@ final class Spaces {
         let focused = Windows.focused(in: Array(windows.values))
         if let f = focused, model.workspace(of: f.id) == model.current { model.noteFocus(f.id) }
         let leaving = model.current
+        clock.from = leaving
         let plan = model.switchTo(n)
         recent.removeAll { $0 == n }
         recent.insert(n, at: 0)
@@ -540,6 +541,7 @@ final class Spaces {
         // macOS puts each window back where it was before full screen.
         leaveFullScreen(asking, fill: false) { [self] refused in
             guard gen == generation, active else { return }
+            clock.mark(.fullscreen)
             for w in refused { model.assign(w.id, to: n, focus: false) }
             // Back on the regular desktop, Accessibility can list windows it couldn't see from the
             // full-screen one. Those opened while you were on the workspace you just left.
@@ -1160,9 +1162,13 @@ final class Spaces {
         }
         // Parked windows go home first, unseen; only then do their apps show.
         bringHome(home, screens: screens, gen: gen) { [self] in
+        // From scanned (or fullscreen, after leaving full screen and scanning again) to here:
+        // planning the switch, carrying windows between displays and bringing parked windows home.
+        clock.mark(.home)
         // An app with a window here parks its other windows now, before it shows (a hidden one
         // parks them unseen), so they never linger among this workspace's windows.
         parkAlongside(how, screens: screens)
+        clock.mark(.alongside)
         // An app on the parked list that BaneySpaces hid comes back once its windows from other
         // workspaces are parked, later in this switch (see `park`).
         // Going to a workspace shows its apps, even one hidden with ⌘H. An app on the other
@@ -1177,6 +1183,7 @@ final class Spaces {
         for (w, frame) in home where saved.frames[w.id] != nil {
             if restore(w, to: frame, screens: screens) { saved.frames[w.id] = nil }
         }
+        clock.mark(.unhidden)
         // 2. Everything else leaves at once, except the app in front. Hiding a background app
         //    changes nothing about focus, so there's no reason to wait for it.
         let deferred: Set<pid_t> = moveFocus ? Set([oldFront].compactMap { $0 }).intersection(how.hideApps) : []
@@ -1185,6 +1192,7 @@ final class Spaces {
         ownHidesUntil = Date().addingTimeInterval(1)
         let leavingParked: pid_t? = moveFocus ? oldFront.flatMap { parkedApps.contains($0) && !how.showApps.contains($0) ? $0 : nil } : nil
         conceal(how, apps: how.hideApps.subtracting(deferred), screens: screens)
+        clock.mark(.concealed)
         // 3. Focus moves to this workspace. Only then does the old front app hide: hiding the app
         //    in front makes macOS activate another app on its own, which would look like the
         //    person picking it.
@@ -1698,8 +1706,10 @@ final class KeyablePanel: NSPanel {
 /// How long one switch takes, phase by phase. Appended to timing.log so speed changes are
 /// measured on real use, not guessed.
 struct SwitchClock {
-    enum Phase: String { case snap, scanned, shown, focused, done, parked }
+    enum Phase: String { case snap, scanned, fullscreen, home, alongside, unhidden, concealed, shown, focused, done, parked }
     var target = 0
+    /// The workspace being left: a switch to the one you're on (`bench.sh`) moves nothing.
+    var from = 0
     var scan = "full"
     private let start = CFAbsoluteTimeGetCurrent()
     private var marks: [(Phase, Double)] = []
@@ -1710,7 +1720,7 @@ struct SwitchClock {
 
     func log(to url: URL) {
         let parts = marks.map { "\($0.0.rawValue)=\(Int($0.1.rounded()))" }.joined(separator: " ")
-        let line = "\(Int(Date().timeIntervalSince1970)) ws=\(target) scan=\(scan) \(parts)\n"
+        let line = "\(Int(Date().timeIntervalSince1970)) ws=\(target) from=\(from) scan=\(scan) \(parts)\n"
         var lines = ((try? String(contentsOf: url, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init)
         lines.append(String(line.dropLast()))
         try? (lines.suffix(500).joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)

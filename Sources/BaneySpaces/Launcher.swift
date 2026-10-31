@@ -157,9 +157,16 @@ struct LauncherActions {
     var dockOn: () -> Bool = { false }
     var checkForUpdates: () -> Void = {}
     var showSetup: () -> Void = {}
+    /// Another Claude Code session beside the ones running, in Ghostty.
+    var newClaude: () -> Void = {}
+    /// A new terminal window.
+    var newTerminal: () -> Void = {}
     /// The Deck's rows (terminal splits, browser tabs, agents) that answer a query; with nothing
     /// typed, only the agents that finished or need you.
     var deckItems: (String) -> [LauncherItem] = { _ in [] }
+    /// The launcher is opening: read every app's tabs and splits again, since the Deck engine
+    /// reads background tabs only now and then (`Sweep`). They arrive through `rowsChanged`.
+    var willShow: () -> Void = {}
 }
 
 final class LauncherController: NSObject, NSWindowDelegate {
@@ -175,6 +182,8 @@ final class LauncherController: NSObject, NSWindowDelegate {
     var isShown: Bool { panel?.isVisible == true }
 
     func toggle() { isShown ? hide() : show() }
+
+    func rowsChanged() { if isShown { model.rowsChanged() } }
 
     /// `takeKeys: false` (opened by a link) shows it without taking the keyboard, so typing meant
     /// for another app never lands in it; a click on it takes the keyboard.
@@ -355,6 +364,7 @@ final class LauncherModel: ObservableObject {
     }
 
     func prepare(scope: Scope) {
+        actions.willShow()
         self.scope = scope
         query = ""
         field?.stringValue = ""
@@ -480,6 +490,9 @@ final class LauncherModel: ObservableObject {
         items = out
         if selected >= items.count { selected = max(0, items.count - 1) }
     }
+
+    /// The Deck's rows changed while the launcher is open.
+    func rowsChanged() { rebuildKeepingSelection() }
 
     /// Rebuilds for results that came in after the typing (files, the App Store): the row you
     /// were on stays selected wherever it moved, so Return still does what it showed.
@@ -721,6 +734,8 @@ final class LauncherModel: ObservableObject {
             ("Log Out…", "rectangle.portrait.and.arrow.right", "macOS asks before logging out", { System.loginWindow("rlgo") }),
             ("Toggle Dark Mode", "circle.lefthalf.filled", "Asks once to let BaneySpaces change appearance", { System.toggleDarkMode() }),
             ("Take a Screenshot", "camera.viewfinder", "Choose an area, a window or the screen", { System.run("/usr/bin/open", ["-a", "Screenshot"]) }),
+            ("New Claude Session", "sparkle", "Another Claude Code session in Ghostty", { [weak self] in self?.actions.newClaude() }),
+            ("New Terminal", "plus", "A new Ghostty window", { [weak self] in self?.actions.newTerminal() }),
             ("Show All Workspaces", "square.grid.3x3", "", { [weak self] in self?.actions.showOverview() }),
             ("Bring Every Window Back", "arrow.uturn.backward.circle", "Gathers every window onto workspace 1", { [weak self] in self?.actions.bringBack() }),
             (dockOn ? "Turn Off Workspace Dock" : "Turn On Workspace Dock", "dock.rectangle", "", { [weak self] in self?.actions.toggleDock() }),
@@ -1400,7 +1415,7 @@ enum Toast {
             Text(text).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
         }
         .padding(.horizontal, 16).padding(.vertical, 11)
-        .background(Chrome.panel(cornerRadius: 16))
+        .background(Chrome.panelBackground(cornerRadius: 16))
         .padding(24)
         .environment(\.colorScheme, .dark)
         let host = NSHostingView(rootView: view)
@@ -1435,6 +1450,8 @@ enum Toast {
 
 struct LauncherView: View {
     @ObservedObject var model: LauncherModel
+    /// Redraws when Settings › Appearance changes.
+    @ObservedObject private var appearance = Appearance.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1444,7 +1461,7 @@ struct LauncherView: View {
             Rectangle().fill(Color.white.opacity(0.08)).frame(height: 1)
             footer
         }
-        .background(Chrome.panel(cornerRadius: 22))
+        .background(Chrome.panelBackground(cornerRadius: 22))
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .padding(1)
     }

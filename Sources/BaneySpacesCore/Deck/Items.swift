@@ -1,6 +1,6 @@
 import Foundation
 
-/// What an app is to Ghostdeck. The role picks the sidebar section; the adapter picks how deep
+/// What an app is to Ghostdeck. The role picks the kind of row; the adapter picks how deep
 /// Ghostdeck can see into it.
 public enum Role: String, Codable, Sendable, CaseIterable {
     case terminal, agent, browser, device, other
@@ -89,7 +89,7 @@ public enum Catalog {
     }
 }
 
-/// One thing the sidebar lists: a terminal split, a browser tab, or a whole window.
+/// One thing the Deck lists: a terminal split, a browser tab, or a whole window.
 public struct Item: Identifiable, Equatable, Codable, Sendable {
     public enum Kind: String, Codable, Sendable { case terminal, tab, window, device }
 
@@ -158,5 +158,14 @@ public enum URLDisplay {
         let path = u.path == "/" ? "" : u.path
         let s = h + path
         return s.count > 60 ? String(s.prefix(59)) + "…" : s
+    }
+}
+
+extension Item {
+    /// The folder a new terminal or Claude session opens in: the focused terminal's, and only
+    /// while its app is in front (`front` is that app's bundle ID). A focused row in another app,
+    /// or one that isn't a terminal, says nothing about where you were working.
+    public static func workingFolder(_ items: [Item], front: String?) -> String? {
+        items.first { $0.focused && $0.kind == .terminal && $0.bundleID == front && !$0.directory.isEmpty }?.directory
     }
 }

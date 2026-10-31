@@ -136,30 +136,6 @@ final class AttentionRowsTests: XCTestCase {
     }
 }
 
-final class DeckLayoutTests: XCTestCase {
-    /// A picked phone's window sits right beside the sidebar at its own size, centered top to bottom.
-    func testADockedDeviceWindowKeepsItsSizeBesideTheSidebar() {
-        let visible = CGRect(x: 0, y: 25, width: 1512, height: 920)
-        let f = Deck.docked(CGSize(width: 330, height: 700), visible: visible, sidebar: 270)
-        XCTAssertEqual(f, CGRect(x: 276, y: 135, width: 330, height: 700))
-        // Bigger than the room beside the sidebar: it shrinks to fit, never runs off screen.
-        let big = Deck.docked(CGSize(width: 3000, height: 3000), visible: visible, sidebar: 270)
-        XCTAssertEqual(big, Deck.content(visible: visible, sidebar: 270))
-    }
-
-    func testContentLeavesTheSidebarStrip() {
-        let visible = CGRect(x: 0, y: 33, width: 1512, height: 909)
-        let c = Deck.content(visible: visible, sidebar: 270)
-        XCTAssertEqual(c.minX, 276)
-        XCTAssertEqual(c.maxX, 1506)
-        XCTAssertTrue(visible.contains(c))
-        let (l, r) = Deck.halves(c)
-        XCTAssertLessThanOrEqual(l.maxX, r.minX)
-        XCTAssertEqual(r.maxX, c.maxX)
-        XCTAssertEqual(l.height, c.height)
-    }
-}
-
 final class WindowMatchTests: XCTestCase {
     func testPairsByTitleThenInOrder() {
         let m = WindowMatch.pair(scripted: [("a", "same"), ("b", "same"), ("c", "unique")],
@@ -300,5 +276,20 @@ final class AnsweredQuestionsTests: XCTestCase {
         _ = a.notice(for: "t1", ask, focused: true)
         a.keep([])
         XCTAssertEqual(a.notice(for: "t1", ask, focused: false), "?")
+    }
+
+    func testANewTerminalOpensOnlyWhereAFrontTerminalWas() {
+        func row(_ id: String, app: String, kind: Item.Kind, dir: String, focused: Bool) -> Item {
+            Item(id: id, bundleID: app, appName: app, role: kind == .terminal ? .terminal : .browser, kind: kind,
+                 group: "g", title: id, directory: dir, focused: focused)
+        }
+        let ghostty = "com.mitchellh.ghostty", browser = "com.example.browser"
+        let items = [row("t1", app: ghostty, kind: .terminal, dir: "/work", focused: true),
+                     row("tab", app: browser, kind: .tab, dir: "/elsewhere", focused: true)]
+        XCTAssertEqual(Item.workingFolder(items, front: ghostty), "/work")
+        // The browser in front: its focused tab isn't a place to work, and Ghostty's isn't in front.
+        XCTAssertNil(Item.workingFolder(items, front: browser))
+        XCTAssertNil(Item.workingFolder(items, front: nil))
+        XCTAssertNil(Item.workingFolder([row("t2", app: ghostty, kind: .terminal, dir: "", focused: true)], front: ghostty))
     }
 }

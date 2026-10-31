@@ -16,6 +16,12 @@ final class Engine {
         var dirty = false
         var last = Date.distantPast
         var ms = 0
+        /// Script reads since launch, for `deck.json`: how often the engine wakes this app.
+        var reads = 0
+        /// When a script was last sent to it, answered or not, and whether it answered (`Sweep`).
+        /// A refusal (no Automation permission) isn't a try: the next read asks again.
+        var scriptTriedAt = Date.distantPast
+        var lastScriptOK = true
     }
 
     private(set) var specs: [AppSpec] = []
@@ -110,6 +116,8 @@ final class Engine {
             }
         }
         for pid in tracked.keys where !alive.contains(pid) {
+            // A yes from before it quit isn't known to hold for the next launch.
+            if let b = tracked[pid]?.spec.bundleID { Automation.forget(b) }
             tracked[pid] = nil
             watcher.unwatch(pid)
         }
@@ -119,21 +127,28 @@ final class Engine {
     /// Re-adds Accessibility observers once the permission arrives.
     func retryWatching() { for pid in tracked.keys where !watcher.watching.contains(pid) { watcher.watch(pid) } ; refreshAll() }
 
+    /// The engine's own timer (see `Sweep`). `visible` is no longer used: what's on screen is
+    /// announced through Accessibility, and the launcher reads every app as it opens.
     func scheduleSweep(visible: Bool) {
-        let interval: TimeInterval = visible ? 2 : 5
-        guard sweep?.timeInterval != interval else { return }
-        sweep?.invalidate()
-        sweep = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in self?.sweepScripted() }
-        sweep?.tolerance = interval / 4
+        guard sweep == nil else { return }
+        sweep = Timer.scheduledTimer(withTimeInterval: Sweep.tick, repeats: true) { [weak self] _ in self?.sweepScripted() }
+        sweep?.tolerance = Sweep.tick / 2
     }
 
     /// Scripted apps only: their background tabs change without any window notification.
     private func sweepScripted() {
         let forgot = sessions.expire(now: Date().timeIntervalSince1970)
+        // Each app by its own rows: an agent in T3 Code, on a phone or in another terminal app
+        // says nothing about this terminal's background tabs.
+        let working = Set(items.filter { $0.activity == .working }.map(\.id))
+        let now = Date()
         let scripted = tracked.filter { $0.value.spec.adapter != .windows }
-        for pid in scripted.keys { refresh(pid) }
+            .map { (id: $0.key, role: $0.value.spec.role, lastRead: $0.value.scriptTriedAt.timeIntervalSinceReferenceDate,
+                    agentWorking: $0.value.items.contains { working.contains($0.id) }, lastOK: $0.value.lastScriptOK) }
+        let due = Sweep.due(scripted, now: now.timeIntervalSinceReferenceDate)
+        for pid in due { refresh(pid) }
         // Each read merges; with none, merge anyway so a stale report on an app's window clears.
-        if scripted.isEmpty && (forgot || !sessions.sessions.isEmpty) { merge() }
+        if due.isEmpty && (forgot || !sessions.sessions.isEmpty) { merge() }
     }
 
     func refreshAll() { for pid in tracked.keys { refresh(pid) } }
@@ -203,9 +218,10 @@ final class Engine {
             let native = wins.map { (number: $0.number, title: $0.title) }
             // Scripted only once macOS says yes; until then the app's windows stand in.
             let scriptable = script != nil && Automation.allowed(spec.bundleID)
+            var refused = false
             switch scriptable ? spec.adapter : .windows {
             case .ghostty:
-                let raw = script.flatMap { s in OSA.queue.sync { s.call("snapshot") } }
+                let raw = script.flatMap { s in Self.snapshot(s, spec.bundleID, refused: &refused) }
                 ghostty = raw.map(Snapshot.parse)
                 if let g = ghostty {
                     items = Build.ghostty(spec, g, numbers: WindowMatch.pair(scripted: g.windowTitles, native: native), front: front)
@@ -213,7 +229,7 @@ final class Engine {
                     items = Build.windows(spec, native, front: front, frontWindowNumber: frontNumber)
                 }
             case .chromium, .terminalApp, .iterm:
-                let raw = script.flatMap { s in OSA.queue.sync { s.call("snapshot") } }
+                let raw = script.flatMap { s in Self.snapshot(s, spec.bundleID, refused: &refused) }
                 scripted = raw.map(ScriptedSnapshot.parse)
                 if let s = scripted {
                     let pairs = WindowMatch.pair(scripted: s.windows.map { ($0.id, $0.title) }, native: native)
@@ -231,6 +247,11 @@ final class Engine {
                 t.windows = wins
                 if let ghostty { t.ghostty = ghostty }
                 if let scripted { t.scripted = scripted }
+                if scriptable && !refused {
+                    t.reads += 1
+                    t.scriptTriedAt = started
+                    t.lastScriptOK = ghostty != nil || scripted != nil
+                }
                 t.refreshing = false
                 t.last = Date()
                 t.ms = ms
@@ -240,6 +261,14 @@ final class Engine {
                 if again { self.refresh(pid) }
             }
         }
+    }
+
+    /// An app's snapshot script. Refused by macOS (-1743) or waiting on the person to answer
+    /// (-1744): Automation's remembered yes is dropped, so the next read asks again.
+    private static func snapshot(_ s: OSA, _ bundleID: String, refused: inout Bool) -> String? {
+        let r = OSA.queue.sync { s.run("snapshot") }
+        if r.error == -1743 || r.error == -1744 { Automation.forget(bundleID); refused = true }
+        return r.error == 0 ? r.out : nil
     }
 
     // MARK: merging
@@ -271,7 +300,7 @@ final class Engine {
             if let e = bound[all[i].id] {
                 all[i].activity = AgentSessions.activity(all[i], e, now: now, idleSince: idleTitles.since(all[i].id))
                 all[i].agent = e.agent
-                all[i].notice = answered.notice(for: all[i].id, e, focused: all[i].focused)
+                all[i].notice = answered.notice(for: all[i].id, e, focused: all[i].focused && !sessions.followed.contains(all[i].id))
             }
             if let n = notices[all[i].id] { all[i].notice = n }
         }
@@ -292,12 +321,19 @@ final class Engine {
     func apply(_ e: AgentEvent) {
         sessions.apply(e)
         merge()
-        // A hook usually means the title changed too: read it now, and again once the title has
-        // caught up, which is when an unbound session gets narrowed to its terminal.
-        for (pid, t) in tracked where t.spec.adapter != .windows { refresh(pid) }
+        // A hook usually means the title changed too: read the app it came from now, and again once
+        // the title has caught up, which is when an unbound session gets narrowed to its terminal.
+        let apps = tracked.filter { $0.value.spec.adapter != .windows }
+            .map { (id: $0.key, bundleID: $0.value.spec.bundleID, role: $0.value.spec.role, ttys: Set($0.value.items.map(\.tty).filter { !$0.isEmpty })) }
+        // An app whose script keeps failing waits out its backoff here too.
+        let now = Date().timeIntervalSinceReferenceDate
+        let read = Sweep.forHook(apps, eventApp: e.app, tty: e.tty).filter { pid in
+            tracked[pid].map { !Sweep.backingOff(lastTried: $0.scriptTriedAt.timeIntervalSinceReferenceDate, lastOK: $0.lastScriptOK, now: now) } ?? false
+        }
+        guard !read.isEmpty else { return }
+        for pid in read { refresh(pid) }
         DispatchQueue.main.asyncAfter(deadline: .now() + AgentSessions.settle + 0.15) { [weak self] in
-            guard let self else { return }
-            for (pid, t) in self.tracked where t.spec.adapter != .windows { self.refresh(pid) }
+            for pid in read { self?.refresh(pid) }
         }
     }
 
@@ -447,7 +483,7 @@ final class Engine {
 
     var statusInfo: [String: String] {
         var info: [String: String] = [:]
-        for t in tracked.values { info["read.\(t.spec.name)"] = "\(t.ms) ms, \(t.items.count) rows" }
+        for t in tracked.values { info["read.\(t.spec.name)"] = "\(t.ms) ms, \(t.items.count) rows, \(t.reads) reads" }
         info["sessions"] = "\(sessions.sessions.count) agent sessions"
         info["accessibility"] = AX.isTrusted ? "allowed" : "not allowed"
         info["browser"] = defaultBrowser ?? "unknown"

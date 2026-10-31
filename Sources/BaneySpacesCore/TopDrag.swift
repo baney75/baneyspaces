@@ -115,4 +115,57 @@ public enum FillTheScreen {
     public static func turnBackOn(taken: Bool, saved: Bool?, now: Bool?) -> Bool {
         taken && saved != false && now == false
     }
+
+    /// Attempts before giving up on a setting something else keeps off (a profile, say).
+    public static let maxTries = 3
+
+    /// The preference that says fill-the-screen was given back. uninstall.sh stops on this one.
+    public static let givenBackKey = "systemTopDragFillGivenBack"
+    /// The preference that says BaneySpaces gave up. It is not `givenBackKey`, so uninstall.sh
+    /// still makes one last write. Builds before #50 recorded a give-up as given back, and those
+    /// get no last write. uninstall.sh reads this name too.
+    public static let gaveUpKey = "systemTopDragFillGaveUp"
+
+    /// What to do once the write to turn it back on has been tried.
+    public enum Decision: Equatable {
+        /// Nothing more owed (it's on, or wasn't ours to turn on): drop the record, the pending
+        /// flag and the count, and remember it was given back.
+        case settled
+        /// Still off: store this many tries and keep the pending flag so a later launch (or the
+        /// uninstaller) tries again.
+        case retry(tries: Int)
+        /// Still off after `maxTries`: drop the record, the pending flag and the count, and
+        /// remember giving up apart from giving back, so the uninstaller still tries once more.
+        case giveUp
+
+        /// The preference to set to true, or nil while a retry is still owed.
+        public var flagKey: String? {
+            switch self {
+            case .settled: return FillTheScreen.givenBackKey
+            case .giveUp: return FillTheScreen.gaveUpKey
+            case .retry: return nil
+            }
+        }
+    }
+
+    /// A decision and whether a try has now happened since this launch.
+    public struct Step: Equatable {
+        public var decision: Decision
+        public var triedThisLaunch: Bool
+    }
+
+    /// The decision after a write. `record`: the older build's saved settings exist. `pending`:
+    /// an earlier try didn't read back, which `restore()` doesn't clear with the record. `saved`
+    /// and `now` as in `turnBackOn`. `tries`: the count stored so far. `triedThisLaunch`: a try
+    /// was already counted since BaneySpaces started, so a brief hiccup plus toggling the
+    /// switch can't spend every try in one session; the step returns its new value, which the
+    /// caller keeps for the next call. `readBack`: the setting reads back on.
+    public static func decide(record: Bool, pending: Bool, saved: Bool?, now: Bool?,
+                              tries: Int, triedThisLaunch: Bool, readBack: Bool) -> Step {
+        let due = turnBackOn(taken: record || pending, saved: saved, now: now)
+        let tried = triedThisLaunch || due
+        guard due, !readBack else { return Step(decision: .settled, triedThisLaunch: tried) }
+        guard !triedThisLaunch else { return Step(decision: .retry(tries: tries), triedThisLaunch: tried) }
+        return Step(decision: tries + 1 >= maxTries ? .giveUp : .retry(tries: tries + 1), triedThisLaunch: tried)
+    }
 }

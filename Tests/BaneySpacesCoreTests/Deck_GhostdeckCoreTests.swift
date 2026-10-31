@@ -2,40 +2,6 @@ import CoreGraphics
 import XCTest
 @testable import BaneySpacesCore
 
-final class GridTests: XCTestCase {
-    let laptop = CGRect(x: 0, y: 33, width: 1512, height: 909)
-
-    func testColumnsPerCount() {
-        XCTAssertEqual(Grid.columns(for: 1, in: laptop.size), 1)
-        XCTAssertEqual(Grid.columns(for: 2, in: laptop.size), 2)
-        XCTAssertEqual(Grid.columns(for: 3, in: laptop.size), 2)
-        XCTAssertEqual(Grid.columns(for: 4, in: laptop.size), 2)
-        XCTAssertEqual(Grid.columns(for: 6, in: laptop.size), 3)
-        XCTAssertEqual(Grid.columns(for: 9, in: laptop.size), 3)
-    }
-
-    func testFramesFillTheAreaWithoutOverlap() {
-        for n in 1...9 {
-            let frames = Grid.frames(count: n, in: laptop, gap: 6)
-            XCTAssertEqual(frames.count, n)
-            for f in frames { XCTAssertTrue(laptop.insetBy(dx: -1, dy: -1).contains(f), "\(n): \(f) leaves the area") }
-            for i in frames.indices { for j in frames.indices where i < j {
-                XCTAssertTrue(frames[i].insetBy(dx: 1, dy: 1).intersection(frames[j].insetBy(dx: 1, dy: 1)).isNull, "\(n): \(i) overlaps \(j)")
-            } }
-            // Every row reaches the right edge: no hole left behind.
-            let rights = Dictionary(grouping: frames, by: \.minY).values.map { $0.map(\.maxX).max()! }
-            for r in rights { XCTAssertEqual(r, laptop.maxX, accuracy: 2) }
-        }
-    }
-
-    func testThreeWindowsLastOneSpansTheBottom() {
-        let f = Grid.frames(count: 3, in: laptop, gap: 6)
-        XCTAssertEqual(f[0].minY, f[1].minY)
-        XCTAssertEqual(f[2].width, laptop.width, accuracy: 1)
-        XCTAssertGreaterThan(f[2].minY, f[0].maxY)
-    }
-}
-
 final class ActivityTests: XCTestCase {
     func testClaudeTitles() {
         XCTAssertEqual(Activity.of(title: "✳ Baney spaces opening many windows"), .waiting)

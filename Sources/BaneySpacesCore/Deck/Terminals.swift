@@ -17,7 +17,7 @@ public enum Activity: Equatable, Sendable {
         return .shell
     }
 
-    /// The title without the status glyph, which the sidebar shows as an icon instead.
+    /// The title without the status glyph, which a row shows as an icon instead.
     public static func label(of title: String) -> String {
         guard Activity.of(title: title) != .shell else { return title }
         return String(title.dropFirst()).trimmingCharacters(in: .whitespaces)
@@ -112,7 +112,7 @@ public struct Snapshot: Equatable, Sendable {
 }
 
 /// Remembers which terminals finished a Claude turn while you were looking elsewhere, newest first,
-/// until you look at them. That's the list the sidebar lights up and ⌘⇧U jumps through.
+/// until you look at them. That's the list the launcher puts first and ⌘⇧U jumps through.
 public struct Attention: Equatable, Sendable {
     public private(set) var unseen: [String] = []
     private var last: [String: Activity] = [:]
