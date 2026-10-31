@@ -4,10 +4,11 @@
 // from the panel, which keeps a row for the hover label above the bar and is at least 480 pt
 // long. This brings the bottom dock up from the screen's edge with the real pointer, then rests
 // the pointer (1) on a tile: the dock must stay up; (2) 10 pt above the panel: it must go down;
-// (3) brings it up again and rests 10 pt beside the panel: it must go down. Before the fix it
-// stayed up in (2) and (3).
+// (3) brings it up again and rests 10 pt beside the panel: it must go down; (4) rests on the edge
+// past the bar's end: a dock that comes up there must stay up. Before the fix it stayed up in (2)
+// and (3); before the review fix it flashed in (4).
 //
-// It takes the pointer for about eight seconds and puts it back; run it while Donovan is away.
+// It takes the pointer for about ten seconds and puts it back; run it while Donovan is away.
 // Bottom dock only. Prints "dock let go" and exits 0 on success; exits 1 with the step that failed.
 //
 //   swift scripts/dock-keep-zone-probe.swift
@@ -70,6 +71,20 @@ panel = bringUp()
 move(CGPoint(x: panel.maxX + 10, y: panel.maxY - 40))
 guard until(1.2, { dock() == nil }) else { fail("the dock stayed up with the pointer 10 pt beside its panel") }
 print("beside the panel: went down")
+
+// (4) Resting on the edge past the bar's end but inside the panel's length: the dock may come up
+// there or not, but one that comes up must stay up. Sized from the panel, it came up and dropped
+// 0.4 s later with the pointer still (review of #91).
+move(CGPoint(x: main.midX, y: main.height / 2))
+guard until(1.5, { dock() == nil }) else { fail("the dock didn't go down before step 4") }
+wait(0.3)
+move(CGPoint(x: main.midX + panel.width / 2 - 20, y: main.height - 1))
+var cameUp = false
+for _ in 0..<40 {
+    wait(0.05)
+    if dock() != nil { cameUp = true } else if cameUp { fail("the dock came up past the bar's end and dropped with the pointer still") }
+}
+print(cameUp ? "past the bar's end: came up and stayed" : "past the bar's end: stayed down")
 
 move(start)
 print("dock let go")

@@ -33,6 +33,34 @@ final class DockKeepZoneTests: XCTestCase {
         XCTAssertTrue(zone.contains(CGPoint(x: 870, y: 50)), "within the slack just beside it")
     }
 
+    /// Review of #91: the stretch of edge that brings the dock up was still sized from the panel,
+    /// so resting on the edge 120-260 pt from the middle brought it up and dropped it 0.4 s later
+    /// with the pointer still. Every edge point that brings it up must keep it up.
+    func testTheEdgeThatBringsTheDockUpKeepsItUp() {
+        let visible = CGRect(x: 0, y: 0, width: 1512, height: 949)
+        for edge in DockEdge.allCases {
+            let b = edge.frame(size: edge.isVertical ? CGSize(width: 84, height: 210) : CGSize(width: 210, height: 84),
+                               screen: screen, visible: visible)
+            let length = edge.isVertical ? b.height : b.width
+            let zone = edge.keepZone(bar: b, panel: b.insetBy(dx: -135, dy: -135), sideOpen: false, screen: screen)
+            var opened = 0
+            for i in 0..<Int(edge.isVertical ? screen.height : screen.width) {
+                let t = CGFloat(i) + 0.5
+                let p: CGPoint
+                switch edge {
+                case .bottom: p = CGPoint(x: t, y: 0.5)
+                case .top: p = CGPoint(x: t, y: screen.maxY - 0.5)
+                case .left: p = CGPoint(x: 0.5, y: t)
+                case .right: p = CGPoint(x: screen.maxX - 0.5, y: t)
+                }
+                guard edge.withinSpan(p, screen: screen, visible: visible, length: length, slack: DockEdge.barSlack) else { continue }
+                opened += 1
+                XCTAssertTrue(zone.contains(p), "\(edge): \(p) brings the dock up but doesn't keep it up")
+            }
+            XCTAssertGreaterThan(opened, Int(length), "\(edge): the whole bar's stretch of edge brings it up")
+        }
+    }
+
     func testAnOpenWindowStripCountsTheWholePanel() {
         // The strip sits above the bar and takes clicks; reaching for it must not drop the dock.
         let zone = DockEdge.bottom.keepZone(bar: bar, panel: panel, sideOpen: true, screen: screen)

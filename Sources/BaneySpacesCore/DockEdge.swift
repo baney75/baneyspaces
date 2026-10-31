@@ -47,8 +47,10 @@ public enum DockEdge: String, CaseIterable, Sendable {
 
     /// Whether the pointer is along the stretch of edge the dock covers (with a little slack),
     /// so the corners and the rest of the edge stay free. `length` is the dock's length along it.
-    public func withinSpan(_ p: CGPoint, screen: CGRect, visible: CGRect, length: CGFloat) -> Bool {
-        isVertical ? abs(p.y - visible.midY) <= length / 2 + 24 : abs(p.x - screen.midX) <= length / 2 + 24
+    /// Given the bar's length, pass `barSlack`: the stretch that brings the dock up must lie inside
+    /// the zone that keeps it up (`keepZone(bar:)`), or resting there brings it up and drops it.
+    public func withinSpan(_ p: CGPoint, screen: CGRect, visible: CGRect, length: CGFloat, slack: CGFloat = 24) -> Bool {
+        isVertical ? abs(p.y - visible.midY) < length / 2 + slack : abs(p.x - screen.midX) < length / 2 + slack
     }
 
     /// Where a dock of `size` sits: centered along its edge, 6 points in. The top dock sits under
