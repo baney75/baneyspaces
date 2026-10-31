@@ -1161,6 +1161,8 @@ final class Spaces {
         }
         // Parked windows go home first, unseen; only then do their apps show.
         bringHome(home, screens: screens, gen: gen) { [self] in
+        // From scanned to here: planning the switch, carrying windows between displays and
+        // bringing parked windows home.
         clock.mark(.home)
         // An app with a window here parks its other windows now, before it shows (a hidden one
         // parks them unseen), so they never linger among this workspace's windows.
