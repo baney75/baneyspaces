@@ -229,7 +229,8 @@ if overviewHasKeys() {
     key(col < 2 ? 124 : 123)   // → or ←
     usleep(300_000)
     key(36)                     // Return
-    usleep(900_000)
+    let switchedBy = Date().addingTimeInterval(2)
+    while state().current != expected && Date() < switchedBy { usleep(100_000) }
     expect(state().current == expected, "→/← then Return went from workspace \(from) to \(expected) (on \(state().current))")
 } else {
     expect(false, "the overview took the keyboard (in front: \(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"), overview \(overviewUp(screenRect) ? "up" : "not up"))")
@@ -260,7 +261,9 @@ func fills(_ r: CGRect?) -> Bool {
 }
 // TopDrag.dwell, the rest before the overview opens; the probe can't import it.
 let dwell = 0.25
-for (hold, what) in [(dwell * 0.4, "a short rest"), (dwell + 1.0, "a rest long enough to open the overview")] {
+// The short rest stays under the dwell but long enough for macOS's own fill: at 0.1 s macOS
+// sometimes didn't fill at all (2026-10-30, #73).
+for (hold, what) in [(dwell * 0.72, "a short rest"), (dwell + 1.0, "a rest long enough to open the overview")] {
     DispatchQueue.main.sync { filler.setFrame(filler.frameRect(forContentRect: home), display: true); filler.makeKeyAndOrderFront(nil) }
     usleep(600_000)
     guard let f = onScreen(fillID) else { expect(false, "the fill window is on screen"); break }
@@ -269,6 +272,9 @@ for (hold, what) in [(dwell * 0.4, "a short rest"), (dwell + 1.0, "a rest long e
     drag(from: CGPoint(x: f.midX, y: f.minY + 12), to: edge, hold: hold, release: edge) { opened = overviewUp(screenRect) }
     expect(hold < dwell ? !opened : opened, "after \(what) the overview \(opened ? "opened" : "stayed shut")")
     expect(!missionControlUp(screenRect), "Mission Control stayed closed")
+    // macOS animates the fill; give it up to 2 s.
+    let fillBy = Date().addingTimeInterval(2)
+    while !fills(onScreen(fillID)) && Date() < fillBy { usleep(100_000) }
     expect(fills(onScreen(fillID)), "let go at the top after \(what), the window fills the screen (\(onScreen(fillID).map { "\($0)" } ?? "not on screen"), screen \(visible))")
     expect(workspace(of: fillID) == start.current, "and it stayed on workspace \(start.current)")
 }
