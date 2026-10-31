@@ -136,30 +136,6 @@ final class AttentionRowsTests: XCTestCase {
     }
 }
 
-final class DeckLayoutTests: XCTestCase {
-    /// A picked phone's window sits right beside the sidebar at its own size, centered top to bottom.
-    func testADockedDeviceWindowKeepsItsSizeBesideTheSidebar() {
-        let visible = CGRect(x: 0, y: 25, width: 1512, height: 920)
-        let f = Deck.docked(CGSize(width: 330, height: 700), visible: visible, sidebar: 270)
-        XCTAssertEqual(f, CGRect(x: 276, y: 135, width: 330, height: 700))
-        // Bigger than the room beside the sidebar: it shrinks to fit, never runs off screen.
-        let big = Deck.docked(CGSize(width: 3000, height: 3000), visible: visible, sidebar: 270)
-        XCTAssertEqual(big, Deck.content(visible: visible, sidebar: 270))
-    }
-
-    func testContentLeavesTheSidebarStrip() {
-        let visible = CGRect(x: 0, y: 33, width: 1512, height: 909)
-        let c = Deck.content(visible: visible, sidebar: 270)
-        XCTAssertEqual(c.minX, 276)
-        XCTAssertEqual(c.maxX, 1506)
-        XCTAssertTrue(visible.contains(c))
-        let (l, r) = Deck.halves(c)
-        XCTAssertLessThanOrEqual(l.maxX, r.minX)
-        XCTAssertEqual(r.maxX, c.maxX)
-        XCTAssertEqual(l.height, c.height)
-    }
-}
-
 final class WindowMatchTests: XCTestCase {
     func testPairsByTitleThenInOrder() {
         let m = WindowMatch.pair(scripted: [("a", "same"), ("b", "same"), ("c", "unique")],

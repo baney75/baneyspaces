@@ -13,7 +13,7 @@ public struct Phone: Equatable, Sendable {
     /// Ready to use right now. An unauthorized Android phone (the "Allow USB debugging?" prompt
     /// still showing) or an iPhone out of reach is listed but not ready.
     public var ready: Bool
-    /// Why it isn't ready, in words for the sidebar.
+    /// Why it isn't ready, in words for the launcher.
     public var status: String
     public var simulator: Bool
     /// An iPad. iPhone Mirroring can't show one, so it opens in Xcode's Device Hub instead.

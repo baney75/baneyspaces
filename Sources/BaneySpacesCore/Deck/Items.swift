@@ -1,6 +1,6 @@
 import Foundation
 
-/// What an app is to Ghostdeck. The role picks the sidebar section; the adapter picks how deep
+/// What an app is to Ghostdeck. The role picks the kind of row; the adapter picks how deep
 /// Ghostdeck can see into it.
 public enum Role: String, Codable, Sendable, CaseIterable {
     case terminal, agent, browser, device, other
@@ -89,7 +89,7 @@ public enum Catalog {
     }
 }
 
-/// One thing the sidebar lists: a terminal split, a browser tab, or a whole window.
+/// One thing the Deck lists: a terminal split, a browser tab, or a whole window.
 public struct Item: Identifiable, Equatable, Codable, Sendable {
     public enum Kind: String, Codable, Sendable { case terminal, tab, window, device }
 

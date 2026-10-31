@@ -6,7 +6,7 @@ description: See and drive what's open on Donovan's Mac through BaneySpaces' Dec
 # BaneySpaces Deck
 
 BaneySpaces is the workspace manager on Donovan's Mac. Its Deck wraps Donovan's terminals, browser and coding apps into one
-sidebar. `baneyspaces` is its command (`ghostdeck` still works as an alias). It answers in milliseconds and never moves the pointer or
+list. `baneyspaces` is its command (`ghostdeck` still works as an alias). It answers in milliseconds and never moves the pointer or
 takes focus unless the command is meant to (`focus`).
 
 ## Look before you act

@@ -24,16 +24,11 @@ final class SetupModel: ObservableObject {
     var onDockEdgeChange: ((DockEdge) -> Void)?
     @Published var dockAgentStatus = WorkspaceDock.agentStatus
     var onDockAgentStatusChange: ((Bool) -> Void)?
-    @Published var deck = DeckController.enabled
-    var onDeckChange: ((Bool) -> Void)?
-    @Published var deckEdge = DeckController.edgeOpens
-    var onDeckEdgeChange: ((Bool) -> Void)?
     /// Whether Claude Code and Grok report to BaneySpaces; agent badges need it.
     enum HookState { case on, off, noClaudeCode, unreadable }
     var hooksInstalled: () -> HookState = { .on }
     var onInstallHooks: (() -> Void)?
     @Published var hooks: HookState = .on
-    var hooksOK: Bool { hooks != .off }
     @Published var tab: SettingsTab = .general
     var onUninstall: (() -> Void)?
     @Published var launcherOnCmdSpace = Launcher.onCmdSpace
@@ -204,16 +199,6 @@ final class SetupModel: ObservableObject {
         onDockAgentStatusChange?(on)
     }
 
-    func setDeck(_ on: Bool) {
-        deck = on
-        onDeckChange?(on)
-    }
-
-    func setDeckEdge(_ on: Bool) {
-        deckEdge = on
-        onDeckEdgeChange?(on)
-    }
-
     func installHooks() {
         onInstallHooks?()
         hooks = hooksInstalled()
@@ -276,7 +261,7 @@ final class SetupModel: ObservableObject {
 
 /// The settings window's tabs. General comes first: it's where a new Mac starts.
 enum SettingsTab: String, CaseIterable, Identifiable {
-    case general = "General", keys = "Keys", dock = "Dock", launcher = "Launcher", deck = "Deck"
+    case general = "General", keys = "Keys", dock = "Dock", launcher = "Launcher"
     var id: Self { self }
 
     var symbol: String {
@@ -285,7 +270,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .keys: "keyboard"
         case .dock: "dock.rectangle"
         case .launcher: "magnifyingglass"
-        case .deck: "sidebar.left"
         }
     }
 }
@@ -310,14 +294,13 @@ struct SetupView: View {
                 case .keys: keys
                 case .dock: dock
                 case .launcher: launcher
-                case .deck: deckTab
                 }
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)
             .padding(24)
             Divider()
             HStack {
-                // About the app as a whole, so only under General; on the Deck tab it read like a stray note.
+                // About the app as a whole, so only under General; on another tab it read like a stray note.
                 if model.tab == .general {
                     Text("Full screen works as usual; switching workspaces takes a window out of it first. Change anything later from the menu bar icon.")
                         .font(.footnote).foregroundStyle(.secondary)
@@ -499,13 +482,23 @@ struct SetupView: View {
             .opacity(model.dockAgentStatus && model.workspaceDock ? 1 : 0.4)
             Text("Click an app with a badge to go straight to that agent's tab. Off, the dock shows apps only.")
                 .font(.callout).foregroundStyle(.secondary)
-            if !model.hooksOK {
-                HStack {
-                    Text("Claude Code and Grok don't report to BaneySpaces yet, so only their terminal titles show.")
-                        .font(.callout).foregroundStyle(.orange)
-                    Spacer()
-                    Button("Install Hooks", action: model.installHooks).disabled(!model.deck)
-                }
+        }
+
+        section("Agent hooks") {
+            if model.hooks == .noClaudeCode {
+                Text("Claude Code isn't set up on this Mac (there's no ~/.claude/settings.json). Once it is, install the hooks here.")
+                    .font(.callout).foregroundStyle(.secondary)
+                Button("Install Claude Code and Grok Hooks", action: model.installHooks)
+            } else if model.hooks == .unreadable {
+                Text("~/.claude/settings.json isn't valid JSON, so BaneySpaces leaves it alone. Fix it, then come back here.")
+                    .font(.callout).foregroundStyle(.orange)
+            } else if model.hooks == .on {
+                Label("Claude Code and Grok report to BaneySpaces.", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            } else {
+                Text("Hooks let Claude Code and Grok say when they start, finish, ask for permission or hit an error. Without them BaneySpaces reads only terminal titles.")
+                    .font(.callout).foregroundStyle(.secondary)
+                Button("Install Claude Code and Grok Hooks", action: model.installHooks)
             }
         }
     }
@@ -522,7 +515,7 @@ struct SetupView: View {
     @ViewBuilder private var launcher: some View {
         section("Find and install apps") {
             Toggle("⌘Space opens the BaneySpaces launcher instead of Spotlight", isOn: Binding(get: { model.launcherOnCmdSpace }, set: { model.setLauncher($0) }))
-            Text("Open apps, install and remove them, search the web and ask an agent, from one box. Off gives ⌘Space back to Spotlight; the launcher stays in the menu bar and the Workspace Dock.")
+            Text("Open apps, install and remove them, find files, terminal tabs and splits, browser tabs and agent windows, search the web and ask an agent, from one box. ⌃⌘K opens it from any app. Off gives ⌘Space back to Spotlight; the launcher stays in the menu bar, the Workspace Dock and ⌃⌘K.")
                 .font(.callout).foregroundStyle(.secondary)
             Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 6) {
                 GridRow {
@@ -540,35 +533,6 @@ struct SetupView: View {
                 .font(.callout).foregroundStyle(.secondary)
         }
         section("Your bangs\(model.customBangs.isEmpty ? "" : " (\(model.customBangs.count))")") { bangEditor }
-    }
-
-    // MARK: Deck
-
-    @ViewBuilder private var deckTab: some View {
-        section("Terminal and Agent Deck") {
-            Toggle("A sidebar of every terminal, browser tab and coding agent", isOn: Binding(get: { model.deck }, set: { model.setDeck($0) }))
-            Toggle("Open it by resting the pointer on the left edge", isOn: Binding(get: { model.deckEdge }, set: { model.setDeckEdge($0) }))
-                .disabled(!model.deck)
-            Text("\(model.deckEdge ? "Rest the pointer on the left edge in a terminal, browser, agent or phone app, or press ⌃⌘B" : "Press ⌃⌘B in a terminal, browser, agent or phone app") to open it. ⌃⌘K goes to anything in it; ⌃⌘U jumps to the agent that finished last. Picking an iPhone opens iPhone Mirroring beside it; an iPad opens in Xcode's Device Hub. The Workspace Dock's agent badges come from here.")
-                .font(.callout).foregroundStyle(.secondary)
-        }
-        section("Agent hooks") {
-            if model.hooks == .noClaudeCode {
-                Text("Claude Code isn't set up on this Mac (there's no ~/.claude/settings.json). Once it is, install the hooks here.")
-                    .font(.callout).foregroundStyle(.secondary)
-                Button("Install Claude Code and Grok Hooks", action: model.installHooks).disabled(!model.deck)
-            } else if model.hooks == .unreadable {
-                Text("~/.claude/settings.json isn't valid JSON, so BaneySpaces leaves it alone. Fix it, then come back here.")
-                    .font(.callout).foregroundStyle(.orange)
-            } else if model.hooks == .on {
-                Label("Claude Code and Grok report to BaneySpaces.", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-            } else {
-                Text("Hooks let Claude Code and Grok say when they start, finish, ask for permission or hit an error. Without them BaneySpaces reads only terminal titles.")
-                    .font(.callout).foregroundStyle(.secondary)
-                Button("Install Claude Code and Grok Hooks", action: model.installHooks).disabled(!model.deck)
-            }
-        }
     }
 
     private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
@@ -701,7 +665,6 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     func show() {
         model.justEnabled = false
         if !model.ready { model.tab = .general }
-        model.deck = DeckController.enabled
         model.dockAgentStatus = WorkspaceDock.agentStatus
         model.reload()
         model.reloadBangs()
