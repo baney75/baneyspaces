@@ -45,7 +45,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func cancelSettling(_ id: WindowID? = nil) {
         for w in id.map({ [$0] }) ?? Array(Set(settling.keys).union(dropGeneration.keys)) {
             dropGeneration[w, default: 0] += 1
-            settling.removeValue(forKey: w)?.invalidate()
+            if let timer = settling.removeValue(forKey: w) {
+                if timer.isValid { Trace.log("drop cancelled window=\(w)") }
+                timer.invalidate()
+            }
         }
     }
     /// A window dragged to the top of the screen opens the overview, in place of Mission Control.
@@ -96,14 +99,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let now = TopDragWatcher.bounds(of: id)
             still = now == last ? still + 1 : 0
             last = now
-            guard (looks >= 5 && still >= 3) || looks >= 25 else { return }
+            let heldStill = looks >= 5 && still >= 3
+            guard heldStill || looks >= 25 else { return }
             timer.invalidate()
             let ms = Int((ProcessInfo.processInfo.systemUptime - began) * 1000)
             guard let self, now != nil, self.dropGeneration[id, default: 0] == gen else {
-                Trace.log("drop dropped window=\(id) after \(ms) ms looks=\(looks) gone=\(now == nil) stale=\(self?.dropGeneration[id, default: 0] != gen)")
+                let why = self.map { "stale=\($0.dropGeneration[id, default: 0] != gen)" } ?? "self=nil"
+                Trace.log("drop dropped window=\(id) after \(ms) ms looks=\(looks) gone=\(now == nil) \(why)")
                 return
             }
-            Trace.log("drop settled window=\(id) after \(ms) ms looks=\(looks) still=\(still)")
+            // Ended still, or gave up waiting for it to be (the move runs either way).
+            if heldStill {
+                Trace.log("drop settled window=\(id) after \(ms) ms looks=\(looks) still=\(still) settled=true")
+            } else {
+                Trace.log("drop gave up waiting window=\(id) after \(ms) ms looks=\(looks) still=\(still) settled=false")
+            }
             self.settling[id] = nil
             self.spaces.moveCarried(id, to: n, from: grab.frame) { [weak self] in self?.dropGeneration[id, default: 0] == gen }
         }

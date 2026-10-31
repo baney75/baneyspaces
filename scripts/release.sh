@@ -28,7 +28,8 @@ if [ "$DRY" = 0 ]; then
   # The remote must have the same tag on the same commit (an annotated tag shows its commit on the ^{} line).
   # ls-remote lists the tag itself before its peeled ^{} line, so take the ^{} line when there is one
   # (v0.3.0, 2026-10-30: taking the first line compared a tag object with the commit).
-  REMOTE=$(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}" | awk '$2 ~ /\^\{\}$/ { peeled = $1 } { first = first ? first : $1 } END { print peeled ? peeled : first }')
+  LS=$(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}") || fail "couldn't reach origin to check $TAG."
+  REMOTE=$(printf '%s\n' "$LS" | awk '$2 ~ /\^\{\}$/ { peeled = $1 } { first = first ? first : $1 } END { print peeled ? peeled : first }')
   [ "$REMOTE" = "$TAG_COMMIT" ] || fail "origin doesn't have $TAG on this commit. Push the tag first (git push origin $TAG)."
   # Only the draft the Release workflow made: a published release is already being offered, so its
   # files must never change under people. Fix forward with a new patch version.

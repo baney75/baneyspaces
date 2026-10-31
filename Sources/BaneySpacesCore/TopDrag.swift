@@ -42,7 +42,8 @@ public struct TopDrag: Sendable {
     public private(set) var pinned = false
     /// The overview opened for this drag; nothing more happens until the button comes up.
     public private(set) var fired = false
-    private var topSince: TimeInterval?
+    /// When the pointer arrived at the top and started resting there (nil while it isn't).
+    public private(set) var topSince: TimeInterval?
     private var last: CGRect?
     /// The window's frame since its size last changed: the press, or the size macOS gave a
     /// tiled window back. A pinned window is one that hasn't moved from it.
