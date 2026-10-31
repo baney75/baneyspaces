@@ -539,7 +539,13 @@ struct SetupView: View {
                 .help("Follow the accent color in System Settings")
                 ColorPicker("Custom accent", selection: Binding(
                     get: { Appearance.color(appearance.settings.accentRGB(system: Appearance.systemAccent)) },
-                    set: { appearance.settings.accent = .custom(Appearance.rgb($0)) }), supportsOpacity: false)
+                    set: { picked in
+                        // The picker also answers with the color it was shown; that isn't a pick.
+                        let rgb = Appearance.rgb(picked)
+                        let shown = appearance.accentRGB
+                        guard abs(rgb.r - shown.r) + abs(rgb.g - shown.g) + abs(rgb.b - shown.b) > 0.01 else { return }
+                        appearance.settings.accent = .custom(rgb)
+                    }), supportsOpacity: false)
                     .labelsHidden()
                     .help("Pick any color")
             }

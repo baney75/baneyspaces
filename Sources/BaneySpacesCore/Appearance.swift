@@ -12,6 +12,14 @@ public struct RGB: Codable, Equatable, Hashable {
 
     private static func clamp(_ v: Double) -> Double { min(1, max(0, v)) }
 
+    private enum CodingKeys: String, CodingKey { case r, g, b }
+
+    /// A saved color outside 0...1 is brought back in, as `init(r:g:b:)` does.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(r: try c.decode(Double.self, forKey: .r), g: try c.decode(Double.self, forKey: .g), b: try c.decode(Double.self, forKey: .b))
+    }
+
     /// "#RRGGBB" in capitals.
     public var hex: String {
         func byte(_ v: Double) -> Int { Int((v * 255).rounded()) }
@@ -25,6 +33,15 @@ public struct RGB: Codable, Equatable, Hashable {
         guard s.count == 6, let v = UInt32(s, radix: 16) else { return nil }
         self.init(r: Double((v >> 16) & 0xFF) / 255, g: Double((v >> 8) & 0xFF) / 255, b: Double(v & 0xFF) / 255)
     }
+
+    /// WCAG relative luminance: 0 for black, 1 for white.
+    public var luminance: Double {
+        func lin(_ v: Double) -> Double { v <= 0.03928 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4) }
+        return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+    }
+
+    /// WCAG contrast of white text on this color, from 1 (none) to 21.
+    public var contrastWithWhite: Double { 1.05 / (luminance + 0.05) }
 
     public var hsb: HSB {
         let mx = max(r, g, b), mn = min(r, g, b), d = mx - mn
@@ -145,6 +162,21 @@ public struct AppearanceSettings: Codable, Equatable {
 
     public init() {}
 
+    private enum CodingKeys: String, CodingKey { case accent, palette, overrides, panelStyle, panelOpacity, dockSize }
+
+    /// Each field on its own: one missing or unreadable (a newer build's value, an older build's
+    /// blob) takes its default and leaves the rest as saved.
+    public init(from decoder: Decoder) throws {
+        self.init()
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        accent = (try? c.decodeIfPresent(AccentChoice.self, forKey: .accent)) ?? accent
+        palette = (try? c.decodeIfPresent(WorkspacePalette.self, forKey: .palette)) ?? palette
+        overrides = (try? c.decodeIfPresent([Int: RGB].self, forKey: .overrides)) ?? overrides
+        panelStyle = (try? c.decodeIfPresent(PanelStyle.self, forKey: .panelStyle)) ?? panelStyle
+        panelOpacity = (try? c.decodeIfPresent(Double.self, forKey: .panelOpacity)) ?? panelOpacity
+        dockSize = (try? c.decodeIfPresent(DockSize.self, forKey: .dockSize)) ?? dockSize
+    }
+
     // MARK: Saving
 
     public func encoded() -> Data? {
@@ -209,15 +241,26 @@ public struct AppearanceSettings: Codable, Equatable {
     /// Yellow-green hues read lighter, so they get a little less brightness for white text.
     public static func isLightHue(_ h: Double) -> Bool { (0.10...0.36).contains(h) }
 
-    /// The brightest a workspace color may be with white text on it. A gray has no hue to lean
-    /// on, so it is held lower still.
+    /// The most light a workspace color may give off with white text on it: that of the brightest
+    /// of the nine Rainbow colors, so the defaults are untouched.
+    public static let maxLuminance: Double = (1...9).map { paletteColor(.rainbow, $0, accent: AccentPreset.red.rgb).rgb.luminance }.max() ?? 0.5
+
+    /// The brightest a color of this hue and saturation may be (0...1) and stay within `maxLuminance`.
     public static func maxBrightness(hue h: Double, saturation s: Double) -> Double {
-        if s < 0.15 { return 0.60 }
-        return isLightHue(h) ? 0.68 : 0.80
+        if HSB(h: h, s: s, b: 1).rgb.luminance <= maxLuminance { return 1 }
+        var lo = 0.0, hi = 1.0
+        for _ in 0..<40 {
+            let mid = (lo + hi) / 2
+            if HSB(h: h, s: s, b: mid).rgb.luminance <= maxLuminance { lo = mid } else { hi = mid }
+        }
+        return lo
     }
 
+    /// Lowers a color's brightness until white text reads on it as well as on the brightest default.
     public static func readable(_ c: HSB) -> HSB {
-        HSB(h: c.h, s: c.s, b: min(c.b, maxBrightness(hue: c.h, saturation: c.s)))
+        // Already as dark as the brightest default: left exactly as it is.
+        if c.rgb.luminance <= maxLuminance + 1e-9 { return c }
+        return HSB(h: c.h, s: c.s, b: min(c.b, maxBrightness(hue: c.h, saturation: c.s)))
     }
 
     public static func paletteColor(_ palette: WorkspacePalette, _ n: Int, accent: RGB) -> HSB {
@@ -234,8 +277,8 @@ public struct AppearanceSettings: Codable, Equatable {
         case .accent:
             // Nine steps from dark to light in the accent's own hue.
             let a = accent.hsb
-            let top = maxBrightness(hue: a.h, saturation: a.s)
             let s = a.s < 0.15 ? a.s : min(0.85, max(0.45, a.s)) - 0.2 * t
+            let top = min(0.9, maxBrightness(hue: a.h, saturation: s))
             return HSB(h: a.h, s: s, b: 0.34 + t * (top - 0.34))
         }
     }

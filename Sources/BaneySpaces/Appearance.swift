@@ -28,9 +28,10 @@ final class Appearance: ObservableObject {
         // "System" follows the accent color chosen in System Settings.
         systemObserver = NotificationCenter.default.addObserver(forName: NSColor.systemColorsDidChangeNotification,
                                                                 object: nil, queue: .main) { [weak self] _ in
-            guard let self, case .system = self.settings.accent else { return }
+            guard let self else { return }
+            // The Settings tab draws its System swatch from the live color, whatever is chosen.
             self.objectWillChange.send()
-            NotificationCenter.default.post(name: Appearance.didChange, object: nil)
+            if case .system = self.settings.accent { NotificationCenter.default.post(name: Appearance.didChange, object: nil) }
         }
     }
 

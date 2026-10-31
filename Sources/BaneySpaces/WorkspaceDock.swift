@@ -109,6 +109,8 @@ final class WorkspaceDock {
     }
 
     private let spaces: Spaces
+    private var appearanceObserver: NSObjectProtocol?
+    deinit { appearanceObserver.map(NotificationCenter.default.removeObserver) }
     var onShowOverview: () -> Void = {}
     var onShowLauncher: () -> Void = {}
     var onTurnOff: () -> Void = {}
@@ -153,7 +155,7 @@ final class WorkspaceDock {
         model.onLayoutChange = { [weak self] in DispatchQueue.main.async { self?.resize() } }
         // A new dock size changes what SwiftUI measures; the panel (and the keep-zone, which is
         // taken from its frame) follows.
-        NotificationCenter.default.addObserver(forName: Appearance.didChange, object: nil, queue: .main) { [weak self] _ in
+        appearanceObserver = NotificationCenter.default.addObserver(forName: Appearance.didChange, object: nil, queue: .main) { [weak self] _ in
             self?.scheduleResize()
         }
         model.onShowOverview = { [weak self] in self?.hide(); self?.onShowOverview() }
