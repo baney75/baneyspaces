@@ -120,7 +120,7 @@ public struct AgentSessions: Equatable, Sendable {
     /// Binds sessions to `items` and returns each bound item's state, keyed by item ID.
     public mutating func resolve(_ items: [Item], now: Double = .infinity) -> [String: AgentEvent] {
         let byID = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        followed = []
+        var movedByFocus = Set<String>()
         var out: [String: AgentEvent] = [:]
         var taken = Set<String>()
         // An agent app's window is shared: every session in the app reports to it (T3 Code runs a
@@ -133,9 +133,9 @@ public struct AgentSessions: Equatable, Sendable {
         for (key, itemID) in binding {
             guard let e = sessions[key], let item = byID[itemID], Self.compatible(item, e) else { binding[key] = nil; continue }
             // Bound while its app had one window; a second window makes that a guess. Let it follow
-            // from here, staying put if none is in front.
+            // from its next report, staying on this window until then.
             if Self.shared(item), items.filter({ $0.kind == .window && $0.bundleID == item.bundleID }).count > 1 {
-                lastShared[key] = Pick(id: item.id, at: -1)
+                lastShared[key] = Pick(id: item.id, at: e.at)
                 binding[key] = nil
                 continue
             }
@@ -159,27 +159,28 @@ public struct AgentSessions: Equatable, Sendable {
                 pick = byID[id]
             }
             // An agent inside a desktop app (Grok Bot, say) has no terminal: its app's window stands in.
-            var follows = false
+            var follows = false, moved = false
             if pick == nil, !e.app.isEmpty, pool.isEmpty {
                 let windows = inApp.filter { $0.kind == .window && !taken.contains($0.id) }
                 let last = lastShared[key]
                 let there = last.flatMap { l in windows.first { $0.id == l.id && Self.shared($0) } }
-                if windows.count > 1, let w = there, last?.at == e.at {
-                    // No new report since it was placed: focus moving about doesn't move it.
+                if windows.count > 1, let w = there, last?.at == e.at || e.state != .working {
+                    // Placed already, and either nothing new or a stop or question: focus moving
+                    // about doesn't move it. Only work started from the window in front does.
                     pick = w; follows = true
                 } else {
                     pick = windows.first { $0.focused } ?? (windows.count == 1 ? windows[0] : nil)
                     // Focus is weak evidence when the app has several windows: the session may run in
-                    // any of them. Don't pin it to the one in front; re-pick at its next report, and
-                    // fall back to its last window while none of them is focused.
-                    if let p = pick, windows.count > 1, Self.shared(p) { follows = true }
+                    // any of them. Don't pin it to the one in front; re-pick at its next working
+                    // report, and fall back to its last window while none of them is focused.
+                    if let p = pick, windows.count > 1, Self.shared(p) { follows = true; moved = p.id != there?.id }
                     else if pick == nil, let w = there { pick = w; follows = true }
                 }
             }
             guard let p = pick else { continue }
             if follows {
                 lastShared[key] = Pick(id: p.id, at: e.at)
-                followed.insert(p.id)
+                if moved { movedByFocus.insert(key) }
                 show(e, on: p)
                 continue
             }
@@ -187,6 +188,8 @@ public struct AgentSessions: Equatable, Sendable {
             candidates[key] = nil
             show(e, on: p)
         }
+        // A row is followed when the session it shows was put there by focus, not one that was already there.
+        followed = Set(out.filter { movedByFocus.contains($0.value.agent + ":" + $0.value.session) }.keys)
         // A question on a window you're looking at is answered, or let be: it stops outranking work.
         for (id, e) in out where e.state == .waiting && !e.message.isEmpty {
             if let item = byID[id], Self.shared(item), item.focused, !followed.contains(id) { answered[e.agent + ":" + e.session] = e.at }
