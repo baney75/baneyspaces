@@ -136,7 +136,10 @@ final class Engine {
     /// Scripted apps only: their background tabs change without any window notification.
     private func sweepScripted() {
         let forgot = sessions.expire(now: Date().timeIntervalSince1970)
-        let working = items.contains { $0.activity == .working }
+        // Only an agent in a scripted terminal is a reason to read terminals: one in T3 Code or a
+        // phone says nothing about a background terminal tab.
+        let terminals = Set(tracked.values.filter { $0.spec.adapter != .windows && $0.spec.role == .terminal }.map(\.spec.bundleID))
+        let working = items.contains { $0.activity == .working && terminals.contains($0.bundleID) }
         let now = Date()
         let scripted = tracked.filter { $0.value.spec.adapter != .windows }
             .map { (id: $0.key, role: $0.value.spec.role, lastRead: $0.value.scriptedAt.timeIntervalSinceReferenceDate) }
@@ -215,7 +218,7 @@ final class Engine {
             let scriptable = script != nil && Automation.allowed(spec.bundleID)
             switch scriptable ? spec.adapter : .windows {
             case .ghostty:
-                let raw = script.flatMap { s in OSA.queue.sync { s.call("snapshot") } }
+                let raw = script.flatMap { s in Self.snapshot(s, spec.bundleID) }
                 ghostty = raw.map(Snapshot.parse)
                 if let g = ghostty {
                     items = Build.ghostty(spec, g, numbers: WindowMatch.pair(scripted: g.windowTitles, native: native), front: front)
@@ -223,7 +226,7 @@ final class Engine {
                     items = Build.windows(spec, native, front: front, frontWindowNumber: frontNumber)
                 }
             case .chromium, .terminalApp, .iterm:
-                let raw = script.flatMap { s in OSA.queue.sync { s.call("snapshot") } }
+                let raw = script.flatMap { s in Self.snapshot(s, spec.bundleID) }
                 scripted = raw.map(ScriptedSnapshot.parse)
                 if let s = scripted {
                     let pairs = WindowMatch.pair(scripted: s.windows.map { ($0.id, $0.title) }, native: native)
@@ -252,6 +255,14 @@ final class Engine {
                 if again { self.refresh(pid) }
             }
         }
+    }
+
+    /// An app's snapshot script. Refused by macOS (-1743) or waiting on the person to answer
+    /// (-1744): Automation's remembered yes is dropped, so the next read asks again.
+    private static func snapshot(_ s: OSA, _ bundleID: String) -> String? {
+        let r = OSA.queue.sync { s.run("snapshot") }
+        if r.error == -1743 || r.error == -1744 { Automation.forget(bundleID) }
+        return r.error == 0 ? r.out : nil
     }
 
     // MARK: merging
@@ -307,8 +318,8 @@ final class Engine {
         // A hook usually means the title changed too: read the app it came from now, and again once
         // the title has caught up, which is when an unbound session gets narrowed to its terminal.
         let apps = tracked.filter { $0.value.spec.adapter != .windows }
-            .map { (id: $0.key, bundleID: $0.value.spec.bundleID, role: $0.value.spec.role) }
-        let read = Sweep.forHook(apps, eventApp: e.app)
+            .map { (id: $0.key, bundleID: $0.value.spec.bundleID, role: $0.value.spec.role, ttys: Set($0.value.items.map(\.tty).filter { !$0.isEmpty })) }
+        let read = Sweep.forHook(apps, eventApp: e.app, tty: e.tty)
         guard !read.isEmpty else { return }
         for pid in read { refresh(pid) }
         DispatchQueue.main.asyncAfter(deadline: .now() + AgentSessions.settle + 0.15) { [weak self] in
