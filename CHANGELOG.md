@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **The Workspace Dock goes down once the pointer leaves it.** It used to stay up while the pointer
+  rested above or beside it, over the app underneath, because it counted the empty room it keeps for
+  its hover label. Now only the dock itself counts, plus the window strip while it's open.
+- **Clearer dock logs.** `trace.log` notes when the dock comes up, when it goes down and why, and
+  anything holding it up with the pointer off it. Each line also goes to the macOS log, so a Shotate
+  debug recording includes it.
+
 ## 0.3.0 (2026-10-30)
 
 - **Install without building, and a disk image.** A stable release now carries the finished,
