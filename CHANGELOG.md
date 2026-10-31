@@ -9,11 +9,11 @@
   command line tools. Browser users get `BaneySpaces.dmg` with the drag-to-Applications window;
   the first open needs **System Settings › Privacy & Security › Open Anyway**, because
   BaneySpaces isn't notarized. The installer checks the app against BaneySpaces' release key
-  and refuses anything else. Updating from 0.2.2 builds 0.3.0 on your Mac, and later updates keep
-  building it while the command line tools are installed, so macOS keeps its Accessibility
-  permission. Without the tools, an update installs the ready-made app instead; allow BaneySpaces
-  again in **System Settings › Privacy & Security › Accessibility** once. Nightly builds still
-  build from source.
+  and refuses anything else. Updating from 0.2.2 builds 0.3.0 on your Mac, so keep the command line
+  tools until then. After that, a copy you built keeps building while the tools are installed, so
+  macOS keeps its Accessibility permission; without them, an update installs the ready-made app
+  instead, and macOS asks you to allow BaneySpaces again in **System Settings › Privacy & Security ›
+  Accessibility**. Nightly builds still build from source.
 - **Change the colors and looks in Settings › Appearance.** Pick an accent (nine colors, System
   to follow macOS, or any color you choose), a palette for the nine workspace colors (Rainbow,
   Accent, Calm or Mono) and a color of your own for any one workspace, a panel style (Glass,
@@ -62,12 +62,11 @@
   on an app's icon and the app opens the file or link, as in the macOS Dock.
 - **The Workspace Dock comes and goes with the pointer.** It comes up when the pointer rests on
   its edge under it, stays while a menu near the pointer is open, and goes back down as soon as the
-  pointer leaves, right-click menu or not. An empty menu window macOS leaves under the menu bar
-  doesn't hold it back, and hovered tiles hold still.
-- **Easier on the battery.** BaneySpaces reads Ghostty and your browser by AppleScript only when
-  there's a reason: the terminal an agent runs in, while it works, and every app at most once a
+  pointer leaves, including after you close a right-click menu.
+- **Reads other apps only when it needs to.** BaneySpaces reads Ghostty and your browser by
+  AppleScript only when there's a reason: the terminal an agent runs in, while it works, and every app at most once a
   minute or when you search. An agent's events read only the app it runs in, and an app whose
-  script keeps failing waits a minute before the next try.
+  script keeps failing waits about a minute before the next try.
 - **The Workspace Dock can sit on any side:** bottom, left, right or top, from setup, the menu
   bar menu, or a tile's right-click menu. The label and window strip open on its inner side, and
   a dock too long for the screen shrinks to fit. At the top it sits under the menu bar and waits
@@ -93,10 +92,9 @@
   iPhone Mirroring. `baneyspaces remote on` (off by default) listens only on the tailnet address and
   lets another Mac on your tailnet give this one's agent workspace work, with a token; it can't
   focus, type into or move anything you see.
-- **Apps come forward again.** Ghostty, and some other apps, keep a window alive after you close
-  it, and a tab behind another tab looks the same. BaneySpaces kept those on their workspace, so
-  ⌘Tab, the dock and the launcher sent you to a window that couldn't come forward. They leave the
-  workspaces now.
+- **Closed windows and hidden tabs stay out of the way.** Ghostty and some other apps keep a window
+  alive after you close it, and a tab behind another tab looks the same. Neither counts as a window
+  on a workspace, so ⌘Tab, the dock and the launcher only send you to windows that can come forward.
 - **Windows no longer slide to the corner.** Apps with the accessibility setting
   AXEnhancedUserInterface on animated every move, so an app split across workspaces had its other
   windows glide across the screen on every switch. The move is instant now, and those switches went
