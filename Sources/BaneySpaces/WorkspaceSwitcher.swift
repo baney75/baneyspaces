@@ -1,6 +1,7 @@
 import AppKit
 import BaneySpacesCore
 import SwiftUI
+import os
 
 /// ⌘Tab across workspaces: hold ⌘, tap Tab to step, let go to go there. ⌘⇧Tab steps back;
 /// Esc cancels. In app mode it steps through every app with a window, on any workspace, most
@@ -490,8 +491,16 @@ extension NSWindow {
 
 /// A short record of ⌘Tab gestures in trace.log, to diagnose a switcher that misbehaves. It
 /// notes only the gesture (Tab, ⌘ let go, Esc) and workspace numbers, never other keys.
+///
+/// Each line also goes to the unified log (subsystem com.baney.baneyspaces), so a Shotate debug
+/// recording and `log show --predicate 'subsystem == "com.baney.baneyspaces"'` carry it next to
+/// what macOS logged. Lines hold workspace numbers, window ids and app names, never window titles,
+/// so they're public.
 enum Trace {
+    private static let unified = Logger(subsystem: "com.baney.baneyspaces", category: "trace")
+
     static func log(_ line: String) {
+        unified.notice("\(line, privacy: .public)")
         let url = Spaces.folder.appendingPathComponent("trace.log")
         let text = "\(Date().timeIntervalSince1970) \(line)\n"
         if let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int, size > 200_000 {

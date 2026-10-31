@@ -245,10 +245,14 @@ final class WorkspaceDock {
             dragStraying: model.drag.map { !$0.carried } ?? false,
             carrying: carrying, windowCarry: windowCarry != nil, carryRefused: carryRefused != nil,
             dwell: edge.dwell)
+        var nearBar = false
         if isShown {
             if let p = panel {
                 let screenFrame = (shownOn ?? p.screen)?.frame ?? p.frame
-                input.inKeepZone = edge.keepZone(dock: p.frame, screen: screenFrame).contains(mouse)
+                let bar = model.frames[DockView.barKey].map { DockEdge.screenRect($0, panel: p.frame, origin: model.origin) }
+                let sideOpen = model.stripApp != nil || model.moreApps != nil
+                input.inKeepZone = edge.keepZone(bar: bar, panel: p.frame, sideOpen: sideOpen, screen: screenFrame).contains(mouse)
+                nearBar = edge.keepZone(bar: bar, panel: p.frame, sideOpen: false, screen: screenFrame).contains(mouse)
             }
         } else if let n = edge.screen(at: mouse, among: screens.map(\.frame)) {
             let screen = screens[n]
@@ -269,16 +273,21 @@ final class WorkspaceDock {
             carryUndroppable: { resolveCarry() == nil })
         // Before the actions: showing clears the dwell and away clocks itself.
         tickState = state
+        if isShown { noteHold(nearBar: nearBar, input: input, mouse: mouse, now: uptime) }
         for action in actions {
             switch action {
             case .orderOutStray:
                 Trace.log("dock panel still up after the dock went down; putting it away")
                 panel?.orderOut(nil)
             case .hideForViewer:
+                Trace.log("dock down: overview open")
                 hide()
             case .cancelDrag:
+                Trace.log("dock drag cancelled: buttons up with no mouse-up")
                 model.cancelDrag()
             case .hideAway:
+                let up = shownAt.map { String(format: "%.1f", uptime - $0) } ?? "?"
+                Trace.log("dock down: pointer left at \(Int(mouse.x)),\(Int(mouse.y)) after \(up)s up")
                 rearmScreen = panel?.screen
                 hide()
             case .show(let n):
@@ -286,6 +295,26 @@ final class WorkspaceDock {
                 if let g = windowCarry { carryMoved(g) }
             }
         }
+    }
+
+    /// When the dock last came up, in uptime, for the trace.
+    private var shownAt: TimeInterval?
+    /// Since when something other than the pointer on the bar has held the dock up.
+    private var heldSince: TimeInterval?
+    private var heldLogged = false
+
+    /// A dock up with the pointer off its bar is the "stuck" Donovan sees. Once it has been held
+    /// that way for 2 s, the trace says what holds it and where the pointer is, once per hold.
+    private func noteHold(nearBar: Bool, input: DockTick.Input, mouse: CGPoint, now: TimeInterval) {
+        let reasons = [input.inKeepZone && !nearBar ? "strip" : nil, model.menuOpen ? "menu" : nil,
+                       input.dragStraying ? "drag" : nil].compactMap { $0 }
+        guard !nearBar, !reasons.isEmpty else { heldSince = nil; heldLogged = false; return }
+        if heldSince == nil { heldSince = now }
+        guard !heldLogged, now - heldSince! > 2 else { return }
+        heldLogged = true
+        let bar = panel.flatMap { p in model.frames[DockView.barKey].map { DockEdge.screenRect($0, panel: p.frame, origin: model.origin) } }
+        Trace.log("dock held 2s off the bar by \(reasons.joined(separator: "+")): pointer \(Int(mouse.x)),\(Int(mouse.y))"
+                  + " bar \(bar.map { "\(Int($0.minX)),\(Int($0.minY)) \(Int($0.width))x\(Int($0.height))" } ?? "unmeasured")")
     }
 
     /// A right-click menu from the dock keeps it up while the window server shows it. A flag left
@@ -522,6 +551,11 @@ final class WorkspaceDock {
         let up = edge.frame(size: size, screen: screen.frame, visible: screen.visibleFrame)
         shownOn = screen
         spanLength = edge.isVertical ? size.height : size.width
+        shownAt = ProcessInfo.processInfo.systemUptime
+        heldSince = nil
+        heldLogged = false
+        let m = NSEvent.mouseLocation
+        Trace.log("dock up: \(edge.rawValue) edge, pointer \(Int(m.x)),\(Int(m.y)), panel \(Int(up.width))x\(Int(up.height))" + (retried ? " (rebuilt)" : ""))
         p.setFrame(up.offsetBy(dx: edge.away.dx, dy: edge.away.dy), display: false)
         slidingIn = true
         p.alphaValue = 0
@@ -1010,6 +1044,8 @@ struct DockView: View {
     /// The key under which the stack reports its own frame in the panel. No colon, so no drop
     /// target reads it as a tile or an icon.
     static let originKey = "origin"
+    /// The key for the bar's own frame, in the dock's space. No colon, for the same reason.
+    static let barKey = "bar"
     @ObservedObject var model: DockModel
     /// Redraws when Settings › Appearance changes.
     @ObservedObject private var appearance = Appearance.shared
@@ -1028,7 +1064,8 @@ struct DockView: View {
         let stack = edge.isVertical ? AnyLayout(HStackLayout(alignment: .center, spacing: 8)) : AnyLayout(VStackLayout(alignment: .center, spacing: 8))
         return stack {
             if edge == .bottom || edge == .right { side }
-            fittedBar
+            // The bar you see, for the zone that keeps the dock up (`DockEdge.keepZone(bar:)`).
+            fittedBar.modifier(CenterReport(key: DockView.barKey))
             if edge == .top || edge == .left { side }
         }
         .modifier(SizeReport(size: $stackSize))

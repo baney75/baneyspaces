@@ -68,7 +68,7 @@ public enum DockEdge: String, CaseIterable, Sendable {
     /// Where the pointer can be while the dock stays up: the dock itself, everything between it
     /// and its edge of the screen (for the top dock, the menu bar the pointer came down from),
     /// and a little slack all around.
-    public func keepZone(dock: CGRect, screen: CGRect) -> CGRect {
+    public func keepZone(dock: CGRect, screen: CGRect, slack: CGFloat = 24) -> CGRect {
         var r = dock
         switch self {
         case .bottom: r = CGRect(x: r.minX, y: screen.minY - 1, width: r.width, height: r.maxY - screen.minY + 1)
@@ -76,7 +76,27 @@ public enum DockEdge: String, CaseIterable, Sendable {
         case .left: r = CGRect(x: screen.minX - 1, y: r.minY, width: r.maxX - screen.minX + 1, height: r.height)
         case .right: r = CGRect(x: r.minX, y: r.minY, width: screen.maxX + 1 - r.minX, height: r.height)
         }
-        return r.insetBy(dx: -24, dy: -24)
+        return r.insetBy(dx: -slack, dy: -slack)
+    }
+
+    /// Slack around the bar you see, past which the pointer has left the dock.
+    public static let barSlack: CGFloat = 12
+
+    /// The keep zone of a dock that's up. The panel is bigger than the bar you see: it keeps a
+    /// row for the hover label on the screen side and is at least 480 pt long, so a zone taken from
+    /// the panel held the dock up with the pointer 50 pt above the bar or 100 pt beside it, over
+    /// the app underneath (Donovan, 2026-10-31). The zone hugs the bar, unless the window strip or
+    /// the "+N" list is open: those are on the screen side and take clicks, so the whole panel
+    /// counts then. `bar` is nil until the dock has laid itself out; the panel stands in.
+    public func keepZone(bar: CGRect?, panel: CGRect, sideOpen: Bool, screen: CGRect) -> CGRect {
+        guard let bar, !sideOpen else { return keepZone(dock: panel, screen: screen) }
+        return keepZone(dock: bar, screen: screen, slack: DockEdge.barSlack)
+    }
+
+    /// A frame the dock reports in its own space (top-left origin at `origin` inside a panel
+    /// framed at `panel`), in AppKit screen coordinates. The inverse of `DockCarry.point`.
+    public static func screenRect(_ r: CGRect, panel: CGRect, origin: CGPoint) -> CGRect {
+        CGRect(x: panel.minX + origin.x + r.minX, y: panel.maxY - origin.y - r.maxY, width: r.width, height: r.height)
     }
 
     /// Whether a menu open in another app is what the pointer is there for: one within reach of
