@@ -61,6 +61,36 @@ final class DockKeepZoneTests: XCTestCase {
         }
     }
 
+    /// Review of #91, first-F4: the edge that opens the dock is sized from the bar as last
+    /// measured. When the bar comes up shorter (a workspace emptied), the pointer that opened it
+    /// sits past the new bar's zone; it holds the dock until it moves.
+    func testABarThatShrankBetweenShowsKeepsThePointerThatOpenedIt() {
+        let visible = CGRect(x: 0, y: 0, width: 1512, height: 949)
+        let edge = DockEdge.bottom
+        let p = CGPoint(x: 756 + 240, y: 0.5)
+        XCTAssertTrue(edge.withinSpan(p, screen: screen, visible: visible, length: 500, slack: DockEdge.barSlack), "the old, longer bar opens it")
+        let shorter = edge.frame(size: CGSize(width: 430, height: 84), screen: screen, visible: visible)
+        XCTAssertFalse(edge.keepZone(bar: shorter, panel: panel, sideOpen: false, screen: screen).contains(p),
+                       "the shorter bar's zone alone would drop it")
+        XCTAssertTrue(DockEdge.unmoved(p, since: p), "the pointer that opened it holds it")
+        XCTAssertTrue(DockEdge.unmoved(CGPoint(x: p.x + 3, y: p.y), since: p), "a jitter isn't a move")
+        XCTAssertFalse(DockEdge.unmoved(CGPoint(x: p.x + 5, y: p.y), since: p), "a real move lets the zone decide")
+    }
+
+    /// AGENTS.md's ledger tells the next person what to search trace.log for; the code must log it
+    /// (review of #91, second-G1). And the pointer that opened the dock holds it.
+    func testTheLedgersLogLinesAreTheOnesTheCodeWrites() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let code = try String(contentsOf: root.appendingPathComponent("Sources/BaneySpaces/WorkspaceDock.swift"), encoding: .utf8)
+        let agents = try String(contentsOf: root.appendingPathComponent("AGENTS.md"), encoding: .utf8)
+        for line in ["dock up: ", "dock down: pointer left at ", "dock held 2s off the bar by "] {
+            XCTAssertTrue(code.contains("Trace.log(\"\(line)"), "the code logs `\(line)`")
+            XCTAssertTrue(agents.contains(line), "AGENTS.md names `\(line)`")
+        }
+        XCTAssertTrue(code.contains(".contains(mouse) || unmoved"), "the pointer that opened the dock holds it")
+    }
+
     func testAnOpenWindowStripCountsTheWholePanel() {
         // The strip sits above the bar and takes clicks; reaching for it must not drop the dock.
         let zone = DockEdge.bottom.keepZone(bar: bar, panel: panel, sideOpen: true, screen: screen)
