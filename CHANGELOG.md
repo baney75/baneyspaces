@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Install and update without building.** A stable release now carries the finished, signed app,
+  so the one-line install and the updater download a few MB instead of building on your Mac,
+  and need no command line tools. The installer checks the app against BaneySpaces' release key
+  and refuses anything else. Browser users get `BaneySpaces.dmg` with the drag-to-Applications
+  window; the first open needs **System Settings › Privacy & Security › Open Anyway**, because
+  BaneySpaces isn't notarized. The Nightly build and older releases still build from source.
 - **Each display shows a workspace of its own.** With a second monitor or Sidecar, ⌘3 used to
   change what every screen showed. Now it changes only the display you're on: the one you last
   clicked, anywhere on it (a window, the desktop, the Workspace Dock or the overview), or whose

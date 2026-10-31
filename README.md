@@ -234,17 +234,29 @@ steps just off screen and comes back to the exact spot it left.
 
 ## Install
 
-Requires macOS 13 Ventura or later, on Apple silicon or Intel. In Terminal:
+Requires macOS 13 Ventura or later, on Apple silicon or Intel. Two ways in:
+
+**In Terminal**, one line. It downloads the ready-made app (a few MB, no developer tools),
+checks that it is signed with BaneySpaces' release key, and copies it to `~/Applications`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/baney75/baneyspaces/main/install.sh | bash
 ```
 
-The installer builds BaneySpaces from source with Apple's free command line tools and copies it
-to `~/Applications`. If the tools are missing, it opens Apple's installer for them first (about
-1 GB, usually 5 to 15 minutes); paste the command again when that finishes. Because the app is
-built on your Mac, there is no "unidentified developer" warning. If the build fails, the
-installer shows the error and where the full log is.
+**From your browser**: download `BaneySpaces.dmg` from the
+[latest release](https://github.com/baney75/baneyspaces/releases/latest) and drag BaneySpaces to
+Applications. The first time you open it, macOS asks you to confirm in **System Settings ›
+Privacy & Security › Open Anyway**, because BaneySpaces isn't notarized. The Terminal line
+doesn't ask: a file downloaded by `curl` never gets that prompt.
+
+A release without the ready-made app (the Nightly build, old releases), or
+`BANEYSPACES_FROM_SOURCE=1`, builds from source instead with Apple's free command line tools. If
+the tools are missing, the installer opens Apple's installer for them first (about 1 GB, usually
+5 to 15 minutes); paste the command again when that finishes. If the build fails, the installer
+shows the error and where the full log is.
+
+The ready-made app and a source build are signed with different certificates, so macOS asks for
+the Accessibility permission again if you switch from one to the other.
 
 Prefer to read the source first? Build it yourself:
 
@@ -286,9 +298,10 @@ Spotlight.
 
 BaneySpaces looks for a new version once a day and, when there is one, the menu bar menu shows
 **Update to BaneySpaces …**. Nothing installs until you press **Update Now** in the window that
-shows what changed. The update builds on your Mac the same way the first install did, so the
-Accessibility permission carries over, then BaneySpaces restarts and shows the release notes.
-If the build fails, BaneySpaces keeps running as it was and offers the log.
+shows what changed. The update installs the same way the first install did (a stable release
+downloads the ready-made app, a Nightly build is built on your Mac), so the Accessibility
+permission carries over, then BaneySpaces restarts and shows the release notes. If the update
+fails, BaneySpaces keeps running as it was and offers the log.
 
 Pick what you follow under **Updates** in the menu:
 

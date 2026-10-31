@@ -1,4 +1,8 @@
 name: Release
+# The prebuilt app (BaneySpaces.zip, its .sha256 and BaneySpaces.dmg) is not made here: it is
+# signed with the release key, which never leaves the owner's Mac. After this workflow creates the
+# release, run `make release` on that Mac to upload them. Until then install.sh and the updater
+# build that release from source.
 # Pushing a version tag (git tag v0.2.2 && git push origin v0.2.2) publishes the stable release,
 # with notes taken from that version's CHANGELOG section. The app offers it to everyone on the
 # Stable channel; nothing installs until they press Update.

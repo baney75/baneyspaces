@@ -3,9 +3,10 @@ import BaneySpacesCore
 
 /// Finds new builds on the channel the person chose (Stable or Nightly) and installs one only
 /// when they press Update Now. Checking asks GitHub once a day, and can be turned off; it
-/// sends nothing about this Mac. Installing runs the same installer as the first install,
-/// building on this Mac, so the Accessibility permission carries over and no download has to
-/// be trusted by Gatekeeper.
+/// sends nothing about this Mac. Installing runs the same installer as the first install: it
+/// downloads the release's signed app (checked against the pinned release key) or, for a build
+/// without one, builds on this Mac. Either way the Accessibility permission carries over and
+/// Gatekeeper has nothing to ask.
 final class Updater: NSObject {
     static let releasesURL = URL(string: "https://api.github.com/repos/baney75/baneyspaces/releases?per_page=30")!
 
@@ -129,7 +130,7 @@ final class Updater: NSObject {
     func offer(_ release: Release) {
         let alert = NSAlert()
         alert.messageText = release.isNightly ? "A new nightly build is available" : "\(release.name) is available"
-        alert.informativeText = "You have \(Self.buildDescription). Updating builds the new version on this Mac in about a minute, then BaneySpaces restarts by itself. Your workspaces stay as they are."
+        alert.informativeText = "You have \(Self.buildDescription). Updating installs the new version in about a minute, then BaneySpaces restarts by itself. Your workspaces stay as they are."
         alert.accessoryView = Self.notesView(release.notes)
         alert.addButton(withTitle: "Update Now")
         alert.addButton(withTitle: "Later")
@@ -195,13 +196,13 @@ final class Updater: NSObject {
         return kill(pid, 0) == 0
     }
 
-    /// Runs the installer for `release` in the background. It builds first and only then quits
-    /// and replaces this app, so a failed build leaves BaneySpaces running as it was. The
+    /// Runs the installer for `release` in the background. It downloads (or builds) first and only
+    /// then quits and replaces this app, so a failed update leaves BaneySpaces running as it was. The
     /// exact commit whose notes were shown is installed, or nothing is.
     func install(_ release: Release) {
         guard installing == nil, release.isInstallable else { return }
         guard !Self.installerRunning else {
-            return tell("An update is already installing", "It builds in the background and restarts BaneySpaces when it's done.")
+            return tell("An update is already installing", "It installs in the background and restarts BaneySpaces when it's done.")
         }
         let folder = Self.supportFolder
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
