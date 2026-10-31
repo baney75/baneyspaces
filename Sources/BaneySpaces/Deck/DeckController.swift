@@ -38,6 +38,9 @@ final class DeckController {
     let terminalKeys = ScopedHotkeys(signature: "BSTM")
     /// Set by the app delegate: opens the launcher, where the Deck's rows are searched. ⌃⌘K calls it.
     var onSearch: () -> Void = {}
+    /// The rows changed, so an open launcher can show them.
+    var onItemsChange: () -> Void = {}
+    private var lastItems: [Item] = []
     /// Claude Code and Grok report to BaneySpaces (their hooks are installed).
     private(set) var hooksInstalled = true
     /// A new Claude session's pane is on its way.
@@ -141,6 +144,7 @@ final class DeckController {
             .map { ($0.id, $0.activity == .working ? "" : $0.notice) }) { a, _ in a }
         if working != lastWorking { lastWorking = working; onWorkingChange() }
         lastUnseen = unseen
+        if engine.items != lastItems { lastItems = engine.items; onItemsChange() }
         writeState()
     }
 

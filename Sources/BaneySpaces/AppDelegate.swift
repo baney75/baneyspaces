@@ -122,6 +122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         a.showOverview = { [weak self] in self?.viewer.open() }
         a.deckItems = { [weak self] q in self?.deck.launcherItems(q) ?? [] }
+        a.willShow = { [weak self] in self?.deck.engine.refreshAll() }
         a.newClaude = { [weak self] in self?.deck.newClaude() }
         a.newTerminal = { [weak self] in self?.deck.engine.newTerminal(in: nil) }
         a.bringBack = { [weak self] in self?.bringBack() }
@@ -282,6 +283,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         // ⌃⌘K (registered in `registerShortcuts`) opens the launcher, which searches the Deck's rows.
         deck.onSearch = { [weak self] in self?.launcher.toggle() }
+        deck.onItemsChange = { [weak self] in self?.launcher.rowsChanged() }
         startWhenTrusted()
         // ⌘Space works with or without Accessibility; Spotlight hands it over first.
         if Launcher.onCmdSpace { setLauncherOnCmdSpace(true) } else { registerShortcuts() }
