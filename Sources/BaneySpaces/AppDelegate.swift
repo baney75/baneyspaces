@@ -133,12 +133,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // New Terminal opens where you were working, read before the launcher takes focus.
             // Only a terminal in front says where you were working; a focused row in another app doesn't.
             let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-            self.terminalFolder = self.deck.engine.items.first {
-                $0.focused && $0.kind == .terminal && $0.bundleID == front && !$0.directory.isEmpty
-            }?.directory
+            self.terminalFolder = Item.workingFolder(self.deck.engine.items, front: front)
             self.deck.engine.refreshAll()
         }
-        a.newClaude = { [weak self] in self?.deck.newClaude() }
+        a.newClaude = { [weak self] in self?.deck.newClaude(in: self?.terminalFolder) }
         a.newTerminal = { [weak self] in self?.deck.engine.newTerminal(in: self?.terminalFolder) }
         a.bringBack = { [weak self] in self?.bringBack() }
         a.toggleDock = { [weak self] in self?.toggleWorkspaceDock() }

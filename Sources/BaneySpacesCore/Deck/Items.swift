@@ -160,3 +160,12 @@ public enum URLDisplay {
         return s.count > 60 ? String(s.prefix(59)) + "…" : s
     }
 }
+
+extension Item {
+    /// The folder a new terminal or Claude session opens in: the focused terminal's, and only
+    /// while its app is in front (`front` is that app's bundle ID). A focused row in another app,
+    /// or one that isn't a terminal, says nothing about where you were working.
+    public static func workingFolder(_ items: [Item], front: String?) -> String? {
+        items.first { $0.focused && $0.kind == .terminal && $0.bundleID == front && !$0.directory.isEmpty }?.directory
+    }
+}

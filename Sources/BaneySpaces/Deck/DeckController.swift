@@ -206,12 +206,12 @@ final class DeckController {
     /// Running `claude-desk` itself cost a bash and an `osascript` launch plus a 90 to 150 ms
     /// compile on every press. It stays the fallback when the script never reached Ghostty, and a
     /// plain terminal running `claude` without it. `done` runs once the pane is up or handed off.
-    func newClaude(then done: @escaping () -> Void = {}) {
+    func newClaude(in folder: String? = nil, then done: @escaping () -> Void = {}) {
         guard !claudeOpening else { return }
         let desk = NSHomeDirectory() + "/.local/bin/claude-desk"
         guard FileManager.default.isExecutableFile(atPath: desk) else {
-            let dir = engine.items.first { $0.focused && !$0.directory.isEmpty }?.directory
-            engine.newTerminal(in: dir, command: "claude")
+            let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+            engine.newTerminal(in: folder ?? Item.workingFolder(engine.items, front: front), command: "claude")
             return done()
         }
         claudeOpening = true
