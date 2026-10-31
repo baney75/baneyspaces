@@ -127,7 +127,7 @@ public enum FillTheScreen {
     public static let gaveUpKey = "systemTopDragFillGaveUp"
 
     /// What to do once the write to turn it back on has been tried.
-    public enum Decision: Equatable, Sendable {
+    public enum Decision: Equatable {
         /// Nothing more owed (it's on, or wasn't ours to turn on): drop the record, the pending
         /// flag and the count, and remember it was given back.
         case settled
@@ -149,14 +149,9 @@ public enum FillTheScreen {
     }
 
     /// A decision and whether a try has now happened since this launch.
-    public struct Step: Equatable, Sendable {
+    public struct Step: Equatable {
         public var decision: Decision
         public var triedThisLaunch: Bool
-
-        public init(decision: Decision, triedThisLaunch: Bool) {
-            self.decision = decision
-            self.triedThisLaunch = triedThisLaunch
-        }
     }
 
     /// The decision after a write. `record`: the older build's saved settings exist. `pending`:

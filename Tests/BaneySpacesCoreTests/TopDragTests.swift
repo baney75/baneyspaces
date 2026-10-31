@@ -221,9 +221,9 @@ final class TopDragTests: XCTestCase {
     }
 
     /// Second-S1 / first-F1: giving up is its own record, apart from giving back, so the
-    /// uninstaller still writes once more. Checks the Core mapping from decision to flag, and that
-    /// uninstall.sh names both keys; not what uninstall.sh does with them.
-    func testGiveUpAndGivenBackFlagsAreDistinctAndBothNamedInUninstallSh() throws {
+    /// uninstaller still writes once more. The pure layer names the flag; uninstall.sh reads the
+    /// same names.
+    func testGivingUpIsRecordedApartFromGivingBack() throws {
         XCTAssertEqual(FillTheScreen.Decision.settled.flagKey, "systemTopDragFillGivenBack")
         XCTAssertEqual(FillTheScreen.Decision.giveUp.flagKey, "systemTopDragFillGaveUp")
         XCTAssertNil(FillTheScreen.Decision.retry(tries: 1).flagKey, "a retry sets no flag")

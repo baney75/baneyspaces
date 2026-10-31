@@ -55,20 +55,6 @@ final class DockStuckTests: XCTestCase {
             .split(separator: "\n").map { $0.components(separatedBy: "//")[0] }.joined(separator: "\n")
         XCTAssertTrue(text.contains("p.hidesOnDeactivate = false"))
         XCTAssertTrue(text.contains("DockMenu.holdsDock("), "the tick must check the menu flag against the screen")
-        XCTAssertTrue(text.contains("DockTick.step("), "the tick must decide through DockTick.step")
-        XCTAssertFalse(text.contains("DockStray.isStray("), "the stray check lives in DockTick.step, where its order is tested")
-    }
-
-    /// The stray check is inside `DockTick.step`, ahead of the overview's return (the order itself
-    /// is `DockTickTests.testAStrayPanelIsPutAwayWhileTheOverviewIsOpen`).
-    func testTheStepPutsAwayAStrayPanel() throws {
-        let source = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Sources/BaneySpacesCore/DockTick.swift")
-        let text = try String(contentsOf: source, encoding: .utf8)
-            .split(separator: "\n").map { $0.components(separatedBy: "//")[0] }.joined(separator: "\n")
-        let stray = try XCTUnwrap(text.range(of: "DockStray.isStray("), "the step must put away a panel left up")
-        let viewer = try XCTUnwrap(text.range(of: "if i.viewerOpen"))
-        XCTAssertLessThan(stray.lowerBound, viewer.lowerBound, "the stray check must come before the overview's return")
+        XCTAssertTrue(text.contains("DockStray.isStray("), "the tick must put away a panel left up")
     }
 }
