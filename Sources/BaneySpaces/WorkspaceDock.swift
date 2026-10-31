@@ -739,7 +739,7 @@ final class DockModel: ObservableObject {
 
     /// The apps a tile shows as "+N", and its tile.
     var moreApps: (tile: Tile, apps: [App])? {
-        guard let n = more, let t = tiles.first(where: { $0.id == n }), t.apps.count > DockModel.iconsShown + 1 else { return nil }
+        guard let n = more, let t = tiles.first(where: { $0.id == n }), DockLabel.hidden(t.apps.count, shown: DockModel.iconsShown) > 0 else { return nil }
         return (t, Array(t.apps.dropFirst(DockModel.iconsShown)))
     }
 
@@ -1205,12 +1205,7 @@ struct DockView: View {
         case .app(let n, let id):
             guard let app = model.tiles.first(where: { $0.id == n })?.apps.first(where: { $0.id == id }) else { return nil }
             let elsewhere = model.tiles.filter { $0.id != n && $0.apps.contains { $0.pid == app.pid } }.map { String($0.id) }
-            // The tile already says which workspace; the label adds only what the icon can't.
-            var parts = [app.name]
-            if app.windows > 1 { parts.append("\(app.windows) windows") }
-            if !elsewhere.isEmpty { parts.append("also on \(elsewhere.count == 1 ? "Workspace" : "Workspaces") \(elsewhere.joined(separator: ", "))") }
-            if let agent = app.agent { parts.append(agent.summary) }
-            return parts.joined(separator: " · ")
+            return DockLabel.appTitle(name: app.name, windows: app.windows, elsewhere: elsewhere, agent: app.agent?.summary)
         case .newWorkspace: return model.firstEmpty.map { "Go to Empty Workspace \($0)" }
         case .launcher: return "Find or Install an App"
         case .overview: return "Show All Workspaces"
@@ -1436,13 +1431,14 @@ struct DockView: View {
         } else if apps.count == 2 {
             HStack(spacing: 2) { ForEach(apps) { appIcon($0, in: tile, size: 28 * k) } }
         } else {
-            let shown = apps.count > 4 ? Array(apps.prefix(DockModel.iconsShown)) : apps
+            let hidden = DockLabel.hidden(apps.count, shown: DockModel.iconsShown)
+            let shown = hidden > 0 ? Array(apps.prefix(DockModel.iconsShown)) : apps
             LazyVGrid(columns: [GridItem(.fixed(24 * k), spacing: 3), GridItem(.fixed(24 * k), spacing: 3)], spacing: 3) {
                 ForEach(shown) { appIcon($0, in: tile, size: 24 * k) }
-                if apps.count > 4 {
+                if hidden > 0 {
                     // Rest on it (or click it) to list the apps it stands for, each one clickable.
                     let open = model.hover == .more(tile.id) || model.more == tile.id
-                    Text("+\(apps.count - DockModel.iconsShown)")
+                    Text("+\(hidden)")
                         .font(.system(size: 10, weight: .bold, design: .rounded)).foregroundStyle(.white.opacity(open ? 1 : 0.85))
                         .frame(width: 24 * k, height: 24 * k)
                         .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.white.opacity(open ? 0.24 : 0.12)))
@@ -1451,7 +1447,7 @@ struct DockView: View {
                         .onHover { model.setHover(.more(tile.id), $0) }
                         .onTapGesture { model.more = tile.id }
                         .accessibilityElement(children: .ignore)
-                        .accessibilityLabel("\(apps.count - DockModel.iconsShown) more apps on workspace \(tile.id)")
+                        .accessibilityLabel("\(hidden) more apps on workspace \(tile.id)")
                         .accessibilityAddTraits(.isButton)
                         .accessibilityAction { model.more = tile.id }
                 }

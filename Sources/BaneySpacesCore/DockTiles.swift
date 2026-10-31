@@ -137,7 +137,23 @@ extension DockTiles {
 public enum DockLabel {
     public static func tileTitle(workspace: Int, apps: [String], agent: String?, shown: Int) -> String {
         guard !apps.isEmpty else { return "Workspace \(workspace) · empty" }
-        let listed = apps.count - shown > 1 ? apps.prefix(shown).joined(separator: ", ") + " +\(apps.count - shown) more" : apps.joined(separator: ", ")
+        let more = hidden(apps.count, shown: shown)
+        let listed = more > 0 ? apps.prefix(shown).joined(separator: ", ") + " +\(more) more" : apps.joined(separator: ", ")
         return (["Workspace \(workspace)"] + [agent].compactMap { $0 } + [listed]).joined(separator: " · ")
+    }
+
+    /// How many apps a tile hides behind its "+N": none when one more icon would fit in the
+    /// "+N"'s place. The tile, its "+N" list and the label all count with this.
+    public static func hidden(_ count: Int, shown: Int) -> Int {
+        count - shown > 1 ? count - shown : 0
+    }
+
+    /// The words over a hovered app icon. The tile already says which workspace, so this adds
+    /// only what the icon can't, the agent's state first so a cut-short label keeps it.
+    public static func appTitle(name: String, windows: Int, elsewhere: [String], agent: String?) -> String {
+        var parts = [name] + [agent].compactMap { $0 }
+        if windows > 1 { parts.append("\(windows) windows") }
+        if !elsewhere.isEmpty { parts.append("also on \(elsewhere.count == 1 ? "Workspace" : "Workspaces") \(elsewhere.joined(separator: ", "))") }
+        return parts.joined(separator: " · ")
     }
 }

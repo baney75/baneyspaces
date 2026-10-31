@@ -92,6 +92,18 @@ final class DockLabelTests: XCTestCase {
         XCTAssertEqual(DockLabel.tileTitle(workspace: 3, apps: [], agent: nil, shown: 3), "Workspace 3 · empty")
     }
 
+    func testTheTileAndTheLabelHideTheSameApps() {
+        // Three icons and a "+N" from five apps; four apps show all four icons.
+        XCTAssertEqual([1, 2, 3, 4, 5, 8].map { DockLabel.hidden($0, shown: 3) }, [0, 0, 0, 0, 2, 5])
+        XCTAssertEqual(DockLabel.hidden(5, shown: .max), 0)
+    }
+
+    func testAnAppLabelPutsTheAgentBeforeTheDetails() {
+        XCTAssertEqual(DockLabel.appTitle(name: "T3 Code (Nightly)", windows: 3, elsewhere: ["2", "4"], agent: "Claude is working on Fix the dock"),
+                       "T3 Code (Nightly) · Claude is working on Fix the dock · 3 windows · also on Workspaces 2, 4")
+        XCTAssertEqual(DockLabel.appTitle(name: "Helium", windows: 1, elsewhere: ["3"], agent: nil), "Helium · also on Workspace 3")
+    }
+
     func testVoiceOverHearsEveryApp() {
         XCTAssertEqual(DockLabel.tileTitle(workspace: 1, apps: ["A", "B", "C", "D", "E"], agent: nil, shown: .max),
                        "Workspace 1 · A, B, C, D, E")
