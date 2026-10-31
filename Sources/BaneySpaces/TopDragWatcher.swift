@@ -51,10 +51,6 @@ enum SystemTopDrag {
         UserDefaults.standard.removeObject(forKey: savedKey)
     }
 
-    private static let fillGivenBackKey = "systemTopDragFillGivenBack"
-    /// Gave up after `FillTheScreen.maxTries`: kept apart from giving back so uninstalling still
-    /// makes one last write.
-    private static let fillGaveUpKey = "systemTopDragFillGaveUp"
     /// Turning it back on didn't read back yet: still owed even once `restore()` drops the record.
     private static let fillPendingKey = "systemTopDragFillPending"
     private static let fillTriesKey = "systemTopDragFillTries"
@@ -65,21 +61,23 @@ enum SystemTopDrag {
     /// it comes back on unless it was off before BaneySpaces (`FillTheScreen`). A setting saved
     /// as absent leaves no key, so the record's mere presence is what counts. Done once the write
     /// reads back, or after `FillTheScreen.maxTries` launches' tries that didn't; after that a
-    /// change in System Settings is left alone.
+    /// change in System Settings is left alone, with one exception: a give-up is recorded as
+    /// `FillTheScreen.gaveUpKey`, not as given back, so uninstalling makes one last write. Give-ups
+    /// recorded by builds before #50 set the given-back flag, and get no last write.
     private static func giveFillBack() {
         let d = UserDefaults.standard
-        guard !d.bool(forKey: fillGivenBackKey), !d.bool(forKey: fillGaveUpKey) else { return }
+        guard !d.bool(forKey: FillTheScreen.givenBackKey), !d.bool(forKey: FillTheScreen.gaveUpKey) else { return }
         var saved = d.dictionary(forKey: savedKey)
         let was = saved?[fill.id] as? NSNumber
         let pending = d.bool(forKey: fillPendingKey)
         let now = read(fill)?.boolValue
         let due = FillTheScreen.turnBackOn(taken: saved != nil || pending, saved: was?.boolValue, now: now)
         if due, write(fill, on) { restart([fill]) }
-        let decision = FillTheScreen.decide(
+        let step = FillTheScreen.decide(
             record: saved != nil, pending: pending, saved: was?.boolValue, now: now,
             tries: d.integer(forKey: fillTriesKey), triedThisLaunch: fillTriedThisLaunch, readBack: read(fill) == on)
-        if due { fillTriedThisLaunch = true }
-        switch decision {
+        fillTriedThisLaunch = step.triedThisLaunch
+        switch step.decision {
         case .retry(let tries):
             d.set(tries, forKey: fillTriesKey)
             d.set(true, forKey: fillPendingKey)
@@ -91,7 +89,7 @@ enum SystemTopDrag {
         }
         if saved?.removeValue(forKey: fill.id) != nil { d.set(saved, forKey: savedKey) }
         for key in [fillPendingKey, fillTriesKey] { d.removeObject(forKey: key) }
-        d.set(true, forKey: decision == .giveUp ? fillGaveUpKey : fillGivenBackKey)
+        if let key = step.decision.flagKey { d.set(true, forKey: key) }
     }
 
     private static func read(_ s: Setting) -> NSNumber? {
