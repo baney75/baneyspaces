@@ -202,7 +202,8 @@ case "event":
     if started && state != .working { fail("--started goes with --state working: it says a prompt was just submitted", code: 2) }
     var at = Date().timeIntervalSince1970
     if hasSwitch("--at", in: rest, valued: ["--state", "--agent", "--session", "--cwd", "--message"]) {
-        guard let v = flag("--at", in: rest), let t = Double(v), t > 0 else { fail("--at takes unix seconds, like 1761864000", code: 2) }
+        guard let v = flag("--at", in: rest), let t = Double(v) else { fail("--at takes unix seconds, like 1761864000", code: 2) }
+        if let why = AgentEvent.stampProblem(at: t, started: started, now: Date().timeIntervalSince1970) { fail(why, code: 2) }
         at = t
     }
     let tty = controllingTTY()

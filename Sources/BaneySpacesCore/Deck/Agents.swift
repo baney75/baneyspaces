@@ -1,8 +1,8 @@
 import Foundation
 
-/// One report from a coding agent's hook. Claude Code sends its hook JSON on stdin; `ghostdeck hook`
+/// One report from a coding agent's hook. Claude Code sends its hook JSON on stdin; `baneyspaces hook`
 /// adds the tty it ran under and forwards it here. Any other agent can send the same shape with
-/// `ghostdeck event --state working|waiting|idle|end [--started] [--at SECS]`.
+/// `baneyspaces event --state working|waiting|idle|end [--started] [--at SECS]`.
 public struct AgentEvent: Codable, Equatable, Sendable {
     public enum State: String, Codable, Sendable { case working, waiting, idle, end }
 
@@ -76,6 +76,16 @@ public struct AgentEvent: Codable, Equatable, Sendable {
         let session = json["session_id"] as? String ?? json["sessionId"] as? String ?? ""
         return AgentEvent(agent: agent, session: session, cwd: json["cwd"] as? String ?? "", tty: tty, app: app,
                           state: state, message: message, at: at, started: typed)
+    }
+
+    /// Why `baneyspaces event` should refuse a stamp it was given with `--at`, if it should: `now` is
+    /// the local clock, the same one the app times a prompt by. Nil when the stamp is fine.
+    public static func stampProblem(at t: Double, started: Bool, now: Double) -> String? {
+        guard t.isFinite, t > 0, abs(now - t) <= 6 * 3600 else { return "--at must be unix seconds within 6 hours of now" }
+        if started && now - t > AgentSessions.promptLife {
+            return "--started with an --at over \(Int(AgentSessions.promptLife)) seconds old: a prompt only counts for that long"
+        }
+        return nil
     }
 
     /// Notification types that ask you something; an older Claude sends none.
@@ -215,9 +225,9 @@ public struct AgentSessions: Equatable, Sendable {
                     if let p = pick, windows.count > 1, Self.shared(p) {
                         follows = true
                         // A prompt submitted with this window in front is evidence the session is in it.
-                        // Only that: a prompt pending while focus is elsewhere proves nothing.
-                        let typedHere = pending && p.focused
-                        byFocus = typedHere ? false : (p.id != there?.id || last?.byFocus == true)
+                        // `p` is always the window in front here: with several windows only `front` can
+                        // be picked, so a prompt pending while focus is elsewhere never gets this far.
+                        byFocus = pending ? false : (p.id != there?.id || last?.byFocus == true)
                     } else if pick == nil, let w = there {
                         // Focus decided nothing, so the prompt stays pending.
                         pick = w; follows = true; byFocus = last?.byFocus ?? false
