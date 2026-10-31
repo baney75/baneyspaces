@@ -275,7 +275,8 @@ final class Engine {
 
     /// An app's snapshot script. Refused by macOS (-1743) or waiting on the person to answer
     /// (-1744): Automation's remembered yes is dropped, so the next read asks again.
-    /// `ranAt` is taken as the script starts on `OSA.queue`, the moment `Sweep` counts a try from.
+    /// `ranAt` is when `Sweep` counts the try from: the script's start on `OSA.queue` if it answered,
+    /// its end if it failed (see `Sweep.triedAt`).
     private static func snapshot(_ s: OSA, _ bundleID: String) -> (out: String?, refused: Bool, ranAt: Date) {
         var ranAt = Date()
         let r = OSA.queue.sync { () -> (out: String?, error: Int) in
@@ -284,7 +285,7 @@ final class Engine {
         }
         let refused = r.error == -1743 || r.error == -1744
         if refused { Automation.forget(bundleID) }
-        return (r.error == 0 ? r.out : nil, refused, ranAt)
+        return (r.error == 0 ? r.out : nil, refused, Sweep.triedAt(started: ranAt, finished: Date(), ok: r.error == 0))
     }
 
     // MARK: merging

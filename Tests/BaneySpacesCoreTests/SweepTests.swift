@@ -65,6 +65,15 @@ final class SweepTests: XCTestCase {
         XCTAssertEqual(Sweep.forHook(apps, eventApp: "com.apple.Terminal", tty: "/dev/ttys050"), [2])
     }
 
+    func testAFailedTryCountsFromWhenItEndedAndASuccessFromWhenItStarted() {
+        // A script that timed out after 3 s was tried at its end, so the backoff isn't 3 s shorter.
+        XCTAssertEqual(Sweep.triedAt(started: 100.0, finished: 103.0, ok: false), 103)
+        XCTAssertEqual(Sweep.triedAt(started: 100.0, finished: 103.0, ok: true), 100)
+        let tried = Sweep.triedAt(started: 100.0, finished: 103.0, ok: false)
+        XCTAssertTrue(Sweep.backingOff(lastTried: tried, lastOK: false, now: 100 + Sweep.everything - 1))
+        XCTAssertFalse(Sweep.backingOff(lastTried: 100, lastOK: false, now: 100 + Sweep.everything - 1))
+    }
+
     func testTheSlowPassIsntPushedATickLate() {
         let due = Sweep.everything - Sweep.tick / 2
         XCTAssertTrue(Sweep.reads(role: .browser, agentWorking: false, lastRead: 0, now: due))
@@ -94,6 +103,7 @@ final class SweepTests: XCTestCase {
         XCTAssertTrue(refresh.contains("spec.adapter == .windows || backingOff ? nil"), "a backing-off app sends no script")
         XCTAssertTrue(refresh.contains("t.scriptTriedAt = ranAt ?? started"), "a try is stamped when the script ran on the queue")
         XCTAssertTrue(refresh.contains("ranAt = Date()"), "the time is taken inside the queue block")
+        XCTAssertTrue(refresh.contains("Sweep.triedAt(started: ranAt, finished: Date(), ok: r.error == 0)"), "a failed try is stamped at its end")
         XCTAssertFalse(refresh.contains("t.scriptTriedAt = started"))
     }
 }

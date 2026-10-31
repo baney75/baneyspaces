@@ -457,16 +457,22 @@ final class ClaudeDeskTests: XCTestCase {
         XCTAssertEqual(ClaudeDesk.parse(""), [])
     }
 
-    func testATimedOutTileIsRecoveredFromTheFrontTab() {
-        // The first window opened late: the state is the front tab and its one terminal.
+    func testATimedOutTileIsRecoveredFromTheStatesOwnTab() {
+        // The first window opened late: no state, so the front tab it names becomes the state.
         XCTAssertEqual(ClaudeDesk.recovered(prior: [], front: ["tab-1", "a"]), ["tab-1", "a"])
-        // A split opened late in the tab the state names: the old terminals stay first, the new one
-        // follows, whatever order Ghostty lists them in.
+        // The state's tab is gone: the tab `frontTab` fell back to starts the state over.
+        XCTAssertEqual(ClaudeDesk.recovered(prior: ["tab-1", "a"], front: ["tab-2", "e"]), ["tab-2", "e"])
+        // Exactly one terminal the state doesn't know: the pane that opened late, appended after the
+        // old ones in their order, whatever order Ghostty lists them in.
         XCTAssertEqual(ClaudeDesk.recovered(prior: ["tab-1", "a", "b"], front: ["tab-1", "c", "b", "a"]), ["tab-1", "a", "b", "c"])
-        // A terminal the user closed drops out.
+        // One late pane and a closed one.
         XCTAssertEqual(ClaudeDesk.recovered(prior: ["tab-1", "a", "b"], front: ["tab-1", "b", "c"]), ["tab-1", "b", "c"])
-        // A different front tab (the fifth press made a new tab): the state starts over from it.
-        XCTAssertEqual(ClaudeDesk.recovered(prior: ["tab-1", "a", "b", "c", "d"], front: ["tab-2", "e"]), ["tab-2", "e"])
+        // None unknown: the state minus the terminals that closed.
+        XCTAssertEqual(ClaudeDesk.recovered(prior: ["tab-1", "a", "b"], front: ["tab-1", "b"]), ["tab-1", "b"])
+        XCTAssertEqual(ClaudeDesk.recovered(prior: ["tab-1", "a", "b"], front: ["tab-1", "b", "a"]), ["tab-1", "a", "b"])
+        // More than one unknown: not ours to guess, the state stays.
+        XCTAssertEqual(ClaudeDesk.recovered(prior: ["tab-1", "a"], front: ["tab-1", "a", "x", "y"]), ["tab-1", "a"])
+        XCTAssertEqual(ClaudeDesk.recovered(prior: ["tab-1", "a", "b"], front: ["tab-1", "x", "y"]), ["tab-1", "a", "b"])
         // Ghostty has no window: nothing to write.
         XCTAssertEqual(ClaudeDesk.recovered(prior: ["tab-1", "a"], front: []), [])
         XCTAssertEqual(ClaudeDesk.timedOut, -1712)
@@ -484,10 +490,12 @@ final class ClaudeDeskTests: XCTestCase {
         let focus = try XCTUnwrap(lines.firstIndex { $0.hasPrefix("focus newTerm") })
         XCTAssertEqual(lines[focus - 1], "try")
         XCTAssertEqual(lines[focus + 1], "end try", "focus must be alone in its try")
-        XCTAssertTrue(scripts.contains("on frontTab()"))
+        let front = try XCTUnwrap(scripts.range(of: "on frontTab(priorTab)").map { String(scripts[$0.lowerBound...].prefix(900)) })
+        XCTAssertTrue(front.contains("with timeout of 30 seconds"), "frontTab waits as long as the tile does")
+        XCTAssertTrue(front.contains("if (id of x) is priorTab"), "frontTab looks up the state's own tab by ID")
         let controller = try String(contentsOf: root.appendingPathComponent("Sources/BaneySpaces/Deck/DeckController.swift"), encoding: .utf8)
         XCTAssertTrue(controller.contains("r.error == ClaudeDesk.timedOut"), "a timeout reads the front tab")
-        XCTAssertTrue(controller.contains("ClaudeDesk.recovered(prior: prior"))
+        XCTAssertTrue(controller.contains("script.run(\"frontTab\", [prior.first ?? \"\"])"))
     }
 
     func testRunsClaudeTheWayClaudeDeskDoes() {

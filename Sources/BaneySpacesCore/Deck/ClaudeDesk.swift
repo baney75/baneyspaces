@@ -22,17 +22,25 @@ public enum ClaudeDesk {
     /// AppleScript's error when a `with timeout` block runs out. Ghostty may still finish the work.
     public static let timedOut = -1712
 
-    /// The state after `claudeTile` timed out, from Ghostty's front tab: its ID, then its terminals'
-    /// IDs (`front`). In the tab the state already names, the terminals it had stay first, in order
-    /// (the script picks split bases by position), and any it didn't know follow, which is the
-    /// pane that opened late. Any other tab starts the state over from what's in it. An empty
-    /// answer (no window) writes nothing, so the state stays as it was.
+    /// The state after `claudeTile` timed out, from `frontTab`'s answer: a tab's ID, then its
+    /// terminals' IDs. `frontTab` answers for the state's own tab while it exists, so it's never
+    /// swapped for whichever tab is in front; it answers for the front tab only when the state
+    /// is empty or its tab is gone, and then that tab starts the state over.
+    ///
+    /// In the state's own tab exactly one pane opens late, so one terminal the state doesn't know is
+    /// that pane and is appended. None: the state minus terminals that closed. More than one: don't
+    /// guess which is ours, keep the state. An empty answer (no window) writes nothing.
     public static func recovered(prior: [String], front: [String]) -> [String] {
         guard let tab = front.first else { return [] }
         let terminals = Array(front.dropFirst())
         guard prior.first == tab else { return [tab] + terminals }
         let known = prior.dropFirst().filter { terminals.contains($0) }
-        return [tab] + known + terminals.filter { !known.contains($0) }
+        let unknown = terminals.filter { !prior.contains($0) }
+        switch unknown.count {
+        case 0: return [tab] + known
+        case 1: return [tab] + known + unknown
+        default: return prior
+        }
     }
 
     public static func read() -> [String] {
