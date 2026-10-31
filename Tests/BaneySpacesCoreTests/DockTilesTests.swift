@@ -77,3 +77,34 @@ final class DockAgentTests: XCTestCase {
                        ["tailscale", "silas", "obsidian"])
     }
 }
+
+final class DockLabelTests: XCTestCase {
+    func testABusyTileNamesWhatItShowsAndCountsTheRest() {
+        // The workspace in Donovan's 2026-10-31 recording: the label listed all eight and ran past the dock.
+        let apps = ["Microsoft Word", "Helium", "T3 Code (Nightly)", "Grok Bot", "Claude", "Obsidian", "Ghostty", "Silas"]
+        XCTAssertEqual(DockLabel.tileTitle(workspace: 1, apps: apps, agent: "Claude is working", shown: 3),
+                       "Workspace 1 · Microsoft Word, Helium, T3 Code (Nightly) +5 more · Claude is working")
+    }
+
+    func testATileThatFitsNamesEveryApp() {
+        XCTAssertEqual(DockLabel.tileTitle(workspace: 2, apps: ["Helium", "Ghostty", "Claude", "Silas"], agent: nil, shown: 3),
+                       "Workspace 2 · Helium, Ghostty, Claude, Silas")
+        XCTAssertEqual(DockLabel.tileTitle(workspace: 3, apps: [], agent: nil, shown: 3), "Workspace 3 · empty")
+    }
+
+    func testVoiceOverHearsEveryApp() {
+        XCTAssertEqual(DockLabel.tileTitle(workspace: 1, apps: ["A", "B", "C", "D", "E"], agent: nil, shown: .max),
+                       "Workspace 1 · A, B, C, D, E")
+    }
+
+    /// The label is one line no wider than the dock's narrowest panel, whatever it says.
+    func testTheDockLabelIsCappedToOneLine() throws {
+        let source = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/BaneySpaces/WorkspaceDock.swift")
+        let text = try String(contentsOf: source, encoding: .utf8)
+            .split(separator: "\n").map { $0.components(separatedBy: "//")[0] }.joined(separator: "\n")
+        XCTAssertTrue(text.contains(".frame(maxWidth: Self.labelMaxWidth)"), "the dock label must have a width cap")
+        XCTAssertTrue(text.contains("DockLabel.tileTitle("), "the tile label must come from DockLabel.tileTitle")
+    }
+}

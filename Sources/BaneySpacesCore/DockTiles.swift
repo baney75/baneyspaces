@@ -130,3 +130,13 @@ extension DockTiles {
         return visible + keys.filter { !visible.contains($0) }
     }
 }
+
+/// The words over a hovered tile. It names the apps the tile shows and counts the rest the way
+/// the tile's "+N" does, so eight apps don't stretch the label past the dock (2026-10-31).
+public enum DockLabel {
+    public static func tileTitle(workspace: Int, apps: [String], agent: String?, shown: Int) -> String {
+        guard !apps.isEmpty else { return "Workspace \(workspace) · empty" }
+        let listed = apps.count - shown > 1 ? apps.prefix(shown).joined(separator: ", ") + " +\(apps.count - shown) more" : apps.joined(separator: ", ")
+        return (["Workspace \(workspace)", listed] + [agent].compactMap { $0 }).joined(separator: " · ")
+    }
+}

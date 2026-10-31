@@ -1115,6 +1115,8 @@ struct DockView: View {
                 .offset(sideOffset(hoverKey))
         } else {
             label.frame(height: 24)
+                .modifier(SizeReport(size: $sideSize))
+                .offset(sideOffset(hoverKey))
         }
     }
 
@@ -1144,10 +1146,16 @@ struct DockView: View {
         return CGSize(width: min(max(c.x - stackSize.width / 2, -room), room), height: 0)
     }
 
+    /// The widest the label's text gets: with its padding it stays inside the dock's 480 pt panel,
+    /// so a long label never widens the panel past the dock.
+    static let labelMaxWidth: CGFloat = 420
+
     @ViewBuilder private var label: some View {
         if let text = labelText {
             Text(text)
                 .font(.system(size: 12, weight: .semibold))
+                .lineLimit(1).truncationMode(.tail)
+                .frame(maxWidth: Self.labelMaxWidth)
                 .padding(.horizontal, 10).padding(.vertical, 4)
                 .background(Capsule().fill(Color.black.opacity(0.78)))
                 .overlay(Capsule().strokeBorder(Color.white.opacity(0.12)))
@@ -1175,7 +1183,7 @@ struct DockView: View {
             return "Move \(drag.name) to Workspace \(to)"
         }
         switch model.hover {
-        case .tile(let n): return model.tiles.first { $0.id == n }.map(title)
+        case .tile(let n): return model.tiles.first { $0.id == n }.map { title($0) }
         case .app(let n, let id):
             guard let app = model.tiles.first(where: { $0.id == n })?.apps.first(where: { $0.id == id }) else { return nil }
             let elsewhere = model.tiles.filter { $0.id != n && $0.apps.contains { $0.pid == app.pid } }.map { String($0.id) }
@@ -1254,11 +1262,11 @@ struct DockView: View {
         .onHover { inside in model.onStrip = inside }
     }
 
-    private func title(_ tile: DockModel.Tile) -> String {
-        guard !tile.apps.isEmpty else { return "Workspace \(tile.id) · empty" }
+    /// The tile's label names the apps it shows; VoiceOver (`shown: .max`) hears them all.
+    private func title(_ tile: DockModel.Tile, shown: Int = DockModel.iconsShown) -> String {
         let apps = tile.apps.map { $0.windows > 1 ? "\($0.name) (\($0.windows))" : $0.name }
         let agent = tile.agents.max { $0.state.urgency < $1.state.urgency }
-        return (["Workspace \(tile.id)", apps.joined(separator: ", ")] + [agent?.summary].compactMap { $0 }).joined(separator: " · ")
+        return DockLabel.tileTitle(workspace: tile.id, apps: apps, agent: agent?.summary, shown: shown)
     }
 
     private func isHovered(_ tile: DockModel.Tile) -> Bool {
@@ -1298,7 +1306,7 @@ struct DockView: View {
         .modifier(HoverScale(scale: hovered ? 1.06 : 1, anchor: .bottom, spring: .spring(response: 0.25, dampingFraction: 0.72)))
         .contextMenu { tileMenu(tile) }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(title(tile) + (tile.isCurrent ? ", current" : ""))
+        .accessibilityLabel(title(tile, shown: .max) + (tile.isCurrent ? ", current" : ""))
         .accessibilityAction { model.onPick(tile.id) }
     }
 
