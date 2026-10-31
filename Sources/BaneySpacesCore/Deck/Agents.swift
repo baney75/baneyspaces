@@ -82,6 +82,9 @@ public struct AgentSessions: Equatable, Sendable {
     /// The question each session last showed on an app's window while you were looking at it.
     private var answered: [String: Double] = [:]
     private var narrowedBy: [String: Double] = [:]
+    /// The shared window each session last showed on while it had no binding. Only a fallback for
+    /// when none of the app's windows is focused.
+    private var lastShared: [String: String] = [:]
     /// How long a title takes to catch up with a hook event before it's compared.
     public static let settle = 0.5
 
@@ -98,6 +101,7 @@ public struct AgentSessions: Equatable, Sendable {
 
     private mutating func forget(_ key: String) {
         sessions[key] = nil; binding[key] = nil; candidates[key] = nil; narrowedBy[key] = nil; answered[key] = nil
+        lastShared[key] = nil
     }
 
     /// Forgets sessions silent for longer than `maxAge` seconds (an agent killed without SessionEnd).
@@ -143,11 +147,24 @@ public struct AgentSessions: Equatable, Sendable {
                 pick = byID[id]
             }
             // An agent inside a desktop app (Grok Bot, say) has no terminal: its app's window stands in.
+            var follows = false
             if pick == nil, !e.app.isEmpty, pool.isEmpty {
                 let windows = inApp.filter { $0.kind == .window && !taken.contains($0.id) }
                 pick = windows.first { $0.focused } ?? (windows.count == 1 ? windows[0] : nil)
+                // Focus is weak evidence when the app has several windows: the session may run in
+                // any of them. Don't pin it to the one that happened to be in front; pick again
+                // each merge, and fall back to the last pick while none of them is focused.
+                if let p = pick, windows.count > 1, Self.shared(p) { follows = true }
+                else if pick == nil, let id = lastShared[key], let w = windows.first(where: { $0.id == id && Self.shared($0) }) {
+                    pick = w; follows = true
+                }
             }
             guard let p = pick else { continue }
+            if follows {
+                lastShared[key] = p.id
+                show(e, on: p)
+                continue
+            }
             binding[key] = p.id
             candidates[key] = nil
             show(e, on: p)
@@ -273,7 +290,9 @@ public struct ShownSessions: Equatable, Sendable {
         let key = e.agent + ":" + e.session
         defer { shown[id] = key }
         guard let before = shown[id], before != key else { return activity }
-        return .shell
+        // Only a stop can be false: Attention flags working -> waiting, and the session now shown
+        // may have stopped long ago. Work it reports is real, so its stop is still a finish.
+        return activity == .waiting ? .shell : activity
     }
 
     public mutating func keep(_ ids: Set<String>) { shown = shown.filter { ids.contains($0.key) } }

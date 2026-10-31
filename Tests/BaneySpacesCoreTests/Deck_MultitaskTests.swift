@@ -240,6 +240,78 @@ final class SharedWindowTests: XCTestCase {
         XCTAssertEqual(att.unseen, ["win:1"], "c working then stopping is")
     }
 
+    /// The merge Engine runs for a shared window: resolve, take the activity, feed Attention.
+    private func mergeRow(_ a: inout AgentSessions, _ shown: inout ShownSessions, _ att: inout Attention, _ rows: [Item], now: Double) {
+        let bound = a.resolve(rows, now: now)
+        att.update(rows.map { r in
+            let e = bound[r.id]
+            let act = e.map { AgentSessions.activity(r, $0, now: now) } ?? r.activity
+            return (r.id, shown.attention(r.id, e, AgentSessions.forAttention(act, e)))
+        }, focused: nil)
+    }
+
+    func testShowingAnIdleSessionAfterAStaleOneIsNotAFinish() {
+        var a = AgentSessions(), shown = ShownSessions(), att = Attention()
+        a.apply(ev("a", .working, at: 10))
+        mergeRow(&a, &shown, &att, [window], now: 11)
+        mergeRow(&a, &shown, &att, [window], now: AgentSessions.stale + 20)
+        XCTAssertEqual(a.resolve([window], now: AgentSessions.stale + 20)["win:1"]?.session, "a")
+        a.apply(ev("b", .idle, at: AgentSessions.stale + 30))
+        mergeRow(&a, &shown, &att, [window], now: AgentSessions.stale + 31)
+        XCTAssertEqual(a.resolve([window], now: AgentSessions.stale + 31)["win:1"]?.session, "b", "the stale one gave way")
+        XCTAssertEqual(att.unseen, [], "a session switch alone never flags a finish")
+        mergeRow(&a, &shown, &att, [window], now: AgentSessions.stale + 40)
+        XCTAssertEqual(att.unseen, [])
+    }
+
+    func testTheSameSessionStoppingIsStillAFinish() {
+        var a = AgentSessions(), shown = ShownSessions(), att = Attention()
+        a.apply(ev("a", .working, at: 10))
+        mergeRow(&a, &shown, &att, [window], now: 11)
+        a.apply(ev("a", .waiting, at: 20))
+        mergeRow(&a, &shown, &att, [window], now: 21)
+        XCTAssertEqual(att.unseen, ["win:1"])
+    }
+
+    func testASessionTakingTheWindowWhileWorkingStillFinishesLater() {
+        var a = AgentSessions(), shown = ShownSessions(), att = Attention()
+        a.apply(ev("a", .working, at: 10))
+        mergeRow(&a, &shown, &att, [window], now: 11)
+        a.apply(ev("b", .working, at: 20))
+        mergeRow(&a, &shown, &att, [window], now: 21)
+        a.apply(ev("b", .waiting, at: 22))
+        mergeRow(&a, &shown, &att, [window], now: 23)
+        XCTAssertEqual(a.resolve([window], now: 23)["win:1"]?.session, "a", "a is still fresh work")
+        // b is no longer the one shown, so a is: the row is still working. Stop a too.
+        a.apply(ev("a", .waiting, at: 24))
+        mergeRow(&a, &shown, &att, [window], now: 25)
+        XCTAssertEqual(att.unseen, ["win:1"])
+    }
+
+    func testASessionBindsToTheOnlyWindowOfItsApp() {
+        var a = AgentSessions()
+        a.apply(ev("a", .working, at: 1))
+        var only = window; only.focused = true
+        XCTAssertEqual(a.resolve([only], now: 2)["win:1"]?.session, "a")
+        XCTAssertEqual(a.binding["claude:a"], "win:1", "one window: the binding stays, as before")
+    }
+
+    func testASessionIsNotPinnedToTheWindowThatWasFocusedWhenItFirstReported() {
+        var a = AgentSessions()
+        func win(_ n: Int, focused: Bool) -> Item {
+            Item(id: "win:\(n)", bundleID: t3, appName: "T3 Code", role: .agent, kind: .window, group: "win:\(n)", title: "T3 Code", focused: focused)
+        }
+        a.apply(ev("a", .working, at: 1))
+        XCTAssertEqual(Array(a.resolve([win(1, focused: true), win(2, focused: false)], now: 2).keys), ["win:1"])
+        XCTAssertNil(a.binding["claude:a"], "focus among several windows isn't evidence enough to bind")
+        XCTAssertEqual(Array(a.resolve([win(1, focused: false), win(2, focused: true)], now: 3).keys), ["win:2"],
+                       "the window in front now shows it")
+        XCTAssertEqual(Array(a.resolve([win(1, focused: false), win(2, focused: false)], now: 4).keys), ["win:2"],
+                       "with none in front it stays where it last showed instead of vanishing")
+        XCTAssertEqual(a.resolve([win(1, focused: false)], now: 5)["win:1"]?.session, "a", "the other closed: now the app's only window")
+        XCTAssertEqual(a.binding["claude:a"], "win:1")
+    }
+
     func testAStopOnlyTheTitleSawIsNotAFinish() {
         let late = AgentEvent(agent: "claude", session: "s", cwd: "", tty: "", app: "", state: .working, at: 0)
         XCTAssertEqual(AgentSessions.forAttention(.waiting, late), .shell, "a background agent's late hook won't flag the row again")
