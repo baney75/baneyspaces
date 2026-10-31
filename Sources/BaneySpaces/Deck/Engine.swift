@@ -18,8 +18,8 @@ final class Engine {
         var ms = 0
         /// Script reads since launch, for `deck.json`: how often the engine wakes this app.
         var reads = 0
-        /// When its script last answered (`Sweep`).
-        var scriptedAt = Date.distantPast
+        /// When a script was last sent to it, answered or not (`Sweep`).
+        var scriptTriedAt = Date.distantPast
     }
 
     private(set) var specs: [AppSpec] = []
@@ -136,14 +136,14 @@ final class Engine {
     /// Scripted apps only: their background tabs change without any window notification.
     private func sweepScripted() {
         let forgot = sessions.expire(now: Date().timeIntervalSince1970)
-        // Only an agent in a scripted terminal is a reason to read terminals: one in T3 Code or a
-        // phone says nothing about a background terminal tab.
-        let terminals = Set(tracked.values.filter { $0.spec.adapter != .windows && $0.spec.role == .terminal }.map(\.spec.bundleID))
-        let working = items.contains { $0.activity == .working && terminals.contains($0.bundleID) }
+        // Each app by its own rows: an agent in T3 Code, on a phone or in another terminal app
+        // says nothing about this terminal's background tabs.
+        let working = Set(items.filter { $0.activity == .working }.map(\.id))
         let now = Date()
         let scripted = tracked.filter { $0.value.spec.adapter != .windows }
-            .map { (id: $0.key, role: $0.value.spec.role, lastRead: $0.value.scriptedAt.timeIntervalSinceReferenceDate) }
-        let due = Sweep.due(scripted, agentWorking: working, now: now.timeIntervalSinceReferenceDate)
+            .map { (id: $0.key, role: $0.value.spec.role, lastRead: $0.value.scriptTriedAt.timeIntervalSinceReferenceDate,
+                    agentWorking: $0.value.items.contains { working.contains($0.id) }) }
+        let due = Sweep.due(scripted, now: now.timeIntervalSinceReferenceDate)
         for pid in due { refresh(pid) }
         // Each read merges; with none, merge anyway so a stale report on an app's window clears.
         if due.isEmpty && (forgot || !sessions.sessions.isEmpty) { merge() }
@@ -244,8 +244,7 @@ final class Engine {
                 t.windows = wins
                 if let ghostty { t.ghostty = ghostty }
                 if let scripted { t.scripted = scripted }
-                if ghostty != nil || scripted != nil { t.scriptedAt = Date() }
-                if scriptable { t.reads += 1 }
+                if scriptable { t.reads += 1; t.scriptTriedAt = Date() }
                 t.refreshing = false
                 t.last = Date()
                 t.ms = ms

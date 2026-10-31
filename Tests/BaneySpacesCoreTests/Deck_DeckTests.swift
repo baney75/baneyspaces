@@ -277,4 +277,19 @@ final class AnsweredQuestionsTests: XCTestCase {
         a.keep([])
         XCTAssertEqual(a.notice(for: "t1", ask, focused: false), "?")
     }
+
+    func testANewTerminalOpensOnlyWhereAFrontTerminalWas() {
+        func row(_ id: String, app: String, kind: Item.Kind, dir: String, focused: Bool) -> Item {
+            Item(id: id, bundleID: app, appName: app, role: kind == .terminal ? .terminal : .browser, kind: kind,
+                 group: "g", title: id, directory: dir, focused: focused)
+        }
+        let ghostty = "com.mitchellh.ghostty", browser = "com.example.browser"
+        let items = [row("t1", app: ghostty, kind: .terminal, dir: "/work", focused: true),
+                     row("tab", app: browser, kind: .tab, dir: "/elsewhere", focused: true)]
+        XCTAssertEqual(Item.workingFolder(items, front: ghostty), "/work")
+        // The browser in front: its focused tab isn't a place to work, and Ghostty's isn't in front.
+        XCTAssertNil(Item.workingFolder(items, front: browser))
+        XCTAssertNil(Item.workingFolder(items, front: nil))
+        XCTAssertNil(Item.workingFolder([row("t2", app: ghostty, kind: .terminal, dir: "", focused: true)], front: ghostty))
+    }
 }
