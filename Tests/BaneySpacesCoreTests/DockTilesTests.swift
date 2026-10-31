@@ -83,7 +83,7 @@ final class DockLabelTests: XCTestCase {
         // The workspace in Donovan's 2026-10-31 recording: the label listed all eight and ran past the dock.
         let apps = ["Microsoft Word", "Helium", "T3 Code (Nightly)", "Grok Bot", "Claude", "Obsidian", "Ghostty", "Silas"]
         XCTAssertEqual(DockLabel.tileTitle(workspace: 1, apps: apps, agent: "Claude is working", shown: 3),
-                       "Workspace 1 · Microsoft Word, Helium, T3 Code (Nightly) +5 more · Claude is working")
+                       "Workspace 1 · Claude is working · Microsoft Word, Helium, T3 Code (Nightly) +5 more")
     }
 
     func testATileThatFitsNamesEveryApp() {
@@ -103,8 +103,15 @@ final class DockLabelTests: XCTestCase {
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Sources/BaneySpaces/WorkspaceDock.swift")
         let text = try String(contentsOf: source, encoding: .utf8)
-        XCTAssertTrue(text.contains("WidthCap(max: Self.labelMaxWidth)"), "the dock label must go through WidthCap")
-        XCTAssertTrue(text.contains(".lineLimit(1).truncationMode(.tail)"), "the dock label must be one truncated line")
+        // One block, so the cap and the one-line limit can't drift onto different views.
+        let block = #"""
+            WidthCap(max: Self.labelMaxWidth) {
+                Text(text)
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1).truncationMode(.tail)
+            }
+"""#
+        XCTAssertTrue(text.contains(block), "the dock label's Text must sit in WidthCap as one truncated line")
         XCTAssertTrue(text.contains("DockLabel.tileTitle("), "the tile label must come from DockLabel.tileTitle")
     }
 }

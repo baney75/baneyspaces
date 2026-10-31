@@ -1112,11 +1112,11 @@ struct DockView: View {
             // keeps the dock up) never reaches far into the screen. The panel resizes with it, and
             // the bar stays put because the panel is pinned to its edge.
             label.modifier(SizeReport(size: $sideSize))
-                .offset(sideOffset(hoverKey))
+                .offset(sideOffset(labelKey))
         } else {
             label.frame(height: 24)
                 .modifier(SizeReport(size: $sideSize))
-                .offset(sideOffset(hoverKey))
+                .offset(sideOffset(labelKey))
         }
     }
 
@@ -1131,6 +1131,23 @@ struct DockView: View {
         case .more(let n): return "more:\(n)"
         case nil: return ""
         }
+    }
+
+    /// The dock key for what the label names: a file drag's target, then where a drag would
+    /// land, then what the pointer is on. A drag over nothing centers the label.
+    private var labelKey: String {
+        if let file = model.fileDrag {
+            switch file.target {
+            case .app(let n, let id): return "\(n):\(id)"
+            case .tile(let n): return "tile:\(n)"
+            case nil: return ""
+            }
+        }
+        if model.drag != nil {
+            guard let to = model.dropTarget else { return "" }
+            return model.tiles.contains { $0.id == to } ? "tile:\(to)" : "btn:new"
+        }
+        return hoverKey
     }
 
     /// Across from `key` along the dock, but never past either end of it.
