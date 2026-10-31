@@ -26,9 +26,21 @@ public enum Sweep {
     }
 
     /// The apps a sweep at `now` reads, among scripted ones, each with whether an agent is at
-    /// work in its own rows. One whose script was never sent (no permission yet) stays due.
-    public static func due<ID>(_ apps: [(id: ID, role: Role, lastRead: TimeInterval, agentWorking: Bool)], now: TimeInterval) -> [ID] {
-        apps.filter { reads(role: $0.role, agentWorking: $0.agentWorking, lastRead: $0.lastRead, now: now) }.map(\.id)
+    /// work in its own rows and whether its last script answered. One whose script was never sent
+    /// (no permission yet) stays due; one whose last script failed loses the fast path until the
+    /// slow pass, agent or not.
+    public static func due<ID>(_ apps: [(id: ID, role: Role, lastRead: TimeInterval, agentWorking: Bool, lastOK: Bool)],
+                               now: TimeInterval) -> [ID] {
+        apps.filter {
+            reads(role: $0.role, agentWorking: $0.agentWorking && !backingOff(lastTried: $0.lastRead, lastOK: $0.lastOK, now: now),
+                  lastRead: $0.lastRead, now: now)
+        }.map(\.id)
+    }
+
+    /// Whether an app whose last script failed is still waiting out the slow pass: no script is
+    /// sent to it until then, not for the timer and not for a hook.
+    public static func backingOff(lastTried: TimeInterval, lastOK: Bool, now: TimeInterval) -> Bool {
+        !lastOK && now - lastTried < everything - tick / 2
     }
 
     /// The scripted apps an agent's hook event re-reads: the one whose rows carry its terminal

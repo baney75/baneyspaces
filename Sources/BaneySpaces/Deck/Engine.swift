@@ -18,8 +18,10 @@ final class Engine {
         var ms = 0
         /// Script reads since launch, for `deck.json`: how often the engine wakes this app.
         var reads = 0
-        /// When a script was last sent to it, answered or not (`Sweep`).
+        /// When a script was last sent to it, answered or not, and whether it answered (`Sweep`).
+        /// A refusal (no Automation permission) isn't a try: the next read asks again.
         var scriptTriedAt = Date.distantPast
+        var lastScriptOK = true
     }
 
     private(set) var specs: [AppSpec] = []
@@ -142,7 +144,7 @@ final class Engine {
         let now = Date()
         let scripted = tracked.filter { $0.value.spec.adapter != .windows }
             .map { (id: $0.key, role: $0.value.spec.role, lastRead: $0.value.scriptTriedAt.timeIntervalSinceReferenceDate,
-                    agentWorking: $0.value.items.contains { working.contains($0.id) }) }
+                    agentWorking: $0.value.items.contains { working.contains($0.id) }, lastOK: $0.value.lastScriptOK) }
         let due = Sweep.due(scripted, now: now.timeIntervalSinceReferenceDate)
         for pid in due { refresh(pid) }
         // Each read merges; with none, merge anyway so a stale report on an app's window clears.
@@ -216,9 +218,10 @@ final class Engine {
             let native = wins.map { (number: $0.number, title: $0.title) }
             // Scripted only once macOS says yes; until then the app's windows stand in.
             let scriptable = script != nil && Automation.allowed(spec.bundleID)
+            var refused = false
             switch scriptable ? spec.adapter : .windows {
             case .ghostty:
-                let raw = script.flatMap { s in Self.snapshot(s, spec.bundleID) }
+                let raw = script.flatMap { s in Self.snapshot(s, spec.bundleID, refused: &refused) }
                 ghostty = raw.map(Snapshot.parse)
                 if let g = ghostty {
                     items = Build.ghostty(spec, g, numbers: WindowMatch.pair(scripted: g.windowTitles, native: native), front: front)
@@ -226,7 +229,7 @@ final class Engine {
                     items = Build.windows(spec, native, front: front, frontWindowNumber: frontNumber)
                 }
             case .chromium, .terminalApp, .iterm:
-                let raw = script.flatMap { s in Self.snapshot(s, spec.bundleID) }
+                let raw = script.flatMap { s in Self.snapshot(s, spec.bundleID, refused: &refused) }
                 scripted = raw.map(ScriptedSnapshot.parse)
                 if let s = scripted {
                     let pairs = WindowMatch.pair(scripted: s.windows.map { ($0.id, $0.title) }, native: native)
@@ -244,7 +247,11 @@ final class Engine {
                 t.windows = wins
                 if let ghostty { t.ghostty = ghostty }
                 if let scripted { t.scripted = scripted }
-                if scriptable { t.reads += 1; t.scriptTriedAt = Date() }
+                if scriptable && !refused {
+                    t.reads += 1
+                    t.scriptTriedAt = started
+                    t.lastScriptOK = ghostty != nil || scripted != nil
+                }
                 t.refreshing = false
                 t.last = Date()
                 t.ms = ms
@@ -258,9 +265,9 @@ final class Engine {
 
     /// An app's snapshot script. Refused by macOS (-1743) or waiting on the person to answer
     /// (-1744): Automation's remembered yes is dropped, so the next read asks again.
-    private static func snapshot(_ s: OSA, _ bundleID: String) -> String? {
+    private static func snapshot(_ s: OSA, _ bundleID: String, refused: inout Bool) -> String? {
         let r = OSA.queue.sync { s.run("snapshot") }
-        if r.error == -1743 || r.error == -1744 { Automation.forget(bundleID) }
+        if r.error == -1743 || r.error == -1744 { Automation.forget(bundleID); refused = true }
         return r.error == 0 ? r.out : nil
     }
 
@@ -318,7 +325,11 @@ final class Engine {
         // the title has caught up, which is when an unbound session gets narrowed to its terminal.
         let apps = tracked.filter { $0.value.spec.adapter != .windows }
             .map { (id: $0.key, bundleID: $0.value.spec.bundleID, role: $0.value.spec.role, ttys: Set($0.value.items.map(\.tty).filter { !$0.isEmpty })) }
-        let read = Sweep.forHook(apps, eventApp: e.app, tty: e.tty)
+        // An app whose script keeps failing waits out its backoff here too.
+        let now = Date().timeIntervalSinceReferenceDate
+        let read = Sweep.forHook(apps, eventApp: e.app, tty: e.tty).filter { pid in
+            tracked[pid].map { !Sweep.backingOff(lastTried: $0.scriptTriedAt.timeIntervalSinceReferenceDate, lastOK: $0.lastScriptOK, now: now) } ?? false
+        }
         guard !read.isEmpty else { return }
         for pid in read { refresh(pid) }
         DispatchQueue.main.asyncAfter(deadline: .now() + AgentSessions.settle + 0.15) { [weak self] in

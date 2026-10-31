@@ -16,15 +16,21 @@ final class SweepTests: XCTestCase {
     }
 
     func testEachAppGoesByItsOwnAgentsAndAFailingScriptWaitsForTheSlowPass() {
-        let apps: [(id: Int, role: Role, lastRead: TimeInterval, agentWorking: Bool)] = [
-            (1, .terminal, 100, true), (2, .terminal, 100, false), (3, .browser, 100, true), (4, .browser, 100 - Sweep.everything, false),
+        let apps: [(id: Int, role: Role, lastRead: TimeInterval, agentWorking: Bool, lastOK: Bool)] = [
+            (1, .terminal, 100, true, true), (2, .terminal, 100, false, true), (3, .browser, 100, true, true),
+            (4, .browser, 100 - Sweep.everything, false, true),
         ]
         // Only the terminal with its own agent at work, and the one past the slow pass.
         XCTAssertEqual(Sweep.due(apps, now: 100 + Sweep.tick), [1, 4])
         // A script was tried a moment ago and failed: it waits like any other read.
-        XCTAssertEqual(Sweep.due([(5, .terminal, 100, false)], now: 100 + Sweep.tick), [])
+        XCTAssertEqual(Sweep.due([(5, .terminal, 100, false, false)], now: 100 + Sweep.tick), [])
+        // Even with its own agent at work, a terminal whose last script failed waits for the slow pass.
+        XCTAssertEqual(Sweep.due([(6, .terminal, 100, true, false)], now: 100 + Sweep.tick), [])
+        XCTAssertEqual(Sweep.due([(6, .terminal, 100, true, false)], now: 100 + Sweep.everything), [6])
         // Never tried (no permission yet): due.
-        XCTAssertEqual(Sweep.due([(7, .browser, Date.distantPast.timeIntervalSinceReferenceDate, false)], now: 100), [7])
+        XCTAssertEqual(Sweep.due([(7, .browser, Date.distantPast.timeIntervalSinceReferenceDate, false, true)], now: 100), [7])
+        XCTAssertTrue(Sweep.backingOff(lastTried: 100, lastOK: false, now: 101))
+        XCTAssertFalse(Sweep.backingOff(lastTried: 100, lastOK: true, now: 101))
     }
 
     func testAHookReadsOnlyTheAppItCameFromAndNeverTheBrowser() {
