@@ -97,11 +97,12 @@ final class DeckController {
         server.start()
         remote.handle = { [weak self] in self?.handle($0) ?? Wire.Reply(ok: false) }
         if Self.remoteEnabled { startRemote() }
+        // The sidebar's settings, from before it was removed (2026-10-30).
+        for key in ["deckPinned", "deckLayout", "deckEdgeOpens", "deckEnabled"] { UserDefaults.standard.removeObject(forKey: key) }
 
-        let ctrlCmd = controlKey | cmdKey, cmdShift = cmdKey | shiftKey
+        let cmdShift = cmdKey | shiftKey
         if !keysAdded {
             keysAdded = true
-            deckKeys.add(keyCode: kVK_ANSI_U, modifiers: ctrlCmd) { [weak self] in self?.jumpToFinished() }
             terminalKeys.add(keyCode: kVK_ANSI_U, modifiers: cmdShift) { [weak self] in self?.jumpToFinished() }
         }
 

@@ -33,8 +33,14 @@ final class DeckSidebarRemovedTests: XCTestCase {
         let text = try code(root.appendingPathComponent("Sources/BaneySpaces/AppDelegate.swift"))
         XCTAssertTrue(text.contains("deck.onSearch = { [weak self] in self?.launcher.toggle() }"),
                       "the Deck's onSearch must open the launcher")
-        XCTAssertTrue(text.contains("kVK_ANSI_K, modifiers: controlKey | cmdKey") && text.contains("self?.deck.onSearch()"),
-                      "⌃⌘K must be a global shortcut that calls the Deck's onSearch")
+        // Global means registered before registerShortcuts stops for a missing Accessibility permission.
+        let body = try XCTUnwrap(text.components(separatedBy: "private func registerShortcuts() {").dropFirst().first)
+        let gate = try XCTUnwrap(body.range(of: "guard started else { return }"))
+        for key in ["kVK_ANSI_K", "kVK_ANSI_U"] {
+            let at = try XCTUnwrap(body.range(of: "keyCode: \(key), modifiers: controlKey | cmdKey"), "\(key) isn't registered")
+            XCTAssertLessThan(at.lowerBound, gate.lowerBound, "⌃⌘\(key.suffix(1)) must be registered before the Accessibility gate")
+        }
+        XCTAssertTrue(body.contains("self?.deck.onSearch()"), "⌃⌘K must call the Deck's onSearch")
     }
 
     func testNewClaudeAndNewTerminalAreLauncherCommands() throws {

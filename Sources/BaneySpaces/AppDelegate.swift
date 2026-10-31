@@ -100,7 +100,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.spaces.moveCarried(id, to: n, from: grab.frame) { [weak self] in self?.dropGeneration[id, default: 0] == gen }
         }
     }
+    /// Building the launcher scans every app, so the Deck's updates don't build it early.
+    private var launcherBuilt = false
     private lazy var launcher: LauncherController = {
+        launcherBuilt = true
         var a = LauncherActions()
         a.focusApp = { [weak self] pid, n in self?.spaces.focusApp(pid, on: n) }
         a.openWindowHere = { [weak self] pid in self?.started == true && self?.spaces.openWindowHere(pid) == true }
@@ -283,7 +286,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         // ⌃⌘K (registered in `registerShortcuts`) opens the launcher, which searches the Deck's rows.
         deck.onSearch = { [weak self] in self?.launcher.toggle() }
-        deck.onItemsChange = { [weak self] in self?.launcher.rowsChanged() }
+        deck.onItemsChange = { [weak self] in if self?.launcherBuilt == true { self?.launcher.rowsChanged() } }
         startWhenTrusted()
         // ⌘Space works with or without Accessibility; Spotlight hands it over first.
         if Launcher.onCmdSpace { setLauncherOnCmdSpace(true) } else { registerShortcuts() }
@@ -435,6 +438,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         // ⌃⌘K opens the launcher from any app, with or without Accessibility.
         hotkeys.register(keyCode: kVK_ANSI_K, modifiers: controlKey | cmdKey) { [weak self] in self?.deck.onSearch() }
+        // ⌃⌘U goes to the agent that finished, from any app.
+        hotkeys.register(keyCode: kVK_ANSI_U, modifiers: controlKey | cmdKey) { [weak self] in
+            if self?.deck.started == true { self?.deck.jumpToFinished() }
+        }
         guard started else { return }
         let mods = Modifier.current.carbon
         for (i, code) in Hotkeys.digitKeyCodes.enumerated() {

@@ -7,8 +7,10 @@
   forward keys and the Deck setting and menu item are removed. **⌃⌘K** now opens the launcher
   from any app, and the launcher finds terminal tabs and splits, browser tabs, agent windows and
   files. **New Claude Session** and **New Terminal** are launcher commands. Agent badges stay on
-  the Workspace Dock, the notice when an agent finishes and **⌃⌘U** still work, and so do the
-  `baneyspaces` command and phones. The command's `layout`, `tile`, `sidebar` and `palette`
+  the Workspace Dock, the notice when an agent finishes and **⌃⌘U** (now from any app) still work,
+  and so do the `baneyspaces` command and phones. Agent tracking is always on now; it has no
+  setting of its own. If you kept the sidebar pinned, the windows beside it keep the size they
+  had; widen them once. The command's `layout`, `tile`, `sidebar` and `palette`
   subcommands are gone. The Install Hooks button moved to the Dock tab in setup.
 - **Each display shows a workspace of its own.** With a second monitor or Sidecar, ⌘3 used to
   change what every screen showed. Now it changes only the display you're on: the one you last
