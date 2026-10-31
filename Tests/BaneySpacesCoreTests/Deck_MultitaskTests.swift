@@ -442,6 +442,35 @@ final class SharedWindowTests: XCTestCase {
         XCTAssertEqual(rows(&a, [win(1, focused: false), win(2, focused: true)], now: 5), ["win:2"])
     }
 
+    func testAnOldPromptDoesNotMoveASessionWhenFocusChangesLater() {
+        var a = AgentSessions()
+        a.apply(ev("a", .working, at: 1))
+        XCTAssertEqual(rows(&a, [win(1, focused: true), win(2, focused: false)], now: 2), ["win:1"])
+        a.apply(ev("a", .working, at: 3, started: true))
+        // No window in front for a while, then you click the other one, long after the prompt.
+        XCTAssertEqual(rows(&a, [win(1, focused: false), win(2, focused: false)], now: 4), ["win:1"])
+        let later = 3 + AgentSessions.promptLife + 10
+        XCTAssertEqual(rows(&a, [win(1, focused: false), win(2, focused: true)], now: later), ["win:1"], "the prompt has run out")
+    }
+
+    func testASubagentsPromptIsNotTyped() throws {
+        func hook(_ extra: [String: Any]) throws -> AgentEvent {
+            var json: [String: Any] = ["hook_event_name": "UserPromptSubmit", "session_id": "a", "cwd": "/p/a"]
+            for (k, v) in extra { json[k] = v }
+            return try XCTUnwrap(AgentEvent.hook(json, agent: "claude", tty: "", app: t3, at: 1))
+        }
+        XCTAssertTrue(try hook([:]).started)
+        XCTAssertFalse(try hook(["subagentType": "general-purpose"]).started)
+    }
+
+    func testOnlyAWorkingReportCanCarryAPrompt() {
+        var a = AgentSessions()
+        a.apply(ev("a", .working, at: 1))
+        XCTAssertEqual(rows(&a, [win(1, focused: true), win(2, focused: false)], now: 2), ["win:1"])
+        a.apply(ev("a", .waiting, at: 3, started: true))
+        XCTAssertEqual(rows(&a, [win(1, focused: false), win(2, focused: true)], now: 4), ["win:1"], "a stop isn't a prompt, whatever it says")
+    }
+
     func testTheSameSessionOnAnotherRowIsNotASwitch() {
         // The row-keyed switch check already treats a session arriving on a row that showed nothing as no switch.
         var shown = ShownSessions()

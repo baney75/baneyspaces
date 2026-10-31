@@ -71,9 +71,11 @@ public struct AgentEvent: Codable, Equatable, Sendable {
             state = .end
         default: return nil
         }
+        // A subagent's prompt is the agent's own, not one typed in the window in front.
+        let typed = (name == "UserPromptSubmit" || name == "user_prompt_submit") && json["subagentType"] == nil
         let session = json["session_id"] as? String ?? json["sessionId"] as? String ?? ""
         return AgentEvent(agent: agent, session: session, cwd: json["cwd"] as? String ?? "", tty: tty, app: app,
-                          state: state, message: message, at: at, started: name == "UserPromptSubmit" || name == "user_prompt_submit")
+                          state: state, message: message, at: at, started: typed)
     }
 
     /// Notification types that ask you something; an older Claude sends none.
@@ -112,6 +114,9 @@ public struct AgentSessions: Equatable, Sendable {
     /// `resolve` has acted on. A tool call right after the prompt doesn't hide it: it stays pending
     /// until focus decides where the session goes.
     private var prompted: [String: Double] = [:]
+    /// How long a prompt can still place its session by focus. A window gets focus within moments of
+    /// the prompt typed in it; a prompt from long ago says nothing about where you are now.
+    public static let promptLife: Double = 5
     private var promptUsed: [String: Double] = [:]
     /// Rows showing a session that focus put there (and it has stayed). Being in front of such a
     /// row isn't looking at its session, so its question isn't answered by it.
@@ -127,7 +132,8 @@ public struct AgentSessions: Equatable, Sendable {
             forget(key)
         } else {
             sessions[key] = e
-            if e.started { prompted[key] = e.at }
+            // Only work can start from a prompt; a decoded or remote report saying otherwise is ignored.
+            if e.started && e.state == .working { prompted[key] = e.at }
         }
     }
 
@@ -193,6 +199,7 @@ public struct AgentSessions: Equatable, Sendable {
                 let last = lastShared[key]
                 let there = last.flatMap { l in windows.first { $0.id == l.id && Self.shared($0) } }
                 let pending = (prompted[key] ?? -.infinity) > (promptUsed[key] ?? -.infinity)
+                    && now - (prompted[key] ?? -.infinity) <= Self.promptLife
                 if windows.count > 1, let w = there, !pending {
                     // Placed already and no prompt since: focus moving about doesn't move it, or
                     // change why it's there.

@@ -87,6 +87,17 @@ func flag(_ name: String, in args: [String]) -> String? {
     return args[i + 1]
 }
 
+/// Whether a flag without a value is there, never taking another flag's value for it.
+func hasSwitch(_ name: String, in args: [String], valued: Set<String>) -> Bool {
+    var i = 0
+    while i < args.count {
+        if valued.contains(args[i]) { i += 2; continue }
+        if args[i] == name { return true }
+        i += 1
+    }
+    return false
+}
+
 var argv = Array(CommandLine.arguments.dropFirst())
 // Only in front of the command: `agent run -- tool --on staging` is the tool's own flag.
 if argv.first == "--on", argv.count > 1 {
@@ -185,12 +196,14 @@ case "event":
     guard let s = flag("--state", in: rest), let state = AgentEvent.State(rawValue: s) else {
         fail("usage: \(me) event --state working|waiting|idle|end [--agent A] [--session ID] [--cwd DIR] [--message M] [--started]", code: 2)
     }
+    let started = hasSwitch("--started", in: rest, valued: ["--state", "--agent", "--session", "--cwd", "--message"])
+    if started && state != .working { fail("--started goes with --state working: it says a prompt was just submitted", code: 2) }
     let tty = controllingTTY()
     let ev = AgentEvent(agent: flag("--agent", in: rest) ?? "agent",
                         session: flag("--session", in: rest) ?? (tty.isEmpty ? "default" : tty),
                         cwd: flag("--cwd", in: rest) ?? FileManager.default.currentDirectoryPath,
                         tty: tty, app: launchingApp, state: state, message: flag("--message", in: rest) ?? "",
-                        at: Date().timeIntervalSince1970, started: state == .working && rest.contains("--started"))
+                        at: Date().timeIntervalSince1970, started: started)
     _ = Wire.call(Wire.Request(op: .event, event: ev), timeout: 0.5)
 
 case "hooks":
