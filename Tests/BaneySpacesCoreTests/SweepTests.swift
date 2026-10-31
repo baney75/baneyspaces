@@ -74,6 +74,20 @@ final class SweepTests: XCTestCase {
         XCTAssertFalse(Sweep.backingOff(lastTried: 100, lastOK: false, now: 100 + Sweep.everything - 1))
     }
 
+    func testRowsKeepTheLastGoodSnapshotWhileBackingOffOrFailing() {
+        // A fresh answer always wins.
+        XCTAssertEqual(Sweep.snapshotToShow(answered: "new", last: "old", backingOff: false, scriptable: true, refused: false), "new")
+        // Backing off (no script sent): the last good snapshot stands in.
+        XCTAssertEqual(Sweep.snapshotToShow(answered: nil as String?, last: "old", backingOff: true, scriptable: false, refused: false), "old")
+        // A script that just failed: same, so rows don't flicker to bare windows and back.
+        XCTAssertEqual(Sweep.snapshotToShow(answered: nil as String?, last: "old", backingOff: false, scriptable: true, refused: false), "old")
+        // Permission pulled: no stale rows.
+        XCTAssertNil(Sweep.snapshotToShow(answered: nil as String?, last: "old", backingOff: false, scriptable: true, refused: true))
+        // Never scripted (no permission yet) or never answered: bare windows.
+        XCTAssertNil(Sweep.snapshotToShow(answered: nil as String?, last: "old", backingOff: false, scriptable: false, refused: false))
+        XCTAssertNil(Sweep.snapshotToShow(answered: nil as String?, last: nil, backingOff: true, scriptable: false, refused: false))
+    }
+
     func testTheSlowPassIsntPushedATickLate() {
         let due = Sweep.everything - Sweep.tick / 2
         XCTAssertTrue(Sweep.reads(role: .browser, agentWorking: false, lastRead: 0, now: due))
@@ -99,6 +113,9 @@ final class SweepTests: XCTestCase {
         let src = try String(contentsOf: url, encoding: .utf8)
         let body = try XCTUnwrap(src.range(of: "func refresh(_ pid: pid_t) {").map { String(src[$0.lowerBound...]) })
         let refresh = String(body.prefix(upTo: try XCTUnwrap(body.range(of: "// MARK: merging")).lowerBound))
+        XCTAssertTrue(refresh.contains("Sweep.snapshotToShow(answered: ghostty, last: lastGhostty"), "rows fall back to the last good snapshot")
+        XCTAssertTrue(refresh.contains("Sweep.snapshotToShow(answered: scripted, last: lastScripted"))
+        XCTAssertTrue(refresh.contains("switch scriptable || backingOff ? spec.adapter : .windows"))
         XCTAssertTrue(refresh.contains("Sweep.backingOff("), "refresh must hold the backoff for every caller")
         XCTAssertTrue(refresh.contains("spec.adapter == .windows || backingOff ? nil"), "a backing-off app sends no script")
         XCTAssertTrue(refresh.contains("t.scriptTriedAt = ranAt ?? started"), "a try is stamped when the script ran on the queue")

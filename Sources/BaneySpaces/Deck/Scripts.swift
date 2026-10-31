@@ -287,22 +287,57 @@ enum Scripts {
         	end timeout
         end claudeTile
 
-        -- After a timeout in `claudeTile`: the tab `priorTab` and every terminal in it, one ID per line,
-        -- so the pane that opened late is still written to the state file. The front tab only stands in
-        -- when there is no `priorTab` (the first window) or it's gone: you may have switched tabs since.
-        -- Apple events are handled in order, so this answers after the late pane exists, which is why
-        -- its timeout is as long as the tile's.
-        on frontTab(priorTab)
+        -- After a timeout in `claudeTile`: the tab the state should now name and every terminal in it, one
+        -- ID per line, so the pane that opened late is still written to the state file. It follows the
+        -- branch `claudeTile` took with the same `prior` state: with the state's tab alive and 1 to 3 of its
+        -- terminals still there, a split was made in that tab; with none or 4 or more, a new tab was
+        -- opened in that tab's window (it is that window's selected tab); with no state, or its tab gone,
+        -- a new window was (the front tab). `ClaudeDesk.recovered` checks the answer against the state.
+        -- Known limit: it can't tell a pane `claudeTile` made late from one another app made in that tab
+        -- during the wait. Apple events are handled in order, so this answers after the late pane exists,
+        -- which is why its timeout is as long as the tile's.
+        on frontTab(prior)
+        	set AppleScript's text item delimiters to linefeed
+        	set rows to text items of prior
+        	set AppleScript's text item delimiters to ""
+        	set priorTab to ""
+        	set known to {}
+        	repeat with l in rows
+        		if (contents of l) is not "" then
+        			if priorTab is "" then
+        				set priorTab to contents of l
+        			else
+        				set end of known to (contents of l)
+        			end if
+        		end if
+        	end repeat
         	with timeout of 30 seconds
         		tell application id "com.mitchellh.ghostty"
         			if (count of windows) is 0 then return ""
         			set t to missing value
+        			set priorRef to missing value
+        			set priorWin to missing value
         			if priorTab is not "" then
         				repeat with w in windows
         					repeat with x in tabs of w
-        						if (id of x) is priorTab then set t to contents of x
+        						if (id of x) is priorTab then
+        							set priorRef to contents of x
+        							set priorWin to contents of w
+        						end if
         					end repeat
         				end repeat
+        			end if
+        			if priorRef is not missing value then
+        				set liveCount to 0
+        				set present to id of every terminal of priorRef
+        				repeat with k in known
+        					if present contains (contents of k) then set liveCount to liveCount + 1
+        				end repeat
+        				if liveCount is 0 or liveCount ≥ 4 then
+        					set t to selected tab of priorWin
+        				else
+        					set t to priorRef
+        				end if
         			end if
         			if t is missing value then set t to selected tab of front window
         			set ids to {id of t}
@@ -313,6 +348,13 @@ enum Scripts {
         		end tell
         	end timeout
         end frontTab
+
+        -- Whether Ghostty answers at all: asked for 2 seconds before `frontTab` is worth its 30.
+        on windowCount()
+        	with timeout of 2 seconds
+        		tell application id "com.mitchellh.ghostty" to return (count of windows) as text
+        	end timeout
+        end windowCount
 
         on joinLines(xs)
         	set AppleScript's text item delimiters to linefeed

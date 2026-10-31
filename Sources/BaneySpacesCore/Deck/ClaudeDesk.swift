@@ -23,17 +23,19 @@ public enum ClaudeDesk {
     public static let timedOut = -1712
 
     /// The state after `claudeTile` timed out, from `frontTab`'s answer: a tab's ID, then its
-    /// terminals' IDs. `frontTab` answers for the state's own tab while it exists, so it's never
-    /// swapped for whichever tab is in front; it answers for the front tab only when the state
-    /// is empty or its tab is gone, and then that tab starts the state over.
+    /// terminals' IDs. `frontTab` follows the branch `claudeTile` took, so the tab it names is
+    /// the state's own tab after a split, or the new tab or window after a new one.
     ///
-    /// In the state's own tab exactly one pane opens late, so one terminal the state doesn't know is
-    /// that pane and is appended. None: the state minus terminals that closed. More than one: don't
-    /// guess which is ours, keep the state. An empty answer (no window) writes nothing.
+    /// The state's own tab: exactly one terminal the state doesn't know is the pane that opened late
+    /// and is appended. None: the state minus terminals that closed. More than one: don't guess which
+    /// is ours, keep the state. Any other tab (a new tab, a new window): `claudeTile` leaves one
+    /// terminal in it, so one terminal starts the state over from it and any other count writes
+    /// nothing. A pane another app split into the state's tab during the wait looks like ours; that
+    /// can't be told apart. An empty answer (no window) writes nothing.
     public static func recovered(prior: [String], front: [String]) -> [String] {
         guard let tab = front.first else { return [] }
         let terminals = Array(front.dropFirst())
-        guard prior.first == tab else { return [tab] + terminals }
+        guard prior.first == tab else { return terminals.count == 1 ? [tab] + terminals : [] }
         let known = prior.dropFirst().filter { terminals.contains($0) }
         let unknown = terminals.filter { !prior.contains($0) }
         switch unknown.count {

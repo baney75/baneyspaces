@@ -224,9 +224,12 @@ final class DeckController {
             if let out = r.out {
                 ClaudeDesk.write(ClaudeDesk.parse(out))
             } else if r.error == ClaudeDesk.timedOut {
-                // A slow Ghostty still opens the pane. Read the state's own tab (not the front one)
-                // so the next press splits it.
-                if let tab = script.run("frontTab", [prior.first ?? ""]).out {
+                // A slow Ghostty still opens the pane. Ask for 2 s whether it answers at all (a hung one
+                // would hold `frontTab` for its whole 30), then read the tab `claudeTile` worked in so
+                // the next press splits it.
+                let alive = script.run("windowCount")
+                if alive.error == 0, let count = alive.out, count != "0",
+                   let tab = script.run("frontTab", [prior.joined(separator: "\n")]).out {
                     ClaudeDesk.write(ClaudeDesk.recovered(prior: prior, front: ClaudeDesk.parse(tab)))
                 }
             }
