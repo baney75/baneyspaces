@@ -19,6 +19,22 @@ public enum ClaudeDesk {
         text.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
     }
 
+    /// AppleScript's error when a `with timeout` block runs out. Ghostty may still finish the work.
+    public static let timedOut = -1712
+
+    /// The state after `claudeTile` timed out, from Ghostty's front tab: its ID, then its terminals'
+    /// IDs (`front`). In the tab the state already names, the terminals it had stay first, in order
+    /// (the script picks split bases by position), and any it didn't know follow, which is the
+    /// pane that opened late. Any other tab starts the state over from what's in it. An empty
+    /// answer (no window) writes nothing, so the state stays as it was.
+    public static func recovered(prior: [String], front: [String]) -> [String] {
+        guard let tab = front.first else { return [] }
+        let terminals = Array(front.dropFirst())
+        guard prior.first == tab else { return [tab] + terminals }
+        let known = prior.dropFirst().filter { terminals.contains($0) }
+        return [tab] + known + terminals.filter { !known.contains($0) }
+    }
+
     public static func read() -> [String] {
         (try? String(contentsOf: stateFile, encoding: .utf8)).map(parse) ?? []
     }

@@ -219,8 +219,16 @@ final class DeckController {
         guard Automation.allowed(Catalog.known[0].bundleID) else { return runClaudeDesk(desk, then: finish) }
         let script = claudeScript
         script.queue.async { [weak self] in
-            let r = script.run("claudeTile", [ClaudeDesk.workDir, ClaudeDesk.paneCommand, ClaudeDesk.read().joined(separator: "\n")])
-            if let out = r.out { ClaudeDesk.write(ClaudeDesk.parse(out)) }
+            let prior = ClaudeDesk.read()
+            let r = script.run("claudeTile", [ClaudeDesk.workDir, ClaudeDesk.paneCommand, prior.joined(separator: "\n")])
+            if let out = r.out {
+                ClaudeDesk.write(ClaudeDesk.parse(out))
+            } else if r.error == ClaudeDesk.timedOut {
+                // A slow Ghostty still opens the pane. Read where it landed so the next press splits it.
+                if let front = script.run("frontTab").out {
+                    ClaudeDesk.write(ClaudeDesk.recovered(prior: prior, front: ClaudeDesk.parse(front)))
+                }
+            }
             DispatchQueue.main.async {
                 // Only a script that never reached Ghostty is tried again through claude-desk; one
                 // that failed or timed out partway may already have opened the pane.

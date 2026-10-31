@@ -34,19 +34,35 @@ final class SweepTests: XCTestCase {
     }
 
     func testAHookReadsOnlyTheAppItCameFromAndNeverTheBrowser() {
-        let apps: [(id: Int, bundleID: String, role: Role, ttys: Set<String>)] = [
-            (1, "com.mitchellh.ghostty", .terminal, ["/dev/ttys001"]), (2, "com.apple.Terminal", .terminal, ["/dev/ttys009"]),
-            (3, "com.example.browser", .browser, []),
+        let apps: [(id: Int, bundleID: String, role: Role, byTTY: Bool, ttys: Set<String>)] = [
+            (1, "com.mitchellh.ghostty", .terminal, false, ["/dev/ttys001"]), (2, "com.apple.Terminal", .terminal, true, ["/dev/ttys009"]),
+            (3, "com.example.browser", .browser, false, []),
         ]
         XCTAssertEqual(Sweep.forHook(apps, eventApp: "com.mitchellh.ghostty"), [1])
         // An agent in an app with no script (T3 Code) needs no script read at all.
         XCTAssertEqual(Sweep.forHook(apps, eventApp: "com.t3tools.t3code"), [])
         // Unknown app: every terminal, still not the browser.
-        XCTAssertEqual(Sweep.forHook(apps, eventApp: ""), [1, 2])
+        XCTAssertEqual(Sweep.forHook(apps, eventApp: "", tty: "/dev/ttys042"), [1, 2])
         // The terminal it runs in says which app, whatever the app field says.
         XCTAssertEqual(Sweep.forHook(apps, eventApp: "com.mitchellh.ghostty", tty: "/dev/ttys009"), [2])
         // A tty no row has yet: back to the app.
         XCTAssertEqual(Sweep.forHook(apps, eventApp: "com.mitchellh.ghostty", tty: "/dev/ttys042"), [1])
+    }
+
+    /// Terminal.app was script-read about 13 times a minute with no rows (#68): the agents were
+    /// headless processes under it (no tty), and every hook they sent read Terminal twice.
+    func testAHookWithNoTTYNeverReadsATerminalThatBindsByTTY() {
+        let apps: [(id: Int, bundleID: String, role: Role, byTTY: Bool, ttys: Set<String>)] = [
+            (1, "com.mitchellh.ghostty", .terminal, false, []), (2, "com.apple.Terminal", .terminal, true, []),
+            (3, "com.googlecode.iterm2", .terminal, true, []),
+        ]
+        XCTAssertEqual(Sweep.forHook(apps, eventApp: "com.apple.Terminal", tty: ""), [])
+        XCTAssertEqual(Sweep.forHook(apps, eventApp: "com.googlecode.iterm2", tty: ""), [])
+        // Unknown app and no tty: only the terminal that binds by folder.
+        XCTAssertEqual(Sweep.forHook(apps, eventApp: "", tty: ""), [1])
+        XCTAssertEqual(Sweep.forHook(apps, eventApp: "com.mitchellh.ghostty", tty: ""), [1])
+        // With a tty, Terminal is read: a new tab's row is how the session gets bound.
+        XCTAssertEqual(Sweep.forHook(apps, eventApp: "com.apple.Terminal", tty: "/dev/ttys050"), [2])
     }
 
     func testTheSlowPassIsntPushedATickLate() {
@@ -64,6 +80,20 @@ final class SweepTests: XCTestCase {
         XCTAssertTrue(src.contains("Sweep.forHook(apps, eventApp: e.app, tty: e.tty)"), "a hook reads through Sweep.forHook")
         XCTAssertTrue(src.contains("agentWorking: $0.value.items.contains { working.contains($0.id) }"), "each app goes by its own rows")
         XCTAssertFalse(src.contains("for (pid, t) in tracked where t.spec.adapter != .windows { refresh(pid) }"), "a hook must not read every scripted app")
+        XCTAssertTrue(src.contains("byTTY: $0.value.spec.adapter == .terminalApp"), "a hook tells Sweep which apps bind by tty")
         XCTAssertTrue(src.contains("withTimeInterval: Sweep.tick"), "one timer at Sweep.tick, not a faster one")
+    }
+
+    func testRefreshEnforcesTheBackoffItselfAndStampsWhenTheScriptRan() throws {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/BaneySpaces/Deck/Engine.swift")
+        let src = try String(contentsOf: url, encoding: .utf8)
+        let body = try XCTUnwrap(src.range(of: "func refresh(_ pid: pid_t) {").map { String(src[$0.lowerBound...]) })
+        let refresh = String(body.prefix(upTo: try XCTUnwrap(body.range(of: "// MARK: merging")).lowerBound))
+        XCTAssertTrue(refresh.contains("Sweep.backingOff("), "refresh must hold the backoff for every caller")
+        XCTAssertTrue(refresh.contains("spec.adapter == .windows || backingOff ? nil"), "a backing-off app sends no script")
+        XCTAssertTrue(refresh.contains("t.scriptTriedAt = ranAt ?? started"), "a try is stamped when the script ran on the queue")
+        XCTAssertTrue(refresh.contains("ranAt = Date()"), "the time is taken inside the queue block")
+        XCTAssertFalse(refresh.contains("t.scriptTriedAt = started"))
     }
 }

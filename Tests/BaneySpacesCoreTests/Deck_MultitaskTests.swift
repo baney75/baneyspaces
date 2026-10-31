@@ -457,6 +457,39 @@ final class ClaudeDeskTests: XCTestCase {
         XCTAssertEqual(ClaudeDesk.parse(""), [])
     }
 
+    func testATimedOutTileIsRecoveredFromTheFrontTab() {
+        // The first window opened late: the state is the front tab and its one terminal.
+        XCTAssertEqual(ClaudeDesk.recovered(prior: [], front: ["tab-1", "a"]), ["tab-1", "a"])
+        // A split opened late in the tab the state names: the old terminals stay first, the new one
+        // follows, whatever order Ghostty lists them in.
+        XCTAssertEqual(ClaudeDesk.recovered(prior: ["tab-1", "a", "b"], front: ["tab-1", "c", "b", "a"]), ["tab-1", "a", "b", "c"])
+        // A terminal the user closed drops out.
+        XCTAssertEqual(ClaudeDesk.recovered(prior: ["tab-1", "a", "b"], front: ["tab-1", "b", "c"]), ["tab-1", "b", "c"])
+        // A different front tab (the fifth press made a new tab): the state starts over from it.
+        XCTAssertEqual(ClaudeDesk.recovered(prior: ["tab-1", "a", "b", "c", "d"], front: ["tab-2", "e"]), ["tab-2", "e"])
+        // Ghostty has no window: nothing to write.
+        XCTAssertEqual(ClaudeDesk.recovered(prior: ["tab-1", "a"], front: []), [])
+        XCTAssertEqual(ClaudeDesk.timedOut, -1712)
+    }
+
+    func testTheTileScriptFocusesEvenWhenEqualizeFailsAndTheCallerRecoversATimeout() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let scripts = try String(contentsOf: root.appendingPathComponent("Sources/BaneySpaces/Deck/Scripts.swift"), encoding: .utf8)
+        let tile = try XCTUnwrap(scripts.range(of: "on claudeTile").map { String(scripts[$0.lowerBound...]) })
+        // `equalize_splits` and `focus` each sit in a try block of their own.
+        let lines = tile.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        let eq = try XCTUnwrap(lines.firstIndex { $0.hasPrefix("perform action \"equalize_splits\"") })
+        XCTAssertEqual(lines[eq - 1], "try")
+        XCTAssertEqual(lines[eq + 1], "end try", "equalize must be alone in its try")
+        let focus = try XCTUnwrap(lines.firstIndex { $0.hasPrefix("focus newTerm") })
+        XCTAssertEqual(lines[focus - 1], "try")
+        XCTAssertEqual(lines[focus + 1], "end try", "focus must be alone in its try")
+        XCTAssertTrue(scripts.contains("on frontTab()"))
+        let controller = try String(contentsOf: root.appendingPathComponent("Sources/BaneySpaces/Deck/DeckController.swift"), encoding: .utf8)
+        XCTAssertTrue(controller.contains("r.error == ClaudeDesk.timedOut"), "a timeout reads the front tab")
+        XCTAssertTrue(controller.contains("ClaudeDesk.recovered(prior: prior"))
+    }
+
     func testRunsClaudeTheWayClaudeDeskDoes() {
         XCTAssertEqual(ClaudeDesk.paneCommand, "/bin/zsh -lic 'claude; exec /bin/zsh -l'",
                        "-i loads .zshrc, whose PATH and keys Claude's tools need")

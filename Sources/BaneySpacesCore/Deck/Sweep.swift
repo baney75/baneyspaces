@@ -37,8 +37,10 @@ public enum Sweep {
         }.map(\.id)
     }
 
-    /// Whether an app whose last script failed is still waiting out the slow pass: no script is
-    /// sent to it until then, not for the timer and not for a hook.
+    /// Whether an app whose last script failed is still waiting out the slow pass. No script is
+    /// sent to it until then, whoever asks: `Engine.refresh` checks this itself, so a timer tick,
+    /// a hook, an Accessibility notification, an activation and a re-run of a read that went dirty
+    /// all build its rows from Accessibility alone. The first read after the slow pass is the retry.
     public static func backingOff(lastTried: TimeInterval, lastOK: Bool, now: TimeInterval) -> Bool {
         !lastOK && now - lastTried < everything - tick / 2
     }
@@ -48,9 +50,14 @@ public enum Sweep {
     /// in one. Each hook read every scripted app twice, so an agent at work kept Ghostty, the
     /// browser and Terminal at about 30 reads a minute each (2026-10-30), most of them for an
     /// agent in an app with no script at all.
-    public static func forHook<ID>(_ apps: [(id: ID, bundleID: String, role: Role, ttys: Set<String>)],
+    ///
+    /// An event with no tty comes from a process with no terminal (a headless `claude -p`, a
+    /// subagent, a job): `__CFBundleIdentifier` still names Terminal because it passes down from
+    /// the app, but Terminal and iTerm rows are bound by tty (`byTTY`), so no row there can be
+    /// that agent's and a read can't show one. Only apps that bind by folder (Ghostty) are read.
+    public static func forHook<ID>(_ apps: [(id: ID, bundleID: String, role: Role, byTTY: Bool, ttys: Set<String>)],
                                    eventApp: String, tty: String = "") -> [ID] {
-        let candidates = apps.filter { $0.role != .browser }
+        let candidates = apps.filter { $0.role != .browser && (!tty.isEmpty || !$0.byTTY) }
         if !tty.isEmpty {
             let owners = candidates.filter { $0.ttys.contains(tty) }
             if !owners.isEmpty { return owners.map(\.id) }
