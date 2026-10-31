@@ -62,6 +62,9 @@ enum Automation {
     private static var yes: [String: Date] = [:]
     static let remember: TimeInterval = 60
 
+    /// The app quit: ask again next time.
+    static func forget(_ bundleID: String) { lock.withLock { yes[bundleID] = nil } }
+
     static func allowed(_ bundleID: String) -> Bool {
         if let at = lock.withLock({ yes[bundleID] }), Date().timeIntervalSince(at) < remember { return true }
         let target = NSAppleEventDescriptor(bundleIdentifier: bundleID)
