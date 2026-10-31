@@ -3,9 +3,12 @@ import BaneySpacesCore
 
 /// Finds new builds on the channel the person chose (Stable or Nightly) and installs one only
 /// when they press Update Now. Checking asks GitHub once a day, and can be turned off; it
-/// sends nothing about this Mac. Installing runs the same installer as the first install,
-/// building on this Mac, so the Accessibility permission carries over and no download has to
-/// be trusted by Gatekeeper.
+/// sends nothing about this Mac. Installing runs the same installer as the first install: it
+/// downloads the release's signed app (checked against the pinned release key) and puts it where
+/// this copy is. It builds on this Mac instead when the release has no ready-made app, or when
+/// this copy was built here and the command line tools are installed: that keeps its signature,
+/// so the Accessibility permission carries over. A copy built here, updated on a Mac without the
+/// tools, gets the ready-made app and macOS asks for the permission once more.
 final class Updater: NSObject {
     static let releasesURL = URL(string: "https://api.github.com/repos/baney75/baneyspaces/releases?per_page=30")!
 
@@ -37,6 +40,21 @@ final class Updater: NSObject {
     static var buildDescription: String {
         build.commit.map { "\(build.version) (\($0.prefix(7)))" } ?? build.version
     }
+
+    /// Whether Apple's command line tools are installed. A Nightly build is built on this Mac, so it
+    /// needs them; a Stable release installs ready-made.
+    static var hasCommandLineTools: Bool {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select")
+        p.arguments = ["-p"]
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        guard (try? p.run()) != nil else { return false }
+        p.waitUntilExit()
+        return p.terminationStatus == 0
+    }
+
+    static let nightlyNeedsToolsMessage = "Nightly builds need Apple's command line tools, which this Mac doesn't have. Stable installs ready-made. To follow Nightly, run xcode-select --install in Terminal."
 
     var channel: UpdateChannel {
         get { UserDefaults.standard.string(forKey: "updateChannel").flatMap(UpdateChannel.init) ?? .stable }
@@ -88,13 +106,18 @@ final class Updater: NSObject {
                     return
                 }
                 self.lastCheck = Date()
-                let candidates = Updates.candidates(from: Release.list(fromGitHubJSON: data), channel: self.channel, build: Self.build)
+                // A nightly is built on this Mac, so it isn't offered without the command line tools.
+                let toolsMissing = !Self.hasCommandLineTools
+                let releases = Release.list(fromGitHubJSON: data).filter { !(toolsMissing && $0.isNightly) }
+                let candidates = Updates.candidates(from: releases, channel: self.channel, build: Self.build)
                 self.firstContainingBuild(candidates) { release in
                     self.available = release
                     self.onChange()
                     guard manual else { return }
                     if let release {
                         self.offer(release)
+                    } else if toolsMissing && self.channel == .nightly {
+                        self.tell("Nightly needs Apple's command line tools", Self.nightlyNeedsToolsMessage)
                     } else {
                         self.tell("BaneySpaces is up to date", "You have \(Self.buildDescription), the newest \(self.channel == .stable ? "stable release" : "build on the Nightly channel").")
                     }
@@ -129,7 +152,7 @@ final class Updater: NSObject {
     func offer(_ release: Release) {
         let alert = NSAlert()
         alert.messageText = release.isNightly ? "A new nightly build is available" : "\(release.name) is available"
-        alert.informativeText = "You have \(Self.buildDescription). Updating builds the new version on this Mac in about a minute, then BaneySpaces restarts by itself. Your workspaces stay as they are."
+        alert.informativeText = "You have \(Self.buildDescription). Updating installs the new version in about a minute, then BaneySpaces restarts by itself. Your workspaces stay as they are."
         alert.accessoryView = Self.notesView(release.notes)
         alert.addButton(withTitle: "Update Now")
         alert.addButton(withTitle: "Later")
@@ -195,13 +218,16 @@ final class Updater: NSObject {
         return kill(pid, 0) == 0
     }
 
-    /// Runs the installer for `release` in the background. It builds first and only then quits
-    /// and replaces this app, so a failed build leaves BaneySpaces running as it was. The
+    /// Runs the installer for `release` in the background. It downloads (or builds) first and only
+    /// then quits and replaces this app, so a failed update leaves BaneySpaces running as it was. The
     /// exact commit whose notes were shown is installed, or nothing is.
     func install(_ release: Release) {
         guard installing == nil, release.isInstallable else { return }
+        guard !release.isNightly || Self.hasCommandLineTools else {
+            return tell("Nightly needs Apple's command line tools", Self.nightlyNeedsToolsMessage)
+        }
         guard !Self.installerRunning else {
-            return tell("An update is already installing", "It builds in the background and restarts BaneySpaces when it's done.")
+            return tell("An update is already installing", "It installs in the background and restarts BaneySpaces when it's done.")
         }
         let folder = Self.supportFolder
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -230,6 +256,13 @@ final class Updater: NSObject {
         task.arguments = ["-c", "nohup /bin/bash \"$0\" >>\"$1\" 2>&1 &", scriptURL.path, Self.logURL.path]
         var env = ProcessInfo.processInfo.environment
         env["BANEYSPACES_REF"] = release.tag
+        // The new copy goes where this one is, so an /Applications copy isn't left beside a new
+        // one in ~/Applications. Only those two folders count: a copy run from anywhere else
+        // (a build folder, the disk image) leaves it unset, and the installer finds the installed copy.
+        let parent = Bundle.main.bundleURL.deletingLastPathComponent().path
+        if parent == "/Applications" || parent == "\(NSHomeDirectory())/Applications" {
+            env["BANEYSPACES_INSTALL_DIR"] = parent
+        }
         if let commit = release.commit { env["BANEYSPACES_COMMIT"] = commit }
         env["BANEYSPACES_STATUS_FILE"] = Self.statusURL.path
         env["BANEYSPACES_PID_FILE"] = Self.pidURL.path

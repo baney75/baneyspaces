@@ -21,6 +21,41 @@ healthy() {
     && security find-identity -p codesigning "$KC" 2>/dev/null | grep -q "$NAME"
 }
 
+# Uninstalling on the Mac that signs releases keeps the key beside the app's data instead of
+# deleting it (uninstall.sh). Bring it back before anything decides the key is gone: a new key
+# wouldn't match the requirement every release is checked against. The folder is "BaneySpaces
+# Release Signing", or the newest "BaneySpaces Release Signing <date>" when that name was taken.
+KEPT="$HOME/Library/BaneySpaces Release Signing"
+restore_kept() {
+  local src="" d
+  if [ -f "$KEPT/baneyspaces-signing.keychain-db" ]; then
+    src=$KEPT
+  else
+    for d in "$KEPT "*; do   # the dates sort oldest first, so the last one is the newest
+      if [ -f "$d/baneyspaces-signing.keychain-db" ]; then src=$d; fi
+    done
+  fi
+  [ -n "$src" ] || return 0
+  rmdir "$DIR" 2>/dev/null || true   # an empty folder is in the way of moving the whole one
+  if [ ! -e "$DIR" ]; then
+    mkdir -p "$(dirname "$DIR")"
+    mv "$src" "$DIR"
+  else
+    # Something is already there: move the contents over, dotfiles included.
+    local f
+    for f in "$src"/* "$src"/.[!.]*; do
+      [ -e "$f" ] || continue
+      mv "$f" "$DIR"/
+    done
+    rmdir "$src" 2>/dev/null || true
+  fi
+  chmod 700 "$DIR"
+  echo "note: restored the BaneySpaces release signing key from $src" >&2
+}
+if [ ! -f "$KC" ] && [ ! -s "$PASS_FILE" ]; then restore_kept; fi
+# For the test: stop after the restore, before anything touches a keychain.
+[ -z "${BANEYSPACES_SIGNING_RESTORE_ONLY:-}" ] || exit 0
+
 # A new certificate means macOS no longer recognizes the app and its Accessibility switch stops
 # working, so an existing identity is only replaced when it is really gone. A failed unlock gets a
 # second try first: `security` can fail once right after login or while the keychain is busy.

@@ -19,6 +19,9 @@ cp "$(dirname "$BIN")/baneyspaces-cli" "$APP/Contents/Resources/bin/baneyspaces"
 cp skill/SKILL.md "$APP/Contents/Resources/skill/SKILL.md"
 # Settings' Uninstall runs the same script as the README.
 cp uninstall.sh "$APP/Contents/Resources/uninstall.sh"
+# install.sh runs this copy on the prebuilt release, so the installer that fetched the app and the
+# steps that put it in place always come from the same signed bundle.
+cp scripts/install-app.sh "$APP/Contents/Resources/install-app.sh"
 
 swift scripts/make-icon.swift build/BaneySpaces.iconset
 iconutil -c icns build/BaneySpaces.iconset -o "$APP/Contents/Resources/BaneySpaces.icns"
@@ -41,54 +44,6 @@ codesign --verify "$APP"
 echo "built $APP ($VERSION, $(lipo -archs "$APP/Contents/MacOS/BaneySpaces"))"
 
 if [ "${1:-}" = "--install" ]; then
-  DEST="$HOME/Applications/BaneySpaces.app"
-  # Quit by bundle ID so BaneySpaces brings every hidden window back before it exits.
-  osascript -e 'tell application id "com.baney.baneyspaces" to quit' >/dev/null 2>&1 || true
-  for _ in $(seq 1 50); do pgrep -f "$DEST/Contents/MacOS/BaneySpaces" >/dev/null || break; sleep 0.2; done
-  if pgrep -f "$DEST/Contents/MacOS/BaneySpaces" >/dev/null; then
-    echo "BaneySpaces is still running; quit it from the menu bar and run this again." >&2
-    exit 1
-  fi
-  # Two workspace managers on the same keys fight, so AeroSpace steps aside: it quits, it stops
-  # opening at login, and its config stops re-adding it. The app itself stays installed.
-  # Each change is written down first, so uninstall.sh can put it back.
-  STATE="$HOME/Library/Application Support/BaneySpaces"
-  mkdir -p "$STATE"
-  if [ -f "$HOME/.aerospace.toml" ] && grep -q '^start-at-login *= *true' "$HOME/.aerospace.toml"; then
-    touch "$STATE/aerospace-start-at-login"
-    sed -i '' 's/^start-at-login *= *true/start-at-login = false/' "$HOME/.aerospace.toml"
-  fi
-  if pgrep -xq AeroSpace; then
-    osascript -e 'tell application id "bobko.aerospace" to quit' >/dev/null 2>&1 || true
-    for _ in $(seq 1 50); do pgrep -xq AeroSpace || break; sleep 0.2; done
-    if pgrep -xq AeroSpace; then
-      echo "AeroSpace is still running; quit it from its menu bar icon and run this again." >&2
-      exit 1
-    fi
-  fi
-  aero=$(osascript -e 'tell application "System Events" to get the path of login item "AeroSpace"' 2>/dev/null || true)
-  [ -n "$aero" ] && printf '%s' "$aero" > "$STATE/aerospace-login-item"
-  osascript -e 'tell application "System Events" to delete login item "AeroSpace"' >/dev/null 2>&1 || true
-  if osascript -e 'tell application "System Events" to get the name of every login item' 2>/dev/null | grep -q AeroSpace; then
-    echo "warning: AeroSpace is still a login item; remove it in System Settings › General › Login Items." >&2
-  fi
-  rm -rf "$DEST"
-  mkdir -p "$HOME/Applications"
-  cp -R "$APP" "$DEST"
-  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$DEST"
-  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "$PWD/$APP" 2>/dev/null || true
-  # The Deck replaces Ghostdeck, its standalone predecessor: two sidebars on the same windows would
-  # fight. Ghostdeck quits and goes to the Trash (recoverable), and its command name now runs ours.
-  osascript -e 'tell application id "com.baney.ghostdeck" to quit' >/dev/null 2>&1 || true
-  if [ -d "$HOME/Applications/Ghostdeck.app" ]; then
-    for _ in $(seq 1 25); do pgrep -f "Ghostdeck.app/Contents/MacOS/Ghostdeck" >/dev/null || break; sleep 0.2; done
-    mv "$HOME/Applications/Ghostdeck.app" "$HOME/.Trash/Ghostdeck-$(date +%Y%m%d-%H%M%S).app"
-    echo "moved Ghostdeck.app to the Trash; the Deck in BaneySpaces replaces it"
-  fi
-  mkdir -p "$HOME/.local/bin"
-  ln -sf "$DEST/Contents/Resources/bin/baneyspaces" "$HOME/.local/bin/baneyspaces"
-  ln -sf "$DEST/Contents/Resources/bin/baneyspaces" "$HOME/.local/bin/ghostdeck"
-  open "$DEST"
-  echo "installed $DEST and ~/.local/bin/baneyspaces"
+  scripts/install-app.sh "$APP"
 fi
 [ -z "${ADHOC_NOTE:-}" ] || echo "$ADHOC_NOTE"

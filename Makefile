@@ -1,4 +1,4 @@
-.PHONY: build test app install clean bench brand shots
+.PHONY: build test app install release clean bench brand shots
 build:
 	swift build
 test:
@@ -7,6 +7,9 @@ app:
 	scripts/bundle.sh
 install:
 	scripts/bundle.sh --install
+# On the owner's Mac, after pushing the tag: signs the app, packages it and uploads it to the release.
+release:
+	scripts/release.sh
 clean:
 	rm -rf .build build
 bench:
