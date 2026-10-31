@@ -100,8 +100,8 @@ final class WorkspaceDock {
         WorkspaceDock.edge = e
         let screen = shownOn ?? NSScreen.main
         hide(animated: false)
-        needsRearm = false
-        edgeSince = nil
+        tickState.needsRearm = false
+        tickState.edgeSince = nil
         spanLength = nil
         model.edge = e
         // Shown by a script, it stays shown, now on its new side.
@@ -123,17 +123,14 @@ final class WorkspaceDock {
     let model = DockModel()
     private var panel: DockPanel?
     private var timer: Timer?
-    private var edgeSince: Date?
-    private var awaySince: Date?
-    private var buttonsUpSince: Date?
+    /// What `tick` remembers between calls (`DockTick.State`).
+    private var tickState = DockTick.State()
     private(set) var isRunning = false
     private(set) var isShown = false
     /// Shown by a script or a test, not the pointer: it stays until hidden the same way.
     private var pinned = false
-    /// Hidden because the pointer moved away while still on the bottom edge: it comes back only
-    /// after the pointer leaves the edge, so a pointer parked there can't make it bob up and down.
-    private var needsRearm = false
-    /// The screen whose edge that was; another screen's edge is fresh.
+    /// After hiding with the pointer still on the edge (`DockTick.State.needsRearm`), the screen
+    /// whose edge that was; another screen's edge is fresh.
     private var rearmScreen: NSScreen?
     /// A file, link or image being dragged from another app: the dock comes up for it.
     private var outsideDrag = OutsideDrag()
@@ -234,62 +231,61 @@ final class WorkspaceDock {
             menusSeenAt = uptime
             menuWindows.update(WorkspaceDock.menuLevelWindows(), now: uptime)
         }
-        // Down, yet its panel still up once the slide-out is over (seen once in a scratch test: the
-        // animated hide stalled with the panel at full alpha): nothing else would take it away.
-        if let p = panel, DockStray.isStray(shown: isShown, panelUp: p.isVisible, hiddenAt: hiddenAt, now: uptime) {
-            Trace.log("dock panel still up after the dock went down; putting it away")
-            p.orderOut(nil)
-        }
-        // The overview already shows every workspace; the dock stays down while it's open.
-        if MissionControlKeys.viewerOpen { if isShown { hide() }; edgeSince = nil; return }
+        // The decision is `DockTick.step`, in Core, where its order of checks is tested; this
+        // gathers what it reads and does what it returns, in order.
         let mouse = NSEvent.mouseLocation
-        // A drag whose mouse-up never reached the dock (the screen locked, another app took the
-        // pointer) would hold it open forever; once the button has been up a moment, it's over.
-        if model.drag != nil, NSEvent.pressedMouseButtons == 0 {
-            if buttonsUpSince == nil { buttonsUpSince = Date() }
-            if Date().timeIntervalSince(buttonsUpSince!) > 0.3 { model.cancelDrag() }
-        } else {
-            buttonsUpSince = nil
-        }
-        if isShown {
-            guard let p = panel else { return }
-            // Hovering the dock or the edge below it keeps it up; a menu open from it too, and a
-            // drag that strays off it on the way to a tile.
-            let screenFrame = (shownOn ?? p.screen)?.frame ?? p.frame
-            // A window carried down from another app has the pointer itself: off the dock, it's not for it.
-            let keep = WorkspaceDock.edge.keepZone(dock: p.frame, screen: screenFrame).contains(mouse) || menuHoldsDock()
-                || (model.drag != nil && model.drag?.carried == false)
-            if keep { awaySince = nil; return }
-            if awaySince == nil { awaySince = Date() }
-            if Date().timeIntervalSince(awaySince!) > 0.4 {
-                rearmScreen = p.screen
-                hide()
-                needsRearm = true
-            }
-            return
-        }
-        // Resting on the dock's edge, buttons up (not dragging a selection) unless carrying
-        // something from another app to drop, or a window by its title bar, on an edge with no
-        // other screen beyond it, as the macOS Dock uses.
         let edge = WorkspaceDock.edge
         let screens = NSScreen.screens
-        let screen = edge.screen(at: mouse, among: screens.map(\.frame)).map { screens[$0] }
-        guard let screen, NSEvent.pressedMouseButtons == 0 || carrying || windowCarry != nil && carryRefused == nil else { edgeSince = nil; needsRearm = false; return }
-        if needsRearm, screen == rearmScreen { edgeSince = nil; return }
-        needsRearm = false
-        // Only along the dock itself; the corners and the rest of the edge stay free.
-        let length = spanLength ?? 560
-        guard edge.withinSpan(mouse, screen: screen.frame, visible: screen.visibleFrame, length: length) else { edgeSince = nil; return }
-        if edgeSince == nil { edgeSince = Date() }
-        guard Date().timeIntervalSince(edgeSince!) > edge.dwell else { return }
-        // A menu open in another app (a menu bar title, a status item) is what the pointer is
-        // there for; the dock waits until it closes.
-        let fresh = menuWindows.update(WorkspaceDock.menuLevelWindows(), now: ProcessInfo.processInfo.systemUptime)
-        if DockEdge.menuInTheWay(fresh, pointer: mouse) { return }
-        // A carried window that can't be dropped anywhere doesn't bring the dock up at all.
-        if NSEvent.pressedMouseButtons != 0, !carrying, windowCarry != nil, resolveCarry() == nil { edgeSince = nil; return }
-        show(on: screen)
-        if let g = windowCarry { carryMoved(g) }
+        var input = DockTick.Input(
+            uptime: uptime, clock: Date().timeIntervalSinceReferenceDate,
+            shown: isShown, panelPresent: panel != nil, panelUp: panel?.isVisible ?? false, hiddenAt: hiddenAt,
+            viewerOpen: MissionControlKeys.viewerOpen, buttonsDown: NSEvent.pressedMouseButtons != 0,
+            dragActive: model.drag != nil,
+            // A window carried down from another app has the pointer itself: off the dock, it's not for it.
+            dragStraying: model.drag.map { !$0.carried } ?? false,
+            carrying: carrying, windowCarry: windowCarry != nil, carryRefused: carryRefused != nil,
+            dwell: edge.dwell)
+        if isShown {
+            if let p = panel {
+                let screenFrame = (shownOn ?? p.screen)?.frame ?? p.frame
+                input.inKeepZone = edge.keepZone(dock: p.frame, screen: screenFrame).contains(mouse)
+            }
+        } else if let n = edge.screen(at: mouse, among: screens.map(\.frame)) {
+            let screen = screens[n]
+            input.edgeScreen = n
+            input.onRearmScreen = screen == rearmScreen
+            input.withinSpan = edge.withinSpan(mouse, screen: screen.frame, visible: screen.visibleFrame, length: spanLength ?? 560)
+        }
+        var state = tickState
+        let actions = DockTick.step(input, state: &state,
+            menuHoldsDock: { menuHoldsDock() },
+            // A menu open in another app (a menu bar title, a status item) is what the pointer is
+            // there for; the dock waits until it closes.
+            menuInTheWay: {
+                let fresh = menuWindows.update(WorkspaceDock.menuLevelWindows(), now: ProcessInfo.processInfo.systemUptime)
+                return DockEdge.menuInTheWay(fresh, pointer: mouse)
+            },
+            // A carried window that can't be dropped anywhere doesn't bring the dock up at all.
+            carryUndroppable: { resolveCarry() == nil })
+        // Before the actions: showing clears the dwell and away clocks itself.
+        tickState = state
+        for action in actions {
+            switch action {
+            case .orderOutStray:
+                Trace.log("dock panel still up after the dock went down; putting it away")
+                panel?.orderOut(nil)
+            case .hideForViewer:
+                hide()
+            case .cancelDrag:
+                model.cancelDrag()
+            case .hideAway:
+                rearmScreen = panel?.screen
+                hide()
+            case .show(let n):
+                show(on: screens[n])
+                if let g = windowCarry { carryMoved(g) }
+            }
+        }
     }
 
     /// A right-click menu from the dock keeps it up while the window server shows it. A flag left
@@ -424,7 +420,7 @@ final class WorkspaceDock {
         } else {
             // The pointer is still on the edge; it has to leave it before the dock comes again.
             rearmScreen = panel?.screen
-            needsRearm = true
+            tickState.needsRearm = true
             hide()
         }
         return target
@@ -511,8 +507,8 @@ final class WorkspaceDock {
     }
 
     private func show(on screen: NSScreen, retried: Bool = false) {
-        edgeSince = nil
-        awaySince = nil
+        tickState.edgeSince = nil
+        tickState.awaySince = nil
         model.reset()
         model.shown = true
         let edge = WorkspaceDock.edge
