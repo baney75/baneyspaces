@@ -105,6 +105,13 @@ public enum DockEdge: String, CaseIterable, Sendable {
         hypot(p.x - shown.x, p.y - shown.y) <= unmovedSlop
     }
 
+    /// Whether the pointer that brought the dock up still holds it: unmoved, and still on the
+    /// edge that opens it. A still pointer anywhere else (above the bar, over the app underneath)
+    /// never holds the dock.
+    public func openerHolds(_ p: CGPoint, since shown: CGPoint, among screens: [CGRect]) -> Bool {
+        DockEdge.unmoved(p, since: shown) && screen(at: p, among: screens) != nil
+    }
+
     /// A frame the dock reports in its own space (top-left origin at `origin` inside a panel
     /// framed at `panel`), in AppKit screen coordinates. The inverse of `DockCarry.point`.
     public static func screenRect(_ r: CGRect, panel: CGRect, origin: CGPoint) -> CGRect {

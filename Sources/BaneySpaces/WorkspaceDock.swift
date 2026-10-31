@@ -253,7 +253,7 @@ final class WorkspaceDock {
             // of edge that opens it is sized from the bar as last measured, and the bar may come up
             // shorter (a workspace emptied, a narrower screen), leaving the pointer just past it.
             if let sp = shownPoint {
-                if DockEdge.unmoved(mouse, since: sp) { unmoved = true } else { shownPoint = nil }
+                if edge.openerHolds(mouse, since: sp, among: screens.map(\.frame)) { unmoved = true } else { shownPoint = nil }
             }
             if let p = panel {
                 let screenFrame = (shownOn ?? p.screen)?.frame ?? p.frame
@@ -583,7 +583,9 @@ final class WorkspaceDock {
         shownOn = screen
         spanLength = edge.isVertical ? size.height : size.width
         shownAt = ProcessInfo.processInfo.systemUptime
-        shownPoint = NSEvent.mouseLocation
+        // A rebuilt panel keeps the point that first brought the dock up, not wherever the
+        // pointer has moved to by then.
+        if !retried { shownPoint = NSEvent.mouseLocation }
         heldSince = nil
         heldLogged = false
         let m = NSEvent.mouseLocation

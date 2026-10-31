@@ -77,6 +77,22 @@ final class DockKeepZoneTests: XCTestCase {
         XCTAssertFalse(DockEdge.unmoved(CGPoint(x: p.x + 5, y: p.y), since: p), "a real move lets the zone decide")
     }
 
+    /// Review of #93, second-G3: the panel rebuilt 0.1 s after the dock came up sampled the
+    /// pointer again, wherever it had moved, and a still pointer there held the dock. Only the
+    /// pointer still on the edge that opened it holds the dock; the rebuild keeps the first point.
+    func testOnlyAPointerStillOnTheEdgeHoldsTheDock() throws {
+        let edge = DockEdge.bottom
+        let onEdge = CGPoint(x: 756 + 240, y: 0.5)
+        XCTAssertTrue(edge.openerHolds(onEdge, since: onEdge, among: [screen]), "still, on the edge: held")
+        let aboveBar = CGPoint(x: 756, y: 110)
+        XCTAssertFalse(edge.openerHolds(aboveBar, since: aboveBar, among: [screen]), "still, in the label row: not held")
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let code = try String(contentsOf: root.appendingPathComponent("Sources/BaneySpaces/WorkspaceDock.swift"), encoding: .utf8)
+        XCTAssertTrue(code.contains("if !retried { shownPoint = NSEvent.mouseLocation }"), "a rebuild keeps the first point")
+        XCTAssertTrue(code.contains("edge.openerHolds(mouse, since: sp"), "the tick asks openerHolds")
+    }
+
     /// AGENTS.md's ledger tells the next person what to search trace.log for; the code must log it
     /// (review of #91, second-G1). And the pointer that opened the dock holds it.
     func testTheLedgersLogLinesAreTheOnesTheCodeWrites() throws {
