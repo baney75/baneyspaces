@@ -2,7 +2,7 @@ import Foundation
 
 /// One report from a coding agent's hook. Claude Code sends its hook JSON on stdin; `ghostdeck hook`
 /// adds the tty it ran under and forwards it here. Any other agent can send the same shape with
-/// `ghostdeck event --state working|waiting|idle|end`.
+/// `ghostdeck event --state working|waiting|idle|end [--started]`.
 public struct AgentEvent: Codable, Equatable, Sendable {
     public enum State: String, Codable, Sendable { case working, waiting, idle, end }
 
@@ -71,9 +71,11 @@ public struct AgentEvent: Codable, Equatable, Sendable {
             state = .end
         default: return nil
         }
+        // A subagent's prompt is the agent's own, not one typed in the window in front.
+        let typed = (name == "UserPromptSubmit" || name == "user_prompt_submit") && json["subagentType"] == nil
         let session = json["session_id"] as? String ?? json["sessionId"] as? String ?? ""
         return AgentEvent(agent: agent, session: session, cwd: json["cwd"] as? String ?? "", tty: tty, app: app,
-                          state: state, message: message, at: at, started: name == "UserPromptSubmit" || name == "user_prompt_submit")
+                          state: state, message: message, at: at, started: typed)
     }
 
     /// Notification types that ask you something; an older Claude sends none.
@@ -102,12 +104,20 @@ public struct AgentSessions: Equatable, Sendable {
     /// The question each session last showed on an app's window while you were looking at it.
     private var answered: [String: Double] = [:]
     private var narrowedBy: [String: Double] = [:]
-    /// The shared window each unbound session last showed on, and the report (`at`) that put it there.
-    /// A session stays on it until it reports again; only then does the focused window take it.
+    /// The shared window each unbound session last showed on. A session stays on it until a prompt
+    /// is submitted; only then does the focused window take it.
     private var lastShared: [String: Pick] = [:]
     /// `byFocus`: focus chose the window, not evidence about the session. It stays so while the
-    /// session stays there, and only a real binding clears it.
-    struct Pick: Equatable, Sendable { var id: String; var at: Double; var byFocus: Bool }
+    /// session stays there, and only a real binding or a prompt typed there clears it.
+    struct Pick: Equatable, Sendable { var id: String; var byFocus: Bool }
+    /// When each session last had a prompt submitted (a `started` report), and the newest of those
+    /// `resolve` has acted on. A tool call right after the prompt doesn't hide it: it stays pending
+    /// until focus decides where the session goes.
+    private var prompted: [String: Double] = [:]
+    /// How long a prompt can still place its session by focus. A window gets focus within moments of
+    /// the prompt typed in it; a prompt from long ago says nothing about where you are now.
+    public static let promptLife: Double = 5
+    private var promptUsed: [String: Double] = [:]
     /// Rows showing a session that focus put there (and it has stayed). Being in front of such a
     /// row isn't looking at its session, so its question isn't answered by it.
     public private(set) var followed: Set<String> = []
@@ -122,12 +132,14 @@ public struct AgentSessions: Equatable, Sendable {
             forget(key)
         } else {
             sessions[key] = e
+            // Only work can start from a prompt; a decoded or remote report saying otherwise is ignored.
+            if e.started && e.state == .working { prompted[key] = e.at }
         }
     }
 
     private mutating func forget(_ key: String) {
         sessions[key] = nil; binding[key] = nil; candidates[key] = nil; narrowedBy[key] = nil; answered[key] = nil
-        lastShared[key] = nil
+        lastShared[key] = nil; prompted[key] = nil; promptUsed[key] = nil
     }
 
     /// Forgets sessions silent for longer than `maxAge` seconds (an agent killed without SessionEnd).
@@ -156,10 +168,11 @@ public struct AgentSessions: Equatable, Sendable {
             // Bound while its app had one window; a second window makes that a guess. Let it follow
             // from its next report, staying on this window until then.
             if Self.shared(item), items.filter({ $0.kind == .window && $0.bundleID == item.bundleID }).count > 1 {
-                lastShared[key] = Pick(id: item.id, at: e.at, byFocus: false)
+                lastShared[key] = Pick(id: item.id, byFocus: false)
                 binding[key] = nil
                 continue
             }
+            promptUsed[key] = prompted[key]
             show(e, on: item)
         }
         for (key, e) in sessions.sorted(by: { $0.value.at > $1.value.at }) where binding[key] == nil {
@@ -185,22 +198,32 @@ public struct AgentSessions: Equatable, Sendable {
                 let windows = inApp.filter { $0.kind == .window && !taken.contains($0.id) }
                 let last = lastShared[key]
                 let there = last.flatMap { l in windows.first { $0.id == l.id && Self.shared($0) } }
-                if windows.count > 1, let w = there, last?.at == e.at || !e.started {
-                    // Placed already, and either nothing new or a report that isn't a prompt typed
-                    // in the window in front: focus moving about doesn't move it, or change why it's there.
+                let pending = (prompted[key] ?? -.infinity) > (promptUsed[key] ?? -.infinity)
+                    && now - (prompted[key] ?? -.infinity) <= Self.promptLife
+                if windows.count > 1, let w = there, !pending {
+                    // Placed already and no prompt since: focus moving about doesn't move it, or
+                    // change why it's there.
                     pick = w; follows = true; byFocus = last?.byFocus ?? false
                 } else {
-                    pick = windows.first { $0.focused } ?? (windows.count == 1 ? windows[0] : nil)
+                    let front = windows.first { $0.focused }
+                    pick = front ?? (windows.count == 1 ? windows[0] : nil)
                     // Focus is weak evidence when the app has several windows: the session may run in
                     // any of them. Don't pin it to the one in front; re-pick when a prompt is submitted
-                    // there, and fall back to its last window while none of them is focused.
-                    if let p = pick, windows.count > 1, Self.shared(p) { follows = true; byFocus = p.id != there?.id || last?.byFocus == true }
-                    else if pick == nil, let w = there { pick = w; follows = true; byFocus = last?.byFocus ?? false }
+                    // there, and keep it where it was while none of them is focused.
+                    if let p = pick, windows.count > 1, Self.shared(p) {
+                        follows = true
+                        // A prompt submitted with this window in front is evidence the session is in it.
+                        byFocus = pending ? false : (p.id != there?.id || last?.byFocus == true)
+                    } else if pick == nil, let w = there {
+                        // Focus decided nothing, so the prompt stays pending.
+                        pick = w; follows = true; byFocus = last?.byFocus ?? false
+                    }
+                    if front != nil || windows.count == 1 { promptUsed[key] = prompted[key] }
                 }
             }
             guard let p = pick else { continue }
             if follows {
-                lastShared[key] = Pick(id: p.id, at: e.at, byFocus: byFocus)
+                lastShared[key] = Pick(id: p.id, byFocus: byFocus)
                 show(e, on: p)
                 continue
             }
