@@ -401,6 +401,47 @@ final class SharedWindowTests: XCTestCase {
         XCTAssertTrue(round.started)
     }
 
+    func testAPromptStaysPendingThroughALaterToolCall() {
+        var a = AgentSessions()
+        a.apply(ev("a", .working, at: 1))
+        XCTAssertEqual(rows(&a, [win(1, focused: true), win(2, focused: false)], now: 2), ["win:1"])
+        a.apply(ev("a", .working, at: 3, started: true))
+        a.apply(ev("a", .working, at: 3.2))   // PostToolUse lands before anything resolves
+        XCTAssertEqual(rows(&a, [win(1, focused: false), win(2, focused: true)], now: 3.3), ["win:2"], "the prompt still moves it")
+        a.apply(ev("a", .working, at: 4))
+        XCTAssertEqual(rows(&a, [win(1, focused: true), win(2, focused: false)], now: 4.1), ["win:2"], "and is used up once it has")
+    }
+
+    func testAPromptSubmittedWithItsWindowInFrontIsEvidenceNotFocusLuck() {
+        var a = AgentSessions()
+        a.apply(ev("a", .working, at: 1, started: true))
+        XCTAssertEqual(rows(&a, [win(1, focused: true), win(2, focused: false)], now: 2), ["win:1"])
+        XCTAssertEqual(a.followed, [], "you typed the prompt there")
+        var b = AgentSessions()
+        b.apply(ev("a", .working, at: 1))
+        XCTAssertEqual(rows(&b, [win(1, focused: true), win(2, focused: false)], now: 2), ["win:1"])
+        XCTAssertEqual(b.followed, ["win:1"], "without a prompt, focus is all there is")
+    }
+
+    func testAPromptWithNoWindowInFrontWaitsForFocus() {
+        var a = AgentSessions()
+        a.apply(ev("a", .working, at: 1))
+        XCTAssertEqual(rows(&a, [win(1, focused: true), win(2, focused: false)], now: 2), ["win:1"])
+        a.apply(ev("a", .working, at: 3, started: true))
+        XCTAssertEqual(rows(&a, [win(1, focused: false), win(2, focused: false)], now: 4), ["win:1"], "no focus: it stays")
+        XCTAssertEqual(rows(&a, [win(1, focused: false), win(2, focused: true)], now: 5), ["win:2"], "the prompt wasn't used up")
+    }
+
+    func testAPromptWhenASecondWindowOpensWaitsForFocusToo() {
+        var a = AgentSessions()
+        a.apply(ev("a", .working, at: 1))
+        _ = a.resolve([win(1, focused: true)], now: 2)
+        XCTAssertEqual(a.binding["claude:a"], "win:1")
+        a.apply(ev("a", .working, at: 3, started: true))
+        XCTAssertEqual(rows(&a, [win(1, focused: false), win(2, focused: false)], now: 4), ["win:1"])
+        XCTAssertEqual(rows(&a, [win(1, focused: false), win(2, focused: true)], now: 5), ["win:2"])
+    }
+
     func testTheSameSessionOnAnotherRowIsNotASwitch() {
         // The row-keyed switch check already treats a session arriving on a row that showed nothing as no switch.
         var shown = ShownSessions()

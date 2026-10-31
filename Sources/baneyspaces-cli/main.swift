@@ -25,8 +25,9 @@ usage: \(me) <command>
   remote on|off|status|token  let your other machines (tailnet only) send agent work here
   --on HOST <command>         run ls or agent status|open|run on another machine
   hook claude|grok            for agent hooks: reads the hook JSON on stdin
-  event --state S [--agent A] [--session ID] [--cwd DIR] [--message M]
-                              report any agent's state (working, waiting, idle, end)
+  event --state S [--agent A] [--session ID] [--cwd DIR] [--message M] [--started]
+                              report any agent's state (working, waiting, idle, end);
+                              --started with working: a prompt was just submitted
   hooks install|uninstall|status   Claude Code and Grok hooks
   skill install               the agent skill into ~/.claude/skills/baneyspaces
   doctor                      what's working and what isn't
@@ -182,14 +183,14 @@ case "hook":
 
 case "event":
     guard let s = flag("--state", in: rest), let state = AgentEvent.State(rawValue: s) else {
-        fail("usage: \(me) event --state working|waiting|idle|end [--agent A] [--session ID] [--cwd DIR] [--message M]", code: 2)
+        fail("usage: \(me) event --state working|waiting|idle|end [--agent A] [--session ID] [--cwd DIR] [--message M] [--started]", code: 2)
     }
     let tty = controllingTTY()
     let ev = AgentEvent(agent: flag("--agent", in: rest) ?? "agent",
                         session: flag("--session", in: rest) ?? (tty.isEmpty ? "default" : tty),
                         cwd: flag("--cwd", in: rest) ?? FileManager.default.currentDirectoryPath,
                         tty: tty, app: launchingApp, state: state, message: flag("--message", in: rest) ?? "",
-                        at: Date().timeIntervalSince1970)
+                        at: Date().timeIntervalSince1970, started: state == .working && rest.contains("--started"))
     _ = Wire.call(Wire.Request(op: .event, event: ev), timeout: 0.5)
 
 case "hooks":
