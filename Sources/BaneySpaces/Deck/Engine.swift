@@ -336,7 +336,7 @@ final class Engine {
     // MARK: agents
 
     func apply(_ e: AgentEvent) {
-        sessions.apply(e)
+        sessions.apply(e, receivedAt: Date().timeIntervalSince1970)
         merge()
         // A hook usually means the title changed too: read the app it came from now, and again once
         // the title has caught up, which is when an unbound session gets narrowed to its terminal.

@@ -30,7 +30,7 @@ BaneySpaces workspace.
 | Open a page | `baneyspaces open https://…` (default browser, stays in the deck) |
 | Type into another Ghostty terminal | `baneyspaces send <id or words> "text"` (pasted, no Return unless you include a newline) |
 | Tell Donovan this terminal needs him | `baneyspaces notify "Tests failed, need a decision"` |
-| Report your own state (non-Claude agents) | `baneyspaces event --state working\|waiting\|idle\|end --agent <name>` (add `--started` with `working` when a prompt was just submitted in the window in front) |
+| Report your own state (non-Claude agents) | `baneyspaces event --state working\|waiting\|idle\|end --agent <name>` (add `--started` with `working` when a prompt was just submitted in the window in front; `--at <unix seconds>` says when it happened, default now) |
 
 ## Rules
 

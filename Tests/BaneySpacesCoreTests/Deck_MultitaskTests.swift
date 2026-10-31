@@ -471,6 +471,59 @@ final class SharedWindowTests: XCTestCase {
         XCTAssertEqual(rows(&a, [win(1, focused: false), win(2, focused: true)], now: 4), ["win:1"], "a stop isn't a prompt, whatever it says")
     }
 
+    func testAPromptIsTimedFromWhenItArrivedNotFromTheSendersClock() {
+        // A remote machine's clock a day behind: its prompt still places the session. (Only the
+        // prompt's life runs from arrival; staleness and expiry still go by the sender's `at`.)
+        var a = AgentSessions()
+        a.apply(ev("a", .working, at: 1))
+        XCTAssertEqual(rows(&a, [win(1, focused: true), win(2, focused: false)], now: 2), ["win:1"])
+        a.apply(ev("a", .working, at: 3 - 86_400, started: true), receivedAt: 3)
+        XCTAssertEqual(rows(&a, [win(1, focused: false), win(2, focused: true)], now: 4), ["win:2"], "a slow sender clock doesn't cut the prompt short")
+        // And one a day ahead can't stretch it.
+        var b = AgentSessions()
+        b.apply(ev("a", .working, at: 1))
+        XCTAssertEqual(rows(&b, [win(1, focused: true), win(2, focused: false)], now: 2), ["win:1"])
+        b.apply(ev("a", .working, at: 3 + 86_400, started: true), receivedAt: 3)
+        XCTAssertEqual(rows(&b, [win(1, focused: false), win(2, focused: false)], now: 4), ["win:1"])
+        XCTAssertEqual(rows(&b, [win(1, focused: false), win(2, focused: true)], now: 3 + AgentSessions.promptLife + 10), ["win:1"],
+                       "a fast sender clock doesn't stretch it")
+    }
+
+    func testAPromptPendingWhileNoWindowIsInFrontLeavesAFollowedSessionFollowed() {
+        var a = AgentSessions()
+        a.apply(ev("q", .waiting, at: 1, message: "Claude needs your permission to use Bash"))
+        XCTAssertEqual(rows(&a, [win(1, focused: true), win(2, focused: false)], now: 2), ["win:1"])
+        XCTAssertEqual(a.followed, ["win:1"])
+        a.apply(ev("q", .waiting, at: 3, message: "Claude needs your permission to use Bash", started: false))
+        a.apply(ev("w", .working, at: 3.1, started: true))
+        // A prompt is pending (w's), nothing is in front: the question must not count as seen.
+        _ = a.resolve([win(1, focused: false), win(2, focused: false)], now: 4)
+        XCTAssertEqual(a.followed, ["win:1"], "placed by focus before, and nothing since says otherwise")
+    }
+
+    func testAGroksSubagentPromptIsNotTypedInItsRealShape() throws {
+        // Grok sends Claude's event names in `hook_event_name` and camelCase keys elsewhere (see the
+        // SessionEnd case above).
+        let json: [String: Any] = ["hook_event_name": "UserPromptSubmit", "sessionId": "g1", "cwd": "/p", "subagentType": "explore"]
+        let e = try XCTUnwrap(AgentEvent.hook(json, agent: "grok", tty: "", app: t3, at: 1))
+        XCTAssertFalse(e.started)
+        var own = json; own["subagentType"] = nil
+        XCTAssertTrue(try XCTUnwrap(AgentEvent.hook(own, agent: "grok", tty: "", app: t3, at: 1)).started)
+    }
+
+    func testEventStampsAreCheckedAgainstTheLocalClock() {
+        let now = 1_761_864_000.0
+        XCTAssertNil(AgentEvent.stampProblem(at: now - 1, started: true, now: now))
+        XCTAssertNil(AgentEvent.stampProblem(at: now - 3600, started: false, now: now), "an old stop is fine")
+        XCTAssertNotNil(AgentEvent.stampProblem(at: now - 3600, started: true, now: now), "a prompt an hour old places nothing")
+        XCTAssertNotNil(AgentEvent.stampProblem(at: now - AgentSessions.promptLife - 1, started: true, now: now))
+        XCTAssertNotNil(AgentEvent.stampProblem(at: .infinity, started: false, now: now))
+        XCTAssertNotNil(AgentEvent.stampProblem(at: .nan, started: false, now: now))
+        XCTAssertNotNil(AgentEvent.stampProblem(at: 1e300, started: false, now: now))
+        XCTAssertNotNil(AgentEvent.stampProblem(at: now + 7 * 3600, started: false, now: now))
+        XCTAssertNotNil(AgentEvent.stampProblem(at: now - 7 * 3600, started: false, now: now))
+    }
+
     func testTheSameSessionOnAnotherRowIsNotASwitch() {
         // The row-keyed switch check already treats a session arriving on a row that showed nothing as no switch.
         var shown = ShownSessions()

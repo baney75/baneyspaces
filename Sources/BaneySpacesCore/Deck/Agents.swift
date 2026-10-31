@@ -1,8 +1,8 @@
 import Foundation
 
-/// One report from a coding agent's hook. Claude Code sends its hook JSON on stdin; `ghostdeck hook`
+/// One report from a coding agent's hook. Claude Code sends its hook JSON on stdin; `baneyspaces hook`
 /// adds the tty it ran under and forwards it here. Any other agent can send the same shape with
-/// `ghostdeck event --state working|waiting|idle|end [--started]`.
+/// `baneyspaces event --state working|waiting|idle|end [--started] [--at SECS]`.
 public struct AgentEvent: Codable, Equatable, Sendable {
     public enum State: String, Codable, Sendable { case working, waiting, idle, end }
 
@@ -78,6 +78,16 @@ public struct AgentEvent: Codable, Equatable, Sendable {
                           state: state, message: message, at: at, started: typed)
     }
 
+    /// Why `baneyspaces event` should refuse a stamp it was given with `--at`, if it should: `now` is
+    /// the local clock, the same one the app times a prompt by. Nil when the stamp is fine.
+    public static func stampProblem(at t: Double, started: Bool, now: Double) -> String? {
+        guard t.isFinite, t > 0, abs(now - t) <= 6 * 3600 else { return "--at must be unix seconds within 6 hours of now" }
+        if started && now - t > AgentSessions.promptLife {
+            return "--started with an --at over \(Int(AgentSessions.promptLife)) seconds old: a prompt only counts for that long"
+        }
+        return nil
+    }
+
     /// Notification types that ask you something; an older Claude sends none.
     public static let asking: Set<String> = ["permission_prompt", "elicitation_dialog"]
 
@@ -126,14 +136,16 @@ public struct AgentSessions: Equatable, Sendable {
 
     public init() {}
 
-    public mutating func apply(_ e: AgentEvent) {
+    /// `receivedAt` is when this process got the report (the sender's `at` may come from another
+    /// machine's clock, or be stamped late); a prompt's life runs from it. Tests leave it to `e.at`.
+    public mutating func apply(_ e: AgentEvent, receivedAt: Double? = nil) {
         let key = e.agent + ":" + e.session
         if e.state == .end {
             forget(key)
         } else {
             sessions[key] = e
             // Only work can start from a prompt; a decoded or remote report saying otherwise is ignored.
-            if e.started && e.state == .working { prompted[key] = e.at }
+            if e.started && e.state == .working { prompted[key] = receivedAt ?? e.at }
         }
     }
 
@@ -213,6 +225,8 @@ public struct AgentSessions: Equatable, Sendable {
                     if let p = pick, windows.count > 1, Self.shared(p) {
                         follows = true
                         // A prompt submitted with this window in front is evidence the session is in it.
+                        // `p` is always the window in front here: with several windows only `front` can
+                        // be picked, so a prompt pending while focus is elsewhere never gets this far.
                         byFocus = pending ? false : (p.id != there?.id || last?.byFocus == true)
                     } else if pick == nil, let w = there {
                         // Focus decided nothing, so the prompt stays pending.
