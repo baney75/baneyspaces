@@ -963,8 +963,9 @@ final class Spaces {
     /// waiting there where it was instead of pressed against the menu bar.
     /// `wanted` is asked again when the move runs, which may be after a switch in progress.
     func moveCarried(_ id: WindowID, to n: Int, from frame: CGRect, wanted: @escaping () -> Bool = { true }) {
-        guard active, Workspaces.range.contains(n), wanted() else { return }
-        if switching { return enqueue { [weak self] in self?.moveCarried(id, to: n, from: frame, wanted: wanted) } }
+        guard active, Workspaces.range.contains(n), wanted() else { Trace.log("drop not wanted window=\(id)"); return }
+        if switching { Trace.log("drop waits for a switch window=\(id)"); return enqueue { [weak self] in self?.moveCarried(id, to: n, from: frame, wanted: wanted) } }
+        Trace.log("drop moves window=\(id) to=\(n)")
         // Already gone to `n` while the drop settled: the window is out of sight on the workspace
         // just left, so it goes back to its spot now, before the switch below shows it here.
         if model.isShown(n), let w = windows[id] { w.place(onDisplayOf(n, frame), currentSize: w.frame?.size ?? .zero) }

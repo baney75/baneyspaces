@@ -89,6 +89,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let gen = dropGeneration[id, default: 0]
         var last = TopDragWatcher.bounds(of: id)
         var looks = 0, still = 0
+        let began = ProcessInfo.processInfo.systemUptime
+        Trace.log("drop settling window=\(id) to=\(n)")
         settling[id] = Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { [weak self] timer in
             looks += 1
             let now = TopDragWatcher.bounds(of: id)
@@ -96,7 +98,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             last = now
             guard (looks >= 5 && still >= 3) || looks >= 25 else { return }
             timer.invalidate()
-            guard let self, now != nil, self.dropGeneration[id, default: 0] == gen else { return }
+            let ms = Int((ProcessInfo.processInfo.systemUptime - began) * 1000)
+            guard let self, now != nil, self.dropGeneration[id, default: 0] == gen else {
+                Trace.log("drop dropped window=\(id) after \(ms) ms looks=\(looks) gone=\(now == nil) stale=\(self?.dropGeneration[id, default: 0] != gen)")
+                return
+            }
+            Trace.log("drop settled window=\(id) after \(ms) ms looks=\(looks) still=\(still)")
             self.settling[id] = nil
             self.spaces.moveCarried(id, to: n, from: grab.frame) { [weak self] in self?.dropGeneration[id, default: 0] == gen }
         }
