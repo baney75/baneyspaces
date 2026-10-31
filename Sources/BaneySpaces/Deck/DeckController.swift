@@ -32,8 +32,6 @@ final class DeckController {
         set { UserDefaults.standard.set(newValue, forKey: "remoteEnabled") }
     }
     lazy var toast = ToastPanel()
-    /// ⌃⌘U, held while any wrapped app is in front. No app we wrap uses it.
-    let deckKeys = ScopedHotkeys(signature: "BSDK")
     /// ⌘⇧U, held only while a terminal is in front.
     let terminalKeys = ScopedHotkeys(signature: "BSTM")
     /// Set by the app delegate: opens the launcher, where the Deck's rows are searched. ⌃⌘K calls it.
@@ -42,7 +40,6 @@ final class DeckController {
     var onItemsChange: () -> Void = {}
     private var lastItems: [Item] = []
     /// Claude Code and Grok report to BaneySpaces (their hooks are installed).
-    private(set) var hooksInstalled = true
     /// A new Claude session's pane is on its way.
     private var claudeOpening = false
     var trustTimer: Timer?
@@ -108,7 +105,6 @@ final class DeckController {
 
         toast.onPick = { [weak self] id in if let i = self?.engine.item(id) { self?.focus(i) } }
         if !AX.isTrusted { watchForTrust() }
-        hooksInstalled = Self.hooksInstalled()
         appChanged()
     }
 
@@ -116,7 +112,7 @@ final class DeckController {
     func stop() {
         guard started else { return }
         started = false
-        deckKeys.deactivate(); terminalKeys.deactivate()
+        terminalKeys.deactivate()
         toast.orderOut(nil)
         trustTimer?.invalidate()
         engine.stop()
@@ -186,7 +182,6 @@ final class DeckController {
     func appChanged() {
         guard started else { return }
         let front = wrappedFront
-        if front != nil { deckKeys.activate() } else { deckKeys.deactivate() }
         if front?.role == .terminal { terminalKeys.activate() } else { terminalKeys.deactivate() }
     }
 
@@ -262,7 +257,6 @@ final class DeckController {
         p.arguments = ["hooks", "install"]
         try? p.run()
         p.waitUntilExit()
-        hooksInstalled = Self.hooksInstalled()
     }
 
     /// Rows for BaneySpaces' launcher (⌘Space, ⌃⌘K), so one search finds apps, splits, tabs and agents.

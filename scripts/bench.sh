@@ -6,8 +6,9 @@
 #   BUDGET_MS=25 scripts/bench.sh
 # It also reports the switches you really made with the running build (each between two
 # workspaces, since it started) step by step, and fails if their p90 is over REAL_P90_MS (250 ms;
-# 232 on 2026-10-30, before the build that logs from=). With fewer than 20 since it started it only
-# says so: real use takes a while to collect. Time a switch spends queued behind another isn't counted.
+# 232 on 2026-10-30, before the build that logs from=). With fewer than 20 since it started it
+# exits 3: make 20 real switches on the installed build first, or report the budget unchecked.
+# Time a switch spends queued behind another isn't counted.
 set -euo pipefail
 BUDGET_MS="${BUDGET_MS:-40}"
 REAL_P90_MS="${REAL_P90_MS:-250}"
@@ -18,7 +19,7 @@ current=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['curre
 start=$(date +%s)
 status=0
 # When the running build started: only its switches count toward the real-use budget.
-lstart=$(ps -o lstart= -p "$(pgrep -f "BaneySpaces.app/Contents/MacOS/BaneySpaces" | head -1)" | tr -s ' ' | sed 's/^ //; s/ $//')
+lstart=$(LC_ALL=C ps -o lstart= -p "$(pgrep -f "BaneySpaces.app/Contents/MacOS/BaneySpaces" | head -1)" | tr -s ' ' | sed 's/^ //; s/ $//')
 launched=$(LC_ALL=C date -j -f "%a %b %d %T %Y" "$lstart" +%s)
 for _ in $(seq 1 10); do open -g "baneyspaces://switch/$current"; sleep 0.8; done
 sleep 0.5
@@ -36,9 +37,9 @@ if parked: print(f"with parking: median {statistics.median(parked):.0f} ms, slow
 sys.exit(0 if median <= budget else 1)
 ' "$BUDGET_MS" "$start" "$LOG" || status=$?
 python3 -c '
-import re, statistics, sys
+import math, re, statistics, sys
 budget, launched = int(sys.argv[1]), int(sys.argv[3])
-phases = ["start", "snap", "scanned", "home", "alongside", "unhidden", "concealed", "shown", "focused", "done"]
+phases = ["start", "snap", "scanned", "fullscreen", "home", "alongside", "unhidden", "concealed", "shown", "focused", "done"]
 rows = []
 for line in open(sys.argv[2]):
     if not line[:1].isdigit() or int(line.split()[0]) < launched: continue
@@ -50,9 +51,10 @@ for line in open(sys.argv[2]):
     if "done" not in kv or "from" not in kv or kv["from"] == kv["ws"]: continue
     rows.append({"start": 0, **{k: int(v) for k, v in kv.items() if v.isdigit()}})
 if len(rows) < 20:
-    print(f"real use: only {len(rows)} switches since this build started; budget not checked yet")
-    sys.exit(0)
-def pct(v, p): v = sorted(v); return v[min(len(v) - 1, int(len(v) * p))]
+    print(f"real use: only {len(rows)} switches since this build started; budget not checked (exit 3)")
+    sys.exit(3)
+# Nearest rank: the smallest value with at least p of them at or below it.
+def pct(v, p): v = sorted(v); return v[max(0, math.ceil(len(v) * p) - 1)]
 done = [r["done"] for r in rows]
 p50, p90 = statistics.median(done), pct(done, 0.9)
 print(f"real use: median {p50:.0f} ms, p90 {p90} ms, slowest {max(done)} ms over {len(rows)} switches (p90 budget {budget} ms)")

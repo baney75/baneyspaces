@@ -491,11 +491,11 @@ final class LauncherModel: ObservableObject {
         if selected >= items.count { selected = max(0, items.count - 1) }
     }
 
-    /// Rebuilds for results that came in after the typing (files, the App Store): the row you
-    /// were on stays selected wherever it moved, so Return still does what it showed.
     /// The Deck's rows changed while the launcher is open.
     func rowsChanged() { rebuildKeepingSelection() }
 
+    /// Rebuilds for results that came in after the typing (files, the App Store): the row you
+    /// were on stays selected wherever it moved, so Return still does what it showed.
     private func rebuildKeepingSelection() {
         let on = items.indices.contains(selected) ? items[selected].id : nil
         rebuild()

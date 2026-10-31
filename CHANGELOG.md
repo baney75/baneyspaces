@@ -11,7 +11,9 @@
   and so do the `baneyspaces` command and phones. Agent tracking is always on now; it has no
   setting of its own. If you kept the sidebar pinned, the windows beside it keep the size they
   had; widen them once. The command's `layout`, `tile`, `sidebar` and `palette`
-  subcommands are gone. The Install Hooks button moved to the Dock tab in setup.
+  subcommands are gone. The Install Hooks button moved to the Dock tab in setup. A phone's shell
+  and screenshot are in the command (`baneyspaces phone shell`, `baneyspaces phone shot`), and **New
+  Terminal** opens in the folder of the terminal you were in.
 - **Each display shows a workspace of its own.** With a second monitor or Sidecar, ⌘3 used to
   change what every screen showed. Now it changes only the display you're on: the one you last
   clicked, anywhere on it (a window, the desktop, the Workspace Dock or the overview), or whose
