@@ -1,26 +1,6 @@
 import XCTest
 @testable import BaneySpacesCore
 
-final class DeckHistoryTests: XCTestCase {
-    func testBackForwardSkipsClosedRowsAndNewVisitDropsForward() {
-        var h = DeckHistory()
-        for id in ["a", "b", "c"] { h.visit(id) }
-        XCTAssertEqual(h.back(alive: ["a", "c"]), "a", "b closed, so back skips it")
-        h.visit("a")
-        XCTAssertEqual(h.forward(alive: ["a", "b", "c"]), "b")
-        h.visit("b")
-        h.visit("d")
-        XCTAssertNil(h.forward(alive: ["a", "b", "c", "d"]), "a new visit after going back drops the forward rows")
-        XCTAssertEqual(h.back(alive: ["a", "b", "c", "d"]), "b")
-    }
-
-    func testRevisitMovesToTheEnd() {
-        var h = DeckHistory()
-        for id in ["a", "b", "a"] { h.visit(id) }
-        XCTAssertEqual(h.stack, ["b", "a"])
-    }
-}
-
 final class DeckRankTests: XCTestCase {
     func testUsesTheLauncherMatcher() {
         XCTAssertEqual(DeckRank.rank("hel", ["shell", "Helium"]) { [$0] }.first, "Helium")

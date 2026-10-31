@@ -8,7 +8,7 @@ final class RemoteTests: XCTestCase {
         XCTAssertTrue(Remote.allows(Wire.Request(op: .agent, text: "run")))
         XCTAssertTrue(Remote.allows(Wire.Request(op: .agent, text: "open")))
         XCTAssertTrue(Remote.allows(Wire.Request(op: .agent)), "status by default")
-        for op in [Wire.Request.Op.focus, .send, .open, .notify, .tile, .layout, .sidebar, .palette, .event, .remote] {
+        for op in [Wire.Request.Op.focus, .send, .open, .notify, .event, .remote] {
             XCTAssertFalse(Remote.allows(Wire.Request(op: op)), "\(op) changes what you see")
         }
         for sub in ["on", "off", "move", "anything"] {

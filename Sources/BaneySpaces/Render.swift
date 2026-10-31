@@ -240,45 +240,6 @@ enum Render {
         fresh.viewerKeys = true
         guard save(SetupView(model: fresh, close: {}).background(Color(nsColor: .windowBackgroundColor)),
                    "setup-first-run.png", CGSize(width: 560, height: 0)) else { return 1 }
-
-        // The Deck: terminals, agents, browser tabs and phones on this workspace, one agent done.
-        let deck = DeckModel()
-        let g = "com.mitchellh.ghostty", h = "net.imput.helium"
-        func row(_ id: String, _ bundle: String, _ app: String, _ role: Role, _ kind: Item.Kind, _ group: String, _ title: String,
-                 detail: String = "", activity: Activity = .shell, focused: Bool = false, nested: Bool = false, workspace: Int = 0) -> Item {
-            var i = Item(id: id, bundleID: bundle, appName: app, role: role, kind: kind, group: group, title: title, detail: detail,
-                         activity: activity, focused: focused, nested: nested)
-            i.workspace = workspace
-            return i
-        }
-        deck.items = [
-            row("t1", g, "Ghostty", .terminal, .terminal, "w1", "◐ Refactor the sync engine", detail: "~/Projects/atlas", activity: .working),
-            row("t2", g, "Ghostty", .terminal, .terminal, "w1", "✳ Write the release notes", detail: "~/Projects/atlas", activity: .waiting),
-            row("t3", g, "Ghostty", .terminal, .terminal, "w1", "npm test --watch", detail: "~/Projects/atlas", nested: true),
-            row("t4", g, "Ghostty", .terminal, .terminal, "w1", "◓ Fix the flaky upload test", detail: "~/Projects/site", activity: .working, focused: true),
-            row("a1", "com.anthropic.claudefordesktop", "Claude", .agent, .window, "a1", "Plan the Q4 roadmap"),
-            row("a2", "com.openai.codex", "ChatGPT", .agent, .window, "a2", "Codex · Migrate the auth module"),
-            row("a3", "com.t3tools.t3code", "T3 Code", .agent, .window, "a3", "atlas · 3 threads"),
-            row("a4", "com.anysphere.sand", "Grok Bot", .agent, .window, "a4", "Magnus"),
-            row("b1", h, "Helium", .browser, .tab, "b", "Pull request #128 · atlas", detail: "github.com/acme/atlas/pull/128"),
-            row("b2", h, "Helium", .browser, .tab, "b", "Swift documentation", detail: "developer.apple.com/documentation/swift"),
-            row("b3", h, "Helium", .browser, .tab, "b", "Workers · Cloudflare", detail: "dash.cloudflare.com"),
-            row("android:R5CT", "", "Android", .device, .device, "phones", "Pixel 8", detail: "R5CT9X"),
-            row("ios:3F42", "com.apple.ScreenContinuity", "iPhone", .device, .device, "phones", "iPhone 15 Plus", detail: "iPhone 15 Plus · USB"),
-            row("t9", g, "Ghostty", .terminal, .terminal, "w9", "Staging logs", detail: "~/Projects/atlas", workspace: 3),
-        ]
-        deck.unseen = ["t2"]
-        deck.pinned = true
-        deck.layout = .stack
-        deck.trusted = true
-        deck.hooksInstalled = true
-        guard save(SidebarView(model: deck).background(Color(red: 0.13, green: 0.13, blue: 0.15)), "deck.png", CGSize(width: 264, height: 860)) else { return 1 }
-
-        // The notice when an agent finishes while you're in another app.
-        var done = deck.items[1]
-        done.agent = "claude"
-        let toast = ToastView(title: "Claude: finished", detail: done.label, bundleID: g)
-        guard save(toast.frame(height: 64).background(Color(red: 0.16, green: 0.16, blue: 0.18)), "deck-toast.png", CGSize(width: 320, height: 64)) else { return 1 }
         return 0
     }
 }

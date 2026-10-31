@@ -67,7 +67,7 @@ public struct AgentEvent: Codable, Equatable, Sendable {
     }
 }
 
-/// Live agent sessions and which sidebar row each one runs in.
+/// Live agent sessions and which Deck row each one runs in.
 ///
 /// Exact evidence binds at once: the session's tty (Terminal, iTerm) or its folder. Ghostty
 /// reports neither while Claude runs, so the rest bind by correlation: after each hook event

@@ -6,7 +6,7 @@ import ServiceManagement
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let spaces = Spaces()
-    /// Terminal splits, browser tabs and agents in one sidebar, plus the `baneyspaces` command.
+    /// Terminal splits, browser tabs and agents for the launcher and the dock's badges, plus the `baneyspaces` command.
     private let deck = DeckController()
     private let hotkeys = Hotkeys()
     private let updater = Updater()
@@ -122,6 +122,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         a.showOverview = { [weak self] in self?.viewer.open() }
         a.deckItems = { [weak self] q in self?.deck.launcherItems(q) ?? [] }
+        a.newClaude = { [weak self] in self?.deck.newClaude() }
+        a.newTerminal = { [weak self] in self?.deck.engine.newTerminal(in: nil) }
         a.bringBack = { [weak self] in self?.bringBack() }
         a.toggleDock = { [weak self] in self?.toggleWorkspaceDock() }
         a.dockOn = { WorkspaceDock.enabled }
@@ -158,7 +160,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         c.model.onTopDragChange = { [weak self] on in self?.setTopDrag(on) }
         c.model.onDockEdgeChange = { [weak self] e in self?.setDockEdge(e) }
         c.model.onDockAgentStatusChange = { [weak self] on in self?.setDockAgentStatus(on) }
-        c.model.onDeckChange = { [weak self] on in if DeckController.enabled != on { self?.toggleDeck() } }
         // Every event, not just any: an older install lacks StopFailure, which the red badge needs.
         c.model.hooksInstalled = {
             guard let d = FileManager.default.contents(atPath: NSHomeDirectory() + "/.claude/settings.json") else { return .noClaudeCode }
@@ -166,8 +167,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return HookSettings.installed(settings).count == HookSettings.events.count ? .on : .off
         }
         c.model.onInstallHooks = { [weak self] in self?.deck.installHooks() }
-        c.model.onDeckEdgeChange = { [weak self] on in self?.deck.setEdgeOpens(on) }
-        deck.onEdgeOpensChange = { [weak c] on in c?.model.deckEdge = on }
         c.model.onLauncherChange = { [weak self] on in self?.setLauncherOnCmdSpace(on) }
         c.model.onCmdTabChange = { [weak self] mode in
             MissionControlKeys.cmdTabMode = mode
@@ -281,6 +280,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             source.resume()
             signalSources.append(source)
         }
+        // ⌃⌘K (registered in `registerShortcuts`) opens the launcher, which searches the Deck's rows.
+        deck.onSearch = { [weak self] in self?.launcher.toggle() }
         startWhenTrusted()
         // ⌘Space works with or without Accessibility; Spotlight hands it over first.
         if Launcher.onCmdSpace { setLauncherOnCmdSpace(true) } else { registerShortcuts() }
@@ -430,6 +431,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if Launcher.onCmdSpace, !SystemShortcuts.spotlightOwnsCmdSpace {
             hotkeys.register(keyCode: kVK_Space, modifiers: cmdKey) { [weak self] in self?.launcher.toggle() }
         }
+        // ⌃⌘K opens the launcher from any app, with or without Accessibility.
+        hotkeys.register(keyCode: kVK_ANSI_K, modifiers: controlKey | cmdKey) { [weak self] in self?.deck.onSearch() }
         guard started else { return }
         let mods = Modifier.current.carbon
         for (i, code) in Hotkeys.digitKeyCodes.enumerated() {
@@ -465,7 +468,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func startDeck() {
-        guard DeckController.enabled else { return }
         deck.onUnseenChange = { [weak self] _ in self?.updateIcon(); self?.dock.reload() }
         var h = AgentHost()
         h.workspace = { Spaces.agentWorkspace }
@@ -484,18 +486,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // A moment after launch: setting up an observer per app costs the main thread a few
         // hundred milliseconds, which would otherwise land on your first workspace switch.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            guard let self, self.started, DeckController.enabled else { return }
+            guard let self, self.started else { return }
             self.deck.start(workspaceOf: { [weak self] in self?.spaces.model.workspace(of: $0) },
                             currentWorkspace: { [weak self] in self?.spaces.model.current ?? 1 })
         }
-    }
-
-    @objc private func toggleDeck() {
-        DeckController.enabled.toggle()
-        if DeckController.enabled { startDeck() } else { deck.stop() }
-        if setup.model.deck != DeckController.enabled { setup.model.deck = DeckController.enabled }
-        updateIcon()
-        dock.reload()
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -567,10 +561,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             status.toolTip = "Badges on app icons: a turning ring while an agent works, a yellow ? when it asks you something, a red ! when it stops on an error, an orange count when it finishes."
             sub.addItem(status)
         }
-        let deckItem = item("Terminal and Agent Deck", #selector(toggleDeck))
-        deckItem.state = DeckController.enabled ? .on : .off
-        deckItem.toolTip = "A sidebar of every terminal, browser tab and coding agent here. Rest the pointer on the left edge in a terminal, browser or agent app, or press ⌃⌘B."
-        sub.addItem(deckItem)
         let spaceItem = item("Launcher on ⌘Space", #selector(toggleLauncherKey))
         spaceItem.state = Launcher.onCmdSpace ? .on : .off
         spaceItem.toolTip = "⌘Space opens the BaneySpaces launcher instead of Spotlight. Turning it off gives ⌘Space back to Spotlight."

@@ -2,7 +2,7 @@ import BaneySpacesCore
 import Darwin
 import Foundation
 
-// `baneyspaces`: the command line side of BaneySpaces' Deck, for you, for agents and for hooks.
+// `baneyspaces`: the command line side of BaneySpaces' Deck engine, for you, for agents and for hooks.
 // Foundation only, no AppKit, so a hook costs a few milliseconds. Talks to the running app over
 // its socket. Also installed as `ghostdeck`, the Deck's old name.
 
@@ -16,8 +16,6 @@ usage: \(me) <command>
   open <url>                  open in your default browser
   send <id | words> <text>    type text into a Ghostty terminal, as if pasted
   notify [message]            flag the terminal this runs in as needing you
-  layout free|stack|split     how wrapped windows sit beside the docked sidebar
-  tile | sidebar | palette    tile windows, toggle the sidebar, open the switcher
   state                       the Deck's live state as JSON
   agent status|on [N]|off     the agent workspace: agents drive apps there while you work here
   agent open <app> [file…]    open an app (or files in it) there, without switching you
@@ -78,7 +76,7 @@ func call(_ r: Wire.Request, timeout: Double = 2) -> Wire.Reply {
         if !reply.ok { fail(reply.error ?? "failed") }
         return reply
     }
-    guard let reply = Wire.call(r, timeout: timeout) else { fail("BaneySpaces isn't running, or its Deck is off.") }
+    guard let reply = Wire.call(r, timeout: timeout) else { fail("BaneySpaces isn't running, or hasn't started its Deck yet.") }
     if !reply.ok { fail(reply.error ?? "failed") }
     return reply
 }
@@ -135,16 +133,8 @@ case "notify":
                         message: rest.joined(separator: " "), at: Date().timeIntervalSince1970)
     _ = call(Wire.Request(op: .notify, text: rest.joined(separator: " "), event: ev))
 
-case "layout":
-    guard let l = rest.first, Deck.Layout(rawValue: l) != nil else { fail("usage: \(me) layout free|stack|split", code: 2) }
-    _ = call(Wire.Request(op: .layout, text: l))
-
-case "tile": _ = call(Wire.Request(op: .tile))
-case "sidebar": _ = call(Wire.Request(op: .sidebar))
-case "palette": _ = call(Wire.Request(op: .palette))
-
 case "state":
-    guard let d = FileManager.default.contents(atPath: Wire.statePath) else { fail("no state yet: is the Deck on?") }
+    guard let d = FileManager.default.contents(atPath: Wire.statePath) else { fail("no state yet: is BaneySpaces running?") }
     out(String(data: d, encoding: .utf8) ?? "")
 
 case "remote":

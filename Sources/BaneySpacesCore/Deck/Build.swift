@@ -1,6 +1,6 @@
 import Foundation
 
-/// Turns what each adapter read into sidebar rows. Pure, so the rules are unit-tested.
+/// Turns what each adapter read into Deck rows. Pure, so the rules are unit-tested.
 public enum Build {
     /// Ghostty: one row per terminal, splits nested under their tab's first terminal.
     public static func ghostty(_ spec: AppSpec, _ snap: Snapshot, numbers: [String: UInt32], front: Bool) -> [Item] {

@@ -16,9 +16,10 @@ struct AgentHost {
     var windows: () -> [(id: WindowID, app: String, title: String)] = { [] }
 }
 
-/// The Deck: every terminal split, browser tab and coding agent on this workspace in one sidebar,
-/// with a switcher, agent state from hooks, and a toast when an agent finishes while you're
-/// elsewhere. BaneySpaces' app delegate owns it and starts it once Accessibility is allowed.
+/// The Deck: the engine behind every terminal split, browser tab and coding agent BaneySpaces
+/// knows about. It feeds the launcher's rows, the Workspace Dock's agent badges and the
+/// `baneyspaces` command, reads agent state from hooks, and toasts when an agent finishes while
+/// you're elsewhere. BaneySpaces' app delegate owns it and starts it once Accessibility is allowed.
 final class DeckController {
     let engine = Engine()
     let server = Server()
@@ -30,23 +31,17 @@ final class DeckController {
         get { UserDefaults.standard.bool(forKey: "remoteEnabled") }
         set { UserDefaults.standard.set(newValue, forKey: "remoteEnabled") }
     }
-    let model = DeckModel()
-    lazy var panel = SidebarPanel(model: model)
-    lazy var palette = PalettePanel()
-    lazy var edge = EdgeTrigger()
     lazy var toast = ToastPanel()
-    /// ⌃⌘ keys: held while any wrapped app is in front. No app we wrap uses them.
+    /// ⌃⌘U, held while any wrapped app is in front. No app we wrap uses it.
     let deckKeys = ScopedHotkeys(signature: "BSDK")
-    /// ⌘⇧ keys: held only while a terminal is in front, so browsers keep ⌘⇧C (Inspect) and ⌘⇧B (bookmarks).
+    /// ⌘⇧U, held only while a terminal is in front.
     let terminalKeys = ScopedHotkeys(signature: "BSTM")
-    /// Esc, held only while the drawer is open, so it never eats Esc otherwise.
-    let escape = ScopedHotkeys(signature: "BSES")
-    var visibility = SidebarVisibility(pinned: UserDefaults.standard.bool(forKey: "deckPinned"))
-    var layout = Deck.Layout(rawValue: UserDefaults.standard.string(forKey: "deckLayout") ?? "") ?? .stack
-    /// Rows you've been to, oldest first, for ⌃⌘[ and ⌃⌘].
-    var history = DeckHistory()
-    var currentFocus: Item?
-    var previousFocus: Item?
+    /// Set by the app delegate: opens the launcher, where the Deck's rows are searched. ⌃⌘K calls it.
+    var onSearch: () -> Void = {}
+    /// Claude Code and Grok report to BaneySpaces (their hooks are installed).
+    private(set) var hooksInstalled = true
+    /// A new Claude session's pane is on its way.
+    private var claudeOpening = false
     var trustTimer: Timer?
     private(set) var started = false
 
@@ -81,29 +76,6 @@ final class DeckController {
         return true
     }
 
-    static var enabled: Bool {
-        get { UserDefaults.standard.object(forKey: "deckEnabled") as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: "deckEnabled") }
-    }
-
-    /// Resting the pointer on the left edge opens the drawer. Off, only ⌃⌘B (and ⌘⇧B in a
-    /// terminal) opens it, so reaching for something at the edge never pops it out.
-    static var edgeOpens: Bool {
-        get { UserDefaults.standard.object(forKey: "deckEdgeOpens") as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: "deckEdgeOpens") }
-    }
-
-    /// Settings follows a change made from the menu bar.
-    var onEdgeOpensChange: (Bool) -> Void = { _ in }
-
-    func setEdgeOpens(_ on: Bool) {
-        Self.edgeOpens = on
-        onEdgeOpensChange(on)
-        if started { apply() }
-    }
-
-    var reserve: CGFloat { visibility.pinned ? SidebarPanel.width + SidebarPanel.margin : 0 }
-    var effectiveLayout: Deck.Layout { visibility.pinned ? layout : .free }
     var unseenCount: Int { engine.attention.unseen.count }
 
     private var keysAdded = false
@@ -111,11 +83,9 @@ final class DeckController {
     func start(workspaceOf: @escaping (UInt32) -> Int?, currentWorkspace: @escaping () -> Int) {
         guard !started else { return }
         started = true
-        wireModel()
         engine.workspaceOf = workspaceOf
         engine.currentWorkspace = currentWorkspace
         engine.onUpdate = { [weak self] in self?.engineUpdated() }
-        engine.onNewWindow = { [weak self] pid in self?.windowAppeared(pid) }
         engine.extraItems = { [weak self] in self?.phones.phones.map(\.item) ?? [] }
         phones.onChange = { [weak self] in self?.engine.merge() }
         engine.start()
@@ -128,38 +98,22 @@ final class DeckController {
         let ctrlCmd = controlKey | cmdKey, cmdShift = cmdKey | shiftKey
         if !keysAdded {
             keysAdded = true
-            deckKeys.add(keyCode: kVK_ANSI_K, modifiers: ctrlCmd) { [weak self] in self?.togglePalette() }
-            deckKeys.add(keyCode: kVK_ANSI_B, modifiers: ctrlCmd) { [weak self] in self?.send(.toggleKey) }
             deckKeys.add(keyCode: kVK_ANSI_U, modifiers: ctrlCmd) { [weak self] in self?.jumpToFinished() }
-            deckKeys.add(keyCode: kVK_ANSI_LeftBracket, modifiers: ctrlCmd) { [weak self] in self?.goBack() }
-            deckKeys.add(keyCode: kVK_ANSI_RightBracket, modifiers: ctrlCmd) { [weak self] in self?.goForward() }
-            terminalKeys.add(keyCode: kVK_ANSI_C, modifiers: cmdShift) { [weak self] in self?.tile() }
-            terminalKeys.add(keyCode: kVK_ANSI_B, modifiers: cmdShift) { [weak self] in self?.send(.toggleKey) }
             terminalKeys.add(keyCode: kVK_ANSI_U, modifiers: cmdShift) { [weak self] in self?.jumpToFinished() }
-            escape.add(keyCode: kVK_Escape, modifiers: 0) { [weak self] in self?.send(.escape) }
         }
 
-        panel.onPointer = { [weak self] inside in self?.pointer(inside: inside) }
-        edge.onRest = { [weak self] in self?.send(.edgeRest) }
         toast.onPick = { [weak self] id in if let i = self?.engine.item(id) { self?.focus(i) } }
-        screenObserver = screenObserver ?? NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
-            guard let self, self.started else { return }
-            if self.panel.shown { self.panel.place(on: DeckLayout.activeScreen(), animated: false) }
-            self.apply()
-        }
         if !AX.isTrusted { watchForTrust() }
-        model.hooksInstalled = Self.hooksInstalled()
+        hooksInstalled = Self.hooksInstalled()
         appChanged()
     }
-
-    private var screenObserver: NSObjectProtocol?
 
     /// Everything off: keys released, panels gone, no reads, no socket. Windows stay where they are.
     func stop() {
         guard started else { return }
         started = false
-        deckKeys.deactivate(); terminalKeys.deactivate(); escape.deactivate()
-        panel.orderOut(nil); edge.orderOut(nil); palette.dismiss(); toast.orderOut(nil)
+        deckKeys.deactivate(); terminalKeys.deactivate()
+        toast.orderOut(nil)
         trustTimer?.invalidate()
         engine.stop()
         phones.stop()
@@ -170,63 +124,23 @@ final class DeckController {
         onUnseenChange(0)
     }
 
-    func wireModel() {
-        model.pinned = visibility.pinned
-        model.layout = layout
-        // A phone stays beside the open drawer, as if it were in the Deck; anything else closes it.
-        model.onFocus = { [weak self] in self?.focus($0); if $0.kind != .device { self?.send(.picked) } }
-        model.onPhone = { [weak self] item, action in
-            guard let self, let p = self.phones.phone(item.id) else { return }
-            switch action {
-            case .mirror: self.phones.open(p) { self.dockDevice($0) }
-            case .deviceHub: self.phones.openInDeviceHub(p) { self.dockDevice($0) }
-            case .shell: self.phones.shell(p)
-            case .screenshot: self.phones.screenshot(p)
-            }
-        }
-        model.phone = { [weak self] in self?.phones.phone($0.id) }
-        model.onClose = { [weak self] item, what in self?.engine.close(item, what) }
-        model.onNewHere = { [weak self] in self?.engine.newTerminal(in: $0.directory) }
-        model.onTile = { [weak self] in self?.tile() }
-        // The sidebar stays while the pane opens, so "Opening…" is seen, then goes as for any pick.
-        model.onNewClaude = { [weak self] in self?.newClaude { self?.send(.picked) } }
-        model.onNewTerminal = { [weak self] in
-            self?.engine.newTerminal(in: self?.engine.items.first { $0.focused && !$0.directory.isEmpty }?.directory)
-            self?.send(.picked)
-        }
-        model.onPin = { [weak self] in self?.send(.pin($0)) }
-        model.onLayout = { [weak self] in self?.setLayout($0) }
-        model.onAllow = { AX.askForTrust() }
-        model.onSearch = { [weak self] in self?.togglePalette() }
-        model.onInstallHooks = { [weak self] in self?.installHooks() }
-        palette.model.source = { [weak self] in self?.paletteEntries() ?? [] }
-    }
-
     // MARK: engine
 
     var lastState = ""
     var lastUnseen: [String] = []
     func engineUpdated() {
         guard started else { return }
-        if model.items != engine.items { model.items = engine.items }
         let unseen = engine.attention.unseen
-        if model.unseen != unseen { model.unseen = unseen }
-        if model.trusted != AX.isTrusted { model.trusted = AX.isTrusted }
         // Newly finished while you're in some other app: say so, once, in a corner.
         let fresh = unseen.filter { !lastUnseen.contains($0) }
         if let id = fresh.first, let item = engine.item(id), wrappedFront == nil || !(item.focused) {
-            toast.show(item, more: fresh.count - 1, on: DeckLayout.activeScreen())
+            toast.show(item, more: fresh.count - 1, on: Self.activeScreen())
         }
         if unseen != lastUnseen { onUnseenChange(unseen.count) }
         let working = Dictionary(engine.items.filter { $0.activity == .working || !$0.notice.isEmpty }
             .map { ($0.id, $0.activity == .working ? "" : $0.notice) }) { a, _ in a }
         if working != lastWorking { lastWorking = working; onWorkingChange() }
         lastUnseen = unseen
-        if let f = engine.items.first(where: \.focused), f.id != currentFocus?.id {
-            if let c = currentFocus, c.windowNumber != f.windowNumber { previousFocus = c }
-            currentFocus = f
-            history.visit(f.id)
-        }
         writeState()
     }
 
@@ -237,30 +151,15 @@ final class DeckController {
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         struct State: Encodable {
             let trusted: Bool
-            let pinned: Bool
-            let open: Bool
-            let sidebarVisible: Bool
-            let layout: String
             let unseen: [String]
             let reads: [String: String]
             let items: [Item]
         }
-        let s = State(trusted: AX.isTrusted, pinned: visibility.pinned, open: visibility.open, sidebarVisible: panel.shown,
-                      layout: effectiveLayout.rawValue, unseen: engine.attention.unseen, reads: engine.statusInfo, items: engine.items)
+        let s = State(trusted: AX.isTrusted, unseen: engine.attention.unseen, reads: engine.statusInfo, items: engine.items)
         guard let data = try? enc.encode(s), let text = String(data: data, encoding: .utf8), text != lastState else { return }
         lastState = text
         try? FileManager.default.createDirectory(at: Wire.supportDir, withIntermediateDirectories: true)
         try? data.write(to: URL(fileURLWithPath: Wire.statePath), options: .atomic)
-    }
-
-    /// A new wrapped window: while docked it joins the deck frame, or at least leaves the strip.
-    func windowAppeared(_ pid: pid_t) {
-        guard visibility.pinned, panel.shown else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-            guard let self else { return }
-            if self.effectiveLayout == .stack { DeckLayout.stack(self.engine, reserve: self.reserve) }
-            else { DeckLayout.clearStrip(self.engine, width: self.reserve) }
-        }
     }
 
     func watchForTrust() {
@@ -268,7 +167,6 @@ final class DeckController {
             guard AX.isTrusted else { return }
             t.invalidate()
             self?.engine.retryWatching()
-            self?.model.trusted = true
         }
     }
 
@@ -279,163 +177,24 @@ final class DeckController {
         return engine.specs.first { $0.bundleID == b }
     }
 
-    func send(_ e: SidebarVisibility.Event) {
-        guard started else { return }
-        // A rest timer that started just before you switched apps must not open it behind your back.
-        if e == .edgeRest && wrappedFront == nil { return }
-        let wasPinned = visibility.pinned
-        visibility.handle(e)
-        if visibility.pinned != wasPinned {
-            UserDefaults.standard.set(visibility.pinned, forKey: "deckPinned")
-            model.pinned = visibility.pinned
-        }
-        apply()
-        if visibility.pinned && !wasPinned { arrange() }
-        if e == .edgeRest { closeWhenPointerLeaves(after: 1.0) }
-    }
-
-    /// The pointer is at the sidebar, by where it really is: tracking events alone go wrong while
-    /// the sidebar slides in under a pointer resting on the edge.
-    var pointerAtSidebar: Bool {
-        SidebarZone.contains(NSEvent.mouseLocation, sidebar: panel.home, screenMinX: panel.screen?.frame.minX ?? panel.home.minX)
-    }
-
-    /// The phone picked from the sidebar, docked beside it: while it's in front, the pointer on its
-    /// window still counts as in the Deck, so going to use the phone doesn't close the drawer.
-    private var dockedDevice: pid_t?
-
-    var pointerOnDockedDevice: Bool {
-        guard let pid = dockedDevice, NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return false }
-        let p = AX.flip(CGRect(origin: NSEvent.mouseLocation, size: .zero)).origin
-        return NativeWindow.list(pid: pid).contains { $0.onScreen && $0.frame.contains(p) }
-    }
-
-    /// Closes the drawer once the pointer is away from the sidebar. While it waits in the gap by
-    /// the edge, which sends no events, it looks again until the pointer is over the sidebar.
-    func closeWhenPointerLeaves(after delay: TimeInterval) {
-        leaveTimer?.invalidate()
-        leaveTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
-            guard let self, self.visibility.open, !self.visibility.pinned else { return }
-            // Stepped aside for one of BaneySpaces' own panels, still open: look again once it's back.
-            guard self.panel.shown else { return self.closeWhenPointerLeaves(after: 0.45) }
-            // A picked phone's app is still opening: the pointer may already be heading for it.
-            guard self.dockTimer?.isValid != true else { return self.closeWhenPointerLeaves(after: 0.45) }
-            if !self.pointerAtSidebar && !self.pointerOnDockedDevice { self.send(.pointerLeft) }
-            else if !self.panel.home.contains(NSEvent.mouseLocation) { self.closeWhenPointerLeaves(after: 0.45) }
-        }
-    }
-
     /// The app delegate calls this when the front app changes.
     func appChanged() {
         guard started else { return }
         let front = wrappedFront
         if front != nil { deckKeys.activate() } else { deckKeys.deactivate() }
         if front?.role == .terminal { terminalKeys.activate() } else { terminalKeys.deactivate() }
-        // BaneySpaces' own panels (the switcher, the launcher) count as staying in the deck.
-        if front == nil && NSWorkspace.shared.frontmostApplication?.processIdentifier != getpid() {
-            visibility.handle(.ghosttyInactive)
-        }
-        apply()
-    }
-
-    func apply() {
-        let front = wrappedFront != nil
-        let show = visibility.visible(ghosttyFront: front)
-        // However it closed (a key, a pick, another app in front), a phone still on its way stays put.
-        if !visibility.open && !visibility.pinned { stopDocking() }
-        if show {
-            if !panel.shown { panel.place(on: DeckLayout.activeScreen(), animated: !visibility.pinned) }
-            else if let s = panel.screen, s != DeckLayout.activeScreen() { panel.place(on: DeckLayout.activeScreen(), animated: false) }
-            panel.orderFrontRegardless()
-            edge.orderOut(nil)
-        } else {
-            panel.slideOut()
-            if front && Self.edgeOpens { edge.show(on: DeckLayout.activeScreen()) } else { edge.orderOut(nil) }
-        }
-        // Not over a phone's app: Esc there belongs to the phone (backing out, closing a sheet).
-        if show && !visibility.pinned && front && wrappedFront?.role != .device { escape.activate() } else { escape.deactivate() }
-        engine.scheduleSweep(visible: show)
-        writeState()
-    }
-
-    var leaveTimer: Timer?
-    func pointer(inside: Bool) {
-        guard inside, pointerAtSidebar else { return closeWhenPointerLeaves(after: 0.45) }
-        send(.pointerEntered)
-        // Over the sidebar itself, its own exit comes next; in the gap by the edge, keep looking.
-        if panel.home.contains(NSEvent.mouseLocation) { leaveTimer?.invalidate() }
     }
 
     // MARK: actions
 
+    /// Goes to a row picked in the launcher, a toast or a dock badge. A phone opens as its app.
     func focus(_ item: Item) {
-        if item.kind != .device { stopDocking() }
         if item.kind == .device {
             engine.seen(item.id)
-            if let p = phones.phone(item.id) { phones.open(p) { [weak self] in self?.dockDevice($0) } }
+            if let p = phones.phone(item.id) { phones.open(p) }
             return
         }
-        if effectiveLayout == .split {
-            DeckLayout.split(engine, left: currentFocus?.id == item.id ? previousFocus : currentFocus, right: item, reserve: reserve)
-        } else if effectiveLayout == .stack {
-            DeckLayout.place(engine, item: item, reserve: reserve)
-        }
         engine.focus(item)
-    }
-
-    private var dockTimer: Timer?
-
-    /// A pick elsewhere, or the drawer closing, drops a phone window still on its way.
-    func stopDocking() {
-        dockTimer?.invalidate()
-        dockedDevice = nil
-    }
-
-    /// Puts the window of the app now showing a phone (iPhone Mirroring, Device Hub) right beside
-    /// the sidebar at its own size, once it's up. Looks for up to 5 s while the app opens.
-    func dockDevice(_ bundleID: String) {
-        dockTimer?.invalidate()
-        let until = Date().addingTimeInterval(5)
-        dockTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] t in
-            guard let self, Date() < until, AX.isTrusted else { return t.invalidate() }
-            // Starting cold, the app isn't running yet, then has a window with no frame yet. One
-            // parked off screen for another workspace isn't this one's to move.
-            guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first, app.isActive,
-                  let w = NativeWindow.list(pid: app.processIdentifier).first(where: { $0.onScreen && !$0.fullScreen }) else { return }
-            t.invalidate()
-            self.dockedDevice = app.processIdentifier
-            let screen = DeckLayout.activeScreen()
-            let f = Deck.docked(w.frame.size, visible: AX.flip(screen.visibleFrame), sidebar: SidebarPanel.width + SidebarPanel.margin)
-            DeckLayout.move(app.processIdentifier, w, to: f)
-        }
-    }
-
-    func goBack() { if let id = history.back(alive: Set(engine.items.map(\.id))), let i = engine.item(id) { focus(i) } else { NSSound.beep() } }
-    func goForward() { if let id = history.forward(alive: Set(engine.items.map(\.id))), let i = engine.item(id) { focus(i) } else { NSSound.beep() } }
-
-    /// Puts every window where the layout says, once, when docking or switching layout.
-    func arrange() {
-        switch effectiveLayout {
-        case .stack: DeckLayout.stack(engine, reserve: reserve)
-        case .split:
-            if let c = currentFocus { DeckLayout.split(engine, left: previousFocus, right: c, reserve: reserve) }
-            else { DeckLayout.clearStrip(engine, width: reserve) }
-        case .free: DeckLayout.clearStrip(engine, width: reserve)
-        }
-    }
-
-    func setLayout(_ l: Deck.Layout) {
-        layout = l
-        model.layout = l
-        UserDefaults.standard.set(l.rawValue, forKey: "deckLayout")
-        if !visibility.pinned { send(.pin(true)) } else { arrange() }
-        writeState()
-    }
-
-    func tile() {
-        DeckLayout.tile(engine, reserve: reserve)
-        model.trusted = AX.isTrusted
-        send(.picked)
     }
 
     func jumpToFinished() {
@@ -443,25 +202,21 @@ final class DeckController {
         focus(item)
     }
 
-    func togglePalette() {
-        if palette.isOpen { palette.dismiss() } else { palette.show(on: DeckLayout.activeScreen()) }
-    }
-
-    /// The sparkle button and the switcher's "New Claude session": another session tiled into
+    /// The launcher's "New Claude session": another session tiled into
     /// `claude-desk`'s Claude window, through a script compiled here (`Scripts.claudeDesk`).
     /// Running `claude-desk` itself cost a bash and an `osascript` launch plus a 90 to 150 ms
     /// compile on every press. It stays the fallback when the script never reached Ghostty, and a
     /// plain terminal running `claude` without it. `done` runs once the pane is up or handed off.
     func newClaude(then done: @escaping () -> Void = {}) {
-        guard !model.claudeOpening else { return }
+        guard !claudeOpening else { return }
         let desk = NSHomeDirectory() + "/.local/bin/claude-desk"
         guard FileManager.default.isExecutableFile(atPath: desk) else {
             let dir = engine.items.first { $0.focused && !$0.directory.isEmpty }?.directory
             engine.newTerminal(in: dir, command: "claude")
             return done()
         }
-        model.claudeOpening = true
-        let finish = { [weak self] in self?.model.claudeOpening = false; done() }
+        claudeOpening = true
+        let finish = { [weak self] in self?.claudeOpening = false; done() }
         guard Automation.allowed(Catalog.known[0].bundleID) else { return runClaudeDesk(desk, then: finish) }
         let script = claudeScript
         script.queue.async { [weak self] in
@@ -502,36 +257,10 @@ final class DeckController {
         p.arguments = ["hooks", "install"]
         try? p.run()
         p.waitUntilExit()
-        model.hooksInstalled = Self.hooksInstalled()
+        hooksInstalled = Self.hooksInstalled()
     }
 
-    func paletteEntries() -> [PaletteModel.Entry] {
-        var out: [PaletteModel.Entry] = engine.items.map { item in
-            let unseen = engine.attention.unseen.contains(item.id)
-            var sub = [item.appName]
-            if !item.detail.isEmpty { sub.append(item.detail) }
-            if item.workspace > 0 { sub.append("workspace \(item.workspace)") }
-            let badge = unseen ? "done" : item.activity == .working ? "working" : ""
-            return .init(id: item.id, title: item.label, subtitle: sub.joined(separator: " · "), bundleID: item.bundleID,
-                         symbol: nil, badge: badge) { [weak self] in self?.focus(item) }
-        }
-        // Finished turns first, then busy ones: that's usually where you're headed.
-        func rank(_ e: PaletteModel.Entry) -> Int { e.badge == "done" ? 0 : e.badge == "working" ? 1 : 2 }
-        out = out.enumerated().sorted { (rank($0.element), $0.offset) < (rank($1.element), $1.offset) }.map(\.element)
-        let cmds: [(String, String, () -> Void)] = [
-            ("New Claude session", "sparkle", { [weak self] in self?.newClaude() }),
-            ("New terminal", "plus", { [weak self] in self?.engine.newTerminal(in: nil) }),
-            ("Tile windows", "square.grid.2x2", { [weak self] in self?.tile() }),
-            ("Layout: Stack", "square.stack", { [weak self] in self?.setLayout(.stack) }),
-            ("Layout: Split", "rectangle.split.2x1", { [weak self] in self?.setLayout(.split) }),
-            ("Layout: Free", "macwindow.on.rectangle", { [weak self] in self?.setLayout(.free) }),
-            (visibility.pinned ? "Unpin sidebar" : "Pin sidebar", "pin", { [weak self] in guard let self else { return }; self.send(.pin(!self.visibility.pinned)) }),
-        ]
-        out += cmds.map { c in .init(id: "cmd:" + c.0, title: c.0, subtitle: "Command", bundleID: nil, symbol: c.1, badge: "", run: c.2) }
-        return out
-    }
-
-    /// Rows for BaneySpaces' launcher (⌘Space), so one search finds apps, splits, tabs and agents.
+    /// Rows for BaneySpaces' launcher (⌘Space, ⌃⌘K), so one search finds apps, splits, tabs and agents.
     func launcherItems(_ q: String) -> [LauncherItem] {
         guard started else { return [] }
         let unseen = engine.attention.unseen
@@ -550,6 +279,16 @@ final class DeckController {
         }
     }
 
+    /// The screen showing the front app's focused window, else the main one: where the toast appears.
+    static func activeScreen() -> NSScreen {
+        if let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier,
+           let w: AXUIElement = AX.app(pid, timeout: 0.1).value(kAXFocusedWindowAttribute), let f = w.frame {
+            let center = CGPoint(x: f.midX, y: f.midY)
+            if let s = NSScreen.screens.first(where: { AX.flip($0.frame).contains(center) }) { return s }
+        }
+        return NSScreen.main ?? NSScreen.screens[0]
+    }
+
     private static var appPaths: [String: String] = [:]
     static func appPath(_ bundleID: String) -> String {
         if let p = appPaths[bundleID] { return p }
@@ -561,7 +300,7 @@ final class DeckController {
     // MARK: socket
 
     func handle(_ r: Wire.Request) -> Wire.Reply {
-        guard started else { return .init(ok: false, error: "the Deck is off") }
+        guard started else { return .init(ok: false, error: "the Deck hasn't started") }
         switch r.op {
         case .ping:
             var info = engine.statusInfo
@@ -591,13 +330,6 @@ final class DeckController {
             guard let q = r.target, let item = engine.find(q) else { return .init(ok: false, error: "nothing matches") }
             guard engine.send(item, r.text ?? "") else { return .init(ok: false, error: "\(item.label) isn't a Ghostty terminal") }
             return .init(ok: true, info: ["id": item.id, "label": item.label])
-        case .tile: tile(); return .init(ok: true)
-        case .layout:
-            guard let l = Deck.Layout(rawValue: r.text ?? "") else { return .init(ok: false, error: "free, stack or split") }
-            setLayout(l)
-            return .init(ok: true)
-        case .sidebar: send(.toggleKey); return .init(ok: true)
-        case .palette: togglePalette(); return .init(ok: true)
         case .agent: return agent(r.text ?? "status", r.args ?? [])
         case .remote:
             switch r.text ?? "status" {
@@ -738,7 +470,7 @@ final class DeckController {
 
     // MARK: menu
 
-    /// The Deck's part of BaneySpaces' menu bar menu.
+    /// The Deck's part of BaneySpaces' menu bar menu: agents that finished while you were away.
     func menuItems() -> [NSMenuItem] {
         var out: [NSMenuItem] = []
         let unseen = engine.attention.unseen.compactMap { engine.item($0) }
@@ -755,36 +487,6 @@ final class DeckController {
                 out.append(i)
             }
         }
-        func item(_ title: String, key: String = "", _ action: @escaping () -> Void, on: Bool? = nil) -> NSMenuItem {
-            let i = NSMenuItem(title: title, action: #selector(DeckMenuTarget.run(_:)), keyEquivalent: key)
-            // The Deck's own shortcuts, shown the way macOS shows them.
-            if !key.isEmpty { i.keyEquivalentModifierMask = [.control, .command] }
-            i.representedObject = DeckMenuTarget.Action(action)
-            i.target = menuTarget
-            if let on { i.state = on ? .on : .off }
-            return i
-        }
-        let sub = NSMenu()
-        sub.addItem(item("Go to Anything…", key: "k", { [weak self] in self?.togglePalette() }))
-        sub.addItem(item("Jump to Finished Agent", key: "u", { [weak self] in self?.jumpToFinished() }))
-        sub.addItem(.separator())
-        sub.addItem(item("Open at the Left Edge", { [weak self] in self?.setEdgeOpens(!Self.edgeOpens) }, on: Self.edgeOpens))
-        sub.addItem(item("Dock the Sidebar", { [weak self] in guard let self else { return }; self.send(.pin(!self.visibility.pinned)) }, on: visibility.pinned))
-        let layouts = NSMenu()
-        for l in Deck.Layout.allCases {
-            layouts.addItem(item(l.rawValue.capitalized, { [weak self] in self?.setLayout(l) }, on: layout == l))
-        }
-        let layoutItem = NSMenuItem(title: "Layout", action: nil, keyEquivalent: "")
-        layoutItem.submenu = layouts
-        sub.addItem(layoutItem)
-        sub.addItem(item("Tile Windows", { [weak self] in self?.tile() }))
-        if !model.hooksInstalled {
-            sub.addItem(.separator())
-            sub.addItem(item("Install Claude Code and Grok Hooks", { [weak self] in self?.installHooks() }))
-        }
-        let deck = NSMenuItem(title: "Deck", action: nil, keyEquivalent: "")
-        deck.submenu = sub
-        out.insert(deck, at: 0)
         return out
     }
 
@@ -793,14 +495,12 @@ final class DeckController {
 
 /// Menu items need an Objective-C target; this one forwards to the Deck.
 final class DeckMenuTarget: NSObject {
-    final class Action { let run: () -> Void; init(_ run: @escaping () -> Void) { self.run = run } }
     weak var owner: DeckController?
     init(owner: DeckController) { self.owner = owner }
     @objc func focusRow(_ item: NSMenuItem) {
         guard let id = item.representedObject as? String, let owner, let row = owner.engine.item(id) else { return }
         owner.focus(row)
     }
-    @objc func run(_ item: NSMenuItem) { (item.representedObject as? Action)?.run() }
 }
 
 /// A small notice in the top-right corner when an agent finishes or needs you while you're looking
@@ -822,10 +522,33 @@ final class ToastPanel: NSPanel {
         title = "BaneySpaces Agent Notice"
         setAccessibilityIdentifier("deck.toast")
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
-        contentView = SidebarPanel.chrome(text, radius: 12)
+        contentView = Self.chrome(text, radius: 12)
     }
 
     override var canBecomeKey: Bool { false }
+
+    /// A blurred rounded card hosting `content`.
+    private static func chrome(_ content: NSView, radius: CGFloat) -> NSView {
+        let root = NSView()
+        let blur = NSVisualEffectView()
+        blur.material = .sidebar
+        blur.blendingMode = .behindWindow
+        blur.state = .active
+        blur.wantsLayer = true
+        blur.layer?.cornerRadius = radius
+        blur.layer?.masksToBounds = true
+        for (child, parent) in [(blur, root), (content, blur)] {
+            child.translatesAutoresizingMaskIntoConstraints = false
+            parent.addSubview(child)
+            NSLayoutConstraint.activate([
+                child.leadingAnchor.constraint(equalTo: parent.leadingAnchor),
+                child.trailingAnchor.constraint(equalTo: parent.trailingAnchor),
+                child.topAnchor.constraint(equalTo: parent.topAnchor),
+                child.bottomAnchor.constraint(equalTo: parent.bottomAnchor),
+            ])
+        }
+        return root
+    }
 
     func show(_ item: Item, more: Int, on screen: NSScreen) {
         itemID = item.id
@@ -868,5 +591,21 @@ struct ToastView: View {
         .padding(.horizontal, 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityElement(children: .combine)
+    }
+}
+
+enum Icons {
+    private static var cache: [String: NSImage] = [:]
+    static func app(_ bundleID: String) -> NSImage {
+        if let i = cache[bundleID] { return i }
+        let img: NSImage
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+            img = NSWorkspace.shared.icon(forFile: url.path)
+        } else {
+            img = NSImage(systemSymbolName: "app", accessibilityDescription: nil) ?? NSImage()
+        }
+        img.size = NSSize(width: 32, height: 32)
+        cache[bundleID] = img
+        return img
     }
 }

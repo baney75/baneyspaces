@@ -157,6 +157,10 @@ struct LauncherActions {
     var dockOn: () -> Bool = { false }
     var checkForUpdates: () -> Void = {}
     var showSetup: () -> Void = {}
+    /// Another Claude Code session beside the ones running, in Ghostty.
+    var newClaude: () -> Void = {}
+    /// A new terminal window.
+    var newTerminal: () -> Void = {}
     /// The Deck's rows (terminal splits, browser tabs, agents) that answer a query; with nothing
     /// typed, only the agents that finished or need you.
     var deckItems: (String) -> [LauncherItem] = { _ in [] }
@@ -721,6 +725,8 @@ final class LauncherModel: ObservableObject {
             ("Log Out…", "rectangle.portrait.and.arrow.right", "macOS asks before logging out", { System.loginWindow("rlgo") }),
             ("Toggle Dark Mode", "circle.lefthalf.filled", "Asks once to let BaneySpaces change appearance", { System.toggleDarkMode() }),
             ("Take a Screenshot", "camera.viewfinder", "Choose an area, a window or the screen", { System.run("/usr/bin/open", ["-a", "Screenshot"]) }),
+            ("New Claude Session", "sparkle", "Another Claude Code session in Ghostty", { [weak self] in self?.actions.newClaude() }),
+            ("New Terminal", "plus", "A new Ghostty window", { [weak self] in self?.actions.newTerminal() }),
             ("Show All Workspaces", "square.grid.3x3", "", { [weak self] in self?.actions.showOverview() }),
             ("Bring Every Window Back", "arrow.uturn.backward.circle", "Gathers every window onto workspace 1", { [weak self] in self?.actions.bringBack() }),
             (dockOn ? "Turn Off Workspace Dock" : "Turn On Workspace Dock", "dock.rectangle", "", { [weak self] in self?.actions.toggleDock() }),
