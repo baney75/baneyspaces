@@ -208,7 +208,22 @@ enum Scripts {
         -- then the terminals it made there. Returns the new state.
         --   1st  a screen-filling window   2nd  split right   3rd  left pane down
         --   4th  right pane down           5th  a new tab, and the grid starts again
-        on claudeTile(workDir, paneCmd, prior)
+        --
+        -- Progress, for the caller after a timeout. A timed-out call stops the script at the Apple event
+        -- that timed out; Ghostty still finishes that one event and nothing after it is sent. These
+        -- properties live as long as the compiled script, so `tileProgress` tells which event it was:
+        -- "creating" is the one that opens the pane (it may still land), anything before it means no pane
+        -- will open. `token` is the caller's own for this press.
+        property tileToken : ""
+        property tileStep : ""
+
+        on tileProgress()
+        	return tileToken & linefeed & tileStep
+        end tileProgress
+
+        on claudeTile(workDir, paneCmd, prior, token)
+        	set my tileToken to token
+        	set my tileStep to "started"
         	set AppleScript's text item delimiters to linefeed
         	set rows to text items of prior
         	set AppleScript's text item delimiters to ""
@@ -244,7 +259,9 @@ enum Scripts {
         				end repeat
         			end if
         			if targetTab is missing value then
+        				set my tileStep to "creating"
         				set w to new window with configuration cfg
+        				set my tileStep to "done"
         				set t to selected tab of w
         				-- Fill the screen so four tiles stay readable. Once the pane exists, a step
         				-- that fails mustn't lose its ID (or start a second session).
@@ -260,7 +277,9 @@ enum Scripts {
         			end repeat
         			set n to count of liveIDs
         			if n is 0 or n ≥ 4 then
+        				set my tileStep to "creating"
         				set t to new tab in targetWindow with configuration cfg
+        				set my tileStep to "done"
         				return my joinLines({id of t, id of focused terminal of t})
         			end if
         			if n is 1 then
@@ -274,7 +293,9 @@ enum Scripts {
         				set dir to down
         			end if
         			set base to first terminal of targetTab whose id is baseID
+        			set my tileStep to "creating"
         			set newTerm to split base direction dir with configuration cfg
+        			set my tileStep to "done"
         			-- Each step on its own: a failed equalize still focuses the new pane.
         			try
         				perform action "equalize_splits" on newTerm
@@ -295,7 +316,8 @@ enum Scripts {
         -- a new window was (the front tab). `ClaudeDesk.recovered` checks the answer against the state.
         -- Known limit: it can't tell a pane `claudeTile` made late from one another app made in that tab
         -- during the wait. Apple events are handled in order, so this answers after the late pane exists,
-        -- which is why its timeout is as long as the tile's.
+        -- which is why its timeout is as long as the tile's, and why nothing is asked before it: a
+        -- shorter probe would queue behind the same slow event and time out when it's needed.
         on frontTab(prior)
         	set AppleScript's text item delimiters to linefeed
         	set rows to text items of prior
@@ -335,6 +357,8 @@ enum Scripts {
         				end repeat
         				if liveCount is 0 or liveCount ≥ 4 then
         					set t to selected tab of priorWin
+        					-- The new tab never appeared: nothing to adopt, and the state stays.
+        					if (id of t) is priorTab then return ""
         				else
         					set t to priorRef
         				end if
@@ -348,13 +372,6 @@ enum Scripts {
         		end tell
         	end timeout
         end frontTab
-
-        -- Whether Ghostty answers at all: asked for 2 seconds before `frontTab` is worth its 30.
-        on windowCount()
-        	with timeout of 2 seconds
-        		tell application id "com.mitchellh.ghostty" to return (count of windows) as text
-        	end timeout
-        end windowCount
 
         on joinLines(xs)
         	set AppleScript's text item delimiters to linefeed

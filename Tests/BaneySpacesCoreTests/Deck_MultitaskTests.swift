@@ -527,6 +527,31 @@ final class ClaudeDeskTests: XCTestCase {
         XCTAssertEqual(ClaudeDesk.parse(""), [])
     }
 
+    func testOnlyTheEventThatOpensThePaneCanStillLandOne() {
+        XCTAssertTrue(ClaudeDesk.paneMayLand(progress: "tok\ncreating", token: "tok"))
+        // Stopped before the pane-opening event: nothing opened, nothing to recover.
+        XCTAssertFalse(ClaudeDesk.paneMayLand(progress: "tok\nstarted", token: "tok"))
+        XCTAssertFalse(ClaudeDesk.paneMayLand(progress: "tok\ndone", token: "tok"))
+        // Another press's progress, or none.
+        XCTAssertFalse(ClaudeDesk.paneMayLand(progress: "other\ncreating", token: "tok"))
+        XCTAssertFalse(ClaudeDesk.paneMayLand(progress: "", token: "tok"))
+        XCTAssertFalse(ClaudeDesk.paneMayLand(progress: "\ncreating", token: ""))
+    }
+
+    func testAPressWaitsWhileATimedOutTileMayStillLand() {
+        var gate = TileGate()
+        XCTAssertFalse(gate.blocks(now: 0))
+        gate.timedOut(at: 100)
+        XCTAssertTrue(gate.blocks(now: 100))
+        XCTAssertTrue(gate.blocks(now: 100 + TileGate.limit - 1))
+        XCTAssertFalse(gate.blocks(now: 100 + TileGate.limit), "35 s is the longest a press waits")
+        // frontTab answered: the pane exists, so the next press goes ahead at once.
+        gate.timedOut(at: 200)
+        gate.settled()
+        XCTAssertFalse(gate.blocks(now: 201))
+        XCTAssertEqual(TileGate.limit, 35)
+    }
+
     func testATimedOutTileIsRecoveredFromTheStatesOwnTab() {
         // The first window opened late: no state, so the front tab it names becomes the state.
         XCTAssertEqual(ClaudeDesk.recovered(prior: [], front: ["tab-1", "a"]), ["tab-1", "a"])
@@ -575,14 +600,20 @@ final class ClaudeDeskTests: XCTestCase {
         XCTAssertTrue(front.contains("if liveCount is 0 or liveCount ≥ 4 then"))
         XCTAssertTrue(tile.contains("if n is 0 or n ≥ 4 then"), "the branch frontTab mirrors")
         XCTAssertTrue(front.contains("set t to selected tab of priorWin"))
-        // Ghostty is asked for 2 s whether it answers before frontTab is allowed its 30.
-        let probe = try XCTUnwrap(scripts.range(of: "on windowCount()").map { String(scripts[$0.lowerBound...].prefix(250)) })
-        XCTAssertTrue(probe.contains("with timeout of 2 seconds"))
+        // No short probe before frontTab: it would queue behind the slow tile and time out when it matters.
+        XCTAssertFalse(scripts.contains("windowCount"))
+        // The new tab never appeared: nothing is adopted.
+        XCTAssertTrue(front.contains("if (id of t) is priorTab then return \"\""))
+        // Progress is recorded for the caller: only "creating" can still land a pane.
+        XCTAssertTrue(tile.contains("property tileToken") || scripts.contains("property tileToken"))
+        XCTAssertEqual(tile.components(separatedBy: "set my tileStep to \"creating\"").count - 1, 3, "each of the three ways to open a pane")
+        XCTAssertEqual(tile.components(separatedBy: "set my tileStep to \"done\"").count - 1, 3)
         let controller = try String(contentsOf: root.appendingPathComponent("Sources/BaneySpaces/Deck/DeckController.swift"), encoding: .utf8)
         XCTAssertTrue(controller.contains("r.error == ClaudeDesk.timedOut"), "a timeout reads the front tab")
-        XCTAssertTrue(controller.contains("script.run(\"windowCount\")"), "a short probe comes before frontTab")
-        XCTAssertLessThan(try XCTUnwrap(controller.range(of: "script.run(\"windowCount\")")).lowerBound,
-                          try XCTUnwrap(controller.range(of: "script.run(\"frontTab\"")).lowerBound)
+        XCTAssertFalse(controller.contains("windowCount"))
+        XCTAssertTrue(controller.contains("ClaudeDesk.paneMayLand(progress:"), "recovery only when a pane may still land")
+        XCTAssertTrue(controller.contains("tileGate.blocks("), "a press waits while a timed-out tile may be landing")
+        XCTAssertTrue(controller.contains("self?.tileGate.timedOut(at: landing)"))
         XCTAssertTrue(controller.contains("script.run(\"frontTab\", [prior.joined(separator: \"\\n\")])"))
     }
 

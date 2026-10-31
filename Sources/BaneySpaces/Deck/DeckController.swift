@@ -41,6 +41,7 @@ final class DeckController {
     private var lastItems: [Item] = []
     /// A new Claude session's pane is on its way.
     private var claudeOpening = false
+    private var tileGate = TileGate()
     var trustTimer: Timer?
     private(set) var started = false
 
@@ -207,7 +208,8 @@ final class DeckController {
     /// compile on every press. It stays the fallback when the script never reached Ghostty, and a
     /// plain terminal running `claude` without it. `done` runs once the pane is up or handed off.
     func newClaude(in folder: String? = nil, then done: @escaping () -> Void = {}) {
-        guard !claudeOpening else { return }
+        // Not while a timed-out tile may still be landing its pane: a second press could open a second.
+        guard !claudeOpening, !tileGate.blocks(now: Date().timeIntervalSinceReferenceDate) else { return }
         let desk = NSHomeDirectory() + "/.local/bin/claude-desk"
         guard FileManager.default.isExecutableFile(atPath: desk) else {
             let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
@@ -220,20 +222,28 @@ final class DeckController {
         let script = claudeScript
         script.queue.async { [weak self] in
             let prior = ClaudeDesk.read()
-            let r = script.run("claudeTile", [ClaudeDesk.workDir, ClaudeDesk.paneCommand, prior.joined(separator: "\n")])
+            let token = UUID().uuidString
+            let r = script.run("claudeTile", [ClaudeDesk.workDir, ClaudeDesk.paneCommand, prior.joined(separator: "\n"), token])
+            var landing: TimeInterval?
             if let out = r.out {
                 ClaudeDesk.write(ClaudeDesk.parse(out))
             } else if r.error == ClaudeDesk.timedOut {
-                // A slow Ghostty still opens the pane. Ask for 2 s whether it answers at all (a hung one
-                // would hold `frontTab` for its whole 30), then read the tab `claudeTile` worked in so
-                // the next press splits it.
-                let alive = script.run("windowCount")
-                if alive.error == 0, let count = alive.out, count != "0",
-                   let tab = script.run("frontTab", [prior.joined(separator: "\n")]).out {
-                    ClaudeDesk.write(ClaudeDesk.recovered(prior: prior, front: ClaudeDesk.parse(tab)))
+                // The script stopped at the Apple event that timed out. Only if that was the one that
+                // opens the pane can one still land; otherwise nothing opened and nothing is owed.
+                // `frontTab` queues behind it in Ghostty, so its answer means the pane exists. It
+                // reads the tab `claudeTile` worked in, so the next press splits it.
+                let timedOutAt = Date().timeIntervalSinceReferenceDate
+                if ClaudeDesk.paneMayLand(progress: script.run("tileProgress").out ?? "", token: token) {
+                    if let tab = script.run("frontTab", [prior.joined(separator: "\n")]).out {
+                        ClaudeDesk.write(ClaudeDesk.recovered(prior: prior, front: ClaudeDesk.parse(tab)))
+                    } else {
+                        landing = timedOutAt
+                    }
                 }
             }
             DispatchQueue.main.async {
+                // No answer from `frontTab` either: presses wait out `TileGate.limit` from the timeout.
+                if let landing { self?.tileGate.timedOut(at: landing) } else { self?.tileGate.settled() }
                 // Only a script that never reached Ghostty is tried again through claude-desk; one
                 // that failed or timed out partway may already have opened the pane.
                 if Self.neverReached.contains(r.error) { self?.runClaudeDesk(desk, then: finish) } else { finish() }

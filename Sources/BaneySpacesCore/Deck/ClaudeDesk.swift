@@ -45,6 +45,16 @@ public enum ClaudeDesk {
         }
     }
 
+    /// Whether a pane may still land after `claudeTile` timed out. `progress` is `tileProgress`'s
+    /// answer: this press's token, then the last step the script reached. A timeout stops the script
+    /// at the Apple event that timed out and sends nothing after it, so only "creating" (the event
+    /// that opens the pane) can still produce one. Any step before it, or another press's token,
+    /// means nothing opened and nothing is owed to the state.
+    public static func paneMayLand(progress: String, token: String) -> Bool {
+        let lines = parse(progress)
+        return lines.count == 2 && lines[0] == token && lines[1] == "creating"
+    }
+
     public static func read() -> [String] {
         (try? String(contentsOf: stateFile, encoding: .utf8)).map(parse) ?? []
     }
@@ -54,5 +64,25 @@ public enum ClaudeDesk {
         guard !lines.isEmpty else { return }
         try? FileManager.default.createDirectory(at: stateFile.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? (lines.joined(separator: "\n") + "\n").write(to: stateFile, atomically: true, encoding: .utf8)
+    }
+}
+
+/// Whether a New Claude press is let through. After `claudeTile` times out with a pane that may
+/// still land, Ghostty is still busy with it; a second press then could open a second pane, and
+/// recovery could adopt the wrong one. Presses wait until `frontTab` has answered (which Ghostty
+/// does only after the pane exists) or `limit` seconds have passed, whichever is first.
+public struct TileGate: Equatable, Sendable {
+    public static let limit: TimeInterval = 35
+    private var since: TimeInterval?
+
+    public init() {}
+
+    /// A tile timed out at `now` with a pane that may still land.
+    public mutating func timedOut(at now: TimeInterval) { since = now }
+    /// `frontTab` answered: the pane is there, or nothing was coming.
+    public mutating func settled() { since = nil }
+    public func blocks(now: TimeInterval) -> Bool {
+        guard let since else { return false }
+        return now - since < Self.limit
     }
 }

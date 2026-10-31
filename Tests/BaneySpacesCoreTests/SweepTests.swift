@@ -75,17 +75,35 @@ final class SweepTests: XCTestCase {
     }
 
     func testRowsKeepTheLastGoodSnapshotWhileBackingOffOrFailing() {
+        func show(_ answered: String?, last: String? = "old", age: TimeInterval = 10, backingOff: Bool = false,
+                  scriptable: Bool = true, refused: Bool = false) -> String? {
+            Sweep.snapshotToShow(answered: answered, last: last, lastAt: 1000 - age, now: 1000,
+                                 backingOff: backingOff, scriptable: scriptable, refused: refused)
+        }
         // A fresh answer always wins.
-        XCTAssertEqual(Sweep.snapshotToShow(answered: "new", last: "old", backingOff: false, scriptable: true, refused: false), "new")
+        XCTAssertEqual(show("new"), "new")
         // Backing off (no script sent): the last good snapshot stands in.
-        XCTAssertEqual(Sweep.snapshotToShow(answered: nil as String?, last: "old", backingOff: true, scriptable: false, refused: false), "old")
+        XCTAssertEqual(show(nil, backingOff: true, scriptable: false), "old")
         // A script that just failed: same, so rows don't flicker to bare windows and back.
-        XCTAssertEqual(Sweep.snapshotToShow(answered: nil as String?, last: "old", backingOff: false, scriptable: true, refused: false), "old")
+        XCTAssertEqual(show(nil), "old")
         // Permission pulled: no stale rows.
-        XCTAssertNil(Sweep.snapshotToShow(answered: nil as String?, last: "old", backingOff: false, scriptable: true, refused: true))
+        XCTAssertNil(show(nil, refused: true))
         // Never scripted (no permission yet) or never answered: bare windows.
-        XCTAssertNil(Sweep.snapshotToShow(answered: nil as String?, last: "old", backingOff: false, scriptable: false, refused: false))
-        XCTAssertNil(Sweep.snapshotToShow(answered: nil as String?, last: nil, backingOff: true, scriptable: false, refused: false))
+        XCTAssertNil(show(nil, scriptable: false))
+        XCTAssertNil(show(nil, last: nil, backingOff: true, scriptable: false))
+    }
+
+    func testASnapshotOlderThanTheSlowPassIsNotShown() {
+        func show(age: TimeInterval) -> String? {
+            Sweep.snapshotToShow(answered: nil as String?, last: "old", lastAt: 1000 - age, now: 1000,
+                                 backingOff: true, scriptable: false, refused: false)
+        }
+        XCTAssertEqual(show(age: Sweep.everything), "old")
+        XCTAssertNil(show(age: Sweep.everything + 1))
+        XCTAssertNil(show(age: 3 * 3600), "hours-old tabs show nothing")
+        // An app never read: its default time is the distant past.
+        XCTAssertNil(Sweep.snapshotToShow(answered: nil as String?, last: "old", lastAt: Date.distantPast.timeIntervalSinceReferenceDate,
+                                          now: 1000, backingOff: true, scriptable: false, refused: false))
     }
 
     func testTheSlowPassIsntPushedATickLate() {
@@ -113,8 +131,9 @@ final class SweepTests: XCTestCase {
         let src = try String(contentsOf: url, encoding: .utf8)
         let body = try XCTUnwrap(src.range(of: "func refresh(_ pid: pid_t) {").map { String(src[$0.lowerBound...]) })
         let refresh = String(body.prefix(upTo: try XCTUnwrap(body.range(of: "// MARK: merging")).lowerBound))
-        XCTAssertTrue(refresh.contains("Sweep.snapshotToShow(answered: ghostty, last: lastGhostty"), "rows fall back to the last good snapshot")
-        XCTAssertTrue(refresh.contains("Sweep.snapshotToShow(answered: scripted, last: lastScripted"))
+        XCTAssertTrue(refresh.contains("Sweep.snapshotToShow(answered: ghostty, last: lastGhostty, lastAt: lastGhosttyAt"), "rows fall back to the last good snapshot, while it's recent")
+        XCTAssertTrue(refresh.contains("Sweep.snapshotToShow(answered: scripted, last: lastScripted, lastAt: lastScriptedAt"))
+        XCTAssertTrue(refresh.contains("t.ghosttyAt = answeredAt") && refresh.contains("t.scriptedAt = answeredAt"), "the time a snapshot answered is kept")
         XCTAssertTrue(refresh.contains("switch scriptable || backingOff ? spec.adapter : .windows"))
         XCTAssertTrue(refresh.contains("Sweep.backingOff("), "refresh must hold the backoff for every caller")
         XCTAssertTrue(refresh.contains("spec.adapter == .windows || backingOff ? nil"), "a backing-off app sends no script")
