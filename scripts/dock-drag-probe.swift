@@ -19,6 +19,11 @@ func state() -> (current: Int, workspaces: [Int: [UInt32]]) {
     return ((json["current"] as? Int) ?? 0, out)
 }
 func workspace(of id: UInt32) -> Int? { state().workspaces.first { $0.value.contains(id) }?.key }
+/// Whether the window is on workspace `n` within 1.5 s: a move lands up to 0.5 s after letting go.
+func settled(_ id: UInt32, on n: Int) -> Bool {
+    for _ in 0..<30 { if workspace(of: id) == n { return true }; usleep(50_000) }
+    return false
+}
 /// trace.log's lines written after `offset`, and the new end.
 func traceSince(_ offset: UInt64) -> (lines: [String], end: UInt64) {
     guard let h = try? FileHandle(forReadingFrom: folder.appendingPathComponent("trace.log")) else { return ([], offset) }
@@ -150,7 +155,8 @@ DispatchQueue.global().async {
     }
     usleep(300_000)
     expect(dockFrame(screenRect) == nil, "the dock went down on letting go")
-    expect(workspace(of: id) == target, "the window moved to workspace \(target) (it's on \(workspace(of: id).map(String.init) ?? "none"))")
+    // The window moves once it has held still, up to 0.5 s after letting go (`dropCarried`).
+    expect(settled(id, on: target), "the window moved to workspace \(target) (it's on \(workspace(of: id).map(String.init) ?? "none"))")
     expect(state().current == start.current, "you stayed on workspace \(start.current)")
     go(target)
     let landed = onScreen(id)
@@ -164,7 +170,9 @@ DispatchQueue.global().async {
             let above = CGPoint(x: screenRect.midX, y: (dock?.minY ?? screenRect.maxY - 200) - 120)
             return glide(CGPoint(x: screenRect.midX, y: screenRect.maxY - 1), above)
         }
-        expect(workspace(of: id) == target, "let go above the dock, the window stayed on workspace \(target)")
+        // Give a wrong move as long to show up as a right one.
+        usleep(1_500_000)
+        expect(workspace(of: id) == target, "let go above the dock, the window stayed on workspace \(target) (it's on \(workspace(of: id).map(String.init) ?? "none"))")
     } else {
         expect(false, "the window is on screen on workspace \(target)")
     }
