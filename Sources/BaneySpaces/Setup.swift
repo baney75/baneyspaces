@@ -541,7 +541,7 @@ struct SetupView: View {
                     get: { Appearance.color(appearance.settings.accentRGB(system: Appearance.systemAccent)) },
                     set: { picked in
                         // The picker also answers with the color it was shown; that isn't a pick.
-                        let rgb = Appearance.rgb(picked)
+                        guard let rgb = Appearance.rgb(picked) else { return }
                         let shown = appearance.accentRGB
                         guard abs(rgb.r - shown.r) + abs(rgb.g - shown.g) + abs(rgb.b - shown.b) > 0.01 else { return }
                         appearance.settings.accent = .custom(rgb)
@@ -569,7 +569,7 @@ struct SetupView: View {
                             get: { Chrome.workspace(n) },
                             set: { picked in
                                 // The picker also answers with the color it was shown; that isn't a pick.
-                                let rgb = Appearance.rgb(picked)
+                                guard let rgb = Appearance.rgb(picked) else { return }
                                 let shown = appearance.settings.workspaceColor(n, accent: appearance.accentRGB).rgb
                                 guard abs(rgb.r - shown.r) + abs(rgb.g - shown.g) + abs(rgb.b - shown.b) > 0.01 else { return }
                                 appearance.settings.overrides[n] = rgb

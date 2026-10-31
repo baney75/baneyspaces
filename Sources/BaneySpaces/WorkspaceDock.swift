@@ -156,7 +156,7 @@ final class WorkspaceDock {
         // A new dock size changes what SwiftUI measures; the panel (and the keep-zone, which is
         // taken from its frame) follows.
         appearanceObserver = NotificationCenter.default.addObserver(forName: Appearance.didChange, object: nil, queue: .main) { [weak self] note in
-            if note.userInfo?["dockSizeChanged"] as? Bool == true { self?.scheduleResize() }
+            if note.userInfo?[Appearance.dockSizeChangedKey] as? Bool == true { self?.scheduleResize() }
         }
         model.onShowOverview = { [weak self] in self?.hide(); self?.onShowOverview() }
         model.onShowLauncher = { [weak self] in self?.hide(); self?.onShowLauncher() }
