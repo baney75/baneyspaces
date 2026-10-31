@@ -95,7 +95,11 @@ let screen = NSScreen.main!
 let screenRect = CGRect(origin: .zero, size: screen.frame.size)
 let start = state()
 guard start.current > 0 else { print("BaneySpaces isn't running (no state.json)"); exit(2) }
-guard let target = (1...9).first(where: { $0 != start.current && (start.workspaces[$0] ?? []).isEmpty }) else {
+// Only windows the window server still has: a window closed a moment ago (the last run's) can
+// still be listed in state.json, which would pick a workspace the dock doesn't show (#73).
+let alive = Set((CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? [])
+    .compactMap { ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value })
+guard let target = (1...9).first(where: { $0 != start.current && (start.workspaces[$0] ?? []).allSatisfy { !alive.contains($0) } }) else {
     print("no empty workspace to drop on"); exit(2)
 }
 
