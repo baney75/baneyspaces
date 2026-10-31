@@ -46,6 +46,19 @@ public enum Sweep {
         !lastOK && now - lastTried < everything - tick / 2
     }
 
+    /// The snapshot an app's rows are built from. The one this read's script answered, else the last
+    /// good one while the app is backing off or its script just failed, so a hung Ghostty or Terminal
+    /// keeps its tabs on screen (paired with fresh windows) instead of dropping to bare windows. Never
+    /// after macOS refused the script: the permission is gone, and so is the right to those rows.
+    ///
+    /// Only while it's recent: `lastAt` (when it answered) is within `everything` of `now`. An older
+    /// one can show tabs that closed hours ago, so those rows come from Accessibility instead.
+    public static func snapshotToShow<S>(answered: S?, last: S?, lastAt: TimeInterval, now: TimeInterval,
+                                         backingOff: Bool, scriptable: Bool, refused: Bool) -> S? {
+        if let answered { return answered }
+        return !refused && (backingOff || scriptable) && now - lastAt <= everything ? last : nil
+    }
+
     /// The time a read script counts as tried. A failure counts from when it ended, so a script that
     /// ran for its whole timeout still waits out the slow pass; a success from when it started.
     public static func triedAt<T>(started: T, finished: T, ok: Bool) -> T { ok ? started : finished }

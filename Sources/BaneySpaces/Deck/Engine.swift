@@ -12,6 +12,9 @@ final class Engine {
         var windows: [NativeWindow] = []
         var ghostty: Snapshot?
         var scripted: ScriptedSnapshot?
+        /// When each snapshot last answered (`Sweep.snapshotToShow` won't show an old one).
+        var ghosttyAt = Date.distantPast.timeIntervalSinceReferenceDate
+        var scriptedAt = Date.distantPast.timeIntervalSinceReferenceDate
         var refreshing = false
         var dirty = false
         var last = Date.distantPast
@@ -206,11 +209,15 @@ final class Engine {
         tracked[pid] = t
         let spec = t.spec
         let front = NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
-        // An app whose last script failed is read from Accessibility alone until the slow pass, whoever
-        // asked: a notification, an activation, this method's own re-run, not just the timer and hooks.
+        // An app whose last script failed is sent no script until the slow pass, whoever asked: a
+        // notification, an activation, this method's own re-run, not just the timer and hooks. Its rows
+        // come from the last good snapshot paired with fresh windows.
         let backingOff = Sweep.backingOff(lastTried: t.scriptTriedAt.timeIntervalSinceReferenceDate, lastOK: t.lastScriptOK,
                                           now: Date().timeIntervalSinceReferenceDate)
         let script = spec.adapter == .windows || backingOff ? nil : script(for: spec)
+        // The last good snapshots: what the rows keep showing while a script is backing off or failing.
+        let lastGhostty = t.ghostty, lastScripted = t.scripted
+        let lastGhosttyAt = t.ghosttyAt, lastScriptedAt = t.scriptedAt
         let started = Date()
         DispatchQueue.global(qos: .userInitiated).async {
             let wins = NativeWindow.list(pid: pid)
@@ -225,13 +232,13 @@ final class Engine {
             var refused = false
             // When the script ran on `OSA.queue`, not when this read began: a backlog there isn't a try.
             var ranAt: Date?
-            switch scriptable ? spec.adapter : .windows {
+            switch scriptable || backingOff ? spec.adapter : .windows {
             case .ghostty:
                 let raw = script.flatMap { s in Self.snapshot(s, spec.bundleID) }
                 refused = raw?.refused ?? false
                 ranAt = raw?.ranAt
                 ghostty = raw?.out.map(Snapshot.parse)
-                if let g = ghostty {
+                if let g = Sweep.snapshotToShow(answered: ghostty, last: lastGhostty, lastAt: lastGhosttyAt, now: Date().timeIntervalSinceReferenceDate, backingOff: backingOff, scriptable: scriptable, refused: refused) {
                     items = Build.ghostty(spec, g, numbers: WindowMatch.pair(scripted: g.windowTitles, native: native), front: front)
                 } else {
                     items = Build.windows(spec, native, front: front, frontWindowNumber: frontNumber)
@@ -241,7 +248,7 @@ final class Engine {
                 refused = raw?.refused ?? false
                 ranAt = raw?.ranAt
                 scripted = raw?.out.map(ScriptedSnapshot.parse)
-                if let s = scripted {
+                if let s = Sweep.snapshotToShow(answered: scripted, last: lastScripted, lastAt: lastScriptedAt, now: Date().timeIntervalSinceReferenceDate, backingOff: backingOff, scriptable: scriptable, refused: refused) {
                     let pairs = WindowMatch.pair(scripted: s.windows.map { ($0.id, $0.title) }, native: native)
                     items = Build.scripted(spec, s, numbers: pairs, front: front, frontWindowNumber: frontNumber)
                 } else {
@@ -255,8 +262,9 @@ final class Engine {
                 guard let self, var t = self.tracked[pid] else { return }
                 t.items = items
                 t.windows = wins
-                if let ghostty { t.ghostty = ghostty }
-                if let scripted { t.scripted = scripted }
+                let answeredAt = (ranAt ?? started).timeIntervalSinceReferenceDate
+                if let ghostty { t.ghostty = ghostty; t.ghosttyAt = answeredAt }
+                if let scripted { t.scripted = scripted; t.scriptedAt = answeredAt }
                 if scriptable && !refused {
                     t.reads += 1
                     t.scriptTriedAt = ranAt ?? started

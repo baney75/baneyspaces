@@ -208,7 +208,22 @@ enum Scripts {
         -- then the terminals it made there. Returns the new state.
         --   1st  a screen-filling window   2nd  split right   3rd  left pane down
         --   4th  right pane down           5th  a new tab, and the grid starts again
-        on claudeTile(workDir, paneCmd, prior)
+        --
+        -- Progress, for the caller after a timeout. A timed-out call stops the script at the Apple event
+        -- that timed out; Ghostty still finishes that one event and nothing after it is sent. These
+        -- properties live as long as the compiled script, so `tileProgress` tells which event it was:
+        -- "creating" is the one that opens the pane (it may still land), anything before it means no pane
+        -- will open. `token` is the caller's own for this press.
+        property tileToken : ""
+        property tileStep : ""
+
+        on tileProgress()
+        	return tileToken & linefeed & tileStep
+        end tileProgress
+
+        on claudeTile(workDir, paneCmd, prior, token)
+        	set my tileToken to token
+        	set my tileStep to "started"
         	set AppleScript's text item delimiters to linefeed
         	set rows to text items of prior
         	set AppleScript's text item delimiters to ""
@@ -244,7 +259,9 @@ enum Scripts {
         				end repeat
         			end if
         			if targetTab is missing value then
+        				set my tileStep to "creating"
         				set w to new window with configuration cfg
+        				set my tileStep to "done"
         				set t to selected tab of w
         				-- Fill the screen so four tiles stay readable. Once the pane exists, a step
         				-- that fails mustn't lose its ID (or start a second session).
@@ -260,7 +277,9 @@ enum Scripts {
         			end repeat
         			set n to count of liveIDs
         			if n is 0 or n ≥ 4 then
+        				set my tileStep to "creating"
         				set t to new tab in targetWindow with configuration cfg
+        				set my tileStep to "done"
         				return my joinLines({id of t, id of focused terminal of t})
         			end if
         			if n is 1 then
@@ -274,7 +293,9 @@ enum Scripts {
         				set dir to down
         			end if
         			set base to first terminal of targetTab whose id is baseID
+        			set my tileStep to "creating"
         			set newTerm to split base direction dir with configuration cfg
+        			set my tileStep to "done"
         			-- Each step on its own: a failed equalize still focuses the new pane.
         			try
         				perform action "equalize_splits" on newTerm
@@ -287,22 +308,60 @@ enum Scripts {
         	end timeout
         end claudeTile
 
-        -- After a timeout in `claudeTile`: the tab `priorTab` and every terminal in it, one ID per line,
-        -- so the pane that opened late is still written to the state file. The front tab only stands in
-        -- when there is no `priorTab` (the first window) or it's gone: you may have switched tabs since.
-        -- Apple events are handled in order, so this answers after the late pane exists, which is why
-        -- its timeout is as long as the tile's.
-        on frontTab(priorTab)
+        -- After a timeout in `claudeTile`: the tab the state should now name and every terminal in it, one
+        -- ID per line, so the pane that opened late is still written to the state file. It follows the
+        -- branch `claudeTile` took with the same `prior` state: with the state's tab alive and 1 to 3 of its
+        -- terminals still there, a split was made in that tab; with none or 4 or more, a new tab was
+        -- opened in that tab's window (it is that window's selected tab); with no state, or its tab gone,
+        -- a new window was (the front tab). `ClaudeDesk.recovered` checks the answer against the state.
+        -- Known limit: it can't tell a pane `claudeTile` made late from one another app made in that tab
+        -- during the wait. Apple events are handled in order, so this answers after the late pane exists,
+        -- which is why its timeout is as long as the tile's, and why nothing is asked before it: a
+        -- shorter probe would queue behind the same slow event and time out when it's needed.
+        on frontTab(prior)
+        	set AppleScript's text item delimiters to linefeed
+        	set rows to text items of prior
+        	set AppleScript's text item delimiters to ""
+        	set priorTab to ""
+        	set known to {}
+        	repeat with l in rows
+        		if (contents of l) is not "" then
+        			if priorTab is "" then
+        				set priorTab to contents of l
+        			else
+        				set end of known to (contents of l)
+        			end if
+        		end if
+        	end repeat
         	with timeout of 30 seconds
         		tell application id "com.mitchellh.ghostty"
         			if (count of windows) is 0 then return ""
         			set t to missing value
+        			set priorRef to missing value
+        			set priorWin to missing value
         			if priorTab is not "" then
         				repeat with w in windows
         					repeat with x in tabs of w
-        						if (id of x) is priorTab then set t to contents of x
+        						if (id of x) is priorTab then
+        							set priorRef to contents of x
+        							set priorWin to contents of w
+        						end if
         					end repeat
         				end repeat
+        			end if
+        			if priorRef is not missing value then
+        				set liveCount to 0
+        				set present to id of every terminal of priorRef
+        				repeat with k in known
+        					if present contains (contents of k) then set liveCount to liveCount + 1
+        				end repeat
+        				if liveCount is 0 or liveCount ≥ 4 then
+        					set t to selected tab of priorWin
+        					-- The new tab never appeared: nothing to adopt, and the state stays.
+        					if (id of t) is priorTab then return ""
+        				else
+        					set t to priorRef
+        				end if
         			end if
         			if t is missing value then set t to selected tab of front window
         			set ids to {id of t}
