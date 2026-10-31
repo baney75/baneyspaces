@@ -175,8 +175,8 @@ DispatchQueue.global().async {
         }
         // 1.2 s have passed since letting go (dragDown); give a wrong move as long as a right one gets.
         usleep(1_800_000)
-        let now = workspace(of: id)
-        expect(now == target, "let go above the dock, the window stayed on workspace \(target) (it's on \(now.map(String.init) ?? "none"))")
+        let after = workspace(of: id)
+        expect(after == target, "let go above the dock, the window stayed on workspace \(target) (it's on \(after.map(String.init) ?? "none"))")
     } else {
         expect(false, "the window is on screen on workspace \(target)")
     }
