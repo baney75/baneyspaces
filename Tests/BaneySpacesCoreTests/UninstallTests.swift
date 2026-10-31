@@ -22,13 +22,13 @@ final class UninstallTests: XCTestCase {
     }
 
     private func uninstall(status: Int32 = 0, prefs: [String: Any]? = nil, macOS: String? = nil,
-                           macOSKeys: [String: String] = [:]) throws -> String {
+                           macOSKeys: [String: String] = [:], extraPath: String? = nil) throws -> String {
         let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("uninstall.sh")
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/bash")
         p.arguments = [script.path]
-        var env = ["HOME": home.path, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "BANEYSPACES_UNINSTALL_TEST": "1"]
+        var env = ["HOME": home.path, "PATH": (extraPath.map { $0 + ":" } ?? "") + "/usr/bin:/bin:/usr/sbin:/sbin", "BANEYSPACES_UNINSTALL_TEST": "1"]
         if let prefs {
             let file = home.appendingPathComponent("prefs.plist")
             try PropertyListSerialization.data(fromPropertyList: prefs, format: .xml, options: 0).write(to: file)
@@ -240,5 +240,35 @@ final class UninstallTests: XCTestCase {
     func testRunsOnAnEmptyHome() throws {
         let out = try uninstall()
         XCTAssertTrue(out.contains("BaneySpaces is removed."), out)
+    }
+
+    /// A stand-in `security` that reports the certificate's SHA-1 and nothing else; no real key is read.
+    private func fakeSecurity(sha1: String) throws -> String {
+        let dir = home.appendingPathComponent("fakebin")
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        let file = dir.appendingPathComponent("security")
+        try "#!/bin/sh\necho 'SHA-1 hash: \(sha1)'\n".write(to: file, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
+        return dir.path
+    }
+
+    /// On the owner's Mac the local signing key signs the releases: uninstalling moves it aside.
+    func testTheReleaseSigningKeyIsKeptNotDeleted() throws {
+        try write("Library/Application Support/BaneySpaces/Signing/baneyspaces-signing.keychain-db", "keychain")
+        try write("Library/Application Support/BaneySpaces/state.json", "{}")
+        let out = try uninstall(extraPath: try fakeSecurity(sha1: "D1CFBD7446F84F6C625B9DB83C5BF96DA33B157E"))
+        XCTAssertTrue(out.contains("Kept the signing key because it signs BaneySpaces releases"), out)
+        XCTAssertFalse(out.contains("would run: security delete-keychain"), out)
+        XCTAssertTrue(fm.fileExists(atPath: path("Library/BaneySpaces Release Signing/baneyspaces-signing.keychain-db").path))
+        XCTAssertFalse(fm.fileExists(atPath: path("Library/Application Support/BaneySpaces").path), "the rest of its data still goes")
+    }
+
+    /// Any other person's local key is just deleted, as before.
+    func testAnotherLocalSigningKeyIsStillDeleted() throws {
+        try write("Library/Application Support/BaneySpaces/Signing/baneyspaces-signing.keychain-db", "keychain")
+        let out = try uninstall(extraPath: try fakeSecurity(sha1: "0000000000000000000000000000000000000000"))
+        XCTAssertTrue(out.contains("would run: security delete-keychain"), out)
+        XCTAssertFalse(fm.fileExists(atPath: path("Library/BaneySpaces Release Signing").path))
+        XCTAssertFalse(fm.fileExists(atPath: path("Library/Application Support/BaneySpaces").path))
     }
 }

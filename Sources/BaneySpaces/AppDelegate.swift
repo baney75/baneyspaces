@@ -183,6 +183,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         missionControlKeys.start()
     }
 
+    /// An app dragged out of the disk image never ran the installer's other steps: AeroSpace stepping
+    /// aside, the `baneyspaces` command in ~/.local/bin, Ghostdeck going to the Trash. The first
+    /// launch from Applications does them, once: the bundled install-app.sh with --in-place, run
+    /// off the main thread. It runs only when the command is missing or points somewhere else, and
+    /// only from an Applications folder (never from the disk image or a build folder).
+    private func linkCommandIfNeeded() {
+        let bundle = Bundle.main.bundleURL.path
+        let home = NSHomeDirectory()
+        guard bundle.hasPrefix("/Applications/") || bundle.hasPrefix("\(home)/Applications/"),
+              let script = Bundle.main.url(forResource: "install-app", withExtension: "sh") else { return }
+        let link = "\(home)/.local/bin/baneyspaces"
+        if let target = try? FileManager.default.destinationOfSymbolicLink(atPath: link), target.hasPrefix(bundle + "/") { return }
+        DispatchQueue.global(qos: .utility).async {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/bin/bash")
+            p.arguments = [script.path, "--in-place", bundle]
+            let pipe = Pipe()
+            p.standardOutput = pipe
+            p.standardError = pipe
+            do {
+                try p.run()
+                let out = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                p.waitUntilExit()
+                Trace.log("install-app --in-place exit \(p.terminationStatus): \(out.trimmingCharacters(in: .whitespacesAndNewlines).prefix(300))")
+            } catch {
+                Trace.log("install-app --in-place didn't start: \(error.localizedDescription)")
+            }
+        }
+    }
+
     func applicationDidFinishLaunching(_ n: Notification) {
         // `BaneySpaces --restore-shortcuts`: the uninstaller's way to turn macOS's screenshot
         // shortcuts back on before the app's settings are deleted.
@@ -229,6 +259,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if app.status == .notRegistered || app.status == .notFound { exit(0) }
             exit((try? app.unregister()) != nil ? 0 : 1)
         }
+        linkCommandIfNeeded()
         NSAppleEventManager.shared().setEventHandler(self, andSelector: #selector(handleURL(_:reply:)),
                                                      forEventClass: AEEventClass(kInternetEventClass),
                                                      andEventID: AEEventID(kAEGetURL))

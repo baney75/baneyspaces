@@ -7,7 +7,9 @@
   and need no command line tools. The installer checks the app against BaneySpaces' release key
   and refuses anything else. Browser users get `BaneySpaces.dmg` with the drag-to-Applications
   window; the first open needs **System Settings › Privacy & Security › Open Anyway**, because
-  BaneySpaces isn't notarized. The Nightly build and older releases still build from source.
+  BaneySpaces isn't notarized. The Nightly build and older releases still build from source, and so does an update of a copy
+  you built yourself (while the command line tools are installed), so macOS keeps its
+  Accessibility permission.
 - **Each display shows a workspace of its own.** With a second monitor or Sidecar, ⌘3 used to
   change what every screen showed. Now it changes only the display you're on: the one you last
   clicked, anywhere on it (a window, the desktop, the Workspace Dock or the overview), or whose

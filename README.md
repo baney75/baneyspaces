@@ -237,7 +237,8 @@ steps just off screen and comes back to the exact spot it left.
 Requires macOS 13 Ventura or later, on Apple silicon or Intel. Two ways in:
 
 **In Terminal**, one line. It downloads the ready-made app (a few MB, no developer tools),
-checks that it is signed with BaneySpaces' release key, and copies it to `~/Applications`:
+checks that it is signed with BaneySpaces' release key, and copies it to `~/Applications` (or
+replaces the copy you already have, wherever it is):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/baney75/baneyspaces/main/install.sh | bash
@@ -247,7 +248,9 @@ curl -fsSL https://raw.githubusercontent.com/baney75/baneyspaces/main/install.sh
 [latest release](https://github.com/baney75/baneyspaces/releases/latest) and drag BaneySpaces to
 Applications. The first time you open it, macOS asks you to confirm in **System Settings ›
 Privacy & Security › Open Anyway**, because BaneySpaces isn't notarized. The Terminal line
-doesn't ask: a file downloaded by `curl` never gets that prompt.
+doesn't ask: a file downloaded by `curl` never gets that prompt. On its first launch from
+Applications, BaneySpaces also does what the installer does: it turns AeroSpace's open-at-login
+off, adds the `baneyspaces` command to `~/.local/bin` and moves Ghostdeck to the Trash.
 
 A release without the ready-made app (the Nightly build, old releases), or
 `BANEYSPACES_FROM_SOURCE=1`, builds from source instead with Apple's free command line tools. If
@@ -255,8 +258,11 @@ the tools are missing, the installer opens Apple's installer for them first (abo
 5 to 15 minutes); paste the command again when that finishes. If the build fails, the installer
 shows the error and where the full log is.
 
-The ready-made app and a source build are signed with different certificates, so macOS asks for
-the Accessibility permission again if you switch from one to the other.
+The ready-made app and a source build are signed with different certificates, and macOS ties the
+Accessibility permission to the signature. So if your BaneySpaces was built on your Mac, the
+installer and the updater keep building it from source (the same signature, the permission stays),
+as long as the command line tools are installed. Without them they replace it with the ready-made
+app, and macOS asks for the Accessibility permission once more.
 
 Prefer to read the source first? Build it yourself:
 
@@ -298,10 +304,11 @@ Spotlight.
 
 BaneySpaces looks for a new version once a day and, when there is one, the menu bar menu shows
 **Update to BaneySpaces …**. Nothing installs until you press **Update Now** in the window that
-shows what changed. The update installs the same way the first install did (a stable release
-downloads the ready-made app, a Nightly build is built on your Mac), so the Accessibility
-permission carries over, then BaneySpaces restarts and shows the release notes. If the update
-fails, BaneySpaces keeps running as it was and offers the log.
+shows what changed. The update installs the same way the first install did, into the folder the
+app is in. A stable release downloads the ready-made app; a Nightly build, or a copy that was
+built on your Mac (while the command line tools are installed), is built on your Mac, so the
+Accessibility permission carries over. Then BaneySpaces restarts and shows the release notes. If
+the update fails, BaneySpaces keeps running as it was and offers the log.
 
 Pick what you follow under **Updates** in the menu:
 

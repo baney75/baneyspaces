@@ -201,10 +201,36 @@ done
 rm -rf "$HOME/.claude/skills/baneyspaces"
 
 step "Removing settings and the local signing key"
-if [ -f "$DATA/Signing/baneyspaces-signing.keychain-db" ]; then
-  sys security delete-keychain "$DATA/Signing/baneyspaces-signing.keychain-db" 2>/dev/null || true
+# On the owner's Mac this keychain holds the key every release is signed with (the pinned
+# requirement below names its certificate). That one is moved aside, never deleted. Only the
+# certificate's public fingerprint is read; the private key is never touched or printed.
+RELEASE_REQUIREMENT='identifier "com.baney.baneyspaces" and certificate leaf = H"d1cfbd7446f84f6c625b9db83c5bf96da33b157e"'
+SIGNING_KC="$DATA/Signing/baneyspaces-signing.keychain-db"
+KEEP_SIGNING=""
+if [ -f "$SIGNING_KC" ]; then
+  release_leaf=${RELEASE_REQUIREMENT##*H\"}; release_leaf=$(printf '%s' "${release_leaf%\"}" | tr 'A-F' 'a-f')
+  local_leaf=$(security find-certificate -c "BaneySpaces Local Signing" -Z "$SIGNING_KC" 2>/dev/null \
+    | sed -n 's/^SHA-1 hash: *//p' | head -1 | tr 'A-F' 'a-f')
+  if [ -n "$local_leaf" ] && [ "$local_leaf" = "$release_leaf" ]; then KEEP_SIGNING=1; fi
 fi
-rm -rf "$DATA" "$HOME/Library/Caches/$ID" "$HOME/Library/HTTPStorages/$ID" \
+if [ -n "$KEEP_SIGNING" ]; then
+  KEPT="$HOME/Library/BaneySpaces Release Signing"
+  [ ! -e "$KEPT" ] || KEPT="$KEPT $(date +%Y%m%d-%H%M%S)"
+  if mv "$DATA/Signing" "$KEPT"; then
+    echo "Kept the signing key because it signs BaneySpaces releases: moved to $KEPT"
+    echo "To sign releases again, put it back at $DATA/Signing."
+  else
+    problem "The signing key signs BaneySpaces releases and couldn't be moved aside, so it stays in $DATA/Signing."
+  fi
+elif [ -f "$SIGNING_KC" ]; then
+  sys security delete-keychain "$SIGNING_KC" 2>/dev/null || true
+fi
+if [ -d "$DATA/Signing" ] && [ -n "$KEEP_SIGNING" ]; then
+  find "$DATA" -mindepth 1 -maxdepth 1 ! -name Signing -exec rm -rf {} +
+else
+  rm -rf "$DATA"
+fi
+rm -rf "$HOME/Library/Caches/$ID" "$HOME/Library/HTTPStorages/$ID" \
   "$HOME/Library/Saved Application State/$ID.savedState"
 # Its record of shortcuts it turned off stays while they're still off, so a reinstall can finish.
 if ! shortcuts_off; then

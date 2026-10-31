@@ -2,13 +2,17 @@
 # Installs BaneySpaces on macOS:
 #   curl -fsSL https://raw.githubusercontent.com/baney75/baneyspaces/main/install.sh | bash
 # A stable release carries the finished app (a few MB). This downloads it, checks that it is
-# signed with BaneySpaces' release key (it refuses anything else), and puts it in ~/Applications.
-# No developer tools are needed. A release without the app (the Nightly build, an old release),
-# or BANEYSPACES_FROM_SOURCE=1, builds from source instead with Apple's free command line tools;
-# because that app is built on this Mac there is no "unidentified developer" warning, and a
-# stable local signature lets macOS keep the Accessibility permission across updates.
+# signed with BaneySpaces' release key (it refuses anything else), and puts it in the folder the
+# current copy is in (~/Applications on a first install). No developer tools are needed.
+# It builds from source instead, with Apple's free command line tools, when the release has no
+# ready-made app (the Nightly build, an old release), when BANEYSPACES_FROM_SOURCE=1, or when the
+# copy already installed was built on this Mac and the tools are here: that keeps its signature,
+# so macOS keeps the Accessibility permission. Without the tools that copy is replaced by the
+# ready-made app and macOS asks for the permission once more. A source build has no "unidentified
+# developer" warning either.
 # Set BANEYSPACES_REF to install a specific tag (or, building from source, a branch).
 # BANEYSPACES_COMMIT (the updater sets it) pins the exact commit; a different build is refused.
+# BANEYSPACES_INSTALL_DIR (the updater sets it) is the folder to install into.
 # BANEYSPACES_ZIP=/path/to/BaneySpaces.zip uses that file instead of downloading (for tests; pair
 # it with BANEYSPACES_DEST_DIR so nothing outside that folder changes).
 set -euo pipefail
@@ -26,35 +30,67 @@ REQUIREMENT='identifier "com.baney.baneyspaces" and certificate leaf = H"d1cfbd7
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
-# The prebuilt app: the release's BaneySpaces.zip. Stock macOS has no python3 (only a stub that asks
-# for the command line tools), so the release's JSON is read with plutil.
+# Where an installed copy would be replaced (the same choice install-app.sh makes).
+if [ -n "${BANEYSPACES_DEST_DIR:-}" ]; then CANDIDATES=("$BANEYSPACES_DEST_DIR")
+elif [ -n "${BANEYSPACES_INSTALL_DIR:-}" ]; then CANDIDATES=("$BANEYSPACES_INSTALL_DIR")
+else CANDIDATES=("$HOME/Applications" /Applications); fi
+EXISTING=""
+for dir in "${CANDIDATES[@]}"; do
+  if [ -d "$dir/BaneySpaces.app" ]; then EXISTING="$dir/BaneySpaces.app"; break; fi
+done
+have_tools() { xcode-select -p >/dev/null 2>&1 && xcrun --find swift >/dev/null 2>&1; }
+
+# macOS ties the Accessibility permission to the app's signature. A copy built on this Mac has its
+# own signature, and the ready-made app has another, so replacing one with the other would make
+# macOS ask again. With the command line tools here, keep building from source (same signer);
+# without them, install the ready-made app and say that macOS will ask once more.
+FROM_SOURCE="${BANEYSPACES_FROM_SOURCE:-}"
+if [ "$FROM_SOURCE" != 1 ] && [ -n "$EXISTING" ] && ! codesign -v -R "=$REQUIREMENT" "$EXISTING" >/dev/null 2>&1; then
+  if have_tools; then
+    step "Your BaneySpaces was built on this Mac, so it is updated the same way (macOS keeps its Accessibility permission)"
+    FROM_SOURCE=1
+  else
+    step "Your BaneySpaces was built on this Mac and this one is ready-made, so macOS will ask for the Accessibility permission once more"
+  fi
+fi
+
+# The prebuilt app: the release's BaneySpaces.zip, straight from GitHub's download address (no API,
+# no JSON to read, which stock macOS has no good tool for).
 ZIP="${BANEYSPACES_ZIP:-}"
 TAG="${BANEYSPACES_REF:-}"
-if [ -z "$ZIP" ] && [ "${BANEYSPACES_FROM_SOURCE:-}" != 1 ] && [[ "$TAG" =~ ^[A-Za-z0-9._-]*$ ]]; then
-  API="https://api.github.com/repos/baney75/baneyspaces/releases/latest"
-  [ -z "$TAG" ] || API="https://api.github.com/repos/baney75/baneyspaces/releases/tags/$TAG"
-  ZIP_URL=""
-  if curl -fsSL -H 'Accept: application/vnd.github+json' "$API" -o "$WORK/release.json" 2>/dev/null; then
-    TAG=$(plutil -extract tag_name raw -o - "$WORK/release.json" 2>/dev/null || echo "${TAG:-the latest release}")
-    i=0
-    while name=$(plutil -extract "assets.$i.name" raw -o - "$WORK/release.json" 2>/dev/null); do
-      if [ "$name" = BaneySpaces.zip ]; then
-        ZIP_URL=$(plutil -extract "assets.$i.browser_download_url" raw -o - "$WORK/release.json" 2>/dev/null || true)
-        break
-      fi
-      i=$((i + 1))
-    done
-  fi
-  if [ -n "$ZIP_URL" ]; then
-    step "Downloading BaneySpaces ($TAG)"
-    curl -fsSL "$ZIP_URL" -o "$WORK/BaneySpaces.zip" \
-      || fail "the download stopped. Try again, or build it on this Mac with BANEYSPACES_FROM_SOURCE=1."
-    ZIP="$WORK/BaneySpaces.zip"
-  fi
+SHA_URL=""
+# Prints the HTTP status and the final address; a connection that fails prints 000.
+fetch() { curl -sSL -w '%{http_code} %{url_effective}' -o "$2" "$1" 2>/dev/null || true; }
+if [ -z "$ZIP" ] && [ "$FROM_SOURCE" != 1 ] && [[ "$TAG" =~ ^[A-Za-z0-9._-]*$ ]]; then
+  BASE="https://github.com/baney75/baneyspaces/releases"
+  if [ -n "$TAG" ]; then ZIP_URL="$BASE/download/$TAG/BaneySpaces.zip"; else ZIP_URL="$BASE/latest/download/BaneySpaces.zip"; fi
+  step "Downloading BaneySpaces (${TAG:-the latest release})"
+  reply=$(fetch "$ZIP_URL" "$WORK/BaneySpaces.zip")
+  [ "${reply%% *}" = 200 ] || { sleep 2; reply=$(fetch "$ZIP_URL" "$WORK/BaneySpaces.zip"); }
+  case "${reply%% *}" in
+    200)
+      ZIP="$WORK/BaneySpaces.zip"
+      # The final address names the release, which also settles what "latest" meant.
+      resolved=$(printf '%s' "${reply#* }" | sed -n 's#.*/releases/download/\([^/]*\)/BaneySpaces\.zip.*#\1#p')
+      TAG="${resolved:-$TAG}"
+      SHA_URL="$BASE/download/$TAG/BaneySpaces.zip.sha256" ;;
+    404) echo "  There is no ready-made app for this release; building it." ;;
+    *) fail "the download didn't work (HTTP ${reply%% *}). Try again, or build it on this Mac with BANEYSPACES_FROM_SOURCE=1." ;;
+  esac
 fi
 
 if [ -n "$ZIP" ]; then
   [ -f "$ZIP" ] || fail "$ZIP doesn't exist."
+  # The checksum file is optional: a release without one is checked by its signature alone.
+  if [ -n "$SHA_URL" ]; then
+    reply=$(fetch "$SHA_URL" "$WORK/BaneySpaces.zip.sha256")
+    case "${reply%% *}" in
+      200) [ "$(awk '{print $1}' "$WORK/BaneySpaces.zip.sha256")" = "$(shasum -a 256 "$ZIP" | awk '{print $1}')" ] \
+             || fail "the download doesn't match its checksum, so it was not installed." ;;
+      404) ;;
+      *) fail "couldn't fetch the checksum (HTTP ${reply%% *}). Try again, or build it on this Mac with BANEYSPACES_FROM_SOURCE=1." ;;
+    esac
+  fi
   mkdir "$WORK/app"
   ditto -x -k "$ZIP" "$WORK/app" || fail "the download isn't a usable zip."
   APP="$WORK/app/BaneySpaces.app"
@@ -64,9 +100,16 @@ if [ -n "$ZIP" ]; then
     || fail "the download's signature is broken, so it was not installed."
   codesign -v -R "=$REQUIREMENT" "$APP" 2>/dev/null \
     || fail "the download isn't signed with BaneySpaces' release key, so it was not installed."
-  # An update pins the exact commit whose notes were shown; a tag that moved since is refused.
-  if [ -n "${BANEYSPACES_COMMIT:-}" ] && [ "$(plutil -extract BaneySpacesCommit raw -o - "$APP/Contents/Info.plist" 2>/dev/null)" != "$BANEYSPACES_COMMIT" ]; then
-    fail "${TAG:-the release} moved to a newer build after you looked at it. Check for updates again to see what changed."
+  if [ -n "${BANEYSPACES_COMMIT:-}" ]; then
+    # An update pins the exact commit whose notes were shown; a tag that moved since is refused.
+    if [ "$(plutil -extract BaneySpacesCommit raw -o - "$APP/Contents/Info.plist" 2>/dev/null)" != "$BANEYSPACES_COMMIT" ]; then
+      fail "${TAG:-the release} moved to a newer build after you looked at it. Check for updates again to see what changed."
+    fi
+  elif [[ "$TAG" =~ ^v[0-9] ]]; then
+    # Otherwise the app must be the version the tag names.
+    if [ "$(plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist" 2>/dev/null)" != "${TAG#v}" ]; then
+      fail "the download isn't version ${TAG#v}, so it was not installed."
+    fi
   fi
   step "Installing"
   LOG="${TMPDIR:-/tmp}/baneyspaces-install.log"
@@ -85,7 +128,7 @@ fi
 
 # No prebuilt app for this release (or BANEYSPACES_FROM_SOURCE=1): build it here.
 # The build needs Apple's free command line tools (Swift and git). Check before anything else.
-if ! xcode-select -p >/dev/null 2>&1 || ! xcrun --find swift >/dev/null 2>&1; then
+if ! have_tools; then
   step "BaneySpaces needs Apple's free command line tools first"
   xcode-select --install >/dev/null 2>&1 || true
   echo "  A macOS window just opened. Click Install and agree to the license."

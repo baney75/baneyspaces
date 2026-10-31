@@ -61,6 +61,13 @@ final class UpdatesTests: XCTestCase {
         XCTAssertFalse(release("main").isInstallable)
     }
 
+    func testADraftReleaseIsNeverOffered() {
+        // `make release` publishes only after the assets are checked; until then the release is a draft.
+        let json = #"[{"tag_name":"v0.3.0","name":"0.3.0","body":"x","prerelease":false,"draft":true,"html_url":"u"}]"#
+        let build = BuildInfo(version: "0.2.2", commit: nil, commitDate: nil)
+        XCTAssertNil(Updates.offer(from: Release.list(fromGitHubJSON: Data(json.utf8)), channel: .stable, build: build))
+    }
+
     func testGitHubListSkipsDrafts() {
         let json = #"[{"tag_name":"v0.3.0","name":"0.3.0","body":"x","prerelease":false,"draft":true,"html_url":"u"},{"tag_name":"nightly","name":"Nightly","body":"y","prerelease":true,"draft":false,"html_url":"u"}]"#
         XCTAssertEqual(Release.list(fromGitHubJSON: Data(json.utf8)).map(\.tag), ["nightly"])

@@ -5,7 +5,7 @@
 #   build/BaneySpaces.dmg         the disk image for people who download in a browser
 # It refuses any app that isn't signed with the release identity (scripts/release-requirement.txt),
 # so an ad-hoc or wrong-key build can never be packaged.
-# The disk image is made without Finder: dmgbuild (pip, in a venv under build/.venv) writes it.
+# The disk image is made without Finder: dmgbuild (pip, in a venv under ~/Library/Caches) writes it.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 APP=build/BaneySpaces.app
@@ -21,14 +21,15 @@ ditto -c -k --keepParent "$APP" build/BaneySpaces.zip
 (cd build && shasum -a 256 BaneySpaces.zip > BaneySpaces.zip.sha256)
 
 # Disk image: the app on the left, an Applications link on the right, over a drawn background.
-if [ ! -x build/.venv/bin/dmgbuild ]; then
-  python3 -m venv build/.venv
-  build/.venv/bin/pip install --quiet --disable-pip-version-check dmgbuild
-fi
+# dmgbuild and what it needs are pinned by version and hash (scripts/dmg-requirements.txt) and live
+# in a venv outside build/, which bundle.sh wipes. Nothing is installed system-wide.
+VENV="${BANEYSPACES_RELEASE_VENV:-$HOME/Library/Caches/baneyspaces-release-venv}"
+[ -x "$VENV/bin/pip" ] || python3 -m venv "$VENV"
+"$VENV/bin/pip" install --quiet --disable-pip-version-check --require-hashes -r scripts/dmg-requirements.txt
 rm -rf build/dmg && mkdir -p build/dmg
 swift scripts/make-dmg-background.swift build/dmg
 tiffutil -cathidpicheck build/dmg/background.png build/dmg/background@2x.png -out build/dmg/background.tiff
-build/.venv/bin/dmgbuild -s scripts/dmg-settings.py \
+"$VENV/bin/dmgbuild" -s scripts/dmg-settings.py \
   -D app="$APP" -D background=build/dmg/background.tiff \
   BaneySpaces build/BaneySpaces.dmg >/dev/null
 rm -rf build/dmg

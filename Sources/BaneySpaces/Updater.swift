@@ -4,9 +4,11 @@ import BaneySpacesCore
 /// Finds new builds on the channel the person chose (Stable or Nightly) and installs one only
 /// when they press Update Now. Checking asks GitHub once a day, and can be turned off; it
 /// sends nothing about this Mac. Installing runs the same installer as the first install: it
-/// downloads the release's signed app (checked against the pinned release key) or, for a build
-/// without one, builds on this Mac. Either way the Accessibility permission carries over and
-/// Gatekeeper has nothing to ask.
+/// downloads the release's signed app (checked against the pinned release key) and puts it where
+/// this copy is. It builds on this Mac instead when the release has no ready-made app, or when
+/// this copy was built here and the command line tools are installed: that keeps its signature,
+/// so the Accessibility permission carries over. A copy built here, updated on a Mac without the
+/// tools, gets the ready-made app and macOS asks for the permission once more.
 final class Updater: NSObject {
     static let releasesURL = URL(string: "https://api.github.com/repos/baney75/baneyspaces/releases?per_page=30")!
 
@@ -231,6 +233,9 @@ final class Updater: NSObject {
         task.arguments = ["-c", "nohup /bin/bash \"$0\" >>\"$1\" 2>&1 &", scriptURL.path, Self.logURL.path]
         var env = ProcessInfo.processInfo.environment
         env["BANEYSPACES_REF"] = release.tag
+        // The new copy goes where this one is, so an /Applications copy isn't left beside a new
+        // one in ~/Applications.
+        env["BANEYSPACES_INSTALL_DIR"] = Bundle.main.bundleURL.deletingLastPathComponent().path
         if let commit = release.commit { env["BANEYSPACES_COMMIT"] = commit }
         env["BANEYSPACES_STATUS_FILE"] = Self.statusURL.path
         env["BANEYSPACES_PID_FILE"] = Self.pidURL.path
