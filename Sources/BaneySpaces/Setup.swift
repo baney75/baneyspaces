@@ -261,7 +261,7 @@ final class SetupModel: ObservableObject {
 
 /// The settings window's tabs. General comes first: it's where a new Mac starts.
 enum SettingsTab: String, CaseIterable, Identifiable {
-    case general = "General", keys = "Keys", dock = "Dock", launcher = "Launcher"
+    case general = "General", keys = "Keys", dock = "Dock", appearance = "Appearance", launcher = "Launcher"
     var id: Self { self }
 
     var symbol: String {
@@ -269,6 +269,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .general: "gearshape"
         case .keys: "keyboard"
         case .dock: "dock.rectangle"
+        case .appearance: "paintpalette"
         case .launcher: "magnifyingglass"
         }
     }
@@ -278,6 +279,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
 /// screen. It opens on General until BaneySpaces has what it needs to run.
 struct SetupView: View {
     @ObservedObject var model: SetupModel
+    @ObservedObject private var appearance = Appearance.shared
     var close: () -> Void
 
     var body: some View {
@@ -293,6 +295,7 @@ struct SetupView: View {
                 case .general: general
                 case .keys: keys
                 case .dock: dock
+                case .appearance: appearanceTab
                 case .launcher: launcher
                 }
             }
@@ -508,6 +511,134 @@ struct SetupView: View {
             badge.frame(width: 18, alignment: .center)
             Text(text).font(.callout)
         }
+    }
+
+    // MARK: Appearance
+
+    @ViewBuilder private var appearanceTab: some View {
+        appearancePreview
+
+        section("Accent") {
+            HStack(spacing: 7) {
+                ForEach(AccentPreset.allCases, id: \.self) { p in
+                    swatch(Appearance.color(p.rgb), selected: appearance.settings.accent == .preset(p), name: p.title) {
+                        appearance.settings.accent = .preset(p)
+                    }
+                }
+                Divider().frame(height: 18)
+                Button { appearance.settings.accent = .system } label: {
+                    HStack(spacing: 5) {
+                        Circle().fill(Appearance.color(Appearance.systemAccent)).frame(width: 10, height: 10)
+                        Text("System").font(.callout)
+                    }
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(Capsule().strokeBorder(appearance.settings.accent == .system ? Color.primary : Color.secondary.opacity(0.35),
+                                                       lineWidth: appearance.settings.accent == .system ? 2 : 1))
+                }
+                .buttonStyle(.plain)
+                .help("Follow the accent color in System Settings")
+                ColorPicker("Custom accent", selection: Binding(
+                    get: { Appearance.color(appearance.settings.accentRGB(system: Appearance.systemAccent)) },
+                    set: { appearance.settings.accent = .custom(Appearance.rgb($0)) }), supportsOpacity: false)
+                    .labelsHidden()
+                    .help("Pick any color")
+            }
+        }
+
+        section("Workspace colors") {
+            HStack(spacing: 12) {
+                Picker("", selection: Binding(get: { appearance.settings.palette }, set: { appearance.settings.palette = $0 })) {
+                    ForEach(WorkspacePalette.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented).labelsHidden().frame(width: 280)
+                Spacer()
+                Button("Reset") { appearance.settings.resetOverrides() }
+                    .disabled(appearance.settings.overrides.isEmpty)
+                    .help("Clear the colors picked for single workspaces")
+            }
+            HStack(spacing: 6) {
+                ForEach(1...9, id: \.self) { n in
+                    VStack(spacing: 1) {
+                        ColorPicker("Workspace \(n)", selection: Binding(
+                            get: { Chrome.workspace(n) },
+                            set: { picked in
+                                // The picker also answers with the color it was shown; that isn't a pick.
+                                let rgb = Appearance.rgb(picked)
+                                let shown = appearance.settings.workspaceColor(n, accent: appearance.accentRGB).rgb
+                                guard abs(rgb.r - shown.r) + abs(rgb.g - shown.g) + abs(rgb.b - shown.b) > 0.01 else { return }
+                                appearance.settings.overrides[n] = rgb
+                            }), supportsOpacity: false)
+                            .labelsHidden()
+                        Text("\(n)").font(.caption2.weight(.semibold)).foregroundStyle(appearance.settings.overrides[n] == nil ? Color.secondary : Color.primary)
+                    }
+                }
+            }
+            Text("Click a color to change one workspace. Bright colors are dimmed so the numbers stay readable.")
+                .font(.callout).foregroundStyle(.secondary)
+        }
+
+        section("Panels") {
+            HStack(spacing: 12) {
+                Picker("", selection: Binding(get: { appearance.settings.panelStyle }, set: { appearance.settings.panelStyle = $0 })) {
+                    ForEach(PanelStyle.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented).labelsHidden().frame(width: 220)
+                Slider(value: Binding(get: { appearance.settings.panelOpacity }, set: { appearance.settings.panelOpacity = $0 }),
+                       in: AppearanceSettings.panelOpacityRange)
+                    .frame(width: 120)
+                    .disabled(appearance.settings.panelStyle == .solid)
+                Text("\(Int((appearance.settings.effectivePanelOpacity * 100).rounded()))%")
+                    .font(.callout.monospacedDigit()).foregroundStyle(.secondary).frame(width: 40, alignment: .trailing)
+            }
+            Text("Dock, ⌘Tab, launcher, overview and switch overlay. Solid is always opaque.")
+                .font(.callout).foregroundStyle(.secondary)
+        }
+
+        section("Dock size") {
+            Picker("", selection: Binding(get: { appearance.settings.dockSize }, set: { appearance.settings.dockSize = $0 })) {
+                ForEach(DockSize.allCases, id: \.self) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented).labelsHidden().frame(width: 220)
+        }
+    }
+
+    /// A small dock in the current look, so changes show without opening the real one.
+    private var appearancePreview: some View {
+        let k = CGFloat(appearance.settings.dockSize.scale)
+        return HStack(spacing: 8) {
+            ForEach(1...3, id: \.self) { n in
+                let current = n == 2
+                let tint = Chrome.workspace(n)
+                VStack(spacing: 3) {
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .fill(current ? tint.opacity(0.26) : Color.white.opacity(0.06))
+                        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous)
+                            .strokeBorder(current ? Chrome.accent : Color.white.opacity(0.08), lineWidth: current ? 2 : 1))
+                        .overlay(Image(systemName: "app.fill").font(.system(size: 18 * k)).foregroundStyle(.white.opacity(0.35)))
+                        .frame(width: 44 * k, height: 44 * k)
+                    WorkspaceBadge(n: n, size: 16)
+                }
+            }
+        }
+        .padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 8)
+        .background(Chrome.panelBackground(cornerRadius: 18))
+        .environment(\.colorScheme, .dark)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Preview of the Workspace Dock")
+    }
+
+    private func swatch(_ color: Color, selected: Bool, name: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Circle().fill(color).frame(width: 20, height: 20)
+                .overlay(Circle().strokeBorder(Color.primary.opacity(selected ? 0.9 : 0.15), lineWidth: selected ? 2 : 1))
+                .padding(2)
+        }
+        .buttonStyle(.plain)
+        .help(name)
+        .accessibilityLabel(name)
+        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
     }
 
     // MARK: Launcher

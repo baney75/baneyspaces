@@ -1415,7 +1415,7 @@ enum Toast {
             Text(text).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
         }
         .padding(.horizontal, 16).padding(.vertical, 11)
-        .background(Chrome.panel(cornerRadius: 16))
+        .background(Chrome.panelBackground(cornerRadius: 16))
         .padding(24)
         .environment(\.colorScheme, .dark)
         let host = NSHostingView(rootView: view)
@@ -1450,6 +1450,8 @@ enum Toast {
 
 struct LauncherView: View {
     @ObservedObject var model: LauncherModel
+    /// Redraws when Settings › Appearance changes.
+    @ObservedObject private var appearance = Appearance.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1459,7 +1461,7 @@ struct LauncherView: View {
             Rectangle().fill(Color.white.opacity(0.08)).frame(height: 1)
             footer
         }
-        .background(Chrome.panel(cornerRadius: 22))
+        .background(Chrome.panelBackground(cornerRadius: 22))
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .padding(1)
     }

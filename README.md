@@ -121,6 +121,15 @@ settings first and puts them back exactly when you turn the Workspace Dock off o
 BaneySpaces ever crashed with it on, open BaneySpaces again (or run the uninstaller) and the
 Dock comes back; by hand, `defaults delete com.apple.dock autohide-delay; killall Dock` gives the Dock its usual delay.
 
+### Colors and looks
+
+**Settings › Appearance** changes how every panel looks, and the open ones change as you click. Pick
+an accent (nine colors, **System** to follow macOS, or any color of your own), a palette for the
+nine workspace colors (**Rainbow**, **Accent**, **Calm** or **Mono**) and your own color for any one
+workspace, a panel style (**Glass**, **Tinted** or **Solid**) with an opacity slider, and a **Small**,
+**Medium** or **Large** Workspace Dock. A strip at the top of the tab previews it. White numbers stay
+readable: a workspace color that's too bright is dimmed. The defaults are the look BaneySpaces always had.
+
 ## ⌘Tab across workspaces
 
 macOS's ⌘Tab only reaches apps on the workspace you're on. In setup, set **⌘Tab switches** to

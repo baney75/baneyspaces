@@ -26,6 +26,8 @@ enum Render {
             7: [("Maps", "/System/Applications/Maps.app", "Erie, Pennsylvania")],
             9: [("System Settings", "/System/Applications/System Settings.app", "Keyboard")],
         ]
+        // Product shots always show the default look, whatever this Mac has picked.
+        Appearance.shared.useDefaultLookWithoutSaving()
         let model = ViewerModel()
         model.current = 1
         var id: WindowID = 100
