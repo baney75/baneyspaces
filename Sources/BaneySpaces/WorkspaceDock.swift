@@ -1152,10 +1152,11 @@ struct DockView: View {
 
     @ViewBuilder private var label: some View {
         if let text = labelText {
-            Text(text)
-                .font(.system(size: 12, weight: .semibold))
-                .lineLimit(1).truncationMode(.tail)
-                .frame(maxWidth: Self.labelMaxWidth)
+            WidthCap(max: Self.labelMaxWidth) {
+                Text(text)
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1).truncationMode(.tail)
+            }
                 .padding(.horizontal, 10).padding(.vertical, 4)
                 .background(Capsule().fill(Color.black.opacity(0.78)))
                 .overlay(Capsule().strokeBorder(Color.white.opacity(0.12)))

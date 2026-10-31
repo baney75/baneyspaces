@@ -97,14 +97,14 @@ final class DockLabelTests: XCTestCase {
                        "Workspace 1 · A, B, C, D, E")
     }
 
-    /// The label is one line no wider than the dock's narrowest panel, whatever it says.
-    func testTheDockLabelIsCappedToOneLine() throws {
+    /// The dock label's text goes through WidthCap; the cap itself is measured in WidthCapTests.
+    func testTheDockLabelGoesThroughTheWidthCap() throws {
         let source = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Sources/BaneySpaces/WorkspaceDock.swift")
         let text = try String(contentsOf: source, encoding: .utf8)
-            .split(separator: "\n").map { $0.components(separatedBy: "//")[0] }.joined(separator: "\n")
-        XCTAssertTrue(text.contains(".frame(maxWidth: Self.labelMaxWidth)"), "the dock label must have a width cap")
+        XCTAssertTrue(text.contains("WidthCap(max: Self.labelMaxWidth)"), "the dock label must go through WidthCap")
+        XCTAssertTrue(text.contains(".lineLimit(1).truncationMode(.tail)"), "the dock label must be one truncated line")
         XCTAssertTrue(text.contains("DockLabel.tileTitle("), "the tile label must come from DockLabel.tileTitle")
     }
 }
