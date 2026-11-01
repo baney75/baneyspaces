@@ -872,6 +872,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             case "show" where checks: run { _ in dock.pin(true) }
             case "hide": run { _ in dock.pin(false) }
             case "on" where checks: run { _ in setWorkspaceDock(true) }
+            // For `scripts/dock-motion-probe.swift`: open and close the first "+N" list without the pointer.
+            case "more" where checks: run { _ in _ = dock.openMoreForCheck() }
+            case "lessmore" where checks: run { _ in dock.closeMoreForCheck() }
             default: NSLog("BaneySpaces: dock command refused or unknown %@", text)
             }
         default: NSLog("BaneySpaces: unknown command %@", text)

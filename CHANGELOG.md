@@ -13,6 +13,12 @@
   if it stops any other way (a crash, the app dragged to the Trash), a launch agent puts it back after
   a minute, 30 seconds after an update's quit. A Magic Mouse's two-finger double tap opens nothing
   while this is on.
+- **The "+N" list lets go, and the dock moves.** The window strip and the "+N" list are a panel of their
+  own, so opening one no longer resizes or jumps the dock. The dock stays up only while the pointer is
+  on its bar or on the list (each with a little room), not anywhere over the whole panel; the list
+  closes 250 ms after the pointer leaves it, at once on Esc or a click elsewhere. The dock slides 8 pt
+  and fades in and out, the list grows from its tile and fades, rows light in 80 ms, and a picked-up
+  row or icon lifts and settles. All of it is instant with Reduce Motion on.
 - **A drag out of the "+N" list ends cleanly if its app goes.** Closing the window or quitting the app
   mid-drag, or the list closing under the pointer, cancels the drag instead of leaving the dock in
   drag mode; a window that closed is never moved. Settings > Automation waits for BaneySpaces to

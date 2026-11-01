@@ -7,6 +7,9 @@
 # It fails if either piece of work doesn't land, or if anything you'd see changed.
 # Run with BaneySpaces installed and cua-driver on the PATH.
 #   scripts/agent-workspace-probe.sh
+echo "agent-workspace-probe.sh is retired: it drove cua-driver, which was removed from the fleet on 2026-10-31." >&2
+echo "Use scripts/agent-hands-probe.swift (BaneySpaces agent hands, phase 1)." >&2
+exit 2
 set -euo pipefail
 DIR="$HOME/Library/Application Support/BaneySpaces"
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/bs-agent-probe.XXXXXX")

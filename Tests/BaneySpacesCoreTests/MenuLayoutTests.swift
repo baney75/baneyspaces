@@ -127,7 +127,13 @@ final class MenuLayoutTests: XCTestCase {
         let setup = try code("Sources/BaneySpaces/Setup.swift")
         let app = try code("Sources/BaneySpaces/AppDelegate.swift")
         XCTAssertTrue(setup.contains("if tab == .automation { reloadParked() }\n            if tab == .updates"), "the parked list reads when the tab appears")
-        XCTAssertFalse(setup.contains("let running = isStarted()\n        if running != started { started = running }\n        if tab == .automation"), "...not on every tick")
+        // ...and not on every reload: the bodies of reload() and reloadOptional() never read it.
+        for name in ["func reload() {", "private func reloadOptional() {"] {
+            let from = try XCTUnwrap(setup.range(of: name))
+            let rest = setup[from.upperBound...]
+            let body = rest[..<(rest.range(of: "\n    func ")?.lowerBound ?? rest.range(of: "\n    private func ")!.lowerBound)]
+            XCTAssertFalse(body.contains("reloadParked()"), "\(name) runs every few ticks")
+        }
         XCTAssertTrue(setup.contains("NSWindow.didBecomeKeyNotification, object: window"), "the lists read again when the window takes the keyboard")
         XCTAssertTrue(setup.contains("onFocusFinished?(id)\n        finished = finishedRows()"), "a clicked row leaves the list at once")
         XCTAssertTrue(setup.contains("model.focusFinished(row.id)"))
@@ -214,9 +220,12 @@ final class SettingsFollowUpTests: XCTestCase {
         XCTAssertTrue(setup.contains("@Published var started = false {"))
         XCTAssertTrue(setup.contains("var isStarted: () -> Bool = { false } {\n        didSet { started = isStarted() }"))
         // F2: the list read empty while waiting; it reads the moment BaneySpaces is up.
-        XCTAssertTrue(setup.contains("guard started, !oldValue, tab == .automation else { return }\n            reloadParked()"))
+        XCTAssertTrue(setup.contains("guard started, !oldValue, tab == .automation, windowVisible() else { return }\n            reloadParked()"))
         // F6: a late first window shows without any notification.
-        XCTAssertTrue(setup.contains("if ticks % 12 == 0, tab == .automation { reloadParked() }"))
+        XCTAssertTrue(setup.contains("if ticks % 12 == 0, tab == .automation, windowVisible() { reloadParked() }"), "a closed window isn't scanned for")
+        XCTAssertTrue(setup.contains("guard started, !oldValue, tab == .automation, windowVisible() else { return }"))
+        XCTAssertTrue(setup.contains("self?.windowVisible() == true { self?.reloadParked() }"))
+        XCTAssertTrue(setup.contains("model.windowVisible = { [weak window] in window?.isVisible == true }"))
         let app = try code("Sources/BaneySpaces/AppDelegate.swift")
         XCTAssertTrue(app.contains("if started { spaces.refresh() }"), "the list is the window list as it is now")
     }

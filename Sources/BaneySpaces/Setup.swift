@@ -58,13 +58,15 @@ final class SetupModel: ObservableObject {
         didSet {
             // The list was empty while waiting; read it as soon as BaneySpaces is up, and once more
             // after its first scan of the windows.
-            guard started, !oldValue, tab == .automation else { return }
+            guard started, !oldValue, tab == .automation, windowVisible() else { return }
             reloadParked()
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-                if self?.tab == .automation { self?.reloadParked() }
+                if self?.tab == .automation, self?.windowVisible() == true { self?.reloadParked() }
             }
         }
     }
+    /// Whether the Settings window is on screen: a read nobody can see is a scan for nothing.
+    var windowVisible: () -> Bool = { false }
     var isStarted: () -> Bool = { false } {
         didSet { started = isStarted() }
     }
@@ -163,7 +165,7 @@ final class SetupModel: ObservableObject {
         if ticks % 4 == 0 { reloadOptional() }
         // An app's first window can come long after it launches, and one can close with the app still
         // running: no notification says so, so the Automation list reads every few seconds while up.
-        if ticks % 12 == 0, tab == .automation { reloadParked() }
+        if ticks % 12 == 0, tab == .automation, windowVisible() { reloadParked() }
     }
 
     func reload() {
@@ -965,6 +967,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         self.init(window: window)
         window.title = "BaneySpaces Settings"
         window.delegate = self
+        model.windowVisible = { [weak window] in window?.isVisible == true }
         let host = NSHostingView(rootView: SetupView(model: model) { [weak window] in window?.close() })
         // Its size comes from the content. With .preferredContentSize the hosting view reported
         // 0×0 on macOS 27 and the window opened invisible (2026-10-16, on main too).

@@ -396,18 +396,17 @@ baneyspaces agent status                          # what's there, with window ID
 ```
 
 Three rules keep it from ever taking your screen. Its apps are parked out of view instead of
-hidden, so automation that works from behind (Cua's driver) can click and type in them. Nothing
+hidden, so agents can still click and type in them from behind. Nothing
 on it coming forward takes you there: you go with ⌘9, its Dock tile or a launcher row. And a window
 an agent opens in the background lands there, not on your workspace. `agent run` starts a
 Ghostty of its own for the agent, a separate process from yours, so nothing the agent does
-there can stall your terminals. `scripts/agent-workspace-probe.sh` proves it on your Mac: an
-agent's command runs there, cua-driver types into an app there, and only your own keyboard and
-mouse change what you see.
+there can stall your terminals. `scripts/agent-hands-probe.swift` (phase 1) proves it on your Mac: an
+agent's command runs there, and only your own keyboard and mouse change what you see.
 
-The window IDs are the ones cua-driver uses, so an agent drives a window there with the usual
-`get_window_state` and an `element_token`, never the foreground. A [fork of Cua's
-driver](https://github.com/baney75/cua/tree/baneyspaces) goes one step further: it refuses
-foreground delivery to a window on the agent workspace while you're elsewhere.
+BaneySpaces is also the hands agents use there: snapshot an app, act on what's in it, check the
+result, all on the agent workspace and never in the foreground. That replaces Cua's driver, which
+is no longer used. The plan, the rules and the phases are in
+[docs/agent-computer-use.md](docs/agent-computer-use.md).
 
 **Phones.** Android phones (USB debugging on) and iPhones show in `baneyspaces ls` and the launcher the moment they're
 plugged in. A row opens the phone's screen: scrcpy for Android, iPhone Mirroring for an iPhone.
@@ -425,11 +424,10 @@ incoming connections first.
 ### Keep apps usable by automation
 
 BaneySpaces hides an app whose windows all sit on other workspaces, the way ⌘H does. macOS
-refuses background clicks and keystrokes to a hidden app, so tools that drive apps from behind,
-such as [Cua](https://github.com/trycua/cua), can't use it until you switch back. Put the app
-under **Settings > Automation > Keep usable by automation** and its windows are parked just out of
-view instead, where those tools can still click and type. Cua Spaces is on the list from the
-start, so its picture-in-picture window stays put.
+refuses background clicks and keystrokes to a hidden app, so tools that drive apps from behind
+can't use it until you switch back. Put the app under **Settings > Automation > Keep usable by
+automation** and its windows are parked just out of view instead, where those tools can still click
+and type.
 
 Parked windows never slide across the screen: they move behind the windows of the workspace you
 go to, or while their app is hidden for a moment. Some apps animate every window move (Chromium
@@ -445,7 +443,7 @@ app as usual instead, and its menu entry says so.
   and let the nine workspaces do the rest. To close extra desktops, turn off **Use BaneySpaces'
   overview instead of Mission Control** first, since macOS's is switched off while it's on.
 - **An agent pressing ⌘1–⌘9 in the foreground switches workspaces,** the same as you would.
-  Background key delivery to one app (as Cua does by default) doesn't.
+  Background key delivery to one app doesn't.
 
 ## Build from source
 

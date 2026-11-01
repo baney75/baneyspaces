@@ -19,14 +19,14 @@ final class DockKeepZoneTests: XCTestCase {
     }
 
     func testTheDockLetsGoOnceThePointerIsOffTheBar() {
-        let zone = DockEdge.bottom.keepZone(bar: bar, panel: panel, sideOpen: false, screen: screen)
+        let zone = DockEdge.bottom.keepZone(bar: bar, panel: panel, screen: screen)
         XCTAssertFalse(zone.contains(CGPoint(x: 756, y: 135)), "45 pt above the bar is the app underneath")
         XCTAssertFalse(zone.contains(CGPoint(x: 906, y: 50)), "45 pt beside the bar is the app underneath")
         XCTAssertFalse(zone.contains(CGPoint(x: 756, y: 110)), "past the slack above the bar")
     }
 
     func testThePointerOnTheBarOrBelowItKeepsTheDock() {
-        let zone = DockEdge.bottom.keepZone(bar: bar, panel: panel, sideOpen: false, screen: screen)
+        let zone = DockEdge.bottom.keepZone(bar: bar, panel: panel, screen: screen)
         XCTAssertTrue(zone.contains(CGPoint(x: 756, y: 50)), "on a tile")
         XCTAssertTrue(zone.contains(CGPoint(x: 756, y: 0)), "on the edge below it, where it came from")
         XCTAssertTrue(zone.contains(CGPoint(x: 756, y: 100)), "within the slack just above it")
@@ -42,7 +42,7 @@ final class DockKeepZoneTests: XCTestCase {
             let b = edge.frame(size: edge.isVertical ? CGSize(width: 84, height: 210) : CGSize(width: 210, height: 84),
                                screen: screen, visible: visible)
             let length = edge.isVertical ? b.height : b.width
-            let zone = edge.keepZone(bar: b, panel: b.insetBy(dx: -135, dy: -135), sideOpen: false, screen: screen)
+            let zone = edge.keepZone(bar: b, panel: b.insetBy(dx: -135, dy: -135), screen: screen)
             var opened = 0
             for i in 0..<Int(edge.isVertical ? screen.height : screen.width) {
                 let t = CGFloat(i) + 0.5
@@ -70,7 +70,7 @@ final class DockKeepZoneTests: XCTestCase {
         let p = CGPoint(x: 756 + 240, y: 0.5)
         XCTAssertTrue(edge.withinSpan(p, screen: screen, visible: visible, length: 500, slack: DockEdge.barSlack), "the old, longer bar opens it")
         let shorter = edge.frame(size: CGSize(width: 430, height: 84), screen: screen, visible: visible)
-        XCTAssertFalse(edge.keepZone(bar: shorter, panel: panel, sideOpen: false, screen: screen).contains(p),
+        XCTAssertFalse(edge.keepZone(bar: shorter, panel: panel, screen: screen).contains(p),
                        "the shorter bar's zone alone would drop it")
         XCTAssertTrue(DockEdge.unmoved(p, since: p), "the pointer that opened it holds it")
         XCTAssertTrue(DockEdge.unmoved(CGPoint(x: p.x + 3, y: p.y), since: p), "a jitter isn't a move")
@@ -100,21 +100,49 @@ final class DockKeepZoneTests: XCTestCase {
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let code = try String(contentsOf: root.appendingPathComponent("Sources/BaneySpaces/WorkspaceDock.swift"), encoding: .utf8)
         let agents = try String(contentsOf: root.appendingPathComponent("AGENTS.md"), encoding: .utf8)
-        for line in ["dock up: ", "dock down: pointer left at ", "dock held 2s off the bar by "] {
+        for line in ["dock up: ", "dock down: pointer left at ", "dock held 2s off the bar by ", "dock list closed ("] {
             XCTAssertTrue(code.contains("Trace.log(\"\(line)"), "the code logs `\(line)`")
             XCTAssertTrue(agents.contains(line), "AGENTS.md names `\(line)`")
         }
-        XCTAssertTrue(code.contains(".contains(mouse) || unmoved"), "the pointer that opened the dock holds it")
+        XCTAssertTrue(code.contains("screen: screenFrame) || unmoved"), "the pointer that opened the dock holds it")
     }
 
-    func testAnOpenWindowStripCountsTheWholePanel() {
-        // The strip sits above the bar and takes clicks; reaching for it must not drop the dock.
-        let zone = DockEdge.bottom.keepZone(bar: bar, panel: panel, sideOpen: true, screen: screen)
-        XCTAssertTrue(zone.contains(CGPoint(x: 756, y: 120)))
+    /// Donovan, 2026-10-31 (23:31 recording): with the "5 more" list open the list and the dock stayed up
+    /// for seconds with the pointer well to the right of the list. An open list counted the whole
+    /// panel (480 pt or more), so anywhere over it held the dock. Now the bar and the list count,
+    /// each with 12 pt of slack, and nothing else.
+    func testAnOpenListKeepsTheDockOnlyWhileThePointerIsOnTheBarOrTheList() {
+        let tile = CGRect(x: 700, y: 20, width: 64, height: 64)
+        let list = DockSide.frame(size: CGSize(width: 240, height: 150), anchor: tile, bar: bar, edge: .bottom, screen: screen)
+        let edge = DockEdge.bottom
+        XCTAssertTrue(edge.keeps(CGPoint(x: list.midX, y: list.midY), bar: bar, panel: panel, side: list, screen: screen), "on the list")
+        XCTAssertTrue(edge.keeps(CGPoint(x: bar.midX, y: bar.midY), bar: bar, panel: panel, side: list, screen: screen), "on the bar")
+        XCTAssertTrue(edge.keeps(CGPoint(x: list.midX, y: list.minY - 4), bar: bar, panel: panel, side: list, screen: screen), "crossing the gap between them")
+        // 120 pt right of the list: over the old panel (516...996) in the bar's row, over the app underneath.
+        let right = CGPoint(x: list.maxX + 120, y: list.midY)
+        XCTAssertTrue(edge.keepZone(dock: panel, screen: screen).contains(CGPoint(x: panel.maxX - 10, y: 100)),
+                      "the old zone, the whole panel, held the dock there")
+        XCTAssertFalse(edge.keeps(right, bar: bar, panel: panel, side: list, screen: screen), "120 pt right of the list")
+        XCTAssertFalse(edge.keeps(CGPoint(x: panel.maxX - 10, y: panel.maxY - 5), bar: bar, panel: panel, side: list, screen: screen),
+                       "the far corner of the panel, over the app underneath")
+        XCTAssertFalse(edge.keeps(CGPoint(x: list.maxX + 20, y: list.midY), bar: bar, panel: panel, side: list, screen: screen), "past the slack")
+    }
+
+    func testWithNoListOnlyTheBarCounts() {
+        let edge = DockEdge.bottom
+        XCTAssertFalse(edge.keeps(CGPoint(x: 756, y: 135), bar: bar, panel: panel, side: nil, screen: screen))
+        XCTAssertTrue(edge.keeps(CGPoint(x: 756, y: 50), bar: bar, panel: panel, side: nil, screen: screen))
+    }
+
+    func testBeforeTheBarIsMeasuredAListAddsNothingAndThePanelStandsIn() {
+        let list = CGRect(x: 600, y: 120, width: 240, height: 150)
+        XCTAssertTrue(DockEdge.bottom.keeps(CGPoint(x: 540, y: 100), bar: nil, panel: panel, side: list, screen: screen))
+        XCTAssertFalse(DockEdge.bottom.keeps(CGPoint(x: list.midX, y: list.midY), bar: nil, panel: panel, side: list, screen: screen),
+                       "no side zone until the bar is measured")
     }
 
     func testBeforeTheBarIsMeasuredThePanelStandsIn() {
-        XCTAssertEqual(DockEdge.bottom.keepZone(bar: nil, panel: panel, sideOpen: false, screen: screen),
+        XCTAssertEqual(DockEdge.bottom.keepZone(bar: nil, panel: panel, screen: screen),
                        DockEdge.bottom.keepZone(dock: panel, screen: screen))
     }
 
@@ -125,7 +153,7 @@ final class DockKeepZoneTests: XCTestCase {
             let p = edge.frame(size: size, screen: screen, visible: visible)
             let b = edge.frame(size: edge.isVertical ? CGSize(width: 84, height: 210) : CGSize(width: 210, height: 84),
                                screen: screen, visible: visible)
-            let zone = edge.keepZone(bar: b, panel: p, sideOpen: false, screen: screen)
+            let zone = edge.keepZone(bar: b, panel: p, screen: screen)
             XCTAssertTrue(zone.contains(CGPoint(x: b.midX, y: b.midY)), "\(edge) keeps the pointer on its bar")
             // 45 pt past the bar's far end, still inside the panel.
             let past = edge.isVertical ? CGPoint(x: b.midX, y: b.maxY + 45) : CGPoint(x: b.maxX + 45, y: b.midY)
@@ -155,7 +183,7 @@ final class DockKeepZoneTests: XCTestCase {
             .appendingPathComponent("Sources/BaneySpaces/WorkspaceDock.swift")
         let text = try String(contentsOf: source, encoding: .utf8)
             .split(separator: "\n").map { $0.components(separatedBy: "//")[0] }.joined(separator: "\n")
-        XCTAssertTrue(text.contains("input.inKeepZone = edge.keepZone(bar: bar"), "the keep zone hugs the bar")
+        XCTAssertTrue(text.contains("input.inKeepZone = edge.keeps(mouse, bar: bar"), "the keep zone hugs the bar (and the list)")
         XCTAssertTrue(text.contains(".modifier(CenterReport(key: DockView.barKey))"), "the bar reports its frame")
     }
 }
