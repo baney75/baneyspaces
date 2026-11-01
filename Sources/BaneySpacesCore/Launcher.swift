@@ -5,9 +5,13 @@ import Foundation
 /// "Visual Studio Code"), which beats initials ("vsc"), which beats letters found in order.
 public enum Fuzzy {
     public static func score(_ query: String, _ name: String) -> Int? {
-        let q = fold(query)
+        score(folded: fold(query), in: fold(name))
+    }
+
+    /// `score` for a query and a name already folded (`fold`): the launcher folds each app's name
+    /// once, not on every keystroke.
+    public static func score(folded q: String, in n: String) -> Int? {
         guard !q.isEmpty else { return 0 }
-        let n = fold(name)
         if n == q { return 1000 }
         if n.hasPrefix(q) { return 900 - min(n.count, 99) }
         let words = n.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)

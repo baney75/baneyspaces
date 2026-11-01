@@ -359,7 +359,9 @@ final class LauncherModel: ObservableObject {
     var target: Int?
 
     private let actions: LauncherActions
-    private var apps: [AppEntry] = []
+    private var apps: [AppEntry] = [] { didSet { appIndex = AppNameIndex(names: apps.map(\.name)) } }
+    /// The apps' names folded once, so a keystroke matches them without folding each again.
+    private var appIndex = AppNameIndex(names: [])
     private var running: [String: [Int]] = [:]
     private var recents = Recents(UserDefaults.standard.stringArray(forKey: "launcherRecents") ?? [])
     private var iconCache: [String: NSImage] = [:]
@@ -370,8 +372,16 @@ final class LauncherModel: ObservableObject {
     /// What `fileResults` were found for. Until a newer search answers, they're shown only while
     /// they still match what's typed.
     private var fileResultsQuery = ""
-    private var fileWork: DispatchWorkItem?
-    private var fileSearches = 0
+    /// One search a keystroke: the warm answer now, Spotlight's a moment later, the older query stopped.
+    private lazy var fileFlow = FileSearchFlow(
+        home: FileManager.default.homeDirectoryForCurrentUser.path,
+        warm: { FileWarm.shared.index },
+        schedule: { delay, work in
+            let item = DispatchWorkItem(block: work)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
+            return { item.cancel() }
+        },
+        query: { text, done in FileFinder.start(text, done: done) })
     private var bangs = Launcher.loadBangs()
     /// Terminal agents found on this Mac: command to path.
     var agents: [String: String] = [:]
@@ -393,6 +403,7 @@ final class LauncherModel: ObservableObject {
 
     func prepare(scope: Scope, target: Int? = nil) {
         actions.willShow()
+        FileWarm.shared.refreshIfStale()
         self.target = target
         self.scope = scope
         query = ""
@@ -648,12 +659,10 @@ final class LauncherModel: ObservableObject {
         if q.isEmpty {
             matches = apps
         } else {
-            matches = apps.compactMap { a -> (AppEntry, Int)? in
-                guard let s = Fuzzy.score(q, a.name) else { return nil }
-                return (a, s + recents.boost(a.path) + (running[a.path] != nil ? 15 : 0))
-            }
-            .sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.0.name < $1.0.name }
-            .map(\.0)
+            // Matched on the folded names, no menus read, no files waited for: apps are on screen first.
+            matches = appIndex.rank(q, boost: { [apps, recents, running] i in
+                recents.boost(apps[i].path) + (running[apps[i].path] != nil ? 15 : 0)
+            }, limit: limit).map { apps[$0] }
         }
         // An app open on more than one workspace also gets a row for each, to pick which, and so
         // does one that opens here instead of going to its workspace (⌥↩ goes there too).
@@ -1011,28 +1020,33 @@ final class LauncherModel: ObservableObject {
 
     // MARK: Files
 
-    /// Spotlight, a moment after typing stops: the top five in the main search, more in Files.
-    /// A bang or a question is for the web, not a file name.
+    /// Files for what is typed: the top five in the main search, more in Files. The files you used or
+    /// changed lately answer on the keystroke; Spotlight's full answer follows a short pause, and the
+    /// query before it is stopped when you type again (`FileSearchFlow`). A bang or a question is for
+    /// the web, not a file name.
     private func searchFiles() {
-        fileWork?.cancel()
-        fileSearches += 1
         let q = query.trimmingCharacters(in: .whitespaces)
         let forFiles = scope == .files || scope == .root && !q.hasPrefix("!") && !q.hasPrefix("?") && Bangs.parse(q) == nil
         guard forFiles, FileSearch.spotlightQuery(q) != nil else {
+            fileFlow.cancel()
             if !fileResults.isEmpty { fileResults = []; rebuild() }
             return
         }
-        let search = fileSearches, inScope = scope
-        let work = DispatchWorkItem {
-            FileFinder.find(q, limit: inScope == .files ? 60 : 5, search: search) { [weak self] hits in
-                guard let self, self.fileSearches == search, self.scope == inScope else { return }
+        FileWarm.shared.refreshIfStale()
+        let inScope = scope
+        let started = CFAbsoluteTimeGetCurrent()
+        fileFlow.typed(q, limit: inScope == .files ? 60 : 5) { [weak self] stage, hits in
+            let show = { [weak self] in
+                guard let self, self.scope == inScope, self.query.trimmingCharacters(in: .whitespaces) == q else { return }
                 self.fileResults = hits
                 self.fileResultsQuery = q
                 self.rebuildKeepingSelection()
+                if stage == .warm {
+                    Trace.log("files warm q=\(q.count)ch shown=\(hits.count) ms=\(Int((CFAbsoluteTimeGetCurrent() - started) * 1000))")
+                }
             }
+            if Thread.isMainThread { show() } else { DispatchQueue.main.async(execute: show) }
         }
-        fileWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
     }
 
     private func fileItems() -> [LauncherItem] {
@@ -1052,44 +1066,110 @@ final class LauncherModel: ObservableObject {
     }
 }
 
+/// The files you used or changed lately, kept in memory (`FileWarmIndex`) so a short search is answered
+/// on the keystroke. Read from Spotlight in the background: when the launcher is built, and again once
+/// the list is two minutes old and the launcher is used.
+final class FileWarm: @unchecked Sendable {
+    static let shared = FileWarm()
+    private let lock = NSLock()
+    private var current = FileWarmIndex.empty
+    private var builtAt = Date.distantPast
+    private var building = false
+    /// Files kept: used in the last 90 days or changed in the last 30, most recently used first.
+    static let size = 6_000
+    static let maxAge: TimeInterval = 120
+
+    var index: FileWarmIndex { lock.lock(); defer { lock.unlock() }; return current }
+
+    func refreshIfStale() {
+        lock.lock()
+        let stale = !building && Date().timeIntervalSince(builtAt) > Self.maxAge
+        if stale { building = true }
+        lock.unlock()
+        guard stale else { return }
+        DispatchQueue.global(qos: .utility).async { [self] in
+            let started = Date()
+            let home = FileManager.default.homeDirectoryForCurrentUser.path
+            let hits = FileFinder.recent(limit: Self.size)
+            let built = FileWarmIndex(hits, home: home)
+            lock.lock()
+            // A failed read keeps the list there was.
+            if built.count > 0 || current.count == 0 { current = built }
+            builtAt = Date()
+            building = false
+            lock.unlock()
+            Trace.log("files warm index: \(built.count) files in \(Int(Date().timeIntervalSince(started) * 1000)) ms")
+        }
+    }
+}
+
 /// Runs `FileSearch`'s query through Spotlight over your own folders (iCloud Drive and cloud
 /// drives included, the rest of Library left out), off the main thread, and ranks what it finds.
 enum FileFinder {
-    private static let queue = DispatchQueue(label: "BaneySpaces file search", qos: .userInitiated)
     /// Files kept per search for ranking. A two-letter search can match thousands; the ranking
     /// only needs enough to find the few worth showing.
     static let cap = 1000
     /// Matches Spotlight gathers per search, most recently used first. Noise is skipped as it's
     /// read, since Spotlight can't leave it out (it ignores kMDItemPath) and it can be most of
     /// the matches: 4,887 of 5,159 for "ind" in ~/Projects on Donovan's Mac were in node_modules.
-    /// Measured there: 6,000 takes 80–580 ms a search; 20,000 took up to 1.9 s.
+    /// Measured there: 6,000 takes 40–580 ms a search once Spotlight is warm and up to 1.4 s cold;
+    /// with no cap a two-letter search took 32 s.
     static let scanLimit = 6_000
     /// Reading each match's path costs about 0.3 ms, so reading stops after this long with what
     /// it has kept.
     static let readBudget: TimeInterval = 0.3
-    /// The newest search asked for. One queued behind it is stale and doesn't run.
-    private static let lock = NSLock()
-    nonisolated(unsafe) private static var newest = 0
-    private static func isNewest(_ n: Int) -> Bool { lock.lock(); defer { lock.unlock() }; return newest == n }
+    /// A query still running after this is stopped: its keystroke is long past, and the warm list stays.
+    static let giveUp: TimeInterval = 2.5
 
-    static func find(_ typed: String, limit: Int, search n: Int, done: @escaping ([FileSearch.Hit]) -> Void) {
-        guard let text = FileSearch.spotlightQuery(typed) else { return done([]) }
-        lock.lock(); newest = n; lock.unlock()
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        queue.async {
-            guard isNewest(n) else { return }
-            let start = Date()
-            let places = scopes(home)
-            let hits = search(text, in: places, stale: { !isNewest(n) }) + topLevel(typed, home)
-            guard isNewest(n) else { return }
-            let ranked = FileSearch.rank(typed, hits, home: home, limit: limit)
-            let ms = Int(Date().timeIntervalSince(start) * 1000)
-            DispatchQueue.main.async {
-                // One line a search, so an empty list can be told apart from a slow or blocked one.
-                Trace.log("files q=\(typed.count)ch places=\(places.count) kept=\(hits.count) shown=\(ranked.count) ms=\(ms)")
-                done(ranked)
-            }
+    /// One running search that can be stopped from any thread. A synchronous `MDQueryExecute` returns
+    /// at once when `MDQueryStop` is called on it (measured: 0–1 ms after the stop).
+    private final class Job {
+        private let lock = NSLock()
+        private var query: MDQuery?
+        private(set) var cancelled = false
+        func attach(_ q: MDQuery) -> Bool { lock.lock(); defer { lock.unlock() }; query = q; return !cancelled }
+        func cancel() {
+            lock.lock()
+            cancelled = true
+            let q = query
+            lock.unlock()
+            if let q { MDQueryStop(q) }
         }
+        var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
+    }
+
+    /// Starts the search for `typed` and returns what stops it. `done` gets the hits, or nil when it was
+    /// stopped; it is not called after a stop.
+    static func start(_ typed: String, done: @escaping ([FileSearch.Hit]?) -> Void) -> () -> Void {
+        guard let text = FileSearch.spotlightQuery(typed) else { done(nil); return {} }
+        let job = Job()
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        DispatchQueue.global(qos: .userInitiated).async {
+            let start = Date()
+            guard !job.isCancelled else { return }
+            let places = scopes(home)
+            // A watchdog, not a timeout on the person: it frees Spotlight from a query nobody is waiting on.
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + giveUp) { job.cancel() }
+            let hits = search(text, in: places, job: job) + topLevel(typed, home)
+            guard !job.isCancelled else {
+                if Date().timeIntervalSince(start) >= giveUp { Trace.log("files q=\(typed.count)ch stopped after \(Int(Date().timeIntervalSince(start) * 1000)) ms") }
+                return
+            }
+            let ranked = FileSearch.rank(typed, hits, home: home, limit: 60)
+            let ms = Int(Date().timeIntervalSince(start) * 1000)
+            // One line a search, so an empty list can be told apart from a slow or blocked one.
+            Trace.log("files q=\(typed.count)ch places=\(places.count) kept=\(hits.count) shown=\(min(ranked.count, 5)) ms=\(ms)")
+            done(ranked)
+        }
+        return { job.cancel() }
+    }
+
+    /// The files used in the last 90 days or changed in the last 30, most recently used first, for `FileWarm`.
+    static func recent(limit: Int) -> [FileSearch.Hit] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let text = "(kMDItemLastUsedDate >= $time.today(-90) || kMDItemFSContentChangeDate >= $time.today(-30)) "
+            + "&& kMDItemContentType != \"com.apple.application-bundle\""
+        return search(text, in: scopes(home), job: Job(), maxCount: limit, keep: limit, budget: 2)
     }
 
     /// The home folder's own folders, without Library or hidden ones, plus iCloud Drive and the
@@ -1119,22 +1199,23 @@ enum FileFinder {
     /// isn't one it can (it isn't stored), so that one is asked of each item.
     private static let attributes = [kMDItemFSName, kMDItemLastUsedDate, kMDItemFSContentChangeDate] as [CFString]
 
-    private static func search(_ text: String, in scopes: [String], stale: () -> Bool) -> [FileSearch.Hit] {
+    private static func search(_ text: String, in scopes: [String], job: Job, maxCount: Int = scanLimit,
+                               keep: Int = cap, budget: TimeInterval = readBudget) -> [FileSearch.Hit] {
         guard !scopes.isEmpty,
               let q = MDQueryCreate(kCFAllocatorDefault, text as CFString, attributes as CFArray, [kMDItemLastUsedDate] as CFArray)
         else { return [] }
         MDQuerySetSearchScope(q, scopes as CFArray, 0)
-        MDQuerySetMaxCount(q, scanLimit)
-        guard MDQueryExecute(q, CFOptionFlags(kMDQuerySynchronous.rawValue)), !stale() else { return [] }
+        MDQuerySetMaxCount(q, maxCount)
+        guard job.attach(q), MDQueryExecute(q, CFOptionFlags(kMDQuerySynchronous.rawValue)), !job.isCancelled else { return [] }
         func value<T>(_ attr: CFString, _ i: Int) -> T? {
             MDQueryGetAttributeValueOfResultAtIndex(q, attr, i).map { Unmanaged<AnyObject>.fromOpaque($0).takeUnretainedValue() } as? T
         }
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         var out: [FileSearch.Hit] = []
-        let until = Date().addingTimeInterval(readBudget)
-        for i in 0..<MDQueryGetResultCount(q) where out.count < cap {
+        let until = Date().addingTimeInterval(budget)
+        for i in 0..<MDQueryGetResultCount(q) where out.count < keep {
             if i % 200 == 199 {
-                if stale() { return [] }
+                if job.isCancelled { return [] }
                 if Date() > until { break }
             }
             guard let raw = MDQueryGetResultAtIndex(q, i),

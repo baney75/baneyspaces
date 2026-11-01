@@ -554,6 +554,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Applies to every Accessibility call, so one frozen app can't stall a switch.
         AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 0.25)
         started = true
+        // The files you used lately, read ahead so the launcher's first search is answered on the keystroke.
+        FileWarm.shared.refreshIfStale()
         registerShortcuts()
         missionControlKeys.start()
         syncMissionControl()
