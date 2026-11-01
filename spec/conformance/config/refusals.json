@@ -1,0 +1,904 @@
+[
+  {
+    "name": "an unknown setting is refused with its path and a hint",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "keyz": {}
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "keyz",
+              "code": "unknown_key"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "an unknown nested setting",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "behavior": {
+            "dock": {
+              "sise": "large"
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "behavior.dock.sise",
+              "code": "unknown_key"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a wrong type",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "animation": {
+            "speed": "fast"
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "animation.speed",
+              "code": "type"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a value outside the list",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "behavior": {
+            "dock": {
+              "edge": "top"
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "behavior.dock.edge",
+              "code": "value"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a number out of range",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "behavior": {
+            "switcher": {
+              "hold_ms": 99999
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "behavior.switcher.hold_ms",
+              "code": "range"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "an animation over 1000 ms is refused",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "animation": {
+            "dock": {
+              "in": {
+                "duration_ms": 1001
+              }
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "animation.dock.in.duration_ms",
+              "code": "range"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "exactly 1000 ms is the most (the over-1000 case above is the refusal)",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "animation": {
+            "dock": {
+              "in": {
+                "curve": "linear",
+                "duration_ms": 1000
+              }
+            },
+            "speed": 1.5
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "animation.dock.in.duration_ms",
+              "code": "too_long"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "speed can push a preset over 1000 ms",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "animation": {
+            "preset": "omarchy",
+            "speed": 2.5
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "animation.border.duration_ms",
+              "code": "too_long"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a spring that settles in over a second",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "animation": {
+            "hover": {
+              "response": 1.5
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "animation.hover.response",
+              "code": "range"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a field that belongs to another curve",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "animation": {
+            "dock": {
+              "in": {
+                "curve": "spring",
+                "points": [
+                  0,
+                  0,
+                  1,
+                  1
+                ]
+              }
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "animation.dock.in.points",
+              "code": "wrong_curve"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "bezier x values stay in 0..1",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "animation": {
+            "dock": {
+              "in": {
+                "curve": "bezier",
+                "points": [
+                  2,
+                  0,
+                  0.5,
+                  1
+                ]
+              }
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "animation.dock.in.points",
+              "code": "range"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a chord in capitals",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "Mod+1": "switch 1"
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "keys.bindings.\"Mod+1\"",
+              "code": "bad_chord"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a key name that is not in keys.json",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "mod+enter": "switch 1"
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "keys.bindings.\"mod+enter\"",
+              "code": "bad_chord"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a modifier that is not one",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "hyper+1": "switch 1"
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "keys.bindings.\"hyper+1\"",
+              "code": "bad_chord"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a binding with no modifier",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "1": "switch 1"
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "keys.bindings.1",
+              "code": "bad_chord"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "the same chord twice, spelled two ways",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "mod+r": "exec a",
+              "super+r": "exec b"
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "keys.bindings.\"super+r\"",
+              "code": "duplicate_chord"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "an action that is not a baneyspaces command",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "mod+x": "launch"
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "keys.bindings.\"mod+x\"",
+              "code": "bad_action"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "an action with a workspace out of range",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "mod+x": "switch 12"
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "keys.bindings.\"mod+x\"",
+              "code": "bad_action"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "exec with no command",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "mod+x": "exec"
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "keys.bindings.\"mod+x\"",
+              "code": "bad_action"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a mode that is not defined",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "mod+y": "mode nowhere"
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "keys.bindings.\"mod+y\"",
+              "code": "bad_action"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a mode with no way out",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "keys": {
+            "modes": {
+              "m": {
+                "escape": "switch 1"
+              }
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "keys.modes.m",
+              "code": "lockout"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "removing every workspace switch is a lockout",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "mod+1": "none",
+              "mod+2": "none",
+              "mod+3": "none",
+              "mod+4": "none",
+              "mod+5": "none",
+              "mod+6": "none",
+              "mod+7": "none",
+              "mod+8": "none",
+              "mod+9": "none"
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "keys.bindings",
+              "code": "lockout"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a modifier that is not the platform's",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "keys": {
+            "mod": "cmd"
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "keys.mod",
+              "code": "bad_mod"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "an unknown theme",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "theme": {
+            "name": "ghost"
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "theme.name",
+              "code": "bad_theme"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "an unknown palette",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "theme": {
+            "palette": "nonesuch"
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "theme.palette",
+              "code": "bad_palette"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a theme token out of range",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "theme": {
+            "override": {
+              "radius": {
+                "tile": -4
+              }
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "theme.override.radius.tile",
+              "code": "range"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a bad color",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "behavior": {
+            "workspace_tints": {
+              "1": "blue"
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "behavior.workspace_tints.1",
+              "code": "value"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "workspace 10",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "behavior": {
+            "workspace_names": {
+              "10": "x"
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "behavior.workspace_names.10",
+              "code": "bad_key"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a rule with no app or title",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "rules": [
+            {
+              "workspace": 2
+            }
+          ]
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "rules[0]",
+              "code": "required"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a rule title that is not a regex",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "rules": [
+            {
+              "app": "x",
+              "title": "("
+            }
+          ]
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "rules[0].title",
+              "code": "bad_regex"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a rule for workspace 12",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "rules": [
+            {
+              "app": "x",
+              "workspace": 12
+            }
+          ]
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "rules[0].workspace",
+              "code": "range"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a bang url must be http(s) with {q}",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "bangs": [
+            {
+              "trigger": "x",
+              "url": "ftp://x"
+            }
+          ]
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "bangs[0].url",
+              "code": "bad_url"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a custom theme in use that extends nothing known",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "theme": {
+            "name": "bad"
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "themes.bad.extends",
+              "code": "bad_theme"
+            }
+          ]
+        }
+      }
+    ],
+    "themes": {
+      "bad": {
+        "extends": "ghost"
+      }
+    }
+  },
+  {
+    "name": "two themes that extend each other",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "theme": {
+            "name": "a"
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "theme.name",
+              "code": "bad_theme"
+            }
+          ]
+        }
+      }
+    ],
+    "themes": {
+      "a": {
+        "extends": "b"
+      },
+      "b": {
+        "extends": "a"
+      }
+    }
+  },
+  {
+    "name": "a document that is not toml",
+    "steps": [
+      {
+        "do": "apply",
+        "toml": "[keys",
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "",
+              "code": "syntax"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a refused change leaves the running config and the file alone",
+    "steps": [
+      {
+        "do": "set",
+        "path": "animation.speed",
+        "value": 0.5,
+        "expect": "ok",
+        "history": {
+          "len": 2
+        }
+      },
+      {
+        "do": "set",
+        "path": "animation.dock.in.duration_ms",
+        "value": 5000,
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "animation.dock.in.duration_ms"
+            }
+          ]
+        },
+        "effective": {
+          "animation.speed": 0.5
+        },
+        "history": {
+          "len": 2
+        },
+        "file": "[animation]\nspeed = 0.5\n"
+      }
+    ]
+  }
+]
