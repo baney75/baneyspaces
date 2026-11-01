@@ -45,11 +45,46 @@ final class MenuLayoutTests: XCTestCase {
             .split(separator: "\n").map { $0.components(separatedBy: "//")[0] }.joined(separator: "\n")
     }
 
-    func testMenuBarMenuDropsTheHintRowAndFoldsTheSwitchesAway() throws {
+    func testMenuBarMenuDropsTheHintRowAndMovesTheSwitchesToSettings() throws {
         let text = try code("Sources/BaneySpaces/AppDelegate.swift")
         XCTAssertFalse(text.contains("\"Add ⇧ to send the front window there\""), "the ⇧ hint row is gone; setup teaches it")
         XCTAssertTrue(text.contains("MenuLayout.rows("), "the workspace rows come from MenuLayout")
-        XCTAssertTrue(text.contains("optionsItem()"), "the switches live in one Options submenu")
+        for gone in ["optionsItem()", "channelItem()", "updateItem()", "parkedAppsItem()", "\"About BaneySpaces\"", "deck.menuItems()"] {
+            XCTAssertFalse(text.contains(gone), "\(gone) moved into Settings (Donovan, 2026-10-31)")
+        }
+    }
+
+    /// Donovan, 2026-10-31: the menu keeps the workspace rows, Show All Workspaces, Find or Install
+    /// an App, Settings and Quit. Everything it held under Options, Updates and About is in Settings.
+    func testMenuBarMenuHasOnlyFiveKindsOfRows() throws {
+        let text = try code("Sources/BaneySpaces/AppDelegate.swift")
+        let start = try XCTUnwrap(text.range(of: "spaces.refresh()\n        var apps"))
+        let end = try XCTUnwrap(text.range(of: "private func item(_ title: String"))
+        let menu = String(text[start.lowerBound..<end.lowerBound])
+        let titles = menu.components(separatedBy: "item(\"").dropFirst().compactMap { $0.components(separatedBy: "\"").first }
+        XCTAssertEqual(titles, ["Show All Workspaces", "Find or Install an App…", "Settings…", "Quit BaneySpaces"])
+        XCTAssertTrue(menu.contains("MenuLayout.rows("))
+        XCTAssertTrue(menu.contains("key: \",\""), "Settings keeps ⌘,")
+        XCTAssertTrue(menu.contains("key: \"q\""), "Quit keeps ⌘Q")
+        XCTAssertTrue(menu.contains("find.keyEquivalent = \" \""), "Find keeps ⌘Space")
+    }
+
+    func testEveryActionTheMenuHadIsInSettings() throws {
+        let setup = try code("Sources/BaneySpaces/Setup.swift")
+        let wired = try code("Sources/BaneySpaces/AppDelegate.swift")
+        // Each used to be a menu item; each is now a control in Settings, wired in the app delegate.
+        for control in ["Workspace Dock in place of the macOS Dock", "Position on screen",
+                        "Show what coding agents are doing on their app icons",
+                        "⌘Space opens the BaneySpaces launcher instead of Spotlight",
+                        "Keep usable by automation", "Bring Every Window Back", "Uninstall BaneySpaces…",
+                        "Stable: tested releases", "Check for updates daily", "Check for Updates Now…",
+                        "Update to \\(available)…", "About BaneySpaces…", "Finished while you were away"] {
+            XCTAssertTrue(setup.contains(control), "Settings lacks \"\(control)\"")
+        }
+        for wire in ["onBringBack", "onAbout", "onToggleParked", "onCheckForUpdates", "onOfferUpdate",
+                     "onSetUpdateChannel", "onSetCheckDaily", "onFocusFinished", "onUninstall"] {
+            XCTAssertTrue(wired.contains("c.model.\(wire) ="), "\(wire) isn't wired")
+        }
     }
 
     func testDockMenusAreShortAndForceQuitHidesBehindOption() throws {

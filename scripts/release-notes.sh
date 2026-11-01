@@ -20,7 +20,7 @@ section() {
 
 if [ "$TARGET" = nightly ]; then
   LAST=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
-  printf 'Built from `main` at %s. Nightly builds get changes first and can have rough edges; switch back to Stable from the menu bar at any time.\n\n' "$(git rev-parse --short HEAD)"
+  printf 'Built from `main` at %s. Nightly builds get changes first and can have rough edges; switch back to Stable under Settings > Updates at any time.\n\n' "$(git rev-parse --short HEAD)"
   COMING=$(section Unreleased)
   if [ -n "$COMING" ]; then
     printf '### Coming in the next release\n\n%s\n\n' "$COMING"

@@ -489,38 +489,17 @@ final class DeckController {
         return nil
     }
 
-    // MARK: menu
+    // MARK: finished agents
 
-    /// The Deck's part of BaneySpaces' menu bar menu: agents that finished while you were away.
-    func menuItems() -> [NSMenuItem] {
-        var out: [NSMenuItem] = []
-        let unseen = engine.attention.unseen.compactMap { engine.item($0) }
-        if !unseen.isEmpty {
-            out.append(.separator())
-            let h = NSMenuItem(title: "Finished While You Were Away", action: nil, keyEquivalent: "")
-            h.isEnabled = false
-            out.append(h)
-            for t in unseen {
-                let i = NSMenuItem(title: t.label, action: #selector(DeckMenuTarget.focusRow(_:)), keyEquivalent: "")
-                i.indentationLevel = 1
-                i.representedObject = t.id
-                i.target = menuTarget
-                out.append(i)
-            }
-        }
-        return out
+    /// Agents that finished while you were away, for Settings > Dock (they were in the menu bar menu).
+    func finishedRows() -> [(id: String, label: String)] {
+        engine.attention.unseen.compactMap { engine.item($0) }.map { ($0.id, $0.label) }
     }
 
-    private lazy var menuTarget = DeckMenuTarget(owner: self)
-}
-
-/// Menu items need an Objective-C target; this one forwards to the Deck.
-final class DeckMenuTarget: NSObject {
-    weak var owner: DeckController?
-    init(owner: DeckController) { self.owner = owner }
-    @objc func focusRow(_ item: NSMenuItem) {
-        guard let id = item.representedObject as? String, let owner, let row = owner.engine.item(id) else { return }
-        owner.focus(row)
+    /// Goes to the agent a "Finished While You Were Away" row names.
+    func focusFinished(_ id: String) {
+        guard let row = engine.item(id) else { return }
+        focus(row)
     }
 }
 

@@ -1001,8 +1001,10 @@ final class DockModel: ObservableObject {
         self.drag = nil
         dragEnded = Date()
         if let to {
-            // The strip came from the workspace they left; it closes rather than list them there.
+            // The strip and the "+N" list came from the workspace they left; they close rather than
+            // list them there.
             strip = nil
+            more = nil
             onMove(drag.ids, to)
         } else {
             onDragDone()
@@ -1277,14 +1279,28 @@ struct DockView: View {
     private func moreList(_ apps: [DockModel.App], in tile: DockModel.Tile) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 7) {
-                Text("\(apps.count) more").font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+                // Mid-drag the list stays (it holds the row being dragged), so it says where the
+                // drag lands in place of the count, as the window strip does.
+                if model.drag != nil, let text = labelText {
+                    Text(text).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white).lineLimit(1).truncationMode(.middle)
+                } else {
+                    Text("\(apps.count) more").font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+                }
                 Spacer(minLength: 8)
-                WorkspaceBadge(n: tile.id, size: 17)
+                WorkspaceBadge(n: model.dropTarget ?? tile.id, size: 17)
             }
             .padding(.horizontal, 8).padding(.bottom, 4)
             ForEach(apps) { app in
-                MoreRow(app: app, tint: Chrome.workspace(tile.id)) { model.onFocusApp(app.pid, tile.id) }
-                    .contextMenu { appMenu(app, in: tile) }
+                // Drag a row onto another tile, or the dashed "+", to move all its windows here
+                // there, exactly as the tile's own icons do.
+                let ids = app.list.map(\.id)
+                MoreRow(app: app, tint: Chrome.workspace(tile.id), dragging: model.drag.map { $0.from == tile.id && $0.ids == ids } ?? false,
+                        onDrag: { model.dragged(ids, from: tile.id, icon: app.icon, name: app.name, to: $0) },
+                        onDragEnd: { model.endDrag() }) {
+                    guard model.clickCounts else { return }
+                    model.onFocusApp(app.pid, tile.id)
+                }
+                .contextMenu { appMenu(app, in: tile) }
             }
         }
         .padding(6).padding(.top, 4)
@@ -1687,6 +1703,9 @@ private struct OutsideDrop: DropDelegate {
 private struct MoreRow: View {
     let app: DockModel.App
     let tint: Color
+    var dragging = false
+    var onDrag: (CGPoint) -> Void = { _ in }
+    var onDragEnd: () -> Void = {}
     let action: () -> Void
     @State private var hovered = false
 
@@ -1704,8 +1723,16 @@ private struct MoreRow: View {
         .frame(height: 28)
         .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(hovered ? tint.opacity(0.85) : .clear))
         .contentShape(Rectangle())
+        .opacity(dragging ? 0.4 : 1)
         .onHover { hovered = $0 }
-        .onTapGesture(perform: action)
+        // Drag it onto a workspace tile or the "+" to move its windows there. A press that never
+        // moves 4 pt is still a click, so the list stays open under the pointer until a drag starts.
+        .gesture(
+            DragGesture(minimumDistance: 4, coordinateSpace: .named("dock"))
+                .onChanged { onDrag($0.location) }
+                .onEnded { _ in onDragEnd() }
+        )
+        .simultaneousGesture(TapGesture().onEnded(action))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(app.name)
         .accessibilityAddTraits(.isButton)

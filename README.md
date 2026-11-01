@@ -86,12 +86,13 @@ workspaces in the same 3×3 grid as the number keys, with every window's app and
 </p>
 
 The menu bar icon shows the number of the workspace you're on. Its menu lists the workspaces in
-use and one empty one to start fresh on; the switches and **Bring Every Window Back** sit under
-**Options**.
+use and one empty one to start fresh on, then **Show All Workspaces**, **Find or Install an App…**,
+**Settings…** (⌘,) and **Quit BaneySpaces** (⌘Q). Every switch, **Bring Every Window Back**,
+the update controls and About live in Settings, one click away.
 
 ## Workspace Dock
 
-Turn on **Workspace Dock** in setup or under **Options** in the menu bar menu and the Dock shows your workspaces
+Turn on **Workspace Dock** under **Settings > Dock** and the Dock shows your workspaces
 instead of your apps. Rest the pointer on the bottom edge of the screen and it slides up: a
 tile for each workspace in use, plus the one you're on, each with its apps and its number.
 Click an app's icon to go straight to that app (again for its next window), or the tile around
@@ -111,8 +112,7 @@ you are. The dashed tile goes to
 the first empty workspace, and the two small buttons at the end open the launcher and the
 overview of all nine.
 
-It can sit on any side of the screen: choose **Bottom**, **Left**, **Right** or **Top** in setup,
-in the menu bar menu under **Options › Dock Position**, or from the dock's right-click menu. At the
+It can sit on any side of the screen: choose **Bottom**, **Left**, **Right** or **Top** under **Settings > Dock > Position on screen**, or from the dock's right-click menu. At the
 top it sits under the menu bar and waits half a second before opening, so reaching for a menu
 doesn't bring it up. A dock with more tiles than the screen has room for shrinks to fit.
 
@@ -157,7 +157,7 @@ in `~/.grok/hooks`. Without hooks BaneySpaces reads Claude's terminal title inst
 ## Launcher
 
 One box to open, find, install and remove apps, and find files, terminal tabs and splits,
-browser tabs and agent windows. **⌃⌘K** opens it from any app. You can also open it from the menu bar menu or the Workspace
+browser tabs and agent windows. **⌃⌘K** opens it from any app. You can also open it from the menu bar menu (**Find or Install an App…**) or the Workspace
 Dock, or turn on **⌘Space opens the BaneySpaces launcher** in setup to use it in place of
 Spotlight. Turning that off gives ⌘Space back to Spotlight, and so does quitting BaneySpaces.
 
@@ -225,7 +225,7 @@ steps just off screen and comes back to the exact spot it left.
 - **Quit BaneySpaces** and every window comes back to where it was.
 - **If BaneySpaces crashes,** the next launch shows every app it hid and puts back any window it
   moved.
-- **Bring Every Window Back** (menu bar menu › **Options**) gathers every window onto workspace 1, all visible.
+- **Bring Every Window Back** (**Settings > Automation**) gathers every window onto workspace 1, all visible.
   It gets you out of any tangle.
 
 ## Install
@@ -293,32 +293,32 @@ Everything else is optional and already set sensibly:
 If AeroSpace is running, setup shows a **Quit AeroSpace** step, since both want the same keys.
 The installer also quits it and turns off its open-at-login setting. AeroSpace stays installed.
 
-Open setup again any time from the menu bar icon, or by opening BaneySpaces from Finder or
+Open Settings again any time with **Settings…** (⌘,) in the menu bar icon's menu, or by opening BaneySpaces from Finder or
 Spotlight.
 
 ### Updates
 
-BaneySpaces looks for a new version once a day and, when there is one, the menu bar menu shows
-**Update to BaneySpaces …**. Nothing installs until you press **Update Now** in the window that
+BaneySpaces looks for a new version once a day and, when there is one, the menu bar icon's tooltip says so and **Settings > Updates** shows
+**Update to BaneySpaces …**. Check by hand there with **Check for Updates Now…**. Nothing installs until you press **Update Now** in the window that
 shows what changed. The update installs the same way the first install did, into the folder the
 app is in. A stable release downloads the ready-made app; a Nightly build, or a copy that was
 built on your Mac (while the command line tools are installed), is built on your Mac, so the
 Accessibility permission carries over. Then BaneySpaces restarts and shows the release notes. If
 the update fails, BaneySpaces keeps running as it was and offers the log.
 
-Pick what you follow under **Updates** in the menu:
+Pick what you follow under **Settings > Updates**:
 
 - **Stable** (the default): tagged releases, each one tested and described in the
   [changelog](CHANGELOG.md).
 - **Nightly**: a build of the newest code, published each night something changed. It is built
-  on your Mac, so it needs Apple's command line tools; without them the menu says so and Stable
+  on your Mac, so it needs Apple's command line tools; without them Settings says so and Stable
   keeps working. Its notes
   list what's coming in the next release and every change since the last one. Switching back
   to Stable waits for a stable release newer than the nightly you have, so you never go
   backwards.
 
 The daily check asks GitHub's public release list and sends nothing about your Mac. Turn it off
-under **Updates › Check for Updates Daily** and use **Check for Updates Now…** instead.
+under **Settings > Updates > Check for updates daily** and use **Check for Updates Now…** instead.
 
 ### If the permission won't take
 
@@ -404,7 +404,7 @@ incoming connections first.
 BaneySpaces hides an app whose windows all sit on other workspaces, the way ⌘H does. macOS
 refuses background clicks and keystrokes to a hidden app, so tools that drive apps from behind,
 such as [Cua](https://github.com/trycua/cua), can't use it until you switch back. Put the app
-under **Options › Keep Usable by Automation** in the menu bar menu and its windows are parked just out of
+under **Settings > Automation > Keep usable by automation** and its windows are parked just out of
 view instead, where those tools can still click and type. Cua Spaces is on the list from the
 start, so its picture-in-picture window stays put.
 
@@ -438,8 +438,7 @@ build says so, since a new key means allowing BaneySpaces again (setup's Fix Per
 
 ## Uninstall
 
-In BaneySpaces: **Settings > General > Uninstall BaneySpaces…** (also in the menu bar icon's
-Options). Or in Terminal:
+In BaneySpaces: **Settings > General > Uninstall BaneySpaces…**. Or in Terminal:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/baney75/baneyspaces/main/uninstall.sh | bash
