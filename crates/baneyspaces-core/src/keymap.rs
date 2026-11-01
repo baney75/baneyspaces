@@ -64,20 +64,38 @@ pub fn render_hypr_lua(binary: &str) -> String {
     s.push_str("hl.config({ misc = { focus_on_activate = false } })\n\n");
     s.push_str("-- The recovery chord: hold Super+Shift+Escape for two seconds to put the default keys and theme back.\n");
     s.push_str("-- Bound here, always, and again inside every mode. Config can neither bind nor remove it (spec/config.md).\n");
+    s.push_str("-- A hold is continuous: every 100 ms all three keys must still be down, any release cancels it, and a newer\n");
+    s.push_str("-- press makes an older one void. (hl.is_key_down takes keysym names; an unknown name answers nil.)\n");
+    s.push_str("__baneyspaces_hold_gen = 0\n");
+    s.push_str("local function key_down(left, right) return hl.is_key_down(left) or (right ~= nil and hl.is_key_down(right)) end\n");
+    s.push_str("local function chord_held()\n  return key_down(\"Super_L\", \"Super_R\") and key_down(\"Shift_L\", \"Shift_R\") and key_down(\"Escape\")\nend\n");
+    s.push_str("function __baneyspaces_recovery_fire()\n");
+    s.push_str("  pcall(hl.dispatch, hl.dsp.submap(\"reset\"))\n");
+    s.push_str(&format!("  hl.exec_cmd(\"{binary} config reset keys --notify\")\n  hl.exec_cmd(\"{binary} config reset theme --notify\")\nend\n"));
+    s.push_str(&format!("function __baneyspaces_recovery_press()\n  __baneyspaces_hold_gen = __baneyspaces_hold_gen + 1\n  local gen, waited = __baneyspaces_hold_gen, 0\n  local function tick()\n    if gen ~= __baneyspaces_hold_gen or not chord_held() then return end\n    waited = waited + 100\n    if waited >= {} then\n      __baneyspaces_recovery_fire()\n    else\n      hl.timer(tick, {{ timeout = 100, type = \"oneshot\" }})\n    end\n  end\n  hl.timer(tick, {{ timeout = 100, type = \"oneshot\" }})\nend\n", crate::chord::recovery_hold_ms()));
     s.push_str("function __baneyspaces_recovery(bindfn)\n");
-    s.push_str("  bindfn(\"SUPER + SHIFT + Escape\", function()\n");
-    s.push_str(&format!("    hl.timer(function()\n      if hl.is_key_down(\"Escape\") then\n        hl.exec_cmd(\"{binary} config reset keys --notify\")\n        hl.exec_cmd(\"{binary} config reset theme --notify\")\n      end\n    end, {{ timeout = {}, type = \"oneshot\" }})\n", crate::chord::recovery_hold_ms()));
-    s.push_str("  end, \"BaneySpaces: recovery (hold 2 s)\")\nend\n");
+    s.push_str("  bindfn(\"SUPER + SHIFT + Escape\", function() __baneyspaces_recovery_press() end, \"BaneySpaces: recovery (hold 2 s)\")\nend\n");
     s.push_str("__baneyspaces_recovery(function(keys, dsp, desc) hl.bind(keys, dsp, { description = desc }) end)\n\n");
-    s.push_str("-- Your keys: the daemon writes them from config.toml (baneyspaces config set keys.bindings...).\n");
-    s.push_str("-- Until it has, or when there is no daemon, the defaults below keep every workspace key working.\n");
-    s.push_str("local generated = (os.getenv(\"XDG_STATE_HOME\") or ((os.getenv(\"HOME\") or \"\") .. \"/.local/state\")) .. \"/baneyspaces/hyprland-keys.lua\"\n");
-    s.push_str("local gf = io.open(generated, \"r\")\n");
-    s.push_str("if gf then\n  gf:close()\n  dofile(generated)\nelse\n");
+    s.push_str("-- The default keys: they keep every workspace key working until the daemon has written yours, with no\n");
+    s.push_str("-- daemon, and when your keys file fails.\n");
+    s.push_str("local function bind_defaults()\n");
+    for b in linux_binds() {
+        s.push_str(&format!("  pcall(hl.unbind, \"{}\")\n", b.keys));
+    }
     for b in linux_binds() {
         s.push_str(&format!("  hl.bind(\"{}\", hl.dsp.exec_cmd(\"{} {}\"), {{ description = \"{}\" }})\n", b.keys, binary, b.args, b.description));
     }
-    s.push_str("end\n");
+    s.push_str("end\n\n");
+    s.push_str("-- Your keys: the daemon writes them from config.toml (baneyspaces config set keys.bindings...). A file that\n");
+    s.push_str("-- fails to run falls back to the defaults, and says why in keys-error.txt next to it.\n");
+    s.push_str("local state = (os.getenv(\"XDG_STATE_HOME\") or ((os.getenv(\"HOME\") or \"\") .. \"/.local/state\")) .. \"/baneyspaces\"\n");
+    s.push_str("local generated = state .. \"/hyprland-keys.lua\"\n");
+    s.push_str("local gf = io.open(generated, \"r\")\n");
+    s.push_str("local loaded = false\n");
+    s.push_str("if gf then\n  gf:close()\n  local ok, err = pcall(dofile, generated)\n  if ok then\n    loaded = true\n  else\n");
+    s.push_str("    local ef = io.open(state .. \"/keys-error.txt\", \"w\")\n    if ef then ef:write(tostring(err), \"\\n\") ef:close() end\n");
+    s.push_str("    hl.exec_cmd(\"notify-send -a BaneySpaces 'BaneySpaces: your keys file failed' 'The default keys are on. See keys-error.txt in the BaneySpaces state folder.'\")\n  end\nend\n");
+    s.push_str("if not loaded then\n  bind_defaults()\nend\n");
     s
 }
 

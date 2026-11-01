@@ -1,0 +1,406 @@
+[
+  {
+    "name": "a hook an agent sets is pending and inert",
+    "steps": [
+      {
+        "do": "set",
+        "path": "hooks.on_switch",
+        "value": "echo hi",
+        "caller": "agent:x",
+        "expect": "ok",
+        "pending": [
+          "hooks.on_switch"
+        ],
+        "effective": {
+          "hooks.on_switch": ""
+        },
+        "configured": {
+          "hooks.on_switch": "echo hi"
+        },
+        "resolved": {
+          "/pending/0/written_by_hint": "agent:x",
+          "/pending/0/kind": "hook"
+        }
+      }
+    ]
+  },
+  {
+    "name": "a hook the user sets by hand is pending too",
+    "steps": [
+      {
+        "do": "edit_file",
+        "toml": "[hooks]\non_window_open = \"touch /tmp/x\"\n",
+        "expect": "ok",
+        "pending": [
+          "hooks.on_window_open"
+        ],
+        "effective": {
+          "hooks.on_window_open": ""
+        },
+        "resolved": {
+          "/pending/0/written_by_hint": null
+        }
+      }
+    ]
+  },
+  {
+    "name": "a binding that runs a command is pending and not bound",
+    "steps": [
+      {
+        "do": "set",
+        "path": "keys.bindings.mod+h",
+        "value": "exec foot",
+        "caller": "agent:x",
+        "expect": "ok",
+        "pending": [
+          "keys.bindings.\"mod+h\""
+        ],
+        "absent": [
+          "keys.bindings.mod+h"
+        ],
+        "configured": {
+          "keys.bindings.mod+h": "exec foot"
+        }
+      },
+      {
+        "do": "check",
+        "effective": {
+          "keys.bindings.mod+1": "switch 1"
+        }
+      }
+    ]
+  },
+  {
+    "name": "bindings to config, theme and agent run commands are pending",
+    "steps": [
+      {
+        "do": "apply",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "mod+k": "config set theme.name minimal",
+              "mod+l": "theme set minimal",
+              "mod+y": "agent run -- sh -c 'x'"
+            }
+          }
+        },
+        "caller": "agent:x",
+        "expect": "ok",
+        "pending": [
+          "keys.bindings.\"mod+k\"",
+          "keys.bindings.\"mod+l\"",
+          "keys.bindings.\"mod+y\""
+        ],
+        "absent": [
+          "keys.bindings.mod+k",
+          "keys.bindings.mod+l",
+          "keys.bindings.mod+y"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "a command bound inside a mode is pending",
+    "steps": [
+      {
+        "do": "apply",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "mod+m": "mode nav"
+            },
+            "modes": {
+              "nav": {
+                "x": "exec true",
+                "y": "switch 2"
+              }
+            }
+          }
+        },
+        "caller": "agent:x",
+        "expect": "ok",
+        "pending": [
+          "keys.modes.nav.x"
+        ],
+        "absent": [
+          "keys.modes.nav.x"
+        ],
+        "effective": {
+          "keys.modes.nav.y": "switch 2",
+          "keys.modes.nav.escape": "mode default"
+        }
+      }
+    ]
+  },
+  {
+    "name": "plain actions, themes, animation and behavior stay free for an agent",
+    "steps": [
+      {
+        "do": "set",
+        "path": "keys.bindings.mod+j",
+        "value": "move 2",
+        "caller": "agent:x",
+        "expect": "ok",
+        "pending": [],
+        "effective": {
+          "keys.bindings.mod+j": "move 2"
+        }
+      },
+      {
+        "do": "set",
+        "path": "keys.bindings.mod+u",
+        "value": "overview",
+        "caller": "agent:x",
+        "expect": "ok",
+        "pending": []
+      },
+      {
+        "do": "set",
+        "path": "keys.bindings.mod+i",
+        "value": "agent-workspace toggle",
+        "caller": "agent:x",
+        "expect": "ok",
+        "pending": []
+      },
+      {
+        "do": "set",
+        "path": "theme.name",
+        "value": "minimal",
+        "caller": "agent:x",
+        "expect": "ok",
+        "pending": [],
+        "effective": {
+          "theme.name": "minimal"
+        }
+      },
+      {
+        "do": "set",
+        "path": "animation.preset",
+        "value": "omarchy",
+        "caller": "agent:x",
+        "expect": "ok",
+        "pending": []
+      },
+      {
+        "do": "set",
+        "path": "behavior.follow_focus",
+        "value": false,
+        "caller": "agent:x",
+        "expect": "ok",
+        "pending": [],
+        "effective": {
+          "behavior.follow_focus": false
+        }
+      },
+      {
+        "do": "set",
+        "path": "rules",
+        "value": [
+          {
+            "app": "foot",
+            "workspace": 3
+          }
+        ],
+        "caller": "agent:x",
+        "expect": "ok",
+        "pending": []
+      }
+    ]
+  },
+  {
+    "name": "an approval is per entry, keyed by path and value, and a changed value is pending again",
+    "steps": [
+      {
+        "do": "apply",
+        "doc": {
+          "hooks": {
+            "on_switch": "echo a"
+          },
+          "keys": {
+            "bindings": {
+              "mod+h": "exec foot"
+            }
+          }
+        },
+        "caller": "agent:x",
+        "expect": "ok",
+        "pending": [
+          "hooks.on_switch",
+          "keys.bindings.\"mod+h\""
+        ]
+      },
+      {
+        "do": "approve",
+        "path": "hooks.on_switch",
+        "value": "echo a",
+        "pending": [
+          "keys.bindings.\"mod+h\""
+        ],
+        "effective": {
+          "hooks.on_switch": "echo a"
+        }
+      },
+      {
+        "do": "set",
+        "path": "hooks.on_switch",
+        "value": "echo a; echo b",
+        "caller": "agent:x",
+        "expect": "ok",
+        "pending": [
+          "hooks.on_switch",
+          "keys.bindings.\"mod+h\""
+        ],
+        "effective": {
+          "hooks.on_switch": ""
+        }
+      },
+      {
+        "do": "set",
+        "path": "hooks.on_switch",
+        "value": "echo a",
+        "caller": "agent:x",
+        "expect": "ok",
+        "pending": [
+          "keys.bindings.\"mod+h\""
+        ],
+        "effective": {
+          "hooks.on_switch": "echo a"
+        }
+      },
+      {
+        "do": "approve",
+        "path": "keys.bindings.\"mod+h\"",
+        "value": "exec foot",
+        "pending": []
+      },
+      {
+        "do": "set",
+        "path": "keys.bindings.mod+h",
+        "value": "exec foot -e sh",
+        "caller": "agent:x",
+        "expect": "ok",
+        "pending": [
+          "keys.bindings.\"mod+h\""
+        ]
+      }
+    ]
+  },
+  {
+    "name": "the same command on another path is another entry",
+    "steps": [
+      {
+        "do": "set",
+        "path": "keys.bindings.mod+h",
+        "value": "exec foot",
+        "caller": "agent:x",
+        "expect": "ok"
+      },
+      {
+        "do": "approve",
+        "path": "keys.bindings.\"mod+h\"",
+        "value": "exec foot",
+        "pending": []
+      },
+      {
+        "do": "set",
+        "path": "keys.bindings.mod+g",
+        "value": "exec foot",
+        "caller": "agent:x",
+        "expect": "ok",
+        "pending": [
+          "keys.bindings.\"mod+g\""
+        ]
+      }
+    ]
+  },
+  {
+    "name": "no command approves (user)",
+    "steps": [
+      {
+        "do": "set",
+        "path": "hooks.on_switch",
+        "value": "echo hi",
+        "caller": "user",
+        "expect": "ok",
+        "pending": [
+          "hooks.on_switch"
+        ]
+      },
+      {
+        "do": "approve_by_command",
+        "path": "hooks.on_switch",
+        "value": "echo hi",
+        "caller": "user",
+        "expect": {
+          "error": "not_in_scope"
+        },
+        "pending": [
+          "hooks.on_switch"
+        ],
+        "effective": {
+          "hooks.on_switch": ""
+        }
+      }
+    ]
+  },
+  {
+    "name": "no command approves (settings)",
+    "steps": [
+      {
+        "do": "set",
+        "path": "hooks.on_switch",
+        "value": "echo hi",
+        "caller": "settings",
+        "expect": "ok",
+        "pending": [
+          "hooks.on_switch"
+        ]
+      },
+      {
+        "do": "approve_by_command",
+        "path": "hooks.on_switch",
+        "value": "echo hi",
+        "caller": "settings",
+        "expect": {
+          "error": "not_in_scope"
+        },
+        "pending": [
+          "hooks.on_switch"
+        ],
+        "effective": {
+          "hooks.on_switch": ""
+        }
+      }
+    ]
+  },
+  {
+    "name": "no command approves (agent:x)",
+    "steps": [
+      {
+        "do": "set",
+        "path": "hooks.on_switch",
+        "value": "echo hi",
+        "caller": "agent:x",
+        "expect": "ok",
+        "pending": [
+          "hooks.on_switch"
+        ]
+      },
+      {
+        "do": "approve_by_command",
+        "path": "hooks.on_switch",
+        "value": "echo hi",
+        "caller": "agent:x",
+        "expect": {
+          "error": "not_in_scope"
+        },
+        "pending": [
+          "hooks.on_switch"
+        ],
+        "effective": {
+          "hooks.on_switch": ""
+        }
+      }
+    ]
+  }
+]

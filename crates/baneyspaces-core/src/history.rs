@@ -26,11 +26,18 @@ pub struct Version {
     pub config: String,
     /// `themes/<name>.toml` texts by name.
     pub themes: BTreeMap<String, String>,
+    /// 0 for a change. For an undo, how many live versions it stepped back over: the state it
+    /// holds is that of the version `undo` steps below the top of the live stack.
+    pub undo: u64,
 }
 
 impl Version {
     pub fn to_json(&self) -> Value {
-        json!({ "format": FORMAT, "seq": self.seq, "time": self.time, "caller": self.caller, "summary": self.summary, "config": self.config, "themes": self.themes })
+        let mut v = json!({ "format": FORMAT, "seq": self.seq, "time": self.time, "caller": self.caller, "summary": self.summary, "config": self.config, "themes": self.themes });
+        if self.undo > 0 {
+            v["undo"] = json!(self.undo);
+        }
+        v
     }
 
     pub fn from_json(v: &Value) -> Option<Self> {
@@ -48,12 +55,17 @@ impl Version {
                 .iter()
                 .filter_map(|(k, t)| Some((k.clone(), t.as_str()?.to_string())))
                 .collect(),
+            undo: v["undo"].as_u64().unwrap_or(0),
         })
     }
 
     /// What `config history` shows.
     pub fn summary_json(&self) -> Value {
-        json!({ "version": self.seq, "time": self.time, "caller": self.caller, "summary": self.summary })
+        let mut v = json!({ "version": self.seq, "time": self.time, "caller": self.caller, "summary": self.summary });
+        if self.undo > 0 {
+            v["undo"] = json!(self.undo);
+        }
+        v
     }
 }
 
@@ -210,6 +222,19 @@ impl History {
         config: &str,
         themes: &BTreeMap<String, String>,
     ) -> io::Result<u64> {
+        self.record_with(time, caller, summary, config, themes, 0)
+    }
+
+    /// Like [`History::record`]; `undo` is how many live versions this version steps back over.
+    pub fn record_with(
+        &self,
+        time: &str,
+        caller: &str,
+        summary: &str,
+        config: &str,
+        themes: &BTreeMap<String, String>,
+        undo: u64,
+    ) -> io::Result<u64> {
         let seq = self.seqs().last().map_or(1, |s| s + 1);
         let one_line: String = summary
             .replace(['\n', '\r'], " ")
@@ -223,6 +248,7 @@ impl History {
             summary: one_line,
             config: config.to_string(),
             themes: themes.clone(),
+            undo,
         };
         write_atomic(
             &self.file(seq),
@@ -239,16 +265,20 @@ impl History {
         Ok(seq)
     }
 
-    /// Removes the newest `n` versions (an undo). Returns them, newest first.
-    pub fn pop(&self, n: usize) -> Vec<Version> {
-        let mut out = vec![];
-        for s in self.seqs().into_iter().rev().take(n) {
-            if let Some(v) = self.read(s) {
-                out.push(v);
+    /// The versions an undo can step back over, oldest first: every change, minus the ones later
+    /// undos stepped back over. History itself is never shortened by an undo.
+    pub fn live_stack(all: &[Version]) -> Vec<usize> {
+        let mut stack: Vec<usize> = vec![];
+        for (i, v) in all.iter().enumerate() {
+            if v.undo > 0 {
+                for _ in 0..v.undo {
+                    stack.pop();
+                }
+            } else {
+                stack.push(i);
             }
-            let _ = fs::remove_file(self.file(s));
         }
-        out
+        stack
     }
 }
 
@@ -331,21 +361,21 @@ mod tests {
     }
 
     #[test]
-    fn pop_removes_the_newest_and_numbers_go_on() {
-        let d = tmp("pop");
+    fn the_live_stack_skips_what_undos_stepped_over_and_nothing_is_deleted() {
+        let d = tmp("stack");
         let h = History::new(&d);
+        let none = BTreeMap::new();
         for i in 0..4 {
-            h.record("t", "user", &format!("v{i}"), "", &BTreeMap::new())
-                .unwrap();
+            h.record("t", "user", &format!("v{i}"), "", &none).unwrap();
         }
-        let gone = h.pop(2);
-        assert_eq!(gone.iter().map(|v| v.seq).collect::<Vec<_>>(), vec![4, 3]);
-        assert_eq!(h.latest().unwrap().seq, 2);
-        assert_eq!(
-            h.record("t", "user", "again", "", &BTreeMap::new())
-                .unwrap(),
-            3
-        );
+        h.record_with("t", "user", "undo 2", "", &none, 2).unwrap();
+        let all = h.all();
+        assert_eq!(all.len(), 5, "an undo adds a version");
+        assert_eq!(History::live_stack(&all), vec![0, 1]);
+        h.record("t", "user", "again", "", &none).unwrap();
+        h.record_with("t", "user", "undo 1", "", &none, 1).unwrap();
+        assert_eq!(History::live_stack(&h.all()), vec![0, 1]);
+        assert_eq!(h.record("t", "user", "x", "", &none).unwrap(), 8);
         let _ = fs::remove_dir_all(&d);
     }
 

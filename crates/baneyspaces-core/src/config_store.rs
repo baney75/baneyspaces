@@ -12,13 +12,14 @@
 //! recorded in history with its caller. A platform runs [`Service::dispatch`] for each command
 //! (the Linux daemon is the single writer) and applies the returned [`Applied`] to the screen.
 
+use crate::approvals::{self, Pending};
 use crate::chord::Platform;
 use crate::config::{self, Effective, Env, Themes, Validated};
 use crate::config_schema::{path_string, Issue};
 use crate::envelope::{Envelope, Retry};
 use crate::history::{self, History, Version};
 use serde_json::{json, Map, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -48,6 +49,8 @@ pub struct State {
     pub themes: Themes,
     /// Files that are not valid TOML (`config.toml` is `path` empty).
     pub syntax: Vec<Issue>,
+    /// Theme files that could not be read (not UTF-8, over 1 MiB, unreadable): never written over or deleted.
+    pub unreadable: BTreeSet<String>,
 }
 
 impl State {
@@ -67,8 +70,13 @@ pub struct Applied {
     pub summary: String,
     pub changes: Vec<Change>,
     pub warnings: Vec<Issue>,
+    /// The config that runs: executable entries that are not approved are taken out.
     pub effective: Effective,
     pub resolved: Value,
+    /// Executable entries waiting for a click in Settings.
+    pub pending: Vec<Pending>,
+    /// Broken files kept as `*.invalid-<time>` before a reset or undo wrote over them.
+    pub kept_aside: Vec<String>,
 }
 
 /// A command's answer, and the change to apply to the screen when it changed the config.
@@ -105,6 +113,8 @@ pub struct Loaded {
 pub struct Service {
     pub dir: PathBuf,
     pub env: Env,
+    /// `approvals.json` in the state directory. With none, nothing executable is approved.
+    pub approvals: Option<PathBuf>,
 }
 
 // ---- helpers ---------------------------------------------------------------------------------
@@ -250,7 +260,13 @@ impl Service {
         Service {
             dir: dir.into(),
             env,
+            approvals: None,
         }
+    }
+
+    pub fn with_approvals(mut self, path: impl Into<PathBuf>) -> Self {
+        self.approvals = Some(path.into());
+        self
     }
 
     pub fn config_path(&self) -> PathBuf {
@@ -306,6 +322,7 @@ impl Service {
                 continue;
             }
             let Some(text) = read_limited(&p) else {
+                st.unreadable.insert(stem.to_string());
                 st.themes.insert(stem.to_string(), json!({ "__broken": format!("themes/{stem}.toml cannot be read or is over 1 MiB") }));
                 continue;
             };
@@ -390,54 +407,58 @@ impl Service {
         }
     }
 
-    /// The effective config now, with what was resolved from it.
+    fn approved(&self) -> BTreeSet<String> {
+        self.approvals.as_deref().map(approvals::load).unwrap_or_default()
+    }
+
+    /// The config that runs and the executable entries still waiting for a click.
+    pub fn activate(&self, eff: &Effective) -> (Effective, Vec<Pending>) {
+        approvals::activate(eff, &self.approved())
+    }
+
+    /// Records an approval. This is the Settings UI's write: the control socket, the CLI and MCP never
+    /// call it (the daemon only does, in a test-only operation).
+    pub fn approve(&self, path: &str, value: &str) -> Result<String, String> {
+        let Some(f) = &self.approvals else { return Err("no approvals file".into()) };
+        approvals::approve(f, path, value, &history::now_rfc3339()).map_err(|e| e.to_string())
+    }
+
+    /// The effective config now (the part that runs), with what was resolved from it.
     pub fn current(&self) -> (Effective, Value, Loaded) {
         let l = self.load();
-        let eff = l
-            .validated
-            .effective
-            .clone()
-            .expect("the running state is valid");
+        let configured = l.validated.effective.clone().expect("the running state is valid");
+        let (eff, _) = self.activate(&configured);
         let resolved = config::resolved_json(&eff, &self.env, &l.good.themes);
         (eff, resolved, l)
+    }
+
+    /// Who wrote an executable entry, as far as the kept history says. A hint and nothing more: a
+    /// hand edit reads as `user`, and an entry older than the kept versions has no writer at all.
+    fn written_by(&self, p: &Pending, all: &[Version]) -> Option<String> {
+        let at = |v: &Version| config::get_path(&self.state_of(v).user, &p.segments).and_then(Value::as_str).map(String::from);
+        let mut start = all.len();
+        while start > 0 && at(&all[start - 1]).as_deref() == Some(p.value.as_str()) {
+            start -= 1;
+        }
+        (start > 0 && start < all.len()).then(|| all[start].caller.clone())
+    }
+
+    pub fn pending_json(&self, pending: &[Pending]) -> Vec<Value> {
+        let all = self.history().all();
+        pending.iter().map(|p| p.to_json(self.written_by(p, &all).as_deref())).collect()
     }
 
     /// What every UI reads: the resolved config plus whether the file on disk is the one running.
     pub fn runtime_json(&self) -> Value {
         let (_, mut r, l) = self.current();
-        r["resolved"]["hooks_set_by"] = self.hook_owners();
+        let configured = l.validated.effective.clone().expect("the running state is valid");
+        r["pending"] = Value::Array(self.pending_json(&self.activate(&configured).1));
         r["status"] = json!({
             "valid": l.file_issues.is_empty(),
             "source": match l.source { Source::File => json!("file"), Source::LastGood(v) => json!({ "history": v }), Source::Defaults => json!("defaults") },
             "issues": l.file_issues.iter().map(Issue::to_json).collect::<Vec<_>>(),
         });
         r
-    }
-
-    /// Who set each hook that is set now: the caller of the version that last changed it. A hook
-    /// that was there before history began, or was set by `system`, counts as the user's.
-    pub fn hook_owners(&self) -> Value {
-        let l = self.load();
-        let all = self.history().all();
-        let hook = |u: &Value, h: &str| u["hooks"][h].as_str().unwrap_or("").to_string();
-        let mut out = Map::new();
-        for h in ["on_switch", "on_window_open"] {
-            let cur = hook(&l.good.user, h);
-            if cur.is_empty() {
-                continue;
-            }
-            let users: Vec<String> = all.iter().map(|v| hook(&self.state_of(v).user, h)).collect();
-            let mut start = users.len();
-            while start > 0 && users[start - 1] == cur {
-                start -= 1;
-            }
-            let owner = match all.get(start) {
-                Some(v) if start < users.len() && start > 0 && v.caller != "system" => v.caller.clone(),
-                _ => "user".to_string(),
-            };
-            out.insert(h.to_string(), json!(owner));
-        }
-        Value::Object(out)
     }
 
     // ---- writing -----------------------------------------------------------------------------
@@ -455,25 +476,48 @@ impl Service {
         Ok(f)
     }
 
-    fn write_files(&self, new: &State) -> Result<(), Envelope> {
+    /// Writes the files of `new`. Only the themes named in `removed` are deleted: a file the service
+    /// could not read is never touched.
+    fn write_files(&self, new: &State, removed: &[String]) -> Result<(), Envelope> {
         let tdir = self.themes_dir();
         for (n, t) in &new.theme_texts {
             history::write_atomic(&tdir.join(format!("{n}.toml")), t.as_bytes())
                 .map_err(|e| io_err("cannot write a theme", e))?;
         }
-        for e in fs::read_dir(&tdir).into_iter().flatten().flatten() {
-            let p = e.path();
-            if let (Some(stem), Some("toml")) = (
-                p.file_stem().and_then(|s| s.to_str()),
-                p.extension().and_then(|s| s.to_str()),
-            ) {
-                if crate::action::is_name(stem) && !new.theme_texts.contains_key(stem) {
-                    let _ = fs::remove_file(&p);
-                }
+        for n in removed {
+            if crate::action::is_name(n) && !new.theme_texts.contains_key(n) && !new.unreadable.contains(n) {
+                let _ = fs::remove_file(tdir.join(format!("{n}.toml")));
             }
         }
         history::write_atomic(&self.config_path(), new.config_text.as_bytes())
             .map_err(|e| io_err("cannot write config.toml", e))
+    }
+
+    /// When the files on disk are not the running config, keeps what is about to be written over as
+    /// `*.invalid-<time>`: `config.toml` and every theme file whose text differs.
+    fn keep_aside(&self, l: &Loaded, new: &State) -> Vec<String> {
+        if l.file_issues.is_empty() {
+            return vec![];
+        }
+        let ts = history::now_rfc3339().replace(':', "");
+        let mut out = vec![];
+        let themes_broken = |n: &str| l.file_issues.iter().any(|i| i.path == format!("themes.{n}") || i.path.starts_with(&format!("themes.{n}.")));
+        let config_broken = l.file_issues.iter().any(|i| !i.path.starts_with("themes.")) || !l.state.syntax.is_empty();
+        if config_broken && !l.state.config_text.is_empty() && l.state.config_text != new.config_text {
+            let p = self.dir.join(format!("config.toml.invalid-{ts}"));
+            if history::write_atomic(&p, l.state.config_text.as_bytes()).is_ok() {
+                out.push(p.display().to_string());
+            }
+        }
+        for (n, t) in &l.state.theme_texts {
+            if themes_broken(n) && new.theme_texts.get(n) != Some(t) {
+                let p = self.themes_dir().join(format!("{n}.toml.invalid-{ts}"));
+                if history::write_atomic(&p, t.as_bytes()).is_ok() {
+                    out.push(p.display().to_string());
+                }
+            }
+        }
+        out
     }
 
     fn applied(
@@ -485,7 +529,8 @@ impl Service {
         changed: bool,
     ) -> Applied {
         let v = self.validate_state(new);
-        let eff = v.effective.expect("a written state is valid");
+        let configured = v.effective.expect("a written state is valid");
+        let (eff, pending) = self.activate(&configured);
         let resolved = config::resolved_json(&eff, &self.env, &new.themes);
         let mut ch = changes(&base.user, &new.user);
         for t in theme_changes(&base.theme_texts, &new.theme_texts) {
@@ -503,6 +548,8 @@ impl Service {
             warnings: v.warnings,
             effective: eff,
             resolved,
+            pending,
+            kept_aside: vec![],
         }
     }
 
@@ -523,22 +570,36 @@ impl Service {
             })));
         }
         let (mut new, summary) = f(&l.good)?;
-        // Edit the text on disk (re-read under the lock) so a person's comments and layout stay.
-        let plain = config::to_toml(&new.user);
-        new.config_text = if l.file_issues.is_empty() { config::edit_toml(&l.good.config_text, &l.good.user, &new.user).unwrap_or(plain) } else { plain };
-        // Re-read what was just rendered so the check sees exactly what would be on disk.
-        new.user = config::pruned(&config::parse_document(&new.config_text).unwrap_or_else(|_| json!({})));
+        // Check the document as it was asked for, before anything is rendered or pruned, so a
+        // setting that does not exist is refused whatever it holds (an empty table included).
+        config::normalize_nulls(&mut new.user);
         new.themes = new
             .theme_texts
             .iter()
             .map(|(n, t)| {
                 (
                     n.clone(),
-                    config::parse_document(t)
-                        .unwrap_or_else(|_| json!({ "__broken": "not valid TOML" })),
+                    config::parse_document(t).unwrap_or_else(|_| json!({ "__broken": "not valid TOML" })),
                 )
             })
             .collect();
+        let asked = self.validate_state(&new);
+        if !asked.issues.is_empty() {
+            return Err(invalid(&asked.issues, &asked.warnings, "refused"));
+        }
+        // Edit the text on disk (re-read under the lock) so a person's comments and layout stay.
+        let plain = config::to_toml_checked(&new.user).map_err(|e| io_err("cannot write the document as TOML", e))?;
+        new.config_text = if l.file_issues.is_empty() {
+            config::edit_toml(&l.good.config_text, &l.good.user, &new.user).unwrap_or(plain)
+        } else {
+            plain
+        };
+        // What would be on disk must be what was checked.
+        let parsed = config::parse_document(&new.config_text).map_err(|i| io_err("the rendered document does not read back", i.reason))?;
+        if config::pruned(&parsed) != config::pruned(&new.user) {
+            return Err(io_err("the rendered document differs from the one checked", "nothing was written"));
+        }
+        new.user = config::pruned(&parsed);
         let val = self.validate_state(&new);
         if !val.issues.is_empty() {
             return Err(invalid(&val.issues, &val.warnings, "refused"));
@@ -563,11 +624,15 @@ impl Service {
             )
             .map_err(|e| io_err("cannot write history", e))?;
         }
-        self.write_files(&new)?;
+        let aside = if strict { vec![] } else { self.keep_aside(&l, &new) };
+        let removed: Vec<String> = l.good.theme_texts.keys().filter(|k| !new.theme_texts.contains_key(*k)).cloned().collect();
+        self.write_files(&new, &removed)?;
         let version = h
             .record(&now, caller, &summary, &new.config_text, &new.theme_texts)
             .map_err(|e| io_err("cannot write history", e))?;
-        Ok(self.applied(&new, &l.good, Some(version), summary, true))
+        let mut a = self.applied(&new, &l.good, Some(version), summary, true);
+        a.kept_aside = aside;
+        Ok(a)
     }
 
     /// Notices a hand edit: if the files differ from the newest history version and hold, records
@@ -642,7 +707,9 @@ impl Service {
         match op {
             "config_schema" => Outcome::only(Envelope::ok(config::schema_json())),
             "config_get" => {
-                let (eff, _, l) = self.current();
+                let (_, _, l) = self.current();
+                let eff = l.validated.effective.clone().expect("the running state is valid");
+                let pending = self.pending_json(&self.activate(&eff).1);
                 let note = if l.file_issues.is_empty() {
                     Value::Null
                 } else {
@@ -650,7 +717,7 @@ impl Service {
                 };
                 match text_arg("path").filter(|p| !p.is_empty()) {
                     None => Outcome::only(Envelope::ok(
-                        json!({ "value": eff.doc, "source": l.source_name(), "note": note }),
+                        json!({ "value": eff.doc, "source": l.source_name(), "note": note, "pending": pending }),
                     )),
                     Some(p) => {
                         let path = match config::parse_path(p) {
@@ -664,11 +731,8 @@ impl Service {
                         };
                         match config::get_path(&eff.doc, &path) {
                             Some(v) => {
-                                let mut d = json!({ "path": p, "value": v, "note": note });
-                                if path.first().is_some_and(|f| f == "hooks") {
-                                    d["hooks_set_by"] = self.hook_owners();
-                                }
-                                Outcome::only(Envelope::ok(d))
+                                let mine: Vec<&Value> = pending.iter().filter(|e| e["path"].as_str().is_some_and(|q| q == p || q.starts_with(&format!("{p}.")))).collect();
+                                Outcome::only(Envelope::ok(json!({ "path": p, "value": v, "note": note, "pending": mine })))
                             }
                             None => Outcome::only(not_found(format!("{p} has no value"), "`baneyspaces config get` lists every setting; `baneyspaces config schema` says what each may be.")),
                         }
@@ -692,7 +756,13 @@ impl Service {
                     json!({ "current": cur, "keep": history::KEEP, "versions": versions }),
                 ))
             }
-            "config_diff" => Outcome::only(self.diff(args.get("version").and_then(Value::as_u64))),
+            "config_diff" => match args.get("version") {
+                None | Some(Value::Null) => Outcome::only(self.diff(None)),
+                Some(v) => match v.as_u64() {
+                    Some(n) => Outcome::only(self.diff(Some(n))),
+                    None => Outcome::only(bad_args(format!("version must be a whole number, not {v}"), "baneyspaces config diff [version]; `config history` lists the versions.")),
+                },
+            },
             "theme_list" => Outcome::only(self.theme_list()),
             "theme_show" => Outcome::only(match text_arg("name") {
                 Some(n) => self.theme_show(n),
@@ -783,22 +853,6 @@ impl Service {
                         return Outcome::only(bad_args(format!("{s:?} is not a section"), "Sections: keys, theme, animation, behavior, rules, hooks. No section resets everything."));
                     }
                 }
-                // Reset works from the running config even when the file is broken; the broken file is kept aside.
-                let aside = {
-                    let _l = self.lock();
-                    let l = self.load();
-                    if !l.file_issues.is_empty() && !l.state.config_text.is_empty() {
-                        let p = self.dir.join(format!(
-                            "config.toml.invalid-{}",
-                            history::now_rfc3339().replace(':', "")
-                        ));
-                        history::write_atomic(&p, l.state.config_text.as_bytes())
-                            .ok()
-                            .map(|_| p)
-                    } else {
-                        None
-                    }
-                };
                 let out = self.finish(
                     self.mutate(caller, false, |base| {
                         let mut st = base.clone();
@@ -814,27 +868,24 @@ impl Service {
                     }),
                     None,
                 );
-                match (out.env.ok, aside) {
-                    (true, Some(p)) => {
-                        let mut o = out;
-                        if let Some(d) = o.env.data.as_mut() {
-                            d["kept_invalid_file"] = json!(p.display().to_string());
-                        }
-                        o
-                    }
-                    _ => out,
-                }
+                out
             }
             "config_undo" => {
-                let n = args.get("n").and_then(Value::as_u64).unwrap_or(1) as usize;
-                if n == 0 {
-                    return Outcome::only(bad_args(
-                        "n must be 1 or more",
-                        "baneyspaces config undo [n]",
-                    ));
-                }
+                let n = match args.get("n") {
+                    None | Some(Value::Null) => 1,
+                    Some(v) => match v.as_u64() {
+                        Some(n) if n >= 1 => n,
+                        _ => return Outcome::only(bad_args(format!("n must be a whole number, 1 or more, not {v}"), "baneyspaces config undo [n]")),
+                    },
+                };
                 self.undo(n, caller)
             }
+            "config_approve" | "config_approve_all" => Outcome::only(Envelope::err(
+                "not_in_scope",
+                "Approving an executable setting (a hook, or a key binding that runs a command or changes the configuration) is done by a click in Settings, never by a command",
+                Retry::Never,
+                "Open BaneySpaces Settings and Approve the entry in the pending list. `baneyspaces config get` shows what is waiting.",
+            )),
             "theme_set" => {
                 let Some(n) = text_arg("name") else {
                     return Outcome::only(bad_args(
@@ -898,6 +949,8 @@ impl Service {
                     "value": value,
                     "changes": a.changes.iter().map(Change::to_json).collect::<Vec<_>>(),
                     "warnings": a.warnings.iter().map(Issue::to_json).collect::<Vec<_>>(),
+                    "pending": self.pending_json(&a.pending),
+                    "kept_invalid_files": a.kept_aside,
                 });
                 Outcome {
                     env: Envelope::ok(data),
@@ -970,70 +1023,69 @@ impl Service {
         }
     }
 
-    fn undo(&self, n: usize, caller: &str) -> Outcome {
+    /// An undo is a change like any other: it is recorded as a new version holding the older state,
+    /// and nothing in history is deleted. Repeating it goes further back. An agent may undo only
+    /// versions it made itself; `user` and `settings` may undo anything.
+    fn undo(&self, n: u64, caller: &str) -> Outcome {
         let _lock = match self.lock() {
             Ok(l) => l,
             Err(e) => return Outcome::only(e),
         };
         let h = self.history();
         let all = h.all();
-        if all.len() < 2 {
-            return Outcome::only(not_found(
-                "there is nothing to undo",
-                "`baneyspaces config history` lists the versions.",
-            ));
+        let stack = History::live_stack(&all);
+        let n_us = n.min(usize::MAX as u64) as usize;
+        if stack.len() < 2 {
+            return Outcome::only(not_found("there is nothing to undo", "`baneyspaces config history` lists the versions."));
         }
-        if n >= all.len() {
-            return Outcome::only(bad_args(
-                format!("only {} version(s) can be undone", all.len() - 1),
-                "baneyspaces config undo [n]",
-            ));
+        if n_us >= stack.len() {
+            return Outcome::only(bad_args(format!("only {} version(s) can be undone", stack.len() - 1), "baneyspaces config undo [n]"));
         }
-        let target = &all[all.len() - 1 - n];
+        let popped: Vec<&Version> = stack[stack.len() - n_us..].iter().map(|i| &all[*i]).collect();
+        let target = &all[stack[stack.len() - 1 - n_us]];
+        if caller.starts_with("agent:") {
+            if let Some(other) = popped.iter().find(|v| v.caller != caller) {
+                return Outcome::only(Envelope::err(
+                    "not_in_scope",
+                    format!("{caller} may undo only its own changes; version {} was made by {}", other.seq, other.caller),
+                    Retry::Never,
+                    "Undo fewer versions, or ask the user to undo the rest.",
+                ));
+            }
+        }
         let new = self.state_of(target);
         let val = self.validate_state(&new);
         if !val.issues.is_empty() {
-            return Outcome::only(invalid(
-                &val.issues,
-                &val.warnings,
-                &format!(
-                    "version {} no longer holds under the current rules",
-                    target.seq
-                ),
-            ));
+            return Outcome::only(invalid(&val.issues, &val.warnings, &format!("version {} no longer holds under the current rules", target.seq)));
         }
-        let before = self.load().good;
-        if let Err(e) = self.write_files(&new) {
+        let l = self.load();
+        let aside = self.keep_aside(&l, &new);
+        let on_disk = self.read_state();
+        let removed: Vec<String> = on_disk.theme_texts.keys().filter(|k| !new.theme_texts.contains_key(*k)).cloned().collect();
+        let mut new = new;
+        new.unreadable = on_disk.unreadable.clone();
+        if let Err(e) = self.write_files(&new, &removed) {
             return Outcome::only(e);
         }
-        let gone = h.pop(n);
-        let mut a = self.applied(
-            &new,
-            &before,
-            Some(target.seq),
-            format!(
-                "undid {n} version(s) ({} by {}), back to version {}",
-                gone.iter()
-                    .map(|v| v.seq.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                gone.first().map(|v| v.caller.clone()).unwrap_or_default(),
-                target.seq
-            ),
-            true,
-        );
-        a.changed = !a.changes.is_empty() || before.theme_texts != new.theme_texts;
+        let summary = format!("undo {n}: back to version {} (stepped over {})", target.seq, popped.iter().rev().map(|v| v.seq.to_string()).collect::<Vec<_>>().join(", "));
+        let version = match h.record_with(&history::now_rfc3339(), caller, &summary, &new.config_text, &new.theme_texts, n) {
+            Ok(v) => v,
+            Err(e) => return Outcome::only(io_err("cannot write history", e)),
+        };
+        let mut a = self.applied(&new, &l.good, Some(version), summary, true);
+        a.kept_aside = aside;
+        a.changed = !a.changes.is_empty() || l.good.theme_texts != new.theme_texts;
         let data = json!({
-            "undone": gone.iter().map(Version::summary_json).collect::<Vec<_>>(),
+            "undone": popped.iter().map(|v| v.summary_json()).collect::<Vec<_>>(),
             "restored_version": target.seq,
+            "version": version,
             "summary": a.summary,
             "caller": caller,
             "changes": a.changes.iter().map(Change::to_json).collect::<Vec<_>>(),
+            "pending": self.pending_json(&a.pending),
+            "kept_invalid_files": a.kept_aside,
         });
-        Outcome {
-            env: Envelope::ok(data),
-            applied: Some(a),
-        }
+        Outcome { env: Envelope::ok(data), applied: Some(a) }
     }
 
     fn theme_list(&self) -> Envelope {
@@ -1107,7 +1159,13 @@ impl Service {
             doc.insert("label".into(), l.clone());
         }
         let doc = Value::Object(doc);
-        let text = format!("# Custom theme {name}. Any token in spec/themes.json can be set here; `baneyspaces theme show {base}` lists them.\n{}", config::to_toml(&doc));
+        let mut doc = doc;
+        config::normalize_token_nulls(&mut doc);
+        let rendered = match config::to_toml_checked(&doc) {
+            Ok(r) => r,
+            Err(e) => return Outcome::only(io_err("cannot write the theme as TOML", e)),
+        };
+        let text = format!("# Custom theme {name}. Any token in spec/themes.json can be set here; `baneyspaces theme show {base}` lists them.\n{rendered}");
         let name = name.to_string();
         self.finish(
             self.mutate(caller, true, |b| {
@@ -1182,7 +1240,7 @@ mod tests {
     }
 
     fn svc(d: &Dir) -> Service {
-        Service::new(&d.0, Env::new(Platform::Linux))
+        Service::new(&d.0, Env::new(Platform::Linux)).with_approvals(d.0.join("state/approvals.json"))
     }
 
     fn run(s: &Service, op: &str, args: Value, caller: &str) -> Outcome {
@@ -1262,29 +1320,70 @@ mod tests {
     }
 
     #[test]
-    fn a_hook_remembers_who_set_it() {
-        let d = Dir::new("hooks");
+    fn executable_settings_wait_for_a_click_and_the_click_is_not_a_command() {
+        let d = Dir::new("pending");
         let s = svc(&d);
-        run(&s, "config_set", json!({ "path": "hooks.on_switch", "value_text": "echo user" }), "user");
-        assert_eq!(s.hook_owners(), json!({ "on_switch": "user" }));
-        run(&s, "config_set", json!({ "path": "hooks.on_window_open", "value_text": "baneyspaces switch 3" }), "agent:tester");
-        run(&s, "config_set", json!({ "path": "animation.speed", "value_text": "0.5" }), "user");
-        assert_eq!(s.hook_owners(), json!({ "on_switch": "user", "on_window_open": "agent:tester" }));
-        // An agent that changes it last owns it; setting the same text again does not change the owner.
-        run(&s, "config_set", json!({ "path": "hooks.on_switch", "value_text": "echo agent" }), "agent:b");
-        run(&s, "config_set", json!({ "path": "hooks.on_switch", "value_text": "echo agent" }), "user");
-        assert_eq!(s.hook_owners()["on_switch"], "agent:b");
-        // And the answers show it.
-        let g = run(&s, "config_get", json!({ "path": "hooks" }), "u").env.data.unwrap();
-        assert_eq!(g["hooks_set_by"]["on_window_open"], "agent:tester");
-        assert_eq!(s.runtime_json()["resolved"]["hooks_set_by"]["on_switch"], "agent:b");
-        // A hand edit is the user's.
-        fs::write(d.0.join("config.toml"), "[hooks]\non_switch = \"echo mine\"\n").unwrap();
+        // Free for an agent: plain actions, themes, animation, behavior.
+        for (p, v) in [("keys.bindings.mod+j", "move 2"), ("theme.name", "minimal"), ("animation.speed", "0.5"), ("behavior.follow_focus", "false")] {
+            let o = run(&s, "config_set", json!({ "path": p, "value_text": v }), "agent:tester");
+            assert!(o.env.ok, "{p}: {:?}", o.env);
+            assert!(o.env.data.as_ref().unwrap()["pending"].as_array().unwrap().is_empty(), "{p} is not executable");
+        }
+        // Pending: a hook, an exec binding, a binding that changes the configuration.
+        for (p, v) in [("hooks.on_switch", "echo hi"), ("keys.bindings.mod+h", "exec foot"), ("keys.bindings.mod+k", "config set theme.name omarchy"), ("keys.bindings.mod+l", "theme set omarchy")] {
+            let o = run(&s, "config_set", json!({ "path": p, "value_text": v }), "agent:tester");
+            assert!(o.env.ok, "{p}: {:?}", o.env);
+            let pend = o.env.data.as_ref().unwrap()["pending"].as_array().unwrap().clone();
+            assert!(pend.iter().any(|e| e["value"] == v), "{p} should be pending: {pend:?}");
+        }
+        // They are inert: what runs has none of them.
+        let (active, _, _) = s.current();
+        assert_eq!(active.doc["hooks"]["on_switch"], "");
+        assert!(active.bindings.iter().all(|b| !["mod+h", "mod+k", "mod+l"].contains(&b.spelling.as_str())));
+        assert!(active.bindings.iter().any(|b| b.spelling == "mod+j"));
+        // `config get` shows them, with who wrote them as a hint.
+        let g = run(&s, "config_get", json!({}), "user").env.data.unwrap();
+        assert_eq!(g["value"]["keys"]["bindings"]["mod+h"], "exec foot");
+        let e = g["pending"].as_array().unwrap().iter().find(|e| e["path"] == "hooks.on_switch").unwrap();
+        assert_eq!(e["written_by_hint"], "agent:tester");
+        assert_eq!(s.runtime_json()["pending"].as_array().unwrap().len(), 4);
+        // No operation approves.
+        for op in ["config_approve", "config_approve_all"] {
+            let o = run(&s, op, json!({ "path": "hooks.on_switch", "value": "echo hi" }), "user");
+            assert_eq!(code(&o), "not_in_scope", "{op}");
+            assert!(o.env.error.unwrap().message.contains("click in Settings"));
+        }
+        assert_eq!(s.current().0.doc["hooks"]["on_switch"], "");
+        // The Settings UI's write approves that one entry.
+        s.approve("hooks.on_switch", "echo hi").unwrap();
+        assert_eq!(s.current().0.doc["hooks"]["on_switch"], "echo hi");
+        assert_eq!(s.runtime_json()["pending"].as_array().unwrap().len(), 3);
+        // A change to the value makes it pending again.
+        run(&s, "config_set", json!({ "path": "hooks.on_switch", "value_text": "echo hi; evil" }), "agent:tester");
+        assert_eq!(s.current().0.doc["hooks"]["on_switch"], "");
+        // Setting it back to the approved text is approved again (the approval is per (path, value)).
+        run(&s, "config_set", json!({ "path": "hooks.on_switch", "value_text": "echo hi" }), "agent:tester");
+        assert_eq!(s.current().0.doc["hooks"]["on_switch"], "echo hi");
+        // A hand edit of an executable setting waits just the same.
+        fs::write(d.0.join("config.toml"), "[hooks]\non_window_open = \"touch /tmp/x\"\n").unwrap();
         s.observe().unwrap();
-        assert_eq!(s.hook_owners(), json!({ "on_switch": "user" }));
-        // A hook cleared is nobody's.
-        run(&s, "config_unset", json!({ "path": "hooks.on_switch" }), "agent:b");
-        assert_eq!(s.hook_owners(), json!({}));
+        assert_eq!(s.current().0.doc["hooks"]["on_window_open"], "");
+        assert_eq!(s.runtime_json()["pending"][0]["written_by_hint"], "user");
+    }
+
+    #[test]
+    fn the_writer_hint_survives_fifty_changes_but_is_only_a_hint_and_approval_does_not_depend_on_it() {
+        let d = Dir::new("hint");
+        let s = svc(&d);
+        run(&s, "config_set", json!({ "path": "hooks.on_switch", "value_text": "echo hi" }), "agent:x");
+        for i in 0..60 {
+            run(&s, "config_set", json!({ "path": "animation.speed", "value_text": format!("0.{}", 1 + i % 2) }), "user");
+        }
+        // The version that set it was pruned: the hint is gone, and the hook is still pending.
+        let p = &s.runtime_json()["pending"][0];
+        assert_eq!(p["path"], "hooks.on_switch");
+        assert!(p["written_by_hint"].is_null(), "{p}");
+        assert_eq!(s.current().0.doc["hooks"]["on_switch"], "");
     }
 
     #[test]
@@ -1375,61 +1474,49 @@ mod tests {
     }
 
     #[test]
-    fn undo_steps_back_and_repeats_further() {
+    fn undo_is_recorded_history_is_never_deleted_and_repeating_goes_further_back() {
         let d = Dir::new("undo");
         let s = svc(&d);
-        for (p, v) in [
-            ("animation.speed", "0.5"),
-            ("behavior.follow_focus", "false"),
-            ("keys.bindings.mod+h", "exec foot"),
-        ] {
-            assert!(
-                run(
-                    &s,
-                    "config_set",
-                    json!({ "path": p, "value_text": v }),
-                    "user"
-                )
-                .env
-                .ok
-            );
+        for (p, v) in [("animation.speed", "0.5"), ("behavior.follow_focus", "false"), ("behavior.dock.edge", "left")] {
+            assert!(run(&s, "config_set", json!({ "path": p, "value_text": v }), "user").env.ok);
         }
+        let hist = |s: &Service| run(s, "config_history", json!({}), "u").env.data.unwrap()["versions"].as_array().unwrap().clone();
+        assert_eq!(hist(&s).len(), 4);
         let o = run(&s, "config_undo", json!({}), "agent:claude");
+        assert_eq!(code(&o), "not_in_scope", "an agent may undo only its own changes: {:?}", o.env);
+        let o = run(&s, "config_undo", json!({}), "user");
         assert!(o.env.ok, "{:?}", o.env);
-        assert!(o
-            .applied
-            .unwrap()
-            .effective
-            .bindings
-            .iter()
-            .all(|b| b.spelling != "mod+h"));
-        assert!(!fs::read_to_string(d.0.join("config.toml"))
-            .unwrap()
-            .contains("mod+h"));
-        let o = run(&s, "config_undo", json!({ "n": 2 }), "user");
-        assert!(o.env.ok, "{:?}", o.env);
+        assert_eq!(s.current().0.doc["behavior"]["dock"]["edge"], "bottom");
+        let h = hist(&s);
+        assert_eq!(h.len(), 5, "the undo is a new version, nothing was deleted");
+        assert_eq!(h[0]["caller"], "user");
+        assert!(h[0]["summary"].as_str().unwrap().starts_with("undo 1: back to version 3"), "{}", h[0]["summary"]);
+        assert!(h.iter().any(|v| v["summary"].as_str().unwrap().contains("behavior.dock.edge")), "the undone change is still in history");
+        // Repeating goes further back, it does not redo.
+        assert!(run(&s, "config_undo", json!({ "n": 1 }), "settings").env.ok);
+        assert_eq!(fs::read_to_string(d.0.join("config.toml")).unwrap().trim(), "[animation]\nspeed = 0.5");
+        assert_eq!(hist(&s).len(), 6);
+        assert_eq!(hist(&s)[0]["caller"], "settings");
+        assert!(run(&s, "config_undo", json!({}), "user").env.ok);
         assert_eq!(fs::read_to_string(d.0.join("config.toml")).unwrap(), "");
-        assert_eq!(
-            run(
-                &s,
-                "config_get",
-                json!({ "path": "behavior.follow_focus" }),
-                "user"
-            )
-            .env
-            .data
-            .unwrap()["value"],
-            true
-        );
-        assert_eq!(
-            code(&run(&s, "config_undo", json!({}), "user")),
-            "not_found",
-            "only the baseline is left"
-        );
-        assert_eq!(
-            code(&run(&s, "config_undo", json!({ "n": 0 }), "user")),
-            "invalid_args"
-        );
+        assert_eq!(code(&run(&s, "config_undo", json!({}), "user")), "not_found", "only the baseline is left");
+        assert_eq!(code(&run(&s, "config_undo", json!({ "n": 0 }), "user")), "invalid_args");
+        assert_eq!(code(&run(&s, "config_undo", json!({ "n": "3x" }), "user")), "invalid_args");
+        assert_eq!(code(&run(&s, "config_diff", json!({ "version": "v5" }), "user")), "invalid_args");
+    }
+
+    #[test]
+    fn an_agent_may_undo_its_own_last_changes_only() {
+        let d = Dir::new("undo-agent");
+        let s = svc(&d);
+        run(&s, "config_set", json!({ "path": "animation.speed", "value_text": "0.5" }), "user");
+        run(&s, "config_set", json!({ "path": "behavior.follow_focus", "value_text": "false" }), "agent:a");
+        run(&s, "config_set", json!({ "path": "behavior.dock.edge", "value_text": "left" }), "agent:a");
+        assert_eq!(code(&run(&s, "config_undo", json!({}), "agent:b")), "not_in_scope");
+        assert_eq!(code(&run(&s, "config_undo", json!({ "n": 3 }), "agent:a")), "not_in_scope", "the third is the user's");
+        assert!(run(&s, "config_undo", json!({ "n": 2 }), "agent:a").env.ok);
+        assert_eq!(s.current().0.doc["animation"]["speed"], 0.5);
+        assert_eq!(s.current().0.doc["behavior"]["follow_focus"], true);
     }
 
     #[test]
@@ -1477,7 +1564,7 @@ mod tests {
         assert_eq!(code(&o), "config_invalid");
         let o = run(&s, "config_reset", json!({ "section": "theme" }), "user");
         assert!(o.env.ok, "{:?}", o.env);
-        assert!(o.env.data.as_ref().unwrap()["kept_invalid_file"].is_string());
+        assert!(o.env.data.as_ref().unwrap()["kept_invalid_files"][0].is_string());
         let t = fs::read_to_string(d.0.join("config.toml")).unwrap();
         assert!(!t.contains("minimal") && t.contains("speed"), "{t}");
         assert!(fs::read_dir(&d.0).unwrap().flatten().any(|e| e
@@ -1744,6 +1831,91 @@ mod tests {
         let o = run(&s, "config_undo", json!({}), "u");
         assert!(o.env.ok, "{:?}", o.env);
         assert!(d.0.join("themes/mine.toml").exists());
+    }
+
+    #[test]
+    fn a_theme_file_that_cannot_be_read_is_reported_and_never_deleted_or_written_over() {
+        let d = Dir::new("unreadable");
+        let s = svc(&d);
+        fs::create_dir_all(d.0.join("themes")).unwrap();
+        fs::write(d.0.join("themes/old.toml"), b"# caf\xe9 (Latin-1)\nextends = \"omarchy\"\n").unwrap();
+        fs::write(d.0.join("themes/big.toml"), vec![b'#'; (1 << 20) + 10]).unwrap();
+        assert!(run(&s, "config_set", json!({ "path": "animation.speed", "value_text": "0.5" }), "user").env.ok);
+        assert!(d.0.join("themes/old.toml").exists() && d.0.join("themes/big.toml").exists(), "unreadable files stay");
+        assert_eq!(fs::read(d.0.join("themes/old.toml")).unwrap(), b"# caf\xe9 (Latin-1)\nextends = \"omarchy\"\n");
+        let v = run(&s, "config_validate", json!({ "text": "" }), "user").env.data.unwrap();
+        let w: Vec<&str> = v["warnings"].as_array().unwrap().iter().filter_map(|w| w["path"].as_str()).collect();
+        assert!(w.contains(&"themes.old") && w.contains(&"themes.big"), "{w:?}");
+        // A theme created and deleted through the service still goes.
+        assert!(run(&s, "theme_create", json!({ "name": "mine", "extends": "omarchy" }), "u").env.ok);
+        assert!(run(&s, "theme_delete", json!({ "name": "mine" }), "u").env.ok);
+        assert!(!d.0.join("themes/mine.toml").exists() && d.0.join("themes/old.toml").exists());
+        // Undo and reset leave them too.
+        assert!(run(&s, "config_undo", json!({ "n": 3 }), "u").env.ok);
+        assert!(run(&s, "config_reset", json!({}), "u").env.ok);
+        assert!(d.0.join("themes/old.toml").exists() && d.0.join("themes/big.toml").exists());
+    }
+
+    #[test]
+    fn a_number_outside_the_range_is_refused_and_the_file_is_untouched() {
+        let d = Dir::new("bignum");
+        let s = svc(&d);
+        fs::write(d.0.join("config.toml"), "# mine\n[animation]\nspeed = 0.5\n").unwrap();
+        s.observe().unwrap();
+        let before = fs::read_to_string(d.0.join("config.toml")).unwrap();
+        for v in ["18446744073709551615", "9223372036854775808", "-1e999", "1e400"] {
+            let o = run(&s, "config_set", json!({ "path": "animation.speed", "value_text": v }), "agent:x");
+            assert_eq!(code(&o), "config_invalid", "{v}: {:?}", o.env);
+        }
+        let o = run(&s, "config_apply", json!({ "text": "{\"animation\":{\"speed\":18446744073709551615}}" }), "agent:x");
+        assert_eq!(code(&o), "config_invalid");
+        let o = run(&s, "config_set", json!({ "path": "behavior.switcher.hold_ms", "value_text": "18446744073709551615" }), "agent:x");
+        assert_eq!(code(&o), "config_invalid");
+        assert_eq!(fs::read_to_string(d.0.join("config.toml")).unwrap(), before);
+    }
+
+    #[test]
+    fn apply_and_validate_refuse_the_same_documents() {
+        let d = Dir::new("same");
+        let s = svc(&d);
+        for doc in ["{\"keyz\":{}}", "{\"behavior\":{\"nope\":{}}}", "{\"theme\":{\"override\":{\"radius\":{\"huge\":1}}}}", "{\"keys\":{\"bindings\":{\"mod+q\":null}}}"] {
+            let v = run(&s, "config_validate", json!({ "text": doc }), "u");
+            let a = run(&s, "config_apply", json!({ "text": doc }), "u");
+            assert_eq!((code(&v), code(&a)), ("config_invalid".to_string(), "config_invalid".to_string()), "{doc}");
+        }
+        assert!(!d.0.join("config.toml").exists());
+        // A JSON null shadow means "no shadow", and is written that way.
+        let o = run(&s, "config_apply", json!({ "text": "{\"theme\":{\"override\":{\"shadow\":null,\"fill\":{\"material\":null}}}}" }), "u");
+        assert!(o.env.ok, "{:?}", o.env);
+        let t = fs::read_to_string(d.0.join("config.toml")).unwrap();
+        assert!(t.contains("shadow = false") && t.contains("material = \"none\""), "{t}");
+        let rt = s.runtime_json();
+        assert!(rt["resolved"]["theme"]["tokens"]["shadow"].is_null());
+        assert!(rt["resolved"]["theme"]["tokens"]["fill"]["material"].is_null());
+    }
+
+    #[test]
+    fn reset_and_undo_keep_aside_every_broken_file_they_write_over() {
+        let d = Dir::new("aside");
+        let s = svc(&d);
+        assert!(run(&s, "theme_create", json!({ "name": "mine", "extends": "omarchy" }), "u").env.ok);
+        assert!(run(&s, "config_set", json!({ "path": "theme.name", "value_text": "mine" }), "u").env.ok);
+        assert!(run(&s, "config_set", json!({ "path": "animation.speed", "value_text": "0.5" }), "u").env.ok);
+        // A mistake in the theme in use (the last good config keeps running).
+        fs::write(d.0.join("themes/mine.toml"), "extends = \"omarchy\"\n[radius]\ntile = -5\n").unwrap();
+        assert!(s.observe().is_err());
+        let o = run(&s, "config_undo", json!({}), "u");
+        assert!(o.env.ok, "{:?}", o.env);
+        let kept = o.env.data.as_ref().unwrap()["kept_invalid_files"].as_array().unwrap().clone();
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert!(kept[0].as_str().unwrap().contains("mine.toml.invalid-"));
+        assert!(fs::read_to_string(kept[0].as_str().unwrap()).unwrap().contains("tile = -5"));
+        assert!(!fs::read_to_string(d.0.join("themes/mine.toml")).unwrap().contains("-5"));
+        // The same through config.toml and undo.
+        fs::write(d.0.join("config.toml"), "[animation\nbroken").unwrap();
+        let o = run(&s, "config_undo", json!({}), "u");
+        assert!(o.env.ok, "{:?}", o.env);
+        assert!(fs::read_dir(&d.0).unwrap().flatten().any(|e| e.file_name().to_string_lossy().starts_with("config.toml.invalid-")));
     }
 
     #[test]

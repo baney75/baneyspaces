@@ -110,13 +110,13 @@
         "doc": {
           "keys": {
             "bindings": {
-              "super+1": "exec foot"
+              "super+1": "move 3"
             }
           }
         },
         "expect": "ok",
         "effective": {
-          "keys.bindings.super+1": "exec foot"
+          "keys.bindings.super+1": "move 3"
         }
       }
     ]
@@ -351,7 +351,9 @@
         "toml": "[behavior]\nfollow_focus = false\n[keys.bindings]\n\"mod+h\" = \"exec foot\"\n",
         "expect": "ok",
         "effective": {
-          "behavior.follow_focus": false,
+          "behavior.follow_focus": false
+        },
+        "configured": {
           "keys.bindings.mod+h": "exec foot"
         }
       }

@@ -5,6 +5,7 @@
 pub mod action;
 pub mod agent;
 pub mod animation;
+pub mod approvals;
 pub mod chord;
 pub mod config;
 pub mod config_schema;

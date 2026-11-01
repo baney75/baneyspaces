@@ -5,11 +5,11 @@
       {
         "do": "set",
         "path": "keys.bindings.mod+h",
-        "value": "exec foot",
+        "value": "move 4",
         "caller": "agent:claude",
         "expect": "ok",
         "effective": {
-          "keys.bindings.mod+h": "exec foot"
+          "keys.bindings.mod+h": "move 4"
         },
         "history": {
           "len": 2,
@@ -21,9 +21,15 @@
       },
       {
         "do": "undo",
+        "caller": "agent:claude",
         "expect": "ok",
         "history": {
-          "len": 1
+          "len": 3,
+          "callers": [
+            "agent:claude",
+            "agent:claude",
+            "system"
+          ]
         },
         "file": ""
       },
@@ -75,7 +81,14 @@
           "animation.respect_reduce_motion": true
         },
         "history": {
-          "len": 2
+          "len": 5,
+          "callers": [
+            "user",
+            "settings",
+            "user",
+            "user",
+            "system"
+          ]
         }
       },
       {
@@ -83,6 +96,101 @@
         "n": 5,
         "expect": {
           "error": "invalid_args"
+        }
+      },
+      {
+        "do": "undo",
+        "expect": "ok",
+        "effective": {
+          "animation.speed": 1.0
+        },
+        "history": {
+          "len": 6
+        }
+      },
+      {
+        "do": "undo",
+        "expect": {
+          "error": "not_found"
+        },
+        "history": {
+          "len": 6
+        }
+      }
+    ]
+  },
+  {
+    "name": "undo is history too: nothing is deleted, and an agent may undo only its own last changes",
+    "steps": [
+      {
+        "do": "set",
+        "path": "animation.speed",
+        "value": 0.5,
+        "caller": "user",
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.follow_focus",
+        "value": false,
+        "caller": "agent:a",
+        "expect": "ok"
+      },
+      {
+        "do": "undo",
+        "caller": "agent:b",
+        "expect": {
+          "error": "not_in_scope"
+        },
+        "history": {
+          "len": 3
+        }
+      },
+      {
+        "do": "undo",
+        "n": 2,
+        "caller": "agent:a",
+        "expect": {
+          "error": "not_in_scope"
+        },
+        "history": {
+          "len": 3
+        }
+      },
+      {
+        "do": "undo",
+        "caller": "agent:a",
+        "expect": "ok",
+        "history": {
+          "len": 4,
+          "callers": [
+            "agent:a",
+            "agent:a",
+            "user",
+            "system"
+          ]
+        },
+        "effective": {
+          "behavior.follow_focus": true,
+          "animation.speed": 0.5
+        }
+      },
+      {
+        "do": "undo",
+        "caller": "settings",
+        "expect": "ok",
+        "history": {
+          "len": 5,
+          "callers": [
+            "settings",
+            "agent:a",
+            "agent:a",
+            "user",
+            "system"
+          ]
+        },
+        "effective": {
+          "animation.speed": 1.0
         }
       }
     ]

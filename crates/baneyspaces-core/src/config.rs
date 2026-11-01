@@ -192,6 +192,30 @@ pub fn parse_document(text: &str) -> Result<Value, Issue> {
     }
 }
 
+/// JSON `null` is how a JSON document says "no shadow" and "no material"; TOML has no null, so those
+/// two become `false` and `"none"` (and nothing else is silently dropped).
+pub fn normalize_token_nulls(tokens: &mut Value) {
+    if tokens.get("shadow").is_some_and(Value::is_null) {
+        tokens["shadow"] = json!(false);
+    }
+    if tokens.pointer("/fill/material").is_some_and(Value::is_null) {
+        tokens["fill"]["material"] = json!("none");
+    }
+}
+
+/// [`normalize_token_nulls`] for a whole config document (`theme.override`).
+pub fn normalize_nulls(user: &mut Value) {
+    if let Some(o) = user.pointer_mut("/theme/override") {
+        normalize_token_nulls(o);
+    }
+}
+
+/// A document as TOML text, or why it cannot be written. Empty tables are dropped (the file holds
+/// only what differs).
+pub fn to_toml_checked(v: &Value) -> Result<String, String> {
+    toml::to_string(&pruned(v)).map_err(|e| e.to_string())
+}
+
 /// A document as TOML text. Empty tables are dropped (the file holds only what differs).
 pub fn to_toml(v: &Value) -> String {
     let pruned = prune(v).unwrap_or_else(|| json!({}));
@@ -936,7 +960,7 @@ pub fn validate(user: &Value, env: &Env, themes: &Themes) -> Validated {
     for (b, base) in all {
         if let Action::Mode(m) = &b.action {
             if m != "default" && !modes.contains_key(m) {
-                let mut p = base;
+                let mut p = base.clone();
                 p.push(b.spelling.clone());
                 issues.push(Issue::new(
                     &p,
@@ -945,11 +969,13 @@ pub fn validate(user: &Value, env: &Env, themes: &Themes) -> Validated {
                 ));
             }
         }
-        if matches!(b.action, Action::Exec(_)) {
+        if let Some(kind) = crate::approvals::action_kind(&b.action) {
+            let mut p = base.clone();
+            p.push(b.spelling.clone());
             warnings.push(Issue::new(
-                &["keys".into(), "bindings".into(), b.spelling.clone()],
-                "runs_commands",
-                "exec runs a command as you when the key is pressed",
+                &p,
+                "pending_approval",
+                format!("a {kind}: it stays inert until you approve it in Settings"),
             ));
         }
     }
@@ -1046,8 +1072,8 @@ pub fn validate(user: &Value, env: &Env, themes: &Themes) -> Validated {
         if user_str(user, &["hooks", h]).is_some_and(|s| !s.is_empty()) {
             warnings.push(Issue::new(
                 &["hooks".into(), h.into()],
-                "runs_commands",
-                "a hook runs a command as you on this event; it is logged and shown in Settings",
+                "pending_approval",
+                "a hook runs a command as you on this event; it stays inert until you approve it in Settings",
             ));
         }
     }

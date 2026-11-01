@@ -135,7 +135,7 @@ pub fn run_config_case(case: &Value) -> Result<(), String> {
     for (n, t) in case["themes"].as_object().into_iter().flatten() {
         std::fs::write(dir.join("themes").join(format!("{n}.toml")), crate::config::to_toml(t)).map_err(|e| e.to_string())?;
     }
-    let svc = Service::new(&dir, env);
+    let svc = Service::new(&dir, env).with_approvals(dir.join("state/approvals.json"));
     let result = (|| {
         for (i, step) in case["steps"].as_array().ok_or("no steps")?.iter().enumerate() {
             let kind = step["do"].as_str().unwrap_or("check");
@@ -163,6 +163,13 @@ pub fn run_config_case(case: &Value) -> Result<(), String> {
                         }
                     }
                 }
+                // The Settings UI's click: the one write that approves an executable entry.
+                "approve" => match svc.approve(step["path"].as_str().unwrap_or(""), step["value"].as_str().unwrap_or("")) {
+                    Ok(id) => crate::envelope::Envelope::ok(json!({ "approved": id })),
+                    Err(e) => return Err(at(format!("approve failed: {e}"))),
+                },
+                // Everything that asks for an approval by command is refused.
+                "approve_by_command" => svc.dispatch("config_approve", &json!({ "path": step["path"], "value": step["value"] }), caller).env,
                 "recovery" => {
                     let c = crate::chord::Chord::recovery();
                     crate::envelope::Envelope::ok(json!({ "chord": c.canonical(platform), "hold_ms": crate::chord::recovery_hold_ms() }))
@@ -200,12 +207,40 @@ pub fn run_config_case(case: &Value) -> Result<(), String> {
             if let (Some(data), Some(want)) = (env.data.as_ref(), step.get("data")) {
                 subset(want, data, "data").map_err(&at)?;
             }
-            let (eff, resolved, _) = svc.current();
+            let (eff, _, _) = svc.current();
+            let resolved = svc.runtime_json();
             for (p, want) in step["effective"].as_object().into_iter().flatten() {
                 let path = crate::config::parse_path(p).map_err(|e| at(e))?;
                 let got = crate::config::get_path(&eff.doc, &path);
                 if got != Some(want) {
                     return Err(at(format!("effective {p}: expected {want}, got {}", got.map(|v| v.to_string()).unwrap_or("nothing".into()))));
+                }
+            }
+            // What is configured, whether or not it runs (pending entries are in it).
+            for (p, want) in step["configured"].as_object().into_iter().flatten() {
+                let path = crate::config::parse_path(p).map_err(|e| at(e))?;
+                let l = svc.load();
+                let doc = l.validated.effective.as_ref().map(|e| e.doc.clone()).unwrap_or_default();
+                let got = crate::config::get_path(&doc, &path);
+                if got != Some(want) {
+                    return Err(at(format!("configured {p}: expected {want}, got {}", got.map(|v| v.to_string()).unwrap_or("nothing".into()))));
+                }
+            }
+            // Settings that must not be in what runs.
+            for p in step["absent"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+                let path = crate::config::parse_path(p).map_err(|e| at(e))?;
+                if let Some(v) = crate::config::get_path(&eff.doc, &path) {
+                    return Err(at(format!("effective {p} should not be there, but is {v}")));
+                }
+            }
+            // The executable entries still waiting for a click, by path.
+            if let Some(want) = step["pending"].as_array() {
+                let mut got: Vec<String> = resolved["pending"].as_array().into_iter().flatten().filter_map(|e| e["path"].as_str().map(String::from)).collect();
+                let mut want: Vec<String> = want.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+                got.sort();
+                want.sort();
+                if got != want {
+                    return Err(at(format!("pending {got:?}, expected {want:?}")));
                 }
             }
             for (p, want) in step["resolved"].as_object().into_iter().flatten() {

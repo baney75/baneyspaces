@@ -907,6 +907,9 @@ pub fn handle(shared: &Shared, req: &Value, peer: Option<u32>) -> Envelope {
             });
             Envelope::ok(json!({ "stopping": true }))
         }
+        // Test only: the Settings UI's click. It is the one thing that approves an executable setting; the
+        // real UI writes approvals.json the same way, and no CLI, MCP or socket operation does.
+        "test_settings_approve" => crate::cfg::test_approve(shared, &args),
         "test_register_pid" => {
             let mut c = lock(shared);
             let pid = args["pid"].as_u64().unwrap_or(0) as u32;
@@ -1469,8 +1472,8 @@ pub fn run(trace: bool) -> i32 {
                     lock(&shared).on_hypr_event(ev);
                     // Hooks and the config re-apply run with the lock released.
                     match after {
-                        HyprEvent::Workspace { id } if (1..=9).contains(&id) => crate::cfg::fire_hook(&shared, "on_switch", vec![("BANEYSPACES_WORKSPACE", id.to_string())]),
-                        HyprEvent::OpenWindow { addr } => crate::cfg::fire_hook(&shared, "on_window_open", vec![("BANEYSPACES_WINDOW", addr)]),
+                        HyprEvent::Workspace { id } if (1..=9).contains(&id) => crate::cfg::fire_hook("on_switch", vec![("BANEYSPACES_WORKSPACE", id.to_string())]),
+                        HyprEvent::OpenWindow { addr } => crate::cfg::fire_hook("on_window_open", vec![("BANEYSPACES_WINDOW", addr)]),
                         HyprEvent::ConfigReloaded => crate::cfg::reload(&shared),
                         _ => {}
                     }

@@ -40,26 +40,69 @@ hl.config({ misc = { focus_on_activate = false } })
 
 -- The recovery chord: hold Super+Shift+Escape for two seconds to put the default keys and theme back.
 -- Bound here, always, and again inside every mode. Config can neither bind nor remove it (spec/config.md).
+-- A hold is continuous: every 100 ms all three keys must still be down, any release cancels it, and a newer
+-- press makes an older one void. (hl.is_key_down takes keysym names; an unknown name answers nil.)
+__baneyspaces_hold_gen = 0
+local function key_down(left, right) return hl.is_key_down(left) or (right ~= nil and hl.is_key_down(right)) end
+local function chord_held()
+  return key_down("Super_L", "Super_R") and key_down("Shift_L", "Shift_R") and key_down("Escape")
+end
+function __baneyspaces_recovery_fire()
+  pcall(hl.dispatch, hl.dsp.submap("reset"))
+  hl.exec_cmd("baneyspaces config reset keys --notify")
+  hl.exec_cmd("baneyspaces config reset theme --notify")
+end
+function __baneyspaces_recovery_press()
+  __baneyspaces_hold_gen = __baneyspaces_hold_gen + 1
+  local gen, waited = __baneyspaces_hold_gen, 0
+  local function tick()
+    if gen ~= __baneyspaces_hold_gen or not chord_held() then return end
+    waited = waited + 100
+    if waited >= 2000 then
+      __baneyspaces_recovery_fire()
+    else
+      hl.timer(tick, { timeout = 100, type = "oneshot" })
+    end
+  end
+  hl.timer(tick, { timeout = 100, type = "oneshot" })
+end
 function __baneyspaces_recovery(bindfn)
-  bindfn("SUPER + SHIFT + Escape", function()
-    hl.timer(function()
-      if hl.is_key_down("Escape") then
-        hl.exec_cmd("baneyspaces config reset keys --notify")
-        hl.exec_cmd("baneyspaces config reset theme --notify")
-      end
-    end, { timeout = 2000, type = "oneshot" })
-  end, "BaneySpaces: recovery (hold 2 s)")
+  bindfn("SUPER + SHIFT + Escape", function() __baneyspaces_recovery_press() end, "BaneySpaces: recovery (hold 2 s)")
 end
 __baneyspaces_recovery(function(keys, dsp, desc) hl.bind(keys, dsp, { description = desc }) end)
 
--- Your keys: the daemon writes them from config.toml (baneyspaces config set keys.bindings...).
--- Until it has, or when there is no daemon, the defaults below keep every workspace key working.
-local generated = (os.getenv("XDG_STATE_HOME") or ((os.getenv("HOME") or "") .. "/.local/state")) .. "/baneyspaces/hyprland-keys.lua"
-local gf = io.open(generated, "r")
-if gf then
-  gf:close()
-  dofile(generated)
-else
+-- The default keys: they keep every workspace key working until the daemon has written yours, with no
+-- daemon, and when your keys file fails.
+local function bind_defaults()
+  pcall(hl.unbind, "SUPER + code:10")
+  pcall(hl.unbind, "SUPER + code:11")
+  pcall(hl.unbind, "SUPER + code:12")
+  pcall(hl.unbind, "SUPER + code:13")
+  pcall(hl.unbind, "SUPER + code:14")
+  pcall(hl.unbind, "SUPER + code:15")
+  pcall(hl.unbind, "SUPER + code:16")
+  pcall(hl.unbind, "SUPER + code:17")
+  pcall(hl.unbind, "SUPER + code:18")
+  pcall(hl.unbind, "SUPER + SHIFT + code:10")
+  pcall(hl.unbind, "SUPER + SHIFT + code:11")
+  pcall(hl.unbind, "SUPER + SHIFT + code:12")
+  pcall(hl.unbind, "SUPER + SHIFT + code:13")
+  pcall(hl.unbind, "SUPER + SHIFT + code:14")
+  pcall(hl.unbind, "SUPER + SHIFT + code:15")
+  pcall(hl.unbind, "SUPER + SHIFT + code:16")
+  pcall(hl.unbind, "SUPER + SHIFT + code:17")
+  pcall(hl.unbind, "SUPER + SHIFT + code:18")
+  pcall(hl.unbind, "SUPER + SHIFT + ALT + code:10")
+  pcall(hl.unbind, "SUPER + SHIFT + ALT + code:11")
+  pcall(hl.unbind, "SUPER + SHIFT + ALT + code:12")
+  pcall(hl.unbind, "SUPER + SHIFT + ALT + code:13")
+  pcall(hl.unbind, "SUPER + SHIFT + ALT + code:14")
+  pcall(hl.unbind, "SUPER + SHIFT + ALT + code:15")
+  pcall(hl.unbind, "SUPER + SHIFT + ALT + code:16")
+  pcall(hl.unbind, "SUPER + SHIFT + ALT + code:17")
+  pcall(hl.unbind, "SUPER + SHIFT + ALT + code:18")
+  pcall(hl.unbind, "SUPER + TAB")
+  pcall(hl.unbind, "SUPER + GRAVE")
   hl.bind("SUPER + code:10", hl.dsp.exec_cmd("baneyspaces switch 1"), { description = "BaneySpaces: workspace 1" })
   hl.bind("SUPER + code:11", hl.dsp.exec_cmd("baneyspaces switch 2"), { description = "BaneySpaces: workspace 2" })
   hl.bind("SUPER + code:12", hl.dsp.exec_cmd("baneyspaces switch 3"), { description = "BaneySpaces: workspace 3" })
@@ -89,4 +132,25 @@ else
   hl.bind("SUPER + SHIFT + ALT + code:18", hl.dsp.exec_cmd("baneyspaces move 9 --stay"), { description = "BaneySpaces: send window to workspace 9, stay here" })
   hl.bind("SUPER + TAB", hl.dsp.exec_cmd("baneyspaces overview"), { description = "BaneySpaces: overview" })
   hl.bind("SUPER + GRAVE", hl.dsp.exec_cmd("baneyspaces agent-workspace toggle"), { description = "BaneySpaces: show or hide the agent workspace" })
+end
+
+-- Your keys: the daemon writes them from config.toml (baneyspaces config set keys.bindings...). A file that
+-- fails to run falls back to the defaults, and says why in keys-error.txt next to it.
+local state = (os.getenv("XDG_STATE_HOME") or ((os.getenv("HOME") or "") .. "/.local/state")) .. "/baneyspaces"
+local generated = state .. "/hyprland-keys.lua"
+local gf = io.open(generated, "r")
+local loaded = false
+if gf then
+  gf:close()
+  local ok, err = pcall(dofile, generated)
+  if ok then
+    loaded = true
+  else
+    local ef = io.open(state .. "/keys-error.txt", "w")
+    if ef then ef:write(tostring(err), "\n") ef:close() end
+    hl.exec_cmd("notify-send -a BaneySpaces 'BaneySpaces: your keys file failed' 'The default keys are on. See keys-error.txt in the BaneySpaces state folder.'")
+  end
+end
+if not loaded then
+  bind_defaults()
 end
