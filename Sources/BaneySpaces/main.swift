@@ -14,9 +14,13 @@ if let i = CommandLine.arguments.firstIndex(of: "--bangs") {
     exit(Launcher.commandLine(Array(CommandLine.arguments[(i + 1)...])))
 }
 
-// A plain launch (the one-shot `--` commands the delegate answers don't count) stops after
-// repeated crashes instead of crashing again (`CrashLoopGuard`).
-if !CommandLine.arguments.dropFirst().contains(where: { $0.hasPrefix("--") }) { CrashLoop.checkLaunch() }
+// One-shots the delegate answers and exits on don't count as a launch. `--setup` and a plain
+// start do (`CrashLoopGuard`): any other `--` flag used to skip the guard and leave a crash loop
+// uncounted.
+let crashLoopOneShots: Set<String> = [
+    "--restore-shortcuts", "--restore-dock", "--check-settings", "--unregister-login",
+]
+if Set(CommandLine.arguments).isDisjoint(with: crashLoopOneShots) { CrashLoop.checkLaunch() }
 
 let app = NSApplication.shared
 let delegate = AppDelegate()

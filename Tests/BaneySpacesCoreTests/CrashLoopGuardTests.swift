@@ -65,7 +65,7 @@ final class CrashLoopGuardTests: XCTestCase {
         XCTAssertEqual(crashThenStart(f, pid: 101, at: 13), .start, "1 crash")
         XCTAssertEqual(crashThenStart(f, pid: 102, at: 26), .start, "2 crashes")
         XCTAssertEqual(crashThenStart(f, pid: 103, at: 39), .stop(crashes: 3))
-        XCTAssertNil(f.read().running, "a stopped start isn't a run")
+        XCTAssertEqual(f.read().running, [], "a stopped start isn't a run")
         // Still stopped while a relauncher keeps trying: a stopped start doesn't crash.
         XCTAssertEqual(crashThenStart(f, pid: 104, at: 52), .stop(crashes: 3))
         // Five minutes after the first crash the budget frees up.
@@ -98,7 +98,7 @@ final class CrashLoopGuardTests: XCTestCase {
 
     func testTheLedgerRoundTrips() {
         let f = file()
-        let ledger = CrashLedger(crashes: [t0, t0.addingTimeInterval(13)], running: .init(pid: 42, started: t0.addingTimeInterval(20)))
+        let ledger = CrashLedger(crashes: [t0, t0.addingTimeInterval(13)], running: [.init(pid: 42, started: t0.addingTimeInterval(20))])
         XCTAssertTrue(f.write(ledger))
         XCTAssertEqual(f.read(), ledger)
         // Another process (the next launch) reads the same file.
@@ -107,7 +107,7 @@ final class CrashLoopGuardTests: XCTestCase {
 
     func testTheLedgerKeepsOnlyCrashesThatCanStillCount() {
         let f = file()
-        XCTAssertTrue(f.write(CrashLedger(crashes: [t0, t0.addingTimeInterval(1)], running: .init(pid: 1, started: t0))))
+        XCTAssertTrue(f.write(CrashLedger(crashes: [t0, t0.addingTimeInterval(1)], running: [.init(pid: 1, started: t0)])))
         XCTAssertEqual(f.begin(pid: 2, now: t0.addingTimeInterval(1000), isAlive: dead), .start)
         XCTAssertEqual(f.read().crashes, [t0.addingTimeInterval(1000)])
     }
@@ -118,7 +118,7 @@ final class CrashLoopGuardTests: XCTestCase {
             try Data(junk.utf8).write(to: url)
             XCTAssertEqual(file().read(), CrashLedger(), junk)
             XCTAssertEqual(file().begin(pid: 7, now: t0, isAlive: dead), .start, junk)
-            XCTAssertEqual(file().read().running?.pid, 7, "a damaged ledger is replaced by a good one")
+            XCTAssertEqual(file().read().running.map(\.pid), [7], "a damaged ledger is replaced by a good one")
         }
     }
 
@@ -126,4 +126,27 @@ final class CrashLoopGuardTests: XCTestCase {
         let f = CrashLedgerFile(url: URL(fileURLWithPath: "/dev/null/no/\(CrashLedgerFile.fileName)"), policy: CrashLoopGuard())
         XCTAssertEqual(f.begin(pid: 1, now: t0, isAlive: dead), .start)
     }
+
+    /// A starts, B starts beside it, B quits cleanly, A crashes: the next launch must still see A's crash.
+    func testASecondProcessDoesNotEraseTheFirstRun() {
+        let f = file(CrashLoopGuard(limit: 1, window: 300))
+        XCTAssertEqual(f.begin(pid: 500, now: t0, isAlive: dead), .start)
+        // B starts while A (500) is alive.
+        XCTAssertEqual(f.begin(pid: 501, now: t0.addingTimeInterval(1), isAlive: { $0 == 500 }), .start)
+        XCTAssertEqual(Set(f.read().running.map(\.pid)), Set([500, 501]))
+        f.end(pid: 501)
+        XCTAssertEqual(f.read().running.map(\.pid), [500], "B's clean quit must leave A's run")
+        // A is gone without end → crash.
+        XCTAssertEqual(f.begin(pid: 502, now: t0.addingTimeInterval(2), isAlive: dead), .stop(crashes: 1))
+    }
+
+    /// `--setup` is a full launch and must stay guarded; only uninstall one-shots skip (checked in main.swift).
+    func testTheOneShotExemptionsAreTheUninstallerFlags() {
+        let oneShots: Set<String> = [
+            "--restore-shortcuts", "--restore-dock", "--check-settings", "--unregister-login",
+        ]
+        XCTAssertFalse(oneShots.contains("--setup"))
+        XCTAssertFalse(oneShots.contains("--render"))
+    }
+
 }

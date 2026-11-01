@@ -57,10 +57,11 @@ public struct CrashLedger: Codable, Equatable {
 
     /// When each crash was found (at the start after it).
     public var crashes: [Date]
-    /// The run under way; nil after a clean quit.
-    public var running: Run?
+    /// Every start still under way. More than one is rare (a second BaneySpaces while the first
+    /// lives); both are kept so a later clean quit of the second cannot erase the first's crash.
+    public var running: [Run]
 
-    public init(crashes: [Date] = [], running: Run? = nil) {
+    public init(crashes: [Date] = [], running: [Run] = []) {
         self.crashes = crashes
         self.running = running
     }
@@ -102,22 +103,29 @@ public struct CrashLedgerFile {
     /// copy started beside the first isn't a crash of the first).
     public func begin(pid: Int32, now: Date, isAlive: (Int32) -> Bool) -> CrashLoopGuard.Decision {
         var ledger = read()
-        if let run = ledger.running, run.pid != pid, !isAlive(run.pid) { ledger.crashes.append(now) }
-        ledger.running = nil
+        var still: [CrashLedger.Run] = []
+        for run in ledger.running where run.pid != pid {
+            if isAlive(run.pid) {
+                still.append(run)
+            } else {
+                ledger.crashes.append(now)
+            }
+        }
         // Only the crashes that can still count are kept, so the file stays small.
         ledger.crashes = policy.recent(ledger.crashes, now: now)
         let decision = policy.decide(ledger.crashes, now: now)
-        if decision == .start { ledger.running = .init(pid: pid, started: now) }
+        if decision == .start { still.append(.init(pid: pid, started: now)) }
+        ledger.running = still
         write(ledger)
         return decision
     }
 
-    /// A clean quit: this run is over, and it didn't crash.
+    /// A clean quit: this run is over, and it didn't crash. Other live runs stay recorded.
     public func end(pid: Int32) {
         var ledger = read()
-        guard ledger.running?.pid == pid else { return }
-        ledger.running = nil
-        write(ledger)
+        let before = ledger.running.count
+        ledger.running.removeAll { $0.pid == pid }
+        if ledger.running.count != before { write(ledger) }
     }
 
     /// Start Anyway: the crashes so far are forgiven.
