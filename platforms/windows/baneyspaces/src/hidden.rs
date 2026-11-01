@@ -17,6 +17,10 @@ pub enum How {
     Cloak,
     /// Moved off every screen: the fallback when the cloak call is refused.
     Park,
+    /// Fully transparent, click-through and unable to take focus, but still on screen and not
+    /// cloaked. Used only for the agent workspace: the hands engine (UI Automation) skips cloaked
+    /// windows, so an agent's window has to stay un-cloaked to be drivable.
+    Ghost,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,6 +36,9 @@ pub struct Hidden {
     /// The window belongs to a process started for an agent.
     #[serde(default)]
     pub agent: bool,
+    /// A ghosted window's extended style before we changed it, to put back.
+    #[serde(default)]
+    pub ex_style: Option<i64>,
 }
 
 /// An agent process BaneySpaces started, so a restarted daemon still knows it.
@@ -58,12 +65,6 @@ impl HiddenSet {
     }
     pub fn contains(&self, hwnd: i64) -> bool {
         self.map.contains_key(&hwnd)
-    }
-    pub fn iter(&self) -> impl Iterator<Item = &Hidden> {
-        self.map.values()
-    }
-    pub fn len(&self) -> usize {
-        self.map.len()
     }
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(self.map.values().collect::<Vec<_>>()).unwrap_or_default()
@@ -127,7 +128,7 @@ mod tests {
     use super::*;
 
     fn h(hwnd: i64, pid: u32, agent: bool) -> Hidden {
-        Hidden { hwnd, pid, start: 7, how: How::Cloak, rect: None, agent }
+        Hidden { hwnd, pid, start: 7, how: How::Cloak, rect: None, agent, ex_style: None }
     }
 
     #[test]

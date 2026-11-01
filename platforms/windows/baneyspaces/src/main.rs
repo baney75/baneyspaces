@@ -1,9 +1,11 @@
+#![cfg_attr(not(windows), allow(dead_code, unused_imports))]
 //! `baneyspaces` for Windows. The CLI sends one request to `baneyspaces daemon` over a named pipe
 //! and prints the envelope; `baneyspaces mcp` serves the agent tools over stdio.
 //!
 //! Everything that touches Windows is behind `cfg(windows)`; the rest (request parsing, the key
 //! map, the persisted hidden list, the engine's envelope mapping) builds and is tested anywhere.
 
+mod cmdline;
 mod engine;
 mod hidden;
 mod ipc;
