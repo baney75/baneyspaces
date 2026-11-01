@@ -15,7 +15,9 @@ class App(Gtk.Application):
         # By default every run is its own process (NON_UNIQUE). With --unique it is a normal
         # single-instance GApplication: a second run forwards to the first and exits.
         unique = "--unique" in sys.argv
-        super().__init__(application_id="dev.baneyspaces.TestApp", flags=Gio.ApplicationFlags.DEFAULT_FLAGS if unique else Gio.ApplicationFlags.NON_UNIQUE)
+        # TEST_APP_ID gives the window class (Wayland app id); TEST_APP_SECOND_TITLE opens a second
+        # window in the same process, as an emulator opens its toolbar or extended controls.
+        super().__init__(application_id=os.environ.get("TEST_APP_ID", "dev.baneyspaces.TestApp"), flags=Gio.ApplicationFlags.DEFAULT_FLAGS if unique else Gio.ApplicationFlags.NON_UNIQUE)
         self.count = 0
 
     def do_activate(self):
@@ -32,7 +34,10 @@ class App(Gtk.Application):
             box.append(w)
         win.set_child(box)
         win.present()
-        GLib.timeout_add(300, self.announce)
+        second = os.environ.get("TEST_APP_SECOND_TITLE")
+        if second:
+            GLib.timeout_add(400, lambda: (Gtk.ApplicationWindow(application=self, title=second, default_width=240, default_height=120).present(), False)[1])
+        GLib.timeout_add(900 if second else 300, self.announce)
 
     def announce(self):
         print("ready", os.getpid(), flush=True)
@@ -44,4 +49,6 @@ class App(Gtk.Application):
 
 
 if __name__ == "__main__":
+    if os.environ.get("TEST_APP_ID"):
+        GLib.set_prgname(os.environ["TEST_APP_ID"])  # GTK on Wayland takes the window class from here
     sys.exit(App().run([]))  # arguments are read above, not by GApplication
