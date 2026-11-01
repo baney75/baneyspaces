@@ -89,6 +89,8 @@ final class DeckController {
     var agentHost = AgentHost()
     /// The agent hands: snapshot and act on the agent workspace (see Hands/).
     let hands = HandsRouter()
+    /// Answers `baneyspaces sandbox …` (the app delegate sets it); called off the main thread.
+    var sandboxHandler: ((Wire.Request) -> Wire.Reply)?
 
     /// Set by the app delegate: the menu bar badge shows how many agents finished unseen.
     var onUnseenChange: (Int) -> Void = { _ in }
@@ -141,6 +143,7 @@ final class DeckController {
         phones.start()
         server.handle = { [weak self] in self?.handle($0) ?? Wire.Reply(ok: false) }
         server.handleHands = { [weak self] in self?.handleHands($0) ?? Wire.Reply(ok: false) }
+        server.handleSandbox = { [weak self] in self?.sandboxHandler?($0) ?? Wire.Reply(ok: false, error: "the sandbox isn't ready") }
         server.start()
         remote.handle = { [weak self] in self?.handle($0) ?? Wire.Reply(ok: false) }
         if Self.remoteEnabled { startRemote() }
@@ -424,6 +427,10 @@ final class DeckController {
             guard engine.send(item, r.text ?? "") else { return .init(ok: false, error: "\(item.label) isn't a Ghostty terminal") }
             return .init(ok: true, info: ["id": item.id, "label": item.label])
         case .agent: return agent(r.text ?? "status", r.args ?? [])
+        case .sandbox:
+            // Answered by the server off the main thread (`handleSandbox`); a sandbox request that
+            // reaches here came through a path that doesn't know how.
+            return .init(ok: false, error: "sandbox requests are not answered on the main thread")
         case .remote:
             switch r.text ?? "status" {
             case "on":

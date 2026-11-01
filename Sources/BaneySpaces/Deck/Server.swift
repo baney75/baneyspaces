@@ -9,6 +9,9 @@ final class Server {
     /// of a slow app must never freeze the menu bar, the dock or a workspace switch. The hands
     /// hop to the main thread only for the few reads that need it.
     var handleHands: (Wire.Request) -> Wire.Reply = { _ in Wire.Reply(ok: false, error: "not ready") }
+    /// Sandbox requests take seconds to a minute (a VM boots), so they never run on the main thread:
+    /// the Deck, the dock and the hotkeys stay responsive while one waits.
+    var handleSandbox: (Wire.Request) -> Wire.Reply = { _ in Wire.Reply(ok: false, error: "not ready") }
     private var fd: Int32 = -1
     private var source: DispatchSourceRead?
     private let io = DispatchQueue(label: "deck.socket", attributes: .concurrent)
@@ -63,7 +66,11 @@ final class Server {
             if let why = SocketPolicy.refusal(for: req) {
                 reply = Wire.Reply(ok: false, error: why)
             } else {
-                reply = req.op == .hands ? handleHands(req) : DispatchQueue.main.sync { handle(req) }
+                if req.op == .sandbox {
+                    reply = handleSandbox(req)
+                } else {
+                    reply = req.op == .hands ? handleHands(req) : DispatchQueue.main.sync { handle(req) }
+                }
             }
         } else {
             reply = Wire.Reply(ok: false, error: "bad request")

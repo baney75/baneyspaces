@@ -180,6 +180,9 @@ public enum SocketPolicy {
     public static let humanOnly: Set<String> = ["lend", "return", "grant"]
 
     public static func refusal(for r: Wire.Request) -> String? {
+        if r.op == .sandbox, r.text?.lowercased() == "images" {
+            return "deleting the sandbox's images (24 GB to download again) is Donovan's to do: Settings > Agents > Delete Images"
+        }
         guard r.op == .agent, let text = r.text?.lowercased(), humanOnly.contains(text) else { return nil }
         return "\(text) is Donovan's to do: `baneyspaces agent lend <app>` asks him in a sheet in BaneySpaces; nothing sent on this socket lends an app"
     }
