@@ -7,6 +7,8 @@ public enum FileTrace: Sendable {
     public static let defaultMaxBytes = 200_000
     public static let defaultMaxFiles = 3
 
+    private static let lock = NSLock()
+
     /// Appends `line` (a newline is added). Rotates when the active file would exceed `maxBytes`.
     public static func append(
         _ line: String,
@@ -18,18 +20,21 @@ public enum FileTrace: Sendable {
     ) throws {
         precondition(maxBytes > 0)
         precondition(maxFiles >= 1)
+        lock.lock()
+        defer { lock.unlock() }
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         let active = directory.appendingPathComponent(name)
         let text = line.hasSuffix("\n") ? line : line + "\n"
         let payload = Data(text.utf8)
         let size = (try? fileManager.attributesOfItem(atPath: active.path)[.size] as? Int) ?? 0
         if size > 0, size + payload.count > maxBytes {
-            try rotate(directory: directory, name: name, maxFiles: maxFiles, fileManager: fileManager)
+            try rotateUnlocked(directory: directory, name: name, maxFiles: maxFiles, fileManager: fileManager)
         }
-        if let handle = try? FileHandle(forWritingTo: active) {
+        if fileManager.fileExists(atPath: active.path) {
+            let handle = try FileHandle(forWritingTo: active)
             defer { try? handle.close() }
-            handle.seekToEndOfFile()
-            handle.write(payload)
+            try handle.seekToEnd()
+            try handle.write(contentsOf: payload)
         } else {
             try payload.write(to: active, options: .atomic)
         }
@@ -43,6 +48,17 @@ public enum FileTrace: Sendable {
         fileManager: FileManager = .default
     ) throws {
         precondition(maxFiles >= 1)
+        lock.lock()
+        defer { lock.unlock() }
+        try rotateUnlocked(directory: directory, name: name, maxFiles: maxFiles, fileManager: fileManager)
+    }
+
+    private static func rotateUnlocked(
+        directory: URL,
+        name: String,
+        maxFiles: Int,
+        fileManager: FileManager
+    ) throws {
         let active = directory.appendingPathComponent(name)
         if maxFiles == 1 {
             try? fileManager.removeItem(at: active)
