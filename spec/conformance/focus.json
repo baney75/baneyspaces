@@ -46,7 +46,7 @@
   ]
  },
  {
-  "name": "a user activation on the other monitor takes you to that monitor",
+  "name": "a user activation of a window on the other display goes to that display",
   "rules": [
    "R-F1"
   ],
@@ -67,19 +67,18 @@
     "monitor": "B"
    },
    {
-    "do": "switch",
-    "n": 3,
-    "monitor": "B"
-   },
-   {
     "do": "activate",
     "window": "w1",
     "cause": "user",
+    "effects": [],
     "expect": {
      "focused_monitor": "B",
      "monitors": {
-      "B": {
+      "A": {
        "current": 1
+      },
+      "B": {
+       "current": 2
       }
      },
      "active": "w1"
@@ -176,7 +175,7 @@
   ]
  },
  {
-  "name": "an app activating the other monitor's window does not move your focus",
+  "name": "an app activating the other display's window does not move your focus",
   "rules": [
    "R-F2"
   ],
@@ -206,6 +205,17 @@
     "do": "activate",
     "window": "w2",
     "cause": "app",
+    "effects": [
+     {
+      "do": "refuse_follow",
+      "window": "w2",
+      "reason": "not_user_caused"
+     },
+     {
+      "do": "focus_window",
+      "window": "w1"
+     }
+    ],
     "expect": {
      "focused_monitor": "A",
      "active": "w1"

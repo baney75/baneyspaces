@@ -15,19 +15,23 @@ platforms/linux/tests/         nested.sh (the integration test), omarchy-scripts
 
 ## How BaneySpaces workspaces map onto Hyprland's
 
+One shared pool of nine, as on the Mac: workspace n is Hyprland workspace `n`, and each display
+shows one of them, never the same as another display.
+
 | BaneySpaces | Hyprland |
 | --- | --- |
-| Monitor slot 0, workspace n (1-9) | workspace `n` |
-| Monitor slot s >= 1, workspace n | workspace `100*s + n` (101-109, 201-209, ...) |
+| Workspace n (1-9) | workspace `n` |
+| `switch n`, n shown on no display | the display you are on shows `n`: the daemon brings workspace `n` to it (`workspace.move`) if Hyprland keeps it on another monitor, then focuses it |
+| `switch n`, n shown on another display | focus that display; nothing else changes |
 | The agent workspace | the special workspace `special:agent` |
 | Anything else (workspace 10, `special:scratchpad`, named workspaces) | not ours: never moved, never counted |
 
-A monitor's slot is its place in the order the daemon first saw monitors (kept in
-`monitors.json`); an unplugged monitor frees its slot and the next one takes the lowest free. Each
-id is pinned to its monitor with a workspace rule, so a window sent to 105 lands on the second
-monitor even while you are on the first. A monitor showing an empty workspace that is not its own
-(Hyprland's default for a new monitor) is given its workspace 1; one showing something you keep
-(workspace 10) is left alone.
+A new display shows an empty workspace nobody shows (the one it showed last, if free). An
+unplugged display's workspace goes out of sight with its windows in it until you go to it; after
+Hyprland hands the orphaned workspaces to another monitor, the daemon puts each remaining display
+back on what it was showing. A display showing an empty, non-persistent workspace outside the nine
+is given one of the nine; one showing something you keep (workspace 10 with the work dashboard) is
+left alone, and a switch to 1-9 there simply takes over that display.
 
 Switches are instant: the daemon turns the `workspaces` and `specialWorkspace` animations off
 (`hl.animation`) at start and after every config reload, and the include does the same in config.
@@ -81,14 +85,14 @@ Part 1 does not apply it to any seat.
 ## Tests
 
 ```sh
-cargo test                                  # core, the 68 conformance cases, the daemon's pure parts
+cargo test                                  # core, the 78 conformance cases, the daemon's pure parts
 platforms/linux/tests/omarchy-scripts.sh    # install/uninstall against a throwaway HOME
 platforms/linux/tests/nested.sh             # the integration test; prints PASS or FAIL with counts
 ```
 
 `nested.sh` starts Hyprland inside its own headless host compositor (`build-host.sh`), its own D-Bus
 session and AT-SPI bus, under `/tmp`, and records the real session's `hyprctl` state before and
-after (it must be identical). It drives two virtual monitors, switches 1-9 on both, opens windows,
+after (it must be identical). It drives two virtual monitors, switches 1-9 on both (each shows one, never the same), opens windows,
 opens apps on `special:agent`, runs the hands on a GTK4 app there, and after every agent step checks
 that your front window, both monitors' workspaces, the pointer and the agent workspace's visibility
 did not change.

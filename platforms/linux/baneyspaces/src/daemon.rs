@@ -5,7 +5,7 @@ use crate::hands;
 use crate::hypr::{parse_event, Hypr, HyprEvent};
 use crate::paths::Paths;
 use crate::proc;
-use crate::scheme::{decode, lua_str, sh_quote, ws_id, AGENT_SPECIAL, AGENT_SPECIAL_NAME};
+use crate::scheme::{decode, lua_str, sh_quote, AGENT_SPECIAL, AGENT_SPECIAL_NAME};
 use baneyspaces_core::agent::ActionRecord;
 use baneyspaces_core::envelope::{Envelope, Retry};
 use baneyspaces_core::model::{Cause, Effect, Event, Home, Model, ModelError};
@@ -135,61 +135,51 @@ impl Core {
 
     // ---- Hyprland setup ------------------------------------------------------------------
 
-    /// Pins each monitor's nine workspaces to it, turns workspace animations off and stops apps
-    /// taking focus by asking. Run at start and after every config reload.
+    /// Turns workspace animations off, stops apps taking focus by asking, and gives a display that
+    /// shows nothing of ours a workspace. Run at start and after every config reload.
     pub fn configure_hyprland(&self) {
-        self.configure_rules();
+        let _ = self.hypr.eval("hl.animation({ leaf = \"workspaces\", enabled = false })");
+        let _ = self.hypr.eval("hl.animation({ leaf = \"specialWorkspace\", enabled = false })");
+        let _ = self.hypr.eval("hl.config({ misc = { focus_on_activate = false } })");
         self.adopt_monitors();
     }
 
-    fn configure_rules(&self) {
-        for name in self.model.monitors().map(String::from).collect::<Vec<_>>() {
-            let Some(slot) = self.model.slot(&name) else {
-                continue;
-            };
-            for n in 1..=9u8 {
-                let _ = self.hypr.eval(&format!(
-                    "hl.workspace_rule({{ workspace = {}, monitor = {} }})",
-                    lua_str(&ws_id(slot, n).to_string()),
-                    lua_str(&name)
-                ));
-            }
-        }
-        let _ = self
-            .hypr
-            .eval("hl.animation({ leaf = \"workspaces\", enabled = false })");
-        let _ = self
-            .hypr
-            .eval("hl.animation({ leaf = \"specialWorkspace\", enabled = false })");
-        let _ = self
-            .hypr
-            .eval("hl.config({ misc = { focus_on_activate = false } })");
-    }
-
-    /// A monitor showing an empty, non-persistent workspace that is not one of its own nine (the
-    /// default Hyprland gave a new monitor) is given its workspace 1. A monitor showing anything
-    /// you keep there (workspace 10 with the work dashboard) is left alone.
+    /// A display showing an empty, non-persistent workspace that is not one of the nine (the
+    /// default Hyprland gives a new monitor) shows the workspace the model picked for it (R-M2).
+    /// A display showing anything you keep (workspace 10 with the work dashboard) is left alone.
     fn adopt_monitors(&self) {
         let Ok(spaces) = self.hypr.json("workspaces") else { return };
         let spaces = spaces.as_array().cloned().unwrap_or_default();
         let before = self.monitors().into_iter().find(|m| m.focused).map(|m| m.name);
         let mut moved = false;
         for m in self.monitors() {
-            let Some(slot) = self.model.slot(&m.name) else { continue };
-            if decode(m.ws_id, &m.ws_name).is_some_and(|(s, _)| s == slot) {
+            if decode(m.ws_id, &m.ws_name).is_some() {
                 continue;
             }
+            let Some(n) = self.model.current(&m.name).filter(|n| *n != 0) else { continue };
             let Some(ws) = spaces.iter().find(|w| w["id"].as_i64() == Some(m.ws_id)) else { continue };
             if ws["windows"].as_u64().unwrap_or(1) != 0 || ws["ispersistent"].as_bool().unwrap_or(true) {
                 continue;
             }
-            let _ = self.hypr.dispatch(&format!("hl.dsp.focus({{ monitor = {} }})", lua_str(&m.name)));
-            let _ = self.hypr.dispatch(&format!("hl.dsp.focus({{ workspace = {} }})", lua_str(&ws_id(slot, 1).to_string())));
+            let _ = self.show_workspace(&m.name, n);
             moved = true;
         }
         if let (true, Some(b)) = (moved, before) {
             let _ = self.hypr.dispatch(&format!("hl.dsp.focus({{ monitor = {} }})", lua_str(&b)));
         }
+    }
+
+    /// Makes `monitor` show workspace `n`: brings the workspace there if Hyprland keeps it on
+    /// another monitor, then focuses it. Leaves focus on `monitor`; callers put it back.
+    fn show_workspace(&self, monitor: &str, n: u8) -> Result<(), String> {
+        let lives = self.hypr.json("workspaces").ok().and_then(|v| v.as_array().and_then(|a| a.iter().find(|w| w["id"].as_i64() == Some(n as i64)).and_then(|w| w["monitor"].as_str().map(String::from))));
+        if self.monitors().iter().find(|m| m.focused).is_some_and(|m| m.name != monitor) {
+            self.hypr.dispatch(&format!("hl.dsp.focus({{ monitor = {} }})", lua_str(monitor)))?;
+        }
+        if lives.is_some_and(|on| on != monitor) {
+            self.hypr.dispatch(&format!("hl.dsp.workspace.move({{ workspace = {}, monitor = {} }})", lua_str(&n.to_string()), lua_str(monitor)))?;
+        }
+        self.hypr.dispatch(&format!("hl.dsp.focus({{ workspace = {} }})", lua_str(&n.to_string())))
     }
 
     // ---- model plumbing ------------------------------------------------------------------
@@ -207,13 +197,7 @@ impl Core {
         for e in effects {
             self.log(&format!("effect {e:?}"));
             let r = match e {
-                Effect::ShowWorkspace { monitor, workspace } => match self.model.slot(monitor) {
-                    Some(slot) => self.hypr.dispatch(&format!(
-                        "hl.dsp.focus({{ workspace = {} }})",
-                        lua_str(&ws_id(slot, *workspace).to_string())
-                    )),
-                    None => Ok(()),
-                },
+                Effect::ShowWorkspace { monitor, workspace } => self.show_workspace(monitor, *workspace),
                 Effect::FocusMonitor { monitor } => self.hypr.dispatch(&format!(
                     "hl.dsp.focus({{ monitor = {} }})",
                     lua_str(monitor)
@@ -223,13 +207,7 @@ impl Core {
                     lua_str(&format!("address:{window}"))
                 )),
                 Effect::MoveWindow { window, to } => {
-                    let dest = if to == "agent" {
-                        Some(AGENT_SPECIAL.to_string())
-                    } else {
-                        to.rsplit_once(':').and_then(|(m, n)| {
-                            Some(ws_id(self.model.slot(m)?, n.parse().ok()?).to_string())
-                        })
-                    };
+                    let dest = if to == "agent" { Some(AGENT_SPECIAL.to_string()) } else { to.parse::<u8>().ok().map(|n| n.to_string()) };
                     match dest {
                         Some(d) => self.hypr.dispatch(&format!(
                             "hl.dsp.window.move({{ workspace = {}, follow = false, window = {} }})",
@@ -285,9 +263,7 @@ impl Core {
         v["version"] = json!(1);
         v["platform"] = json!("linux");
         v["agent_workspace"] = json!(AGENT_SPECIAL);
-        v["scheme"] = json!(
-            "slot 0: hyprland workspaces 1-9; slot s: 100*s+1 to 100*s+9; agent: special:agent"
-        );
+        v["scheme"] = json!("one pool: workspace n is hyprland workspace n (1-9); agent: special:agent");
         v["overview"] = json!({ "shown": self.overview_shown });
         v["daemon"] = json!({ "pid": std::process::id(), "started": self.started, "events": self.events_seen });
         self.paths.write_atomic(
@@ -323,39 +299,28 @@ impl Core {
         true
     }
 
-    /// A window Hyprland reports: classify and feed the model.
-    pub fn open_client(&mut self, c: &Client) {
+    /// A window Hyprland reports: classify and feed the model. `existing` windows (found at
+    /// start, or arriving from outside the scheme) are mirrored exactly where they are; a new
+    /// window follows the placement rules.
+    pub fn open_client(&mut self, c: &Client, existing: bool) {
         if !c.mapped || self.model.is_tracked(&c.addr) {
             return;
         }
         let on_agent = c.ws_name == AGENT_SPECIAL;
-        let target = if on_agent {
-            None
-        } else {
-            decode(c.ws_id, &c.ws_name)
-        };
-        if !on_agent && target.is_none() {
+        let n = if on_agent { None } else { decode(c.ws_id, &c.ws_name) };
+        if !on_agent && n.is_none() {
             return; // outside the scheme: not ours
         }
         self.adopt_agent_pid(c.pid);
-        let (monitor, workspace) = match target {
-            Some((slot, n)) => match self.model.monitor_for_slot(slot) {
-                Some(m) => (Some(m.to_string()), Some(n)),
-                None => return,
-            },
-            None => (None, None),
-        };
-        let _ = self.apply(Event::Open {
-            window: c.addr.clone(),
-            pid: c.pid,
-            app: c.class.clone(),
-            monitor,
-            workspace,
-        });
+        if existing {
+            let ev = Event::ObserveWindow { window: c.addr.clone(), pid: c.pid, app: c.class.clone(), workspace: n };
+            let _ = self.apply(ev);
+            return;
+        }
+        let monitor = self.monitors().into_iter().find(|m| m.id == c.monitor).map(|m| m.name);
+        let _ = self.apply(Event::Open { window: c.addr.clone(), pid: c.pid, app: c.class.clone(), monitor, workspace: n });
         if on_agent && !matches!(self.model.home(&c.addr), Some(Home::Agent)) {
-            let _ = self.apply(Event::AgentSend {
-                window: c.addr.clone(),
-            });
+            let _ = self.apply(Event::AgentSend { window: c.addr.clone() });
         }
     }
 
@@ -363,29 +328,12 @@ impl Core {
     pub fn resync(&mut self) {
         self.model = Model::new();
         let mut mons = self.monitors();
-        let order = self
-            .paths
-            .read("monitors.json")
-            .and_then(|t| serde_json::from_str::<Vec<String>>(&t).ok())
-            .unwrap_or_default();
-        mons.sort_by_key(|m| {
-            (
-                order
-                    .iter()
-                    .position(|o| *o == m.name)
-                    .unwrap_or(usize::MAX),
-                m.id,
-            )
-        });
+        let order = self.paths.read("monitors.json").and_then(|t| serde_json::from_str::<Vec<String>>(&t).ok()).unwrap_or_default();
+        mons.sort_by_key(|m| (order.iter().position(|o| *o == m.name).unwrap_or(usize::MAX), m.id));
         for m in &mons {
-            let _ = self.model.apply(Event::MonitorAdded {
-                monitor: m.name.clone(),
-            });
+            let _ = self.model.apply(Event::MonitorAdded { monitor: m.name.clone() });
         }
-        self.paths.write_atomic(
-            "monitors.json",
-            &json!(mons.iter().map(|m| m.name.clone()).collect::<Vec<_>>()).to_string(),
-        );
+        self.paths.write_atomic("monitors.json", &json!(mons.iter().map(|m| m.name.clone()).collect::<Vec<_>>()).to_string());
         self.configure_hyprland();
         self.observe_monitors(false);
         for (pid, start) in self
@@ -401,60 +349,50 @@ impl Core {
             }
         }
         for c in self.clients() {
-            // At start the tokens from a previous run are unknown; windows already on the agent
-            // workspace whose process is registered (agents.json) stay agent windows.
-            self.open_client(&c);
+            self.open_client(&c, true);
         }
         if self.special_shown() {
             let _ = self.model.apply(Event::AgentShow);
         }
         if let Ok(v) = self.hypr.json("activewindow") {
             if let Some(a) = v["address"].as_str() {
-                let _ = self.model.apply(Event::Activate {
-                    window: Some(a.into()),
-                    cause: Cause::User,
-                });
+                let _ = self.model.apply(Event::Activate { window: Some(a.into()), cause: Cause::User });
             }
         }
         self.persist();
     }
 
-    /// Mirrors each monitor's workspace and which monitor has focus.
+    /// Mirrors what each display shows and which display has focus.
     fn observe_monitors(&mut self, with_effects: bool) {
         let mons = self.monitors();
         for m in &mons {
-            let n = decode(m.ws_id, &m.ws_name)
-                .map(|(slot, n)| {
-                    if self.model.slot(&m.name) == Some(slot) {
-                        n
-                    } else {
-                        0
-                    }
-                })
-                .unwrap_or(0);
+            let n = decode(m.ws_id, &m.ws_name).unwrap_or(0);
             if self.model.current(&m.name) != Some(n) {
-                let ev = Event::ObserveWorkspace {
-                    monitor: m.name.clone(),
-                    n,
-                };
-                if with_effects {
-                    let _ = self.apply(ev);
-                } else {
-                    let _ = self.model.apply(ev);
-                }
+                let ev = Event::ObserveWorkspace { monitor: m.name.clone(), n };
+                if with_effects { let _ = self.apply(ev); } else { let _ = self.model.apply(ev); }
             }
         }
         if let Some(f) = mons.iter().find(|m| m.focused) {
             if self.model.focused_monitor() != Some(f.name.as_str()) {
-                let ev = Event::ObserveFocusMonitor {
-                    monitor: f.name.clone(),
-                };
-                if with_effects {
-                    let _ = self.apply(ev);
-                } else {
-                    let _ = self.model.apply(ev);
-                }
+                let ev = Event::ObserveFocusMonitor { monitor: f.name.clone() };
+                if with_effects { let _ = self.apply(ev); } else { let _ = self.model.apply(ev); }
             }
+        }
+    }
+
+    /// After a display goes away Hyprland hands its workspaces to another monitor and may bring one
+    /// up there. The workspace stays out of sight until you go to it (R-M3): put each display back
+    /// on what the model says it shows.
+    fn reassert(&mut self) {
+        let before = self.monitors().into_iter().find(|m| m.focused).map(|m| m.name);
+        for m in self.monitors() {
+            let want = self.model.current(&m.name).unwrap_or(0);
+            if want != 0 && decode(m.ws_id, &m.ws_name) != Some(want) {
+                let _ = self.show_workspace(&m.name, want);
+            }
+        }
+        if let Some(b) = before {
+            let _ = self.hypr.dispatch(&format!("hl.dsp.focus({{ monitor = {} }})", lua_str(&b)));
         }
     }
 
@@ -462,67 +400,45 @@ impl Core {
         match ev {
             HyprEvent::OpenWindow { addr } => {
                 if let Some(c) = self.client(&addr) {
-                    self.open_client(&c);
+                    self.open_client(&c, false);
                 }
             }
             HyprEvent::CloseWindow { addr } => {
                 let _ = self.apply(Event::Close { window: addr });
             }
             HyprEvent::ActiveWindow { addr } => {
-                let _ = self.apply(Event::Activate {
-                    window: addr,
-                    cause: Cause::User,
-                });
+                let _ = self.apply(Event::Activate { window: addr, cause: Cause::User });
             }
             HyprEvent::MonitorAdded { name } => {
                 if !self.model.monitors().any(|m| m == name) {
-                    let _ = self.apply(Event::MonitorAdded { monitor: name });
+                    let _ = self.model.apply(Event::MonitorAdded { monitor: name });
                     let order: Vec<String> = {
-                        let mut v: Vec<(u32, String)> = self
-                            .model
-                            .monitors()
-                            .filter_map(|m| Some((self.model.slot(m)?, m.to_string())))
-                            .collect();
+                        let mut v: Vec<(u32, String)> = self.model.monitors().filter_map(|m| Some((self.model.slot(m)?, m.to_string()))).collect();
                         v.sort();
                         v.into_iter().map(|x| x.1).collect()
                     };
-                    self.paths
-                        .write_atomic("monitors.json", &json!(order).to_string());
+                    self.paths.write_atomic("monitors.json", &json!(order).to_string());
                     self.configure_hyprland();
                 }
                 self.observe_monitors(true);
+                self.persist();
             }
             HyprEvent::MonitorRemoved { name } => {
                 let _ = self.apply(Event::MonitorRemoved { monitor: name });
+                self.reassert();
             }
-            HyprEvent::Workspace { .. } | HyprEvent::FocusedMon { .. } => {
-                self.observe_monitors(true)
-            }
-            HyprEvent::MoveWindow {
-                addr,
-                ws_id,
-                ws_name,
-            } => {
+            HyprEvent::Workspace { .. } | HyprEvent::FocusedMon { .. } => self.observe_monitors(true),
+            HyprEvent::MoveWindow { addr, ws_id, ws_name } => {
                 if !self.model.is_tracked(&addr) {
                     if let Some(c) = self.client(&addr) {
-                        self.open_client(&c);
+                        self.open_client(&c, true);
                     }
                     return;
                 }
                 if ws_name == AGENT_SPECIAL {
-                    let _ = self.apply(Event::ObserveMove {
-                        window: addr,
-                        monitor: None,
-                        n: None,
-                    });
-                } else if let Some((slot, n)) = decode(ws_id, &ws_name) {
-                    if let Some(m) = self.model.monitor_for_slot(slot).map(String::from) {
-                        let _ = self.apply(Event::ObserveMove {
-                            window: addr,
-                            monitor: Some(m),
-                            n: Some(n),
-                        });
-                    }
+                    let _ = self.apply(Event::ObserveMove { window: addr, n: None });
+                } else if let Some(n) = decode(ws_id, &ws_name) {
+                    let _ = self.apply(Event::ObserveMove { window: addr, n: Some(n) });
                 } else {
                     // Left the scheme (to workspace 10, a scratchpad): no longer ours.
                     let _ = self.apply(Event::Close { window: addr });
@@ -603,10 +519,7 @@ pub fn handle(shared: &Shared, req: &Value) -> Envelope {
                 Err(e) => return e,
             };
             let mut c = lock(shared);
-            match c.apply(Event::Switch {
-                n,
-                monitor: arg_str(&args, "monitor").map(String::from),
-            }) {
+            match c.apply(Event::Switch { n }) {
                 Ok(fx) => Envelope::ok(json!({ "workspace": n, "effects": effects_json(&fx) })),
                 Err(e) => model_err(e),
             }

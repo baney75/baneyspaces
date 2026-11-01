@@ -15,7 +15,7 @@ use std::io::Write;
 
 const HELP: &str = "baneyspaces (Linux, Hyprland)
 
-  switch <n>                     go to workspace n (1-9) on the monitor you are on
+  switch <n>                     show workspace n (1-9) here, or go to the display that shows it
   move <n> [--stay] [--window W] send the front window to workspace n and follow it (--stay: don't)
   focus-monitor <name>           go to a monitor
   ls                             windows by workspace, and the agent workspace
@@ -88,9 +88,8 @@ fn request(mut a: Vec<String>) -> Result<Value, Envelope> {
     let req = |op: &str, args: Value| Ok(json!({ "op": op, "args": args }));
     match cmd.as_str() {
         "switch" => {
-            let monitor = take(&mut a, "--monitor");
-            need(&a, 1, "switch <n> [--monitor M]")?;
-            req("switch", json!({ "n": a[0], "monitor": monitor }))
+            need(&a, 1, "switch <n>")?;
+            req("switch", json!({ "n": a[0] }))
         }
         "move" => {
             let stay = take_switch(&mut a, "--stay");

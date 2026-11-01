@@ -169,7 +169,7 @@ nightly builds ship for every platform; it gets tested on every platform before 
 
 | | macOS | Linux (Omarchy, Hyprland) | Windows 11 |
 | --- | --- | --- | --- |
-| Workspaces 1–9 per display, instant | This app (parking, AX) | Hyprland workspaces driven over its IPC socket, one set per monitor, no animations | Our own workspace model: windows of other workspaces are cloaked or minimized without animation; Windows' virtual desktops are not used (they animate and can't be per-display) |
+| One shared set of nine workspaces, each display shows one, instant | This app (parking, AX) | Hyprland workspaces 1–9 driven over its IPC socket: one shared set, each display shows one (a workspace another display shows takes you to that display), no animations | Our own workspace model: windows of other workspaces are cloaked or minimized without animation; Windows' virtual desktops are not used (they animate and are tied to one display) |
 | Agent workspace | Workspace 9, parked | A Hyprland special workspace, never shown unless you open it | Workspace 9, cloaked |
 | Focus following and its guard | FocusWatcher | Hyprland `activewindow` events | `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` |
 | Workspace Dock, launcher, ⌘Tab bar, overview | SwiftUI/AppKit | Omarchy shell (Quickshell) plugins, so they match Omarchy's look | Native overlay windows (Rust, `windows` crate) |

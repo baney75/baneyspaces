@@ -23,20 +23,21 @@ checks:
   "expect": { "monitors": { "A": { "current": 4 } } } }
 ```
 
-- `do` is an event: `monitor_added`, `monitor_removed`, `open`, `close`, `switch`, `move`,
+- `do` is an event: `monitor_added`, `monitor_removed`, `open`, `observe_window`, `close`, `switch`, `move`,
   `activate`, `focus_monitor`, `observe_workspace`, `observe_special`, `observe_focus_monitor`, `observe_move`,
   `agent_register`, `agent_exit`, `agent_show`, `agent_hide`, `agent_toggle`, `agent_send`,
   `agent_bring`. Their fields are the Rust `Event` enum in `crates/baneyspaces-core/src/model.rs`.
 - `effects` is the exact, ordered list the platform must carry out: `show_workspace`,
-  `focus_monitor`, `focus_window`, `move_window` (`to` is `"<monitor>:<n>"` or `"agent"`),
+  `focus_monitor`, `focus_window`, `move_window` (`to` is `"<n>"` or `"agent"`),
   `show_agent`, `hide_agent`, `refuse_follow`. Effects are idempotent; the compositor may already
   be there.
 - `error` is the error code the step must fail with.
 - `expect` is a subset of the state view (below). An expected `[]` also matches a missing key.
 - A step with only `expect` checks state.
 
-State view: `focused_monitor`, `active`, `monitors{id:{slot,current,last_focused}}`,
-`workspaces{"<monitor>:<n>":[window,...]}` (non-empty only, oldest first),
+State view: `focused_monitor`, `current` (the workspace the focused display shows), `active`,
+`monitors{id:{slot,current}}` (`current` is the workspace that display shows, 0 for something outside
+the nine), `last_focused{n:window}`, `workspaces{"<n>":[window,...]}` (non-empty only, oldest first),
 `windows{id:{pid,app,home,agent_owned}}`, `agent{windows,shown,pids}`, `guard{refused}`.
 
 Every rule id in workspaces.md must be named by at least one case; `cargo test` checks it.

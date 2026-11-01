@@ -1,9 +1,10 @@
 //! The workspace model: pure state plus the rules in `spec/workspaces.md`.
 //!
-//! The model never talks to a compositor. A platform feeds it [`Event`]s (what the user asked for,
-//! what the compositor reported) and carries out the [`Effect`]s it returns. Every platform's tests
-//! replay `spec/conformance/*.json` against this same code path, so a rule that is not in `spec/`
-//! does not exist.
+//! One shared pool of nine workspaces; each display shows one of them at a time, never the same
+//! one as another display. The model never talks to a compositor. A platform feeds it [`Event`]s
+//! (what the user asked for, what the compositor reported) and carries out the [`Effect`]s it
+//! returns. Every platform's tests replay `spec/conformance/*.json` against this same code path, so
+//! a rule that is not in `spec/` does not exist.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -17,10 +18,8 @@ pub type MonitorId = String;
 /// Where a window lives.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Home {
-    Workspace {
-        monitor: MonitorId,
-        n: u8,
-    },
+    /// One of the nine shared workspaces.
+    Workspace { n: u8 },
     /// The agent workspace: parked out of view, never shown unless the user asks.
     Agent,
 }
@@ -28,7 +27,7 @@ pub enum Home {
 impl Home {
     pub fn label(&self) -> String {
         match self {
-            Home::Workspace { monitor, n } => format!("{monitor}:{n}"),
+            Home::Workspace { n } => n.to_string(),
             Home::Agent => "agent".into(),
         }
     }
@@ -60,15 +59,25 @@ pub enum Event {
     MonitorRemoved {
         monitor: MonitorId,
     },
+    /// A window opened. `monitor` is the display it appeared on (default: the one you are on);
+    /// `workspace` is the workspace the compositor put it on (default: that display's).
     Open {
         window: WindowId,
         pid: u32,
         #[serde(default)]
         app: String,
-        /// Where the compositor put it. Defaults to the monitor you are on.
         #[serde(default)]
         monitor: Option<MonitorId>,
-        /// The workspace number it was put on. Defaults to that monitor's current one.
+        #[serde(default)]
+        workspace: Option<u8>,
+    },
+    /// A window that already existed when the model started listening: mirrored exactly where it is.
+    /// `workspace` absent means the agent workspace.
+    ObserveWindow {
+        window: WindowId,
+        pid: u32,
+        #[serde(default)]
+        app: String,
         #[serde(default)]
         workspace: Option<u8>,
     },
@@ -77,8 +86,6 @@ pub enum Event {
     },
     Switch {
         n: u8,
-        #[serde(default)]
-        monitor: Option<MonitorId>,
     },
     Move {
         n: u8,
@@ -94,18 +101,17 @@ pub enum Event {
         #[serde(default)]
         cause: Cause,
     },
-    ObserveWorkspace {
-        monitor: MonitorId,
-        n: u8,
-    },
     /// A window the compositor moved (you dragged it, a command did): mirrored, never undone.
-    /// `monitor` and `n` name the workspace; both absent means the agent workspace.
+    /// `n` absent means the agent workspace.
     ObserveMove {
         window: WindowId,
         #[serde(default)]
-        monitor: Option<MonitorId>,
-        #[serde(default)]
         n: Option<u8>,
+    },
+    /// What a display shows now. `n` 0 means something outside the nine.
+    ObserveWorkspace {
+        monitor: MonitorId,
+        n: u8,
     },
     ObserveSpecial {
         shown: bool,
@@ -141,6 +147,7 @@ pub enum Event {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "do", rename_all = "snake_case")]
 pub enum Effect {
+    /// This display shows this workspace.
     ShowWorkspace {
         monitor: MonitorId,
         workspace: u8,
@@ -151,7 +158,7 @@ pub enum Effect {
     FocusWindow {
         window: WindowId,
     },
-    /// Silent: no focus change, no workspace change. `to` is `"<monitor>:<n>"` or `"agent"`.
+    /// Silent: no focus change, no workspace change. `to` is `"<n>"` or `"agent"`.
     MoveWindow {
         window: WindowId,
         to: String,
@@ -189,8 +196,8 @@ impl std::fmt::Display for ModelError {
 #[derive(Clone, Debug)]
 struct Monitor {
     slot: u32,
+    /// The workspace this display shows; 0 when it shows something outside the nine.
     current: u8,
-    last_focused: BTreeMap<u8, WindowId>,
 }
 
 #[derive(Clone, Debug)]
@@ -204,8 +211,12 @@ struct Window {
 #[derive(Clone, Debug, Default)]
 pub struct Model {
     monitors: BTreeMap<MonitorId, Monitor>,
+    /// What each display showed last, so one that comes back shows it again.
+    last_shown: BTreeMap<MonitorId, u8>,
     focused_monitor: Option<MonitorId>,
     windows: BTreeMap<WindowId, Window>,
+    /// The last window in front on each workspace, so coming back lands where you left off.
+    last_focused: BTreeMap<u8, WindowId>,
     active: Option<WindowId>,
     seq: u64,
     /// Agent processes BaneySpaces started: pid -> start time (0 = unchecked).
@@ -231,20 +242,25 @@ impl Model {
     pub fn agent_shown(&self) -> bool {
         self.agent_shown
     }
+    /// The workspace a display shows (0: outside the nine).
     pub fn current(&self, monitor: &str) -> Option<u8> {
         self.monitors.get(monitor).map(|m| m.current)
     }
     pub fn slot(&self, monitor: &str) -> Option<u32> {
         self.monitors.get(monitor).map(|m| m.slot)
     }
-    pub fn monitor_for_slot(&self, slot: u32) -> Option<&str> {
-        self.monitors
-            .iter()
-            .find(|(_, m)| m.slot == slot)
-            .map(|(k, _)| k.as_str())
-    }
     pub fn monitors(&self) -> impl Iterator<Item = &str> {
         self.monitors.keys().map(String::as_str)
+    }
+    /// The display showing workspace `n`, if any.
+    pub fn shown_on(&self, n: u8) -> Option<&str> {
+        if n == 0 {
+            return None;
+        }
+        self.monitors
+            .iter()
+            .find(|(_, m)| m.current == n)
+            .map(|(k, _)| k.as_str())
     }
     pub fn home(&self, window: &str) -> Option<&Home> {
         self.windows.get(window).map(|w| &w.home)
@@ -270,10 +286,8 @@ impl Model {
         self.ordered(|w| w.home == Home::Agent)
     }
     /// Windows on one workspace, oldest first.
-    pub fn windows_on(&self, monitor: &str, n: u8) -> Vec<&str> {
-        self.ordered(
-            |w| matches!(&w.home, Home::Workspace { monitor: m, n: k } if m == monitor && *k == n),
-        )
+    pub fn windows_on(&self, n: u8) -> Vec<&str> {
+        self.ordered(|w| w.home == Home::Workspace { n })
     }
 
     fn ordered(&self, keep: impl Fn(&Window) -> bool) -> Vec<&str> {
@@ -309,53 +323,35 @@ impl Model {
         let monitors: BTreeMap<&str, Value> = self
             .monitors
             .iter()
-            .map(|(id, m)| {
-                let lf: BTreeMap<String, &str> = m
-                    .last_focused
-                    .iter()
-                    .map(|(n, w)| (n.to_string(), w.as_str()))
-                    .collect();
-                (
-                    id.as_str(),
-                    json!({ "slot": m.slot, "current": m.current, "last_focused": lf }),
-                )
-            })
+            .map(|(id, m)| (id.as_str(), json!({ "slot": m.slot, "current": m.current })))
             .collect();
-        let mut workspaces: BTreeMap<String, Vec<&str>> = BTreeMap::new();
-        for (id, m) in &self.monitors {
-            for n in WORKSPACES {
-                let ws = self.windows_on(id, n);
-                if !ws.is_empty() {
-                    workspaces.insert(format!("{id}:{n}"), ws);
-                }
-                let _ = m;
-            }
-        }
-        // Windows whose monitor is gone wait out of sight.
-        for w in self.windows.values() {
-            if let Home::Workspace { monitor, n } = &w.home {
-                if !self.monitors.contains_key(monitor) {
-                    workspaces.entry(format!("{monitor}:{n}")).or_default();
-                }
-            }
-        }
-        for (key, list) in workspaces.iter_mut() {
-            if list.is_empty() {
-                if let Some((m, n)) = key.rsplit_once(':') {
-                    *list = self.windows_on(m, n.parse().unwrap_or(0));
-                }
-            }
-        }
+        let workspaces: BTreeMap<String, Vec<&str>> = WORKSPACES
+            .map(|n| (n, self.windows_on(n)))
+            .filter(|(_, w)| !w.is_empty())
+            .map(|(n, w)| (n.to_string(), w))
+            .collect();
+        let last_focused: BTreeMap<String, &str> = self
+            .last_focused
+            .iter()
+            .map(|(n, w)| (n.to_string(), w.as_str()))
+            .collect();
         let windows: BTreeMap<&str, Value> = self
             .windows
             .iter()
             .map(|(id, w)| (id.as_str(), json!({ "pid": w.pid, "app": w.app, "home": w.home.label(), "agent_owned": self.agent_pids.contains_key(&w.pid) })))
             .collect();
         let pids: Vec<u32> = self.agent_pids.keys().copied().collect();
+        let current = self
+            .focused_monitor
+            .as_ref()
+            .and_then(|m| self.monitors.get(m))
+            .map(|m| m.current);
         json!({
             "focused_monitor": self.focused_monitor,
+            "current": current,
             "active": self.active,
             "monitors": monitors,
+            "last_focused": last_focused,
             "workspaces": workspaces,
             "windows": windows,
             "agent": { "windows": self.agent_windows(), "shown": self.agent_shown, "pids": pids },
@@ -376,12 +372,18 @@ impl Model {
                 monitor,
                 workspace,
             } => self.open(window, pid, app, monitor, workspace),
+            Event::ObserveWindow {
+                window,
+                pid,
+                app,
+                workspace,
+            } => self.observe_window(window, pid, app, workspace),
             Event::Close { window } => Ok(self.close(&window)),
-            Event::Switch { n, monitor } => self.switch(n, monitor),
+            Event::Switch { n } => self.switch(n),
             Event::Move { n, window, follow } => self.move_window(n, window, follow),
             Event::Activate { window, cause } => Ok(self.activate(window, cause)),
+            Event::ObserveMove { window, n } => self.observe_move(&window, n),
             Event::ObserveWorkspace { monitor, n } => self.observe_workspace(&monitor, n),
-            Event::ObserveMove { window, monitor, n } => self.observe_move(&window, monitor, n),
             Event::ObserveSpecial { shown } => Ok(self.observe_special(shown)),
             Event::ObserveFocusMonitor { monitor } => self.observe_focus_monitor(&monitor),
             Event::FocusMonitor { monitor } => self.focus_monitor(&monitor),
@@ -413,89 +415,99 @@ impl Model {
         }
     }
 
+    /// R-M2: what a display without a workspace gets: the one it showed last if nobody shows it,
+    /// else the first empty workspace nobody shows, else the first nobody shows.
+    fn pick(&self, id: &str) -> u8 {
+        let taken: BTreeSet<u8> = self
+            .monitors
+            .iter()
+            .filter(|(k, _)| k.as_str() != id)
+            .map(|(_, m)| m.current)
+            .collect();
+        if let Some(&last) = self.last_shown.get(id) {
+            if last != 0 && !taken.contains(&last) {
+                return last;
+            }
+        }
+        let free: Vec<u8> = WORKSPACES.filter(|n| !taken.contains(n)).collect();
+        free.iter()
+            .copied()
+            .find(|n| self.windows_on(*n).is_empty())
+            .or_else(|| free.first().copied())
+            .unwrap_or(0)
+    }
+
     fn monitor_added(&mut self, id: MonitorId) -> Vec<Effect> {
         if self.monitors.contains_key(&id) {
             return vec![];
         }
         let taken: BTreeSet<u32> = self.monitors.values().map(|m| m.slot).collect();
         let slot = (0..).find(|s| !taken.contains(s)).unwrap_or(0);
-        self.monitors.insert(
-            id.clone(),
-            Monitor {
-                slot,
-                current: 1,
-                last_focused: BTreeMap::new(),
-            },
-        );
+        let first = self.monitors.is_empty();
+        let current = if first {
+            self.last_shown
+                .get(&id)
+                .copied()
+                .filter(|n| *n != 0)
+                .unwrap_or(1)
+        } else {
+            self.pick(&id)
+        };
+        self.monitors.insert(id.clone(), Monitor { slot, current });
+        self.last_shown.insert(id.clone(), current);
         if self.focused_monitor.is_none() {
             self.focused_monitor = Some(id.clone());
+            self.active = self.candidate();
         }
-        // Windows that waited out of sight for this monitor come back to it.
-        let waiting: Vec<WindowId> = self
-            .ordered(|w| matches!(&w.home, Home::Workspace { monitor, .. } if *monitor == id))
-            .into_iter()
-            .map(String::from)
-            .collect();
-        let _ = waiting; // they already carry this monitor id; nothing to move.
-        vec![]
+        if first || current == 0 {
+            return vec![];
+        }
+        vec![Effect::ShowWorkspace {
+            monitor: id,
+            workspace: current,
+        }]
     }
 
-    /// R-M2: a monitor you unplug hands its windows to the lowest-numbered monitor left, same
-    /// workspace number. With no monitor left they wait out of sight for it to return.
+    /// R-M3: a display you unplug stops showing its workspace; the windows stay in it, out of
+    /// sight, until you go to it.
     fn monitor_removed(&mut self, id: &str) -> Vec<Effect> {
         let Some(gone) = self.monitors.remove(id) else {
             return vec![];
         };
-        let _ = gone;
-        let heir = self
-            .monitors
-            .iter()
-            .min_by_key(|(_, m)| m.slot)
-            .map(|(k, _)| k.clone());
-        let mut effects = vec![];
-        if let Some(heir) = &heir {
-            let movers: Vec<WindowId> = self
-                .ordered(|w| matches!(&w.home, Home::Workspace { monitor, .. } if monitor == id))
-                .into_iter()
-                .map(String::from)
-                .collect();
-            for w in movers {
-                let n = match &self.windows[&w].home {
-                    Home::Workspace { n, .. } => *n,
-                    Home::Agent => continue,
-                };
-                self.windows.get_mut(&w).unwrap().home = Home::Workspace {
-                    monitor: heir.clone(),
-                    n,
-                };
-                effects.push(Effect::MoveWindow {
-                    window: w,
-                    to: format!("{heir}:{n}"),
-                });
-            }
+        if gone.current != 0 {
+            self.last_shown.insert(id.to_string(), gone.current);
         }
         if self.focused_monitor.as_deref() == Some(id) {
-            self.focused_monitor = heir;
+            self.focused_monitor = self
+                .monitors
+                .iter()
+                .min_by_key(|(_, m)| m.slot)
+                .map(|(k, _)| k.clone());
             self.active = self.candidate();
         }
-        effects
+        vec![]
     }
 
-    /// Which window should be active on the focused monitor's current workspace.
+    /// Which window should be in front on the focused display.
     fn candidate(&self) -> Option<WindowId> {
         let mon = self.focused_monitor.as_ref()?;
-        let m = self.monitors.get(mon)?;
-        self.candidate_on(mon, m.current)
+        self.candidate_on(self.monitors.get(mon)?.current)
     }
 
-    fn candidate_on(&self, mon: &str, n: u8) -> Option<WindowId> {
-        let m = self.monitors.get(mon)?;
-        if let Some(w) = m.last_focused.get(&n) {
-            if self.windows_on(mon, n).contains(&w.as_str()) {
+    fn candidate_on(&self, n: u8) -> Option<WindowId> {
+        if n == 0 {
+            return None;
+        }
+        if let Some(w) = self.last_focused.get(&n) {
+            if self.windows_on(n).contains(&w.as_str()) {
                 return Some(w.clone());
             }
         }
-        self.windows_on(mon, n).first().map(|s| s.to_string())
+        self.windows_on(n).first().map(|s| s.to_string())
+    }
+
+    fn forget_focus(&mut self, window: &str) {
+        self.last_focused.retain(|_, w| w != window);
     }
 
     fn open(
@@ -532,49 +544,78 @@ impl Model {
             Some(m) => return Err(ModelError::new("not_found", format!("no monitor {m}"))),
             None => return Err(ModelError::new("no_monitor", "no monitor is connected")),
         };
-        let current = self.monitors[&mon].current;
-        let placed = workspace.unwrap_or(current);
+        // R-P1: it joins the workspace the display it appeared on is showing.
+        let shown = self.monitors[&mon].current;
+        let here = if shown != 0 {
+            shown
+        } else {
+            workspace.filter(|n| WORKSPACES.contains(n)).unwrap_or(1)
+        };
+        let placed = workspace.unwrap_or(here);
         self.windows.insert(
             window.clone(),
             Window {
                 pid,
                 app,
-                home: Home::Workspace {
-                    monitor: mon.clone(),
-                    n: current,
-                },
+                home: Home::Workspace { n: here },
                 seq,
             },
         );
-        // R-P1: new windows land where you are. One the compositor put elsewhere is moved here, silently.
-        if placed != current {
+        if placed != here {
+            // The compositor put it on a workspace you are not looking at: moved here, silently.
             return Ok(vec![Effect::MoveWindow {
                 window,
-                to: format!("{mon}:{current}"),
+                to: here.to_string(),
             }]);
         }
-        self.monitors
-            .get_mut(&mon)
-            .unwrap()
-            .last_focused
-            .insert(current, window.clone());
+        self.last_focused.insert(here, window.clone());
         if self.focused_monitor.as_deref() == Some(mon.as_str()) {
             self.active = Some(window);
         }
         Ok(vec![])
     }
 
-    fn close(&mut self, window: &str) -> Vec<Effect> {
-        let Some(w) = self.windows.remove(window) else {
-            return vec![];
-        };
-        if let Home::Workspace { monitor, n } = &w.home {
-            if let Some(m) = self.monitors.get_mut(monitor) {
-                if m.last_focused.get(n).map(String::as_str) == Some(window) {
-                    m.last_focused.remove(n);
-                }
-            }
+    fn observe_window(
+        &mut self,
+        window: WindowId,
+        pid: u32,
+        app: String,
+        workspace: Option<u8>,
+    ) -> Result<Vec<Effect>, ModelError> {
+        if self.windows.contains_key(&window) {
+            return Ok(vec![]);
         }
+        self.seq += 1;
+        let seq = self.seq;
+        let mut effects = vec![];
+        let home = match workspace {
+            None => Home::Agent,
+            Some(_) if self.agent_pids.contains_key(&pid) => {
+                effects.push(Effect::MoveWindow {
+                    window: window.clone(),
+                    to: "agent".into(),
+                });
+                Home::Agent
+            }
+            Some(n) => Home::Workspace { n: Self::range(n)? },
+        };
+        self.windows.insert(
+            window,
+            Window {
+                pid,
+                app,
+                home,
+                seq,
+            },
+        );
+        Ok(effects)
+    }
+
+    fn close(&mut self, window: &str) -> Vec<Effect> {
+        if self.windows.remove(window).is_none() {
+            return vec![];
+        }
+        self.forget_focus(window);
         if self.before_agent.as_deref() == Some(window) {
             self.before_agent = None;
         }
@@ -596,43 +637,56 @@ impl Model {
         }
     }
 
-    fn switch(&mut self, n: u8, monitor: Option<MonitorId>) -> Result<Vec<Effect>, ModelError> {
+    /// Makes the focused display show `n`, or goes to the display that already shows it
+    /// (R-S2, R-S3). Returns whether anything changed.
+    fn show(&mut self, n: u8, effects: &mut Vec<Effect>) {
+        let focused = self.focused_monitor.clone().unwrap_or_default();
+        match self.shown_on(n).map(String::from) {
+            Some(there) => {
+                if there != focused {
+                    self.focused_monitor = Some(there.clone());
+                    effects.push(Effect::FocusMonitor { monitor: there });
+                }
+            }
+            None => {
+                if let Some(m) = self.monitors.get_mut(&focused) {
+                    m.current = n;
+                }
+                self.last_shown.insert(focused.clone(), n);
+                effects.push(Effect::ShowWorkspace {
+                    monitor: focused,
+                    workspace: n,
+                });
+            }
+        }
+    }
+
+    fn switch(&mut self, n: u8) -> Result<Vec<Effect>, ModelError> {
         let n = Self::range(n)?;
         let focused = self
             .focused_monitor
             .clone()
             .ok_or_else(|| ModelError::new("no_monitor", "no monitor is connected"))?;
-        let mon = monitor.unwrap_or_else(|| focused.clone());
-        let cur = self
-            .monitors
-            .get(&mon)
-            .ok_or_else(|| ModelError::new("not_found", format!("no monitor {mon}")))?
-            .current;
         let mut effects = vec![];
-        // R-S3: the workspace you are already on is a no-op, unless the agent workspace is covering it.
-        if cur == n && !(self.agent_shown && mon == focused) {
+        // R-S4: the workspace you are already on is a no-op, unless the agent workspace is covering it.
+        if self.shown_on(n) == Some(focused.as_str()) && !self.agent_shown {
             return Ok(effects);
         }
-        if mon == focused {
-            self.hide_agent_first(&mut effects);
-        }
-        self.monitors.get_mut(&mon).unwrap().current = n;
-        if cur != n {
-            effects.push(Effect::ShowWorkspace {
-                monitor: mon.clone(),
-                workspace: n,
-            });
-        }
-        if mon == focused {
-            self.active = self.candidate_on(&mon, n);
-            if let Some(w) = &self.active {
-                effects.push(Effect::FocusWindow { window: w.clone() });
-            }
+        self.hide_agent_first(&mut effects);
+        self.show(n, &mut effects);
+        self.active = self.candidate_on(n);
+        if let Some(w) = &self.active {
+            effects.push(Effect::FocusWindow { window: w.clone() });
         }
         Ok(effects)
     }
 
-    fn move_window(&mut self, n: u8, window: Option<WindowId>, follow: bool) -> Result<Vec<Effect>, ModelError> {
+    fn move_window(
+        &mut self,
+        n: u8,
+        window: Option<WindowId>,
+        follow: bool,
+    ) -> Result<Vec<Effect>, ModelError> {
         let n = Self::range(n)?;
         let w = window
             .or_else(|| self.active.clone())
@@ -644,7 +698,7 @@ impl Model {
         if self.is_agent_window(&w) {
             return Err(ModelError::new("agent_window", "agent windows stay on the agent workspace; use agent bring for a window you parked"));
         }
-        let Home::Workspace { monitor, n: from } = win.home.clone() else {
+        let Home::Workspace { n: from } = win.home else {
             unreachable!()
         };
         if from == n {
@@ -654,32 +708,31 @@ impl Model {
         if follow {
             self.hide_agent_first(&mut effects);
         }
-        self.windows.get_mut(&w).unwrap().home = Home::Workspace { monitor: monitor.clone(), n };
-        if let Some(m) = self.monitors.get_mut(&monitor) {
-            if m.last_focused.get(&from) == Some(&w) {
-                m.last_focused.remove(&from);
-            }
+        self.windows.get_mut(&w).unwrap().home = Home::Workspace { n };
+        if self.last_focused.get(&from) == Some(&w) {
+            self.last_focused.remove(&from);
         }
-        effects.push(Effect::MoveWindow { window: w.clone(), to: format!("{monitor}:{n}") });
+        effects.push(Effect::MoveWindow {
+            window: w.clone(),
+            to: n.to_string(),
+        });
         if !follow {
-            // R-V4: sent and left behind. The window moves; you, your workspace and your focus do not.
-            if self.active.as_deref() == Some(w.as_str()) {
+            // R-V3: sent and left behind. The window moves; you, your workspaces and your focus do not.
+            let visible_here = self.candidate_on(n).is_some()
+                && self
+                    .focused_monitor
+                    .as_deref()
+                    .is_some_and(|f| self.shown_on(n) == Some(f));
+            if self.active.as_deref() == Some(w.as_str()) && !visible_here {
                 self.active = self.candidate();
             }
             return Ok(effects);
         }
-        if let Some(m) = self.monitors.get_mut(&monitor) {
-            m.last_focused.insert(n, w.clone());
-            m.current = n;
-        }
-        effects.push(Effect::ShowWorkspace { monitor: monitor.clone(), workspace: n });
-        // R-V3: you follow the window you moved, onto its monitor.
-        if self.focused_monitor.as_deref() != Some(monitor.as_str()) {
-            self.focused_monitor = Some(monitor.clone());
-            effects.push(Effect::FocusMonitor { monitor });
-        }
-        effects.push(Effect::FocusWindow { window: w.clone() });
-        self.active = Some(w);
+        // R-V2: you follow it: to the display that shows n, else n comes up on this display.
+        self.show(n, &mut effects);
+        self.last_focused.insert(n, w.clone());
+        self.active = Some(w.clone());
+        effects.push(Effect::FocusWindow { window: w });
         Ok(effects)
     }
 
@@ -712,16 +765,13 @@ impl Model {
             restore(self, &mut effects);
             return effects;
         }
-        let Home::Workspace { monitor, n } = self.windows[&w].home.clone() else {
+        let Home::Workspace { n } = self.windows[&w].home else {
             return effects;
         };
-        let Some(m) = self.monitors.get(&monitor) else {
-            return effects;
-        }; // waiting out of sight
-        let visible = m.current == n;
-        let here = self.focused_monitor.as_deref() == Some(monitor.as_str());
-        // R-G2: only a user-caused activation follows. An app asking for attention does not move you.
-        if cause != Cause::User && !(visible && here) {
+        let at = self.shown_on(n).map(String::from);
+        let here = at.is_some() && at.as_deref() == self.focused_monitor.as_deref();
+        // R-F2: only a user-caused activation follows. An app asking for attention does not move you.
+        if cause != Cause::User && !here {
             self.refused += 1;
             effects.push(Effect::RefuseFollow {
                 window: w,
@@ -730,36 +780,21 @@ impl Model {
             restore(self, &mut effects);
             return effects;
         }
-        if !visible {
-            self.hide_agent_first(&mut effects);
-            self.monitors.get_mut(&monitor).unwrap().current = n;
-            effects.push(Effect::ShowWorkspace {
-                monitor: monitor.clone(),
-                workspace: n,
-            });
-        }
-        if !here {
-            self.focused_monitor = Some(monitor.clone());
-            if !visible {
-                effects.push(Effect::FocusMonitor {
-                    monitor: monitor.clone(),
-                });
+        match at {
+            None => {
+                // R-F1: the workspace is out of sight; it comes up on the display you are on.
+                self.hide_agent_first(&mut effects);
+                self.show(n, &mut effects);
+                effects.push(Effect::FocusWindow { window: w.clone() });
             }
+            Some(there) if !here => self.focused_monitor = Some(there), // the compositor already went there
+            Some(_) => {}
         }
-        if !visible {
-            effects.push(Effect::FocusWindow { window: w.clone() });
-        }
-        self.monitors
-            .get_mut(&monitor)
-            .unwrap()
-            .last_focused
-            .insert(n, w.clone());
+        self.last_focused.insert(n, w.clone());
         self.active = Some(w);
         effects
     }
 
-    /// `n` 0 means the monitor shows a workspace outside the nine (a platform's own, or one you keep
-    /// elsewhere). A switch to any of 1 to 9 then always acts.
     fn observe_workspace(&mut self, monitor: &str, n: u8) -> Result<Vec<Effect>, ModelError> {
         if n != 0 {
             Self::range(n)?;
@@ -769,35 +804,31 @@ impl Model {
             .get_mut(monitor)
             .ok_or_else(|| ModelError::new("not_found", format!("no monitor {monitor}")))?;
         m.current = n;
+        if n != 0 {
+            self.last_shown.insert(monitor.to_string(), n);
+        }
         Ok(vec![])
     }
 
-    fn observe_move(&mut self, window: &str, monitor: Option<MonitorId>, n: Option<u8>) -> Result<Vec<Effect>, ModelError> {
+    fn observe_move(&mut self, window: &str, n: Option<u8>) -> Result<Vec<Effect>, ModelError> {
         if !self.windows.contains_key(window) {
             return Ok(vec![]);
         }
-        let to = match (monitor, n) {
-            (Some(m), Some(n)) => {
-                Self::range(n)?;
-                if !self.monitors.contains_key(&m) {
-                    return Err(ModelError::new("not_found", format!("no monitor {m}")));
-                }
-                Home::Workspace { monitor: m, n }
-            }
-            _ => Home::Agent,
+        let to = match n {
+            Some(n) => Home::Workspace { n: Self::range(n)? },
+            None => Home::Agent,
         };
-        if let Some(Home::Workspace { monitor, n }) = self.windows.get(window).map(|w| w.home.clone()) {
-            if let Some(m) = self.monitors.get_mut(&monitor) {
-                if m.last_focused.get(&n).map(String::as_str) == Some(window) {
-                    m.last_focused.remove(&n);
-                }
-            }
-        }
+        self.forget_focus(window);
         self.windows.get_mut(window).unwrap().home = to;
         if self.active.as_deref() == Some(window) && !self.agent_shown {
-            let home = self.windows[window].home.clone();
-            let visible = matches!(&home, Home::Workspace { monitor, n } if self.monitors.get(monitor).is_some_and(|m| m.current == *n));
-            if !visible {
+            let here = match &self.windows[window].home {
+                Home::Workspace { n } => {
+                    self.shown_on(*n).is_some()
+                        && self.shown_on(*n) == self.focused_monitor.as_deref()
+                }
+                Home::Agent => false,
+            };
+            if !here {
                 self.active = self.candidate();
             }
         }
@@ -872,15 +903,7 @@ impl Model {
 
     fn send_to_agent(&mut self, window: &str) {
         let was_active = self.active.as_deref() == Some(window);
-        if let Some(Home::Workspace { monitor, n }) =
-            self.windows.get(window).map(|w| w.home.clone())
-        {
-            if let Some(m) = self.monitors.get_mut(&monitor) {
-                if m.last_focused.get(&n).map(String::as_str) == Some(window) {
-                    m.last_focused.remove(&n);
-                }
-            }
-        }
+        self.forget_focus(window);
         self.windows.get_mut(window).unwrap().home = Home::Agent;
         if was_active {
             self.active = self.candidate();
@@ -945,14 +968,13 @@ impl Model {
             .focused_monitor
             .clone()
             .ok_or_else(|| ModelError::new("no_monitor", "no monitor is connected"))?;
-        let n = self.monitors[&mon].current;
-        self.windows.get_mut(window).unwrap().home = Home::Workspace {
-            monitor: mon.clone(),
-            n,
-        };
+        let n = Some(self.monitors[&mon].current)
+            .filter(|n| *n != 0)
+            .unwrap_or(1);
+        self.windows.get_mut(window).unwrap().home = Home::Workspace { n };
         Ok(vec![Effect::MoveWindow {
             window: window.to_string(),
-            to: format!("{mon}:{n}"),
+            to: n.to_string(),
         }])
     }
 }
@@ -975,15 +997,23 @@ mod tests {
     }
 
     #[test]
-    fn switch_is_per_monitor() {
+    fn displays_never_show_the_same_workspace() {
         let mut m = two_monitors();
-        m.apply(ev(json!({"do":"switch","n":4}))).unwrap();
-        assert_eq!(m.current("A"), Some(4));
-        assert_eq!(m.current("B"), Some(1));
+        assert_eq!((m.current("A"), m.current("B")), (Some(1), Some(2)));
+        // Going to the one B shows goes to B; nothing is shown twice.
+        m.apply(ev(json!({"do":"switch","n":2}))).unwrap();
+        assert_eq!(m.focused_monitor(), Some("B"));
+        assert_eq!((m.current("A"), m.current("B")), (Some(1), Some(2)));
+        for n in 1..=9u8 {
+            m.apply(ev(json!({"do":"switch","n":n}))).unwrap();
+            let (a, b) = (m.current("A").unwrap(), m.current("B").unwrap());
+            assert_ne!(a, b, "after switch {n}");
+            assert!(m.shown_on(n).is_some());
+        }
     }
 
     #[test]
-    fn switching_to_the_same_workspace_does_nothing() {
+    fn switching_to_the_workspace_you_are_on_does_nothing() {
         let mut m = two_monitors();
         assert!(m
             .apply(ev(json!({"do":"switch","n":1})))
@@ -1016,15 +1046,15 @@ mod tests {
     }
 
     #[test]
-    fn view_lists_waiting_windows_of_a_missing_monitor() {
-        let mut m = Model::new();
-        m.apply(ev(json!({"do":"monitor_added","monitor":"A"})))
+    fn an_unplugged_displays_windows_wait_in_their_workspace() {
+        let mut m = two_monitors();
+        m.apply(ev(json!({"do":"observe_focus_monitor","monitor":"B"})))
             .unwrap();
         m.apply(ev(json!({"do":"open","window":"w1","pid":1})))
             .unwrap();
-        m.apply(ev(json!({"do":"monitor_removed","monitor":"A"})))
+        m.apply(ev(json!({"do":"monitor_removed","monitor":"B"})))
             .unwrap();
-        let v = m.view();
-        assert_eq!(v["workspaces"]["A:1"], json!(["w1"]));
+        assert_eq!(m.view()["workspaces"]["2"], json!(["w1"]));
+        assert_eq!(m.shown_on(2), None);
     }
 }

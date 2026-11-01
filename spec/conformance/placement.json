@@ -22,7 +22,7 @@
    {
     "expect": {
      "workspaces": {
-      "A:4": [
+      "4": [
        "w1"
       ]
      },
@@ -55,17 +55,17 @@
      {
       "do": "move_window",
       "window": "w1",
-      "to": "A:4"
+      "to": "4"
      }
     ]
    },
    {
     "expect": {
      "workspaces": {
-      "A:4": [
+      "4": [
        "w1"
       ],
-      "A:2": []
+      "2": []
      },
      "active": null
     }
@@ -73,46 +73,7 @@
   ]
  },
  {
-  "name": "new windows land on the monitor you are on",
-  "rules": [
-   "R-P1"
-  ],
-  "steps": [
-   {
-    "do": "monitor_added",
-    "monitor": "A"
-   },
-   {
-    "do": "monitor_added",
-    "monitor": "B"
-   },
-   {
-    "do": "observe_focus_monitor",
-    "monitor": "B"
-   },
-   {
-    "do": "switch",
-    "n": 2
-   },
-   {
-    "do": "open",
-    "window": "w1",
-    "pid": 1,
-    "app": "foot"
-   },
-   {
-    "expect": {
-     "workspaces": {
-      "B:2": [
-       "w1"
-      ]
-     }
-    }
-   }
-  ]
- },
- {
-  "name": "a window opened on the other monitor stays there",
+  "name": "a window joins the workspace of the display it appeared on",
   "rules": [
    "R-P1"
   ],
@@ -135,12 +96,48 @@
    {
     "expect": {
      "workspaces": {
-      "B:1": [
+      "2": [
        "w1"
       ]
      },
      "active": null,
      "focused_monitor": "A"
+    }
+   }
+  ]
+ },
+ {
+  "name": "a window opened while you are on the second display lands there",
+  "rules": [
+   "R-P1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "B"
+   },
+   {
+    "do": "observe_focus_monitor",
+    "monitor": "B"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "expect": {
+     "workspaces": {
+      "2": [
+       "w1"
+      ]
+     },
+     "active": "w1"
     }
    }
   ]
@@ -171,7 +168,7 @@
    {
     "expect": {
      "workspaces": {
-      "A:1": [
+      "1": [
        "w1"
       ]
      }
@@ -208,14 +205,108 @@
    {
     "expect": {
      "workspaces": {
-      "A:1": [
+      "1": [
        "w1"
       ],
-      "A:3": [
+      "3": [
        "w2"
       ]
      },
      "active": "w2"
+    }
+   }
+  ]
+ },
+ {
+  "name": "a window that was already open is mirrored where it is, even out of sight",
+  "rules": [
+   "R-P2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "observe_window",
+    "window": "w1",
+    "pid": 1,
+    "workspace": 5,
+    "effects": [],
+    "expect": {
+     "workspaces": {
+      "5": [
+       "w1"
+      ]
+     },
+     "active": null
+    }
+   }
+  ]
+ },
+ {
+  "name": "a window already parked on the agent workspace stays parked and not drivable",
+  "rules": [
+   "R-P2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "observe_window",
+    "window": "w1",
+    "pid": 1,
+    "effects": [],
+    "expect": {
+     "agent": {
+      "windows": [
+       "w1"
+      ]
+     },
+     "windows": {
+      "w1": {
+       "home": "agent",
+       "agent_owned": false
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "an agent process's window found on your workspace is moved off it",
+  "rules": [
+   "R-P2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "agent_register",
+    "pid": 500
+   },
+   {
+    "do": "observe_window",
+    "window": "a1",
+    "pid": 500,
+    "workspace": 1,
+    "effects": [
+     {
+      "do": "move_window",
+      "window": "a1",
+      "to": "agent"
+     }
+    ],
+    "expect": {
+     "agent": {
+      "windows": [
+       "a1"
+      ]
+     }
     }
    }
   ]

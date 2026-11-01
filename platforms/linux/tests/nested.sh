@@ -151,30 +151,39 @@ press "BaneySpaces: workspace 3"; sleep 0.2
 eq "pressing Super+3 goes to workspace 3" "$(mon_ws $M1)" "3"
 press "BaneySpaces: workspace 1"; sleep 0.2
 
-echo "== switching 1-9 on each monitor, instantly"
+echo "== one shared pool of nine; each display shows one, never the same as another"
+eq "monitor 1 shows workspace 1 and monitor 2 shows 2 to start with" "$(mon_ws $M1),$(mon_ws $M2)" "1,2"
+eq "the model agrees" "$(baneyspaces state | jq -r "[.data.monitors[\"$M1\"].current,.data.monitors[\"$M2\"].current]|join(\",\")")" "1,2"
+shown_distinct() { [ "$(H monitors | jq '[.[].activeWorkspace.id]|unique|length')" = "$(H monitors | jq length)" ]; }
 LAT=()
-for n in 1 2 3 4 5 6 7 8 9; do
+for n in 3 4 5 6 7 8 9; do
   t0=$(date +%s%N); baneyspaces switch $n >/dev/null; t1=$(date +%s%N); LAT+=($(( (t1-t0)/1000000 )))
-  eq "monitor 1 shows workspace $n" "$(mon_ws $M1)" "$n"
+  eq "switch $n: monitor 1 shows $n" "$(mon_ws $M1)" "$n"
+  eq "switch $n: monitor 2 still shows 2" "$(mon_ws $M2)" "2"
 done
-eq "monitor 2 untouched by monitor 1 switches" "$(mon_ws $M2)" "$(mon_ws $M2)"
-baneyspaces focus-monitor $M2 >/dev/null; sleep 0.2
-eq "focus-monitor goes to monitor 2" "$(H monitors | jq -r '.[]|select(.focused)|.name')" "$M2"
-for n in 1 2 3 4 5 6 7 8 9; do
+baneyspaces switch 2 >/dev/null; sleep 0.2
+eq "switch 2 goes to the display that shows 2" "$(H monitors | jq -r '.[]|select(.focused)|.name')" "$M2"
+eq "and changes neither display" "$(mon_ws $M1),$(mon_ws $M2)" "9,2"
+for n in 3 4 5 6 7 8; do
   t0=$(date +%s%N); baneyspaces switch $n >/dev/null; t1=$(date +%s%N); LAT+=($(( (t1-t0)/1000000 )))
-  eq "monitor 2 shows workspace 10$n -> $((100+n))" "$(mon_ws $M2)" "$((100+n))"
+  eq "on monitor 2, switch $n shows $n there" "$(mon_ws $M2)" "$n"
 done
 eq "monitor 1 stayed on 9 while monitor 2 switched" "$(mon_ws $M1)" "9"
+baneyspaces switch 9 >/dev/null; sleep 0.2
+eq "switch 9 goes back to monitor 1, which shows it" "$(H monitors | jq -r '.[]|select(.focused)|.name')" "$M1"
+eq "no display changed" "$(mon_ws $M1),$(mon_ws $M2)" "9,8"
+for n in 1 2 3 4 5 6 7 8 9; do
+  baneyspaces switch $n >/dev/null
+  check "after switch $n: some display shows $n and no two displays show the same" sh -c "[ \"\$(hyprctl -j monitors | jq '[.[].activeWorkspace.id]|index($n) != null')\" = true ] && [ \"\$(hyprctl -j monitors | jq '[.[].activeWorkspace.id]|unique|length')\" = 2 ]"
+done
 SORTED=($(printf '%s\n' "${LAT[@]}" | sort -n)); echo "  switch round trip (CLI spawn + daemon + Hyprland), ms: median ${SORTED[$(( ${#SORTED[@]}/2 ))]}, max ${SORTED[-1]}"
-baneyspaces focus-monitor $M1 >/dev/null; baneyspaces switch 1 >/dev/null; baneyspaces switch 1 --monitor $M2 >/dev/null; sleep 0.2
-eq "back on workspace 1 of monitor 1" "$(mon_ws $M1)" "1"
-eq "switch --monitor changes the other monitor without focusing it" "$(mon_ws $M2)-$(H monitors | jq -r '.[]|select(.focused)|.name')" "101-$M1"
+baneyspaces focus-monitor $M1 >/dev/null; baneyspaces switch 1 >/dev/null; baneyspaces focus-monitor $M2 >/dev/null; baneyspaces switch 2 >/dev/null; baneyspaces focus-monitor $M1 >/dev/null; sleep 0.2
+eq "back to 1 and 2" "$(mon_ws $M1),$(mon_ws $M2)" "1,2"
 eq "workspace 10 is refused" "$(baneyspaces switch 10 | jq -r .error.code)" "invalid_args"
 eq "workspace 0 is refused" "$(baneyspaces switch 0 | jq -r .error.code)" "invalid_args"
 
 echo "== windows land where you are, move, empty means empty"
 user_window() { # user_window <title> -> address, opened the way a user's launcher does
-  local before; before="$(H clients | jq -r '.[].address' | sort)"
   hyprctl dispatch "hl.dsp.exec_cmd(\"foot -T $1 sleep 600\")" >/dev/null
   for _ in $(seq 1 60); do
     local a; a="$(H clients | jq -r ".[]|select(.title==\"$1\")|.address")"
@@ -185,16 +194,16 @@ client_ws() { H clients | jq -r ".[]|select(.address==\"$1\")|.workspace.name"; 
 baneyspaces switch 4 >/dev/null; sleep 0.2
 W1="$(user_window w1)"; sleep 0.3
 eq "new window lands on workspace 4 (where you are)" "$(client_ws $W1)" "4"
-eq "the model has it on $M1:4" "$(baneyspaces state | jq -r ".data.workspaces[\"$M1:4\"]|join(\",\")")" "$W1"
+eq "the model has it on workspace 4" "$(baneyspaces state | jq -r ".data.workspaces[\"4\"]|join(\",\")")" "$W1"
 eq "it is in front" "$(active)" "$W1"
-baneyspaces switch 2 >/dev/null; sleep 0.2
+baneyspaces switch 3 >/dev/null; sleep 0.2
 W2="$(user_window w2)"; sleep 0.3
-eq "next window lands on workspace 2" "$(client_ws $W2)" "2"
-baneyspaces focus-monitor $M2 >/dev/null; baneyspaces switch 3 >/dev/null; sleep 0.2
+eq "next window lands on workspace 3" "$(client_ws $W2)" "3"
+baneyspaces focus-monitor $M2 >/dev/null; sleep 0.2
 W3="$(user_window w3)"; sleep 0.3
-eq "a window opened while on monitor 2 lands on 103" "$(client_ws $W3)" "103"
+eq "a window opened while on monitor 2 lands on the workspace it shows (2)" "$(client_ws $W3)" "2"
 baneyspaces focus-monitor $M1 >/dev/null; sleep 0.2
-eq "monitor 1 shows 2 again" "$(mon_ws $M1)" "2"
+eq "monitor 1 still shows 3" "$(mon_ws $M1)" "3"
 baneyspaces switch 7 >/dev/null; sleep 0.2
 eq "an empty workspace has nothing in front" "$(active)" "none"
 eq "the model agrees" "$(baneyspaces state | jq -r '.data.active')" "null"
@@ -204,28 +213,32 @@ baneyspaces move 6 >/dev/null; sleep 0.3
 eq "move sends the front window to 6" "$(client_ws $W1)" "6"
 eq "and follows it" "$(mon_ws $M1)" "6"
 eq "w1 is in front" "$(active)" "$W1"
-baneyspaces switch 2 >/dev/null; sleep 0.2
+baneyspaces switch 3 >/dev/null; sleep 0.2
 baneyspaces move 8 --stay --window "$W1" >/dev/null; sleep 0.3
 eq "move --stay sends it to 8" "$(client_ws $W1)" "8"
-eq "move --stay leaves you on 2" "$(mon_ws $M1)" "2"
+eq "move --stay leaves you on 3" "$(mon_ws $M1)" "3"
 eq "move --stay leaves w2 in front" "$(active)" "$W2"
 press "BaneySpaces: send window to workspace 5"; sleep 0.3
 eq "Super+Shift+5 moves the front window to 5 and follows" "$(client_ws $W2)-$(mon_ws $M1)" "5-5"
 hyprctl dispatch "hl.dsp.window.move({ workspace = \"1\", follow = false, window = \"address:$W1\" })" >/dev/null; sleep 0.3
-eq "a window moved by Hyprland itself is mirrored, not undone" "$(baneyspaces state | jq -r ".data.windows[\"$W1\"].home")" "$M1:1"
+eq "a window moved by Hyprland itself is mirrored, not undone" "$(baneyspaces state | jq -r ".data.windows[\"$W1\"].home")" "1"
 eq "a window moved by Hyprland itself stays where it went" "$(client_ws $W1)" "1"
 eq "a window outside the scheme is left alone (workspace 10)" "$(hyprctl dispatch "hl.dsp.window.move({ workspace = \"10\", follow = false, window = \"address:$W1\" })" >/dev/null; sleep 0.3; baneyspaces state | jq -r ".data.windows|has(\"$W1\")")" "false"
 hyprctl dispatch "hl.dsp.window.move({ workspace = \"1\", follow = false, window = \"address:$W1\" })" >/dev/null; sleep 0.3
+baneyspaces move 2 --window "$W1" >/dev/null; sleep 0.4
+eq "moving to the workspace monitor 2 shows takes you to monitor 2" "$(H monitors | jq -r '.[]|select(.focused)|.name')" "$M2"
+eq "w1 is on 2 and in front" "$(client_ws $W1)-$(active)" "2-$W1"
+eq "monitor 1 did not change" "$(mon_ws $M1)" "5"
+baneyspaces focus-monitor $M1 >/dev/null; sleep 0.2
 
 echo "== focus following: only a user's activation follows"
 baneyspaces switch 1 >/dev/null; sleep 0.2
 hyprctl dispatch "hl.dsp.focus({ window = \"address:$W2\" })" >/dev/null; sleep 0.4
-eq "a user's focus of a window on another workspace takes you there" "$(mon_ws $M1)" "5"
+eq "a user's focus of a window on a hidden workspace brings it up here" "$(mon_ws $M1)" "5"
 eq "w2 is in front" "$(active)" "$W2"
 
 echo "== the agent workspace"
-baneyspaces switch 5 >/dev/null; baneyspaces switch 2 >/dev/null; sleep 0.2
-W4="$(active)"
+sleep 0.2
 USER_ACTIVE="$(active)"; USER_WS1="$(mon_ws $M1)"; USER_WS2="$(mon_ws $M2)"; USER_CURSOR="$(cursor)"
 same_screen() { # same_screen "<desc>"
   eq "$1: your front window" "$(active)" "$USER_ACTIVE"
@@ -269,7 +282,7 @@ eq "agent move parks your window" "$(client_ws $W3)" "special:agent"
 eq "parked windows are not drivable" "$(baneyspaces agent status | jq -r ".data.windows[]|select(.window==\"$W3\")|.drivable")" "false"
 same_screen "after parking a window"
 baneyspaces agent bring "$W3" >/dev/null; sleep 0.3
-eq "agent bring returns it to the workspace you are on" "$(client_ws $W3)" "2"
+eq "agent bring returns it to the workspace you are on" "$(client_ws $W3)" "5"
 eq "an agent window cannot be moved to your workspaces" "$(baneyspaces move 3 --window "$AW" | jq -r .error.code)" "agent_window"
 eq "keys are not supported in part 1" "$(baneyspaces agent press @sa:e1 Return | jq -r .error.code)" "not_supported"
 
@@ -278,17 +291,25 @@ if [ -x "$BANEYSPACES_ENGINE" ] && [ -f "$HERE/hands.sh" ]; then
 fi
 
 echo "== monitors come and go"
-baneyspaces focus-monitor $M2 >/dev/null; baneyspaces switch 5 >/dev/null; sleep 0.2
+baneyspaces focus-monitor $M2 >/dev/null; baneyspaces switch 6 >/dev/null; sleep 0.2
 W5="$(user_window w5)"; sleep 0.3
-eq "a window opened on monitor 2 workspace 5 is on 105" "$(client_ws $W5)" "105"
-hyprctl output remove $M2 >/dev/null; sleep 0.8
+eq "a window opened on monitor 2 (showing 6) is on 6" "$(client_ws $W5)" "6"
+SHOWN1="$(mon_ws $M1)"
+hyprctl output remove $M2 >/dev/null; sleep 1
 eq "unplugging monitor 2 leaves one monitor" "$(baneyspaces state | jq -r '.data.monitors|keys|join(",")')" "$M1"
-eq "its window moved to monitor 1, same workspace number" "$(client_ws $W5)" "5"
+eq "its workspace goes out of sight with its window in it" "$(baneyspaces state | jq -r ".data.workspaces[\"6\"]|join(\",\")")" "$W5"
+eq "nothing was moved: the window is still on 6" "$(client_ws $W5)" "6"
+eq "monitor 1 still shows what it showed" "$(mon_ws $M1)" "$SHOWN1"
 eq "you are on monitor 1" "$(H monitors | jq -r '.[]|select(.focused)|.name')" "$M1"
-hyprctl output create headless >/dev/null; sleep 0.8
+baneyspaces switch 6 >/dev/null; sleep 0.3
+eq "going to 6 brings it up on monitor 1, with w5 in front" "$(mon_ws $M1)-$(active)" "6-$W5"
+hyprctl output create headless >/dev/null; sleep 1
 NEW="$(H monitors | jq -r '[.[]|select(.name!="'$M1'")|.name]|first')"
 eq "a monitor plugged in takes the free slot 1" "$(baneyspaces state | jq -r ".data.monitors[\"$NEW\"].slot")" "1"
-check "its workspaces are pinned to it (switch lands on 10x)" sh -c "baneyspaces switch 4 --monitor $NEW >/dev/null; sleep 0.3; [ \"\$(hyprctl -j monitors | jq -r '.[]|select(.name==\"$NEW\")|.activeWorkspace.id')\" = 104 ]"
+NEWWS="$(mon_ws $NEW)"
+check "it shows a workspace of the nine that monitor 1 does not" sh -c "[ '$NEWWS' -ge 1 ] && [ '$NEWWS' -le 9 ] && [ '$NEWWS' != \"\$(hyprctl -j monitors | jq -r '.[]|select(.name==\"$M1\")|.activeWorkspace.id')\" ]"
+eq "the workspace it shows is empty" "$(baneyspaces state | jq -r ".data.workspaces[\"$NEWWS\"]|length // 0")" "0"
+eq "the model agrees with Hyprland about both" "$(baneyspaces state | jq -r "[.data.monitors[\"$M1\"].current,.data.monitors[\"$NEW\"].current]|join(\",\")")" "$(mon_ws $M1),$NEWWS"
 
 echo "== state.json"
 check "state.json exists and is the model" sh -c "jq -e '.version==1 and .platform==\"linux\" and (.monitors|length)>=1' '$XDG_STATE_HOME/baneyspaces/state.json'"

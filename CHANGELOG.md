@@ -3,9 +3,9 @@
 ## Unreleased
 
 - **BaneySpaces for Linux, part 1 (Omarchy, Hyprland).** `spec/` now holds the workspace rules, the
-  key map, the JSON envelope, the MCP tools and 68 conformance cases every platform replays;
+  key map, the JSON envelope, the MCP tools and 78 conformance cases every platform replays;
   `crates/baneyspaces-core` implements them in Rust; `platforms/linux` is a daemon that drives
-  Hyprland's workspaces (nine per monitor, instant) and an agent workspace (`special:agent`) that
+  Hyprland's workspaces (one shared set of nine, each display shows one, instant) and an agent workspace (`special:agent`) that
   agents' windows open on without ever taking your screen, plus agent hands over AT-SPI through the
   pinned agent-desktop. Install files for Omarchy are included but applied nowhere yet. See
   [platforms/linux/README.md](platforms/linux/README.md).

@@ -28,7 +28,7 @@
     "expect": {
      "active": null,
      "workspaces": {
-      "A:2": []
+      "2": []
      }
     }
    }

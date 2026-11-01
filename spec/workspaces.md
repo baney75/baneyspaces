@@ -1,26 +1,33 @@
 # Workspace rules
 
-Nine workspaces on every display, plus one agent workspace. The model is pure: a platform feeds it
-events (what you asked for, what the compositor reported) and carries out the effects it returns.
-Rules marked *observed* mirror what the compositor already did and produce effects only to correct it.
+One shared pool of nine workspaces, plus one agent workspace. Each display shows one of the nine at
+a time, never the same one as another display. The model is pure: a platform feeds it events (what
+you asked for, what the compositor reported) and carries out the effects it returns. Rules marked
+*observed* mirror what the compositor already did and produce effects only to correct it.
 
-Terms. **Monitor**: a display, named by the platform (`eDP-2`). **Slot**: a monitor's number, 0 for
-the first, the lowest free one for a new monitor. **Current**: the workspace a monitor shows.
-**Front**: the active window. **Agent window**: a window on the agent workspace or owned by a
-process BaneySpaces started for an agent.
+This is the macOS app's model (`Workspaces.swift`: `shown`, `switchTo`, `displays`) on every
+platform: workspace n is the same workspace whichever display shows it.
 
-## Monitors
+Terms. **Display** (monitor): named by the platform (`eDP-2`). **Slot**: a display's place in the
+order, 0 for the main one, the lowest free number for a new one. **Shown**: the workspace a display
+is showing. **Front**: the active window. **Agent window**: a window on the agent workspace or
+owned by a process BaneySpaces started for an agent.
 
-### R-M1 One set of nine per monitor
-Every monitor has workspaces 1 to 9 of its own and shows one of them. A monitor you plug in shows an
-empty workspace 1. The first monitor is the one you are on. (The macOS app shares nine workspaces
-across displays, so ⌘n there can take you to a workspace the other display shows; per-monitor sets
-are the Linux and Windows rule. See "Open" in the Linux part-1 PR.)
+## Displays
 
-### R-M2 Unplugging
-The windows of a monitor you unplug go to the lowest-slot monitor left, same workspace number, and
-you are on that monitor if you were on the one that left. With no monitor left they wait out of
-sight and come back to a monitor of the same name.
+### R-M1 One pool, one workspace per display
+Windows belong to workspaces 1 to 9, not to displays. Each display shows exactly one workspace, and
+no workspace is shown on two displays at once. The first display shows workspace 1 and is the one
+you are on.
+
+### R-M2 A display you plug in shows an empty workspace
+It shows the workspace it showed when it was last here, if nobody shows that now; else the first
+empty workspace nobody shows; else the first nobody shows. The other displays do not change.
+
+### R-M3 A display you unplug lets go of its workspace
+The workspace goes out of sight with its windows in it, until you go to it. Nothing is moved. If
+you were on that display, you are on the first one left. With no display left the windows wait, and
+a display that comes back shows what it showed.
 
 ## Switching
 
@@ -28,19 +35,22 @@ sight and come back to a monitor of the same name.
 `switch n` for n outside 1 to 9 is `invalid_args`. A switch never animates. A platform that cannot
 turn its animation off for a switch does not ship.
 
-### R-S2 Switch acts on the monitor you are on
-The monitor you last clicked into, moved to, or switched to. The other monitors keep their
-workspaces. A switch may name another monitor; then your focus does not change.
+### R-S2 Switch shows the workspace on the display you are on
+The display you last clicked into, moved to, or switched to. The other displays keep what they show.
 
-### R-S3 The workspace you are on is a no-op
+### R-S3 If another display shows it, you go to that display
+Pressing the number of a workspace another display is already showing takes you to that display and
+brings its front window forward. Nothing else changes (as in AeroSpace).
+
+### R-S4 The workspace you are on is a no-op
 No effects. (The one exception: the agent workspace is covering it, see R-A4.)
 
-### R-S4 Switch puts back what you had
-The window you had in front on that workspace, else its oldest window, else nothing.
+### R-S5 Switch puts back what you had
+The window you had in front on that workspace, else the last one opened there, else nothing.
 
-### R-S5 Outside the nine
-A monitor may show a workspace that is not one of the nine (observed as workspace 0). A switch to
-1 to 9 then always acts, even to 1.
+### R-S6 Outside the nine
+A display may show something that is not one of the nine (observed as workspace 0): a platform's
+own, or one you keep elsewhere. A switch to 1 to 9 then always acts, even to 1.
 
 ## Empty means empty
 
@@ -51,9 +61,14 @@ front. Focus never falls to a window on another workspace. Typing goes nowhere u
 ## Placement
 
 ### R-P1 New windows land where you are
-A window that opens goes to the current workspace of the monitor you are on, and takes the front.
-A window the compositor put on a workspace you are not looking at is moved here, silently (no
-focus change). A window the compositor opened on another monitor stays on that monitor's current workspace.
+A window that opens joins the workspace shown on the display it appeared on (the one you are on, by
+default) and takes the front. A window the compositor put on a workspace you are not looking at is
+moved to that one, silently (no focus change).
+
+### R-P2 Windows that were already open
+When the daemon starts it mirrors every window exactly where it is, even out of sight. A window
+already parked on the agent workspace stays parked and is not drivable. A window of an agent process
+found on your workspaces is moved off them.
 
 ## Moving a window
 
@@ -61,16 +76,15 @@ focus change). A window the compositor opened on another monitor stays on that m
 `move n` sends the front window (or a named one) to workspace n. To the workspace it is already on
 is a no-op. With nothing in front it is `not_found`.
 
-### R-V2 A moved window keeps its monitor
-It goes to workspace n of the monitor it is on.
+### R-V2 You follow it
+Like a switch (R-S2, R-S3): you go to the display showing n, or n comes up on the display you are on,
+with the window in front.
 
-### R-V3 You follow it
-You go to workspace n of that monitor, onto that monitor if it is another one, with the window in front.
+### R-V3 Move and stay
+`move n --stay` sends the window and changes nothing else: not what any display shows, not your
+front window (unless the front window itself left, then the front falls back to this workspace).
 
-### R-V4 Move and stay
-`move n --stay` sends the window and changes nothing else: not your workspace, not your front window.
-
-### R-V5 Moves you make are kept
+### R-V4 Moves you make are kept
 A window you move with the compositor's own tools (a drag, a command) is mirrored where it lands. It
 is never moved back. If it was the front window and left the workspace you are looking at, the front
 falls back to that workspace.
@@ -79,11 +93,12 @@ falls back to that workspace.
 
 ### R-F1 Only a user-caused activation follows
 When you activate a window on a workspace that is not showing (the launcher, a click, a focus
-command), that monitor switches to its workspace and you are on that monitor.
+command), it comes up on the display you are on. A window on a workspace another display shows
+takes you to that display.
 
 ### R-F2 An app asking does not move you
 An activation caused by an app (a notification, an attention request) never changes the workspace or
-the monitor you are on. If it already moved the compositor's focus, the front window you had is put back.
+the display you are on. If it already moved the compositor's focus, the front window you had is put back.
 The result is `refuse_follow` with reason `not_user_caused`.
 
 ### R-F3 Windows outside the scheme are ignored
