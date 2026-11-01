@@ -77,8 +77,9 @@ restore_mission_control() {
 # The launch agent that did this when BaneySpaces had stopped running, and its files.
 WATCHDOG=com.baney.baneyspaces.mc-watchdog
 remove_watchdog() {
-  sys launchctl bootout "gui/$(id -u)/$WATCHDOG" >/dev/null 2>&1 || true
+  # The plist first: when the agent is what runs this, unloading it ends this very process.
   rm -f "$HOME/Library/LaunchAgents/$WATCHDOG.plist"
+  sys launchctl bootout "gui/$(id -u)/$WATCHDOG" >/dev/null 2>&1 || true
   return 0
 }
 

@@ -210,6 +210,22 @@ final class MissionControlTakeoverTests: XCTestCase {
         XCTAssertTrue(d.update(.topLeft, now: 4 + HotCorners.dwell), "again after leaving")
     }
 
+    /// Brushing out of a corner and back leaves a timer for the old visit; the wait that is left
+    /// is counted from the new one.
+    func testTheWaitIsCountedFromTheLatestVisit() {
+        var d = HotCornerDwell()
+        XCTAssertFalse(d.update(.topLeft, now: 0))
+        XCTAssertFalse(d.update(nil, now: 0.05))
+        XCTAssertFalse(d.update(.topLeft, now: 0.10))
+        // The old timer fires at 0.14: not enough, and the next look is for what is left.
+        XCTAssertFalse(d.update(.topLeft, now: 0.14))
+        let left = d.remaining(now: 0.14)!
+        XCTAssertEqual(left, HotCorners.dwell - 0.04, accuracy: 0.0001)
+        XCTAssertTrue(d.update(.topLeft, now: 0.14 + left))
+        XCTAssertNil(d.remaining(now: 1), "once it has opened there is nothing to wait for")
+        XCTAssertNil(HotCornerDwell().remaining(now: 0), "not in a corner")
+    }
+
     func testPassingThroughACornerDoesNotOpen() {
         var d = HotCornerDwell()
         XCTAssertFalse(d.update(.bottomRight, now: 0))

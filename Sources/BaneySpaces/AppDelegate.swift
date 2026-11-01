@@ -219,6 +219,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         c.model.onFocusFinished = { [weak self] id in self?.deck.focusFinished(id) }
         c.model.viewerKeysActive = { [weak self] in self?.missionControlKeys.isActive ?? false }
         c.model.trackpadProblem = { [weak self] in self?.trackpadSwipe.problem }
+        c.model.missionControlProblem = { SystemMissionControl.problem }
         c.model.onViewerKeysChange = { [weak self] on in
             MissionControlKeys.enabled = on
             guard let self else { return }
@@ -255,15 +256,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// swipe and its hot corners; switched off, without Accessibility, or while macOS won't let the
     /// key watcher run (nothing would answer the key), all of it goes back.
     private func syncMissionControl() {
-        if started, MissionControlKeys.enabled, missionControlKeys.isActive {
-            SystemMissionControl.takeOver()
+        if started, MissionControlKeys.enabled, missionControlKeys.isActive, SystemMissionControl.takeOver() {
             trackpadSwipe.start()
             hotCorners.set(corners: SystemMissionControl.answeredCorners())
-        } else {
-            trackpadSwipe.stop()
-            hotCorners.stop()
-            SystemMissionControl.restore()
+            return
         }
+        // Not wanted, or not safe: without the launch agent that puts it back, Mission Control stays
+        // on (and the swipe and corners stay quiet, since it would open beside the overview).
+        let why = started && MissionControlKeys.enabled && missionControlKeys.isActive ? SystemMissionControl.problem : nil
+        trackpadSwipe.stop()
+        hotCorners.stop()
+        SystemMissionControl.restore(keeping: why)
     }
 
     /// An app dragged out of the disk image never ran the installer's other steps: AeroSpace stepping
@@ -426,8 +429,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // The macOS Dock comes back with everything else; the next launch tucks it away again.
         dock.stop(restoreSystemDock: true)
         topDrag.stop()
-        trackpadSwipe.stop()
-        hotCorners.stop()
         // Mission Control comes back with the Dock, so there's always a way to see the desktops.
         // Quitting for an update is the exception: the new build takes over, and if it never
         // starts the launch agent puts Mission Control back after 30 seconds.
@@ -436,6 +437,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             else { SystemMissionControl.restore() }
         }
         if started { spaces.restoreAll() }
+        // Last: a fault in the private framework while letting go must not skip what matters above.
+        trackpadSwipe.stop()
+        hotCorners.stop()
         // ⌘Space goes back to Spotlight while BaneySpaces isn't running; the next launch takes it again.
         SystemShortcuts.spotlightQueue.sync { SystemShortcuts.restoreSpotlight() }
         spaces.flushWrites()
@@ -509,10 +513,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // Every ten seconds: proof of life for the launch agent, and System Settings changes
             // to hot corners and trackpad gestures. Nothing here lists devices.
             self.missionControlTicks += 1
-            if self.missionControlTicks % 5 == 0, SystemMissionControl.isTakenByUs {
-                SystemMissionControl.beat()
-                self.trackpadSwipe.refreshSettings()
-                self.hotCorners.set(corners: SystemMissionControl.answeredCorners())
+            if self.missionControlTicks % 5 == 0 {
+                if SystemMissionControl.isTakenByUs {
+                    SystemMissionControl.beat()
+                    self.trackpadSwipe.refreshSettings()
+                    self.hotCorners.set(corners: SystemMissionControl.answeredCorners())
+                } else if self.started, MissionControlKeys.enabled, self.missionControlKeys.isActive,
+                          SystemMissionControl.problem == nil || self.missionControlTicks % 30 == 0 {
+                    // Taken back by the launch agent while this ran, or not armed yet: try again
+                    // (once a minute when the safety net failed).
+                    self.syncMissionControl()
+                }
             }
         }
     }

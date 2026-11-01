@@ -118,6 +118,8 @@ final class SetupModel: ObservableObject {
     @Published var viewerKeysFailed = false
     /// Why the trackpad swipe up doesn't open the overview, if it doesn't.
     @Published var trackpadFailed: String?
+    /// Why macOS's Mission Control couldn't be switched off (the way back couldn't be set up).
+    @Published var missionControlFailed: String?
     /// The person asked for access a while ago and macOS still says no: most likely an old
     /// permission from an earlier copy of the app, which only a reset clears.
     @Published var staleGrant = false
@@ -132,6 +134,7 @@ final class SetupModel: ObservableObject {
     var viewerKeysActive: () -> Bool = { true }
     /// Asked by the window controller; why the trackpad swipe isn't working, or nil.
     var trackpadProblem: () -> String? = { nil }
+    var missionControlProblem: () -> String? = { nil }
     /// Called when every required step turns green while the window is open.
     var onReady: (() -> Void)?
 
@@ -184,6 +187,8 @@ final class SetupModel: ObservableObject {
         viewerKeysFailed = trusted && viewerKeys && !viewerKeysActive()
         let swipe = trusted && viewerKeys ? trackpadProblem() : nil
         if swipe != trackpadFailed { trackpadFailed = swipe }
+        let mc = trusted && viewerKeys ? missionControlProblem() : nil
+        if mc != missionControlFailed { missionControlFailed = mc }
         hooks = hooksInstalled()
         let info = updateInfo()
         if info != update { update = info }
@@ -565,6 +570,10 @@ struct SetupView: View {
             } else {
                 Text("The Mission Control key, ⌃↑, a swipe up with three or four fingers (as your trackpad settings have it) and any hot corner set to Mission Control open the overview; a swipe down closes it. macOS's Mission Control is switched off in the Dock while BaneySpaces runs, and comes back, with your hot corners as they were, when you turn this off or quit. A Magic Mouse's two-finger double tap opens nothing while this is on.")
                     .font(.callout).foregroundStyle(.secondary)
+            }
+            if let problem = model.missionControlFailed {
+                Text("macOS's Mission Control is still on. \(problem) BaneySpaces tries again every minute.")
+                    .font(.callout).foregroundStyle(.orange)
             }
             if let problem = model.trackpadFailed {
                 Text(problem).font(.callout).foregroundStyle(.orange)

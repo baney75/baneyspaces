@@ -21,7 +21,7 @@ final class TouchFrameTests: XCTestCase {
 
     private func read(_ r: inout TouchFrameReader, _ fingers: [(x: Float, y: Float)], stride: Int = 96) -> [FingerSwipe.Touch]? {
         let bytes = frame(fingers, stride: stride)
-        return bytes.withUnsafeBytes { r.touches(in: $0.baseAddress, count: fingers.count) }
+        return bytes.withUnsafeBytes { r.touches(in: $0.baseAddress, count: fingers.count, available: bytes.count) }
     }
 
     private func three(at y: Float) -> [(x: Float, y: Float)] { [(0.4, y), (0.5, y), (0.6, y)] }
@@ -68,16 +68,16 @@ final class TouchFrameTests: XCTestCase {
     func testOnlyFingersTouchingAreCounted() {
         var r = trustedReader()
         let bytes = frame([(0.4, 0.3), (0.5, 0.3), (0.6, 0.3)], state: 2)   // hovering
-        XCTAssertEqual(bytes.withUnsafeBytes { r.touches(in: $0.baseAddress, count: 3) }, [])
+        XCTAssertEqual(bytes.withUnsafeBytes { r.touches(in: $0.baseAddress, count: 3, available: bytes.count) }, [])
     }
 
     func testAFrameOfNoTouchesNeedsNoData() {
         var r = TouchFrameReader()
-        XCTAssertEqual(r.touches(in: nil, count: 0), [], "every finger up")
+        XCTAssertEqual(r.touches(in: nil, count: 0, available: 0), [], "every finger up")
         var rejected = TouchFrameReader()
         _ = read(&rejected, [(9, 9)])
-        XCTAssertNil(rejected.touches(in: nil, count: 0))
-        XCTAssertNil(r.touches(in: nil, count: 3), "touches announced with no data aren't read")
+        XCTAssertNil(rejected.touches(in: nil, count: 0, available: 0))
+        XCTAssertNil(r.touches(in: nil, count: 3, available: 0), "touches announced with no data aren't read")
     }
 
     func testTrustIsWithdrawnAfterNonsenseInARow() {
@@ -89,6 +89,58 @@ final class TouchFrameTests: XCTestCase {
         XCTAssertEqual(r.layout, .rejected)
     }
 
+    // MARK: Never past the buffer
+
+    /// `length` bytes that end exactly where memory stops: reading one byte more is a crash.
+    private func withBufferAtTheEdge(_ length: Int, _ body: (UnsafeRawPointer) -> Void) {
+        let page = Int(getpagesize())
+        let base = mmap(nil, page * 2, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0)!
+        XCTAssertEqual(mprotect(base + page, page, PROT_NONE), 0)
+        defer { munmap(base, page * 2) }
+        let start = base + page - length
+        memset(start, 0, length)
+        body(UnsafeRawPointer(start))
+    }
+
+    func testAShortBufferIsNeverReadPast() {
+        // Two touches of a 64-byte layout: 128 bytes, and the check would need 192 to read them as 96.
+        withBufferAtTheEdge(128) { p in
+            var r = TouchFrameReader()
+            XCTAssertNil(r.touches(in: p, count: 2, available: 128))
+            XCTAssertEqual(r.layout, .rejected, "too short to be this layout, and not read to find out")
+        }
+        // One touch, 64 bytes, claimed to be a 96-byte record.
+        withBufferAtTheEdge(64) { p in
+            var r = TouchFrameReader()
+            XCTAssertNil(r.touches(in: p, count: 1, available: 64))
+            XCTAssertEqual(r.layout, .rejected)
+        }
+    }
+
+    func testATrustedLayoutIsNotReadPastAShortFrame() {
+        var r = trustedReader()
+        withBufferAtTheEdge(96) { p in
+            // Three touches announced, one touch of data.
+            XCTAssertNil(r.touches(in: p, count: 3, available: 96))
+        }
+        XCTAssertEqual(r.layout, .trusted, "a short frame or two doesn't withdraw trust")
+        withBufferAtTheEdge(96) { p in
+            for _ in 0..<TouchFrameReader.oddLimit { _ = r.touches(in: p, count: 3, available: 96) }
+        }
+        XCTAssertEqual(r.layout, .rejected)
+    }
+
+    func testTheLengthComesFromTheBlockOrTheMappedMemory() {
+        let heap = malloc(128)!
+        defer { free(heap) }
+        XCTAssertGreaterThanOrEqual(SafeBuffer.length(of: heap), 128)
+        XCTAssertLessThan(SafeBuffer.length(of: heap), 4096, "its own block, not the whole heap")
+        withBufferAtTheEdge(128) { p in
+            XCTAssertEqual(SafeBuffer.length(of: p), 128, "memory stops after it")
+        }
+        XCTAssertEqual(SafeBuffer.length(of: UnsafeRawPointer(bitPattern: 16)!), 0, "nothing mapped there")
+    }
+
     // MARK: From frames to swipes
 
     /// What the app's callback does with each frame.
@@ -96,7 +148,7 @@ final class TouchFrameTests: XCTestCase {
         var out: [FingerSwipe.Direction] = []
         for f in frames {
             let bytes = frame(f)
-            let touches = f.isEmpty ? r.touches(in: nil, count: 0) : bytes.withUnsafeBytes { r.touches(in: $0.baseAddress, count: f.count) }
+            let touches = f.isEmpty ? r.touches(in: nil, count: 0, available: 0) : bytes.withUnsafeBytes { r.touches(in: $0.baseAddress, count: f.count, available: bytes.count) }
             if let touches, let d = s.frame(touches) { out.append(d) }
         }
         return out

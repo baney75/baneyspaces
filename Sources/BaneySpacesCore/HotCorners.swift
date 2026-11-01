@@ -51,6 +51,13 @@ public struct HotCornerDwell: Sendable {
 
     public init() {}
 
+    /// How much longer the pointer must rest before it counts, from `now`; nil when it isn't in a
+    /// corner or has already opened the overview.
+    public func remaining(now: TimeInterval) -> TimeInterval? {
+        guard corner != nil, !fired else { return nil }
+        return max(0, HotCorners.dwell - (now - since))
+    }
+
     /// The pointer is now in `corner` (nil for none) at `now`. Returns true when the pointer has
     /// rested long enough to open the overview.
     public mutating func update(_ corner: HotCorners.Corner?, now: TimeInterval) -> Bool {

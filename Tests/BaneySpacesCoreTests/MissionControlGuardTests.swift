@@ -27,7 +27,7 @@ final class MissionControlGuardTests: XCTestCase {
         XCTAssertTrue(app.contains("SystemMissionControl.takeOver()"))
         XCTAssertTrue(app.contains("MissionControlKeys.enabled"))
         // start(), then the Accessibility paths and the restore-dock command each give it back.
-        XCTAssertGreaterThanOrEqual(app.components(separatedBy: "SystemMissionControl.restore()").count - 1, 5,
+        XCTAssertGreaterThanOrEqual(app.components(separatedBy: "SystemMissionControl.restore(").count - 1, 5,
                                     "syncMissionControl, quit, startWhenTrusted, stillTrusted and --restore-dock")
         let restoreDock = try XCTUnwrap(app.range(of: "\"--restore-dock\""))
         XCTAssertTrue(app[restoreDock.upperBound...].prefix(400).contains("SystemMissionControl.restore()"))
@@ -70,8 +70,10 @@ final class MissionControlGuardTests: XCTestCase {
         XCTAssertTrue(quit.contains("SystemMissionControl.restore()"))
         XCTAssertTrue(quit.contains("updatingTo") && quit.contains("SystemMissionControl.leaveForUpdate()"))
         let over = try source("Sources/BaneySpaces/MissionControlOverride.swift")
-        XCTAssertTrue(over.contains("installWatchdog()"), "taking over installs the launch agent")
-        XCTAssertTrue(over.contains("removeWatchdog()"), "giving back removes it")
+        XCTAssertTrue(over.contains("MissionControlSetup.takeOver(takeover, arm: { installer.install(pid: getpid()) })"), "nothing is switched off before the launch agent is armed")
+        XCTAssertTrue(over.contains("installer.remove()"), "giving back removes it")
+        XCTAssertLessThan(try XCTUnwrap(quit.range(of: "SystemMissionControl.restore()")).lowerBound, try XCTUnwrap(quit.range(of: "trackpadSwipe.stop()")).lowerBound,
+                          "the private framework is let go of last, after what matters is restored")
         let script = MissionControlWatchdog.script
         XCTAssertTrue(script.contains("--restore-mission-control") && script.contains("pgrep"))
         let uninstall = try String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
@@ -82,7 +84,8 @@ final class MissionControlGuardTests: XCTestCase {
     /// Nothing takes Mission Control off before something answers its key.
     func testItIsOnlyTakenWhileTheKeyWatcherRuns() throws {
         let app = try source("Sources/BaneySpaces/AppDelegate.swift")
-        XCTAssertTrue(app.contains("if started, MissionControlKeys.enabled, missionControlKeys.isActive {"))
+        XCTAssertTrue(app.contains("if started, MissionControlKeys.enabled, missionControlKeys.isActive, SystemMissionControl.takeOver() {"))
+        XCTAssertTrue(app.contains("self.missionControlKeys.isActive,\n                          SystemMissionControl.problem == nil"), "an unarmed or taken-back state is tried again")
         XCTAssertTrue(app.contains("if self.missionControlKeys.isActive { self.syncMissionControl() }"), "retried watcher takes over")
     }
 
@@ -91,10 +94,12 @@ final class MissionControlGuardTests: XCTestCase {
         let text = try source("Sources/BaneySpaces/MissionControlOverride.swift")
         let swipe = try XCTUnwrap(text.range(of: "final class TrackpadSwipe").map { String(text[$0.lowerBound...]) })
         XCTAssertFalse(swipe.contains("Timer."), "no polling")
-        XCTAssertEqual(swipe.components(separatedBy: "api.create()").count - 1, 1, "one place lists devices")
+        XCTAssertEqual(text.components(separatedBy: "create()?.takeRetainedValue()").count - 1, 1, "one place lists devices")
         XCTAssertTrue(swipe.contains("kIOFirstMatchNotification") && swipe.contains("kIOTerminatedNotification"))
-        XCTAssertTrue(swipe.contains("api.deviceID(d, &id)"), "devices are told apart by id, not by pointer")
-        XCTAssertTrue(swipe.contains("TrackpadDevice.isTrackpad("), "a Magic Mouse is never watched")
+        let registry = try source("Sources/BaneySpacesCore/TrackpadRegistry.swift")
+        XCTAssertTrue(registry.contains("framework.deviceID(d)"), "devices are told apart by id, not by pointer")
+        XCTAssertTrue(registry.contains("TrackpadDevice.isTrackpad("), "a Magic Mouse is never watched")
+        XCTAssertTrue(registry.contains("withExtendedLifetime(old)"), "lists outlive the unregistering")
     }
 
     /// The release frame has no data and still has to reach the swipe; mouse gestures are left alone.
@@ -103,6 +108,7 @@ final class MissionControlGuardTests: XCTestCase {
         XCTAssertTrue(text.contains("guard let device else { return 0 }"))
         XCTAssertFalse(text.contains("count > 0 else"), "a zero-contact frame ends the gesture")
         XCTAssertFalse(text.contains("MouseTwoFingerDoubleTapGesture"))
-        XCTAssertTrue(text.contains("addLocalMonitorForEvents(matching: .mouseMoved"), "corners work over BaneySpaces' own windows")
+        XCTAssertTrue(text.contains("addLocalMonitorForEvents(matching: kinds"), "corners work over BaneySpaces' own windows")
+        XCTAssertTrue(text.contains("[.mouseMoved, .flagsChanged]"), "and when the key a corner wants goes down with the pointer already there")
     }
 }

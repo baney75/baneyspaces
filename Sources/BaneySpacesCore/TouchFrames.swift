@@ -39,14 +39,17 @@ public struct TouchFrameReader: Sendable {
     }
 
     /// The fingers on the pad in this frame; empty when every finger is up (the frame then has no
-    /// data), nil while the layout isn't trusted. `count` is the callback's own count.
-    public mutating func touches(in data: UnsafeRawPointer?, count: Int) -> [FingerSwipe.Touch]? {
+    /// data), nil while the layout isn't trusted. `count` is the callback's own count and
+    /// `available` how many bytes can be read from `data` (`SafeBuffer.length`). Nothing is read
+    /// beyond `available`: a frame too short for the touches it claims, at 96 bytes each, isn't in
+    /// this layout.
+    public mutating func touches(in data: UnsafeRawPointer?, count: Int, available: Int) -> [FingerSwipe.Touch]? {
         if layout == .rejected { return nil }
         if count <= 0 { return [] }
         guard let data else { return nil }
         if layout == .checking {
-            // Only the first two touches are read until the size is proven: a wrong size can't
-            // take the reads far past the end of the frame.
+            // Only the first two touches are read until the size is proven, and only if both fit.
+            guard available >= min(count, 2) * Self.stride else { layout = .rejected; return nil }
             let first = Self.raw(data, 0)
             var ok = Self.plausible(first)
             if ok, count >= 2 {
@@ -57,6 +60,11 @@ public struct TouchFrameReader: Sendable {
             guard ok else { layout = .rejected; return nil }
             good += 1
             if good >= Self.framesNeeded && sawSecond { layout = .trusted }
+            return nil
+        }
+        guard available >= count * Self.stride else {
+            odd += 1
+            if odd >= Self.oddLimit { layout = .rejected }
             return nil
         }
         var found: [FingerSwipe.Touch] = []

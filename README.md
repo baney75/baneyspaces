@@ -79,7 +79,9 @@ first. To get Mission Control back, turn off **Settings › Keys › Use BaneySp
 Mission Control**: every setting goes back exactly as it was. Quitting BaneySpaces and uninstalling
 do the same, and the Dock restarts each time. If BaneySpaces stops without quitting (a crash, or
 the app dragged to the Trash), a small launch agent puts Mission Control back once no BaneySpaces
-has run for a minute (30 seconds after an update's restart that never came back). If you ever need
+has run for a minute (30 seconds after an update's restart that never came back). BaneySpaces
+switches Mission Control off only after that agent is written, loaded and checked; if it can't be,
+Mission Control stays on and Settings says why. If you ever need
 it by hand: `defaults delete com.apple.dock mcx-expose-disabled; killall Dock`.
 
 App Exposé (⌃↓) goes with Mission Control, and so does a Magic Mouse's two-finger double tap,
