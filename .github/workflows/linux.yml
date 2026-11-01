@@ -1,0 +1,19 @@
+name: Linux core
+on:
+  pull_request:
+    paths: ['crates/**', 'platforms/linux/**', 'spec/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/linux.yml']
+  push:
+    branches: [main]
+    paths: ['crates/**', 'platforms/linux/**', 'spec/**', 'Cargo.toml', 'Cargo.lock']
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Core, conformance cases and the daemon's pure parts
+        run: cargo test --workspace --locked
+      - name: Install and uninstall scripts against a throwaway HOME
+        run: platforms/linux/tests/omarchy-scripts.sh
+# The nested-Hyprland integration test (platforms/linux/tests/nested.sh) needs Hyprland, a render
+# node and AT-SPI; it runs on Parish1 until a runner image has them.

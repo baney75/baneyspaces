@@ -1,0 +1,291 @@
+{
+  "tools": [
+    {
+      "description": "What is on the agent workspace: windows, processes, whether it is showing.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "description": "",
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "agent_status"
+    },
+    {
+      "description": "Windows on the agent workspace you may act on.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "description": "",
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "agent_windows"
+    },
+    {
+      "description": "Start an allowlisted app on the agent workspace, by name, as its own process with its own session bus. You stay where you are. Only files inside the handoff folder may be passed: no flags, no paths to programs, no URLs (bad_arguments). An app not on the allowlist is needs_sandbox before it starts.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "description": "",
+        "properties": {
+          "app": {
+            "description": "The app's name, such as foot. Never a path.",
+            "type": "string"
+          },
+          "args": {
+            "description": "Paths of files inside the handoff folder.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "app"
+        ],
+        "type": "object"
+      },
+      "name": "agent_open"
+    },
+    {
+      "description": "Accessibility tree of one agent window, with refs to act on.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "description": "",
+        "properties": {
+          "compact": {
+            "type": "boolean"
+          },
+          "interactive": {
+            "type": "boolean"
+          },
+          "window": {
+            "description": "A window id from agent_windows or agent_open (the Hyprland address, 0x...).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "window"
+        ],
+        "type": "object"
+      },
+      "name": "agent_snapshot"
+    },
+    {
+      "description": "Find elements in an agent window by role, name or text.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "description": "",
+        "properties": {
+          "name": {
+            "description": "Accessible name.",
+            "type": "string"
+          },
+          "role": {
+            "description": "Accessibility role.",
+            "type": "string"
+          },
+          "text": {
+            "description": "Text content.",
+            "type": "string"
+          },
+          "window": {
+            "description": "A window id from agent_windows or agent_open (the Hyprland address, 0x...).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "window"
+        ],
+        "type": "object"
+      },
+      "name": "agent_find"
+    },
+    {
+      "description": "Read one property (text, value, title, bounds, role, states) of a ref.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "description": "",
+        "properties": {
+          "property": {
+            "description": "text, value, title, bounds, role or states.",
+            "type": "string"
+          },
+          "ref": {
+            "description": "A ref from a snapshot, such as @s8f3k2p9:e8.",
+            "pattern": "^@s[a-z0-9]+:e[0-9]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref",
+          "property"
+        ],
+        "type": "object"
+      },
+      "name": "agent_get"
+    },
+    {
+      "description": "Press a ref through the accessibility API. Returns evidence read back from the element.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "description": "",
+        "properties": {
+          "ref": {
+            "description": "A ref from a snapshot, such as @s8f3k2p9:e8.",
+            "pattern": "^@s[a-z0-9]+:e[0-9]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref"
+        ],
+        "type": "object"
+      },
+      "name": "agent_click"
+    },
+    {
+      "description": "Set a ref's value through the accessibility API.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "description": "",
+        "properties": {
+          "ref": {
+            "description": "A ref from a snapshot, such as @s8f3k2p9:e8.",
+            "pattern": "^@s[a-z0-9]+:e[0-9]+$",
+            "type": "string"
+          },
+          "value": {
+            "description": "The new value.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref",
+          "value"
+        ],
+        "type": "object"
+      },
+      "name": "agent_set_value"
+    },
+    {
+      "description": "Insert text into a text ref through the accessibility API (no key events).",
+      "inputSchema": {
+        "additionalProperties": false,
+        "description": "",
+        "properties": {
+          "ref": {
+            "description": "A ref from a snapshot, such as @s8f3k2p9:e8.",
+            "pattern": "^@s[a-z0-9]+:e[0-9]+$",
+            "type": "string"
+          },
+          "text": {
+            "description": "Text to insert.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref",
+          "text"
+        ],
+        "type": "object"
+      },
+      "name": "agent_type"
+    },
+    {
+      "description": "Toggle a checkbox or switch ref.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "description": "",
+        "properties": {
+          "ref": {
+            "description": "A ref from a snapshot, such as @s8f3k2p9:e8.",
+            "pattern": "^@s[a-z0-9]+:e[0-9]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref"
+        ],
+        "type": "object"
+      },
+      "name": "agent_toggle"
+    },
+    {
+      "description": "Select an option in a list or dropdown ref.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "description": "",
+        "properties": {
+          "ref": {
+            "description": "A ref from a snapshot, such as @s8f3k2p9:e8.",
+            "pattern": "^@s[a-z0-9]+:e[0-9]+$",
+            "type": "string"
+          },
+          "value": {
+            "description": "The option to select.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref",
+          "value"
+        ],
+        "type": "object"
+      },
+      "name": "agent_select"
+    },
+    {
+      "description": "Scroll a ref.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "description": "",
+        "properties": {
+          "amount": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "direction": {
+            "enum": [
+              "up",
+              "down",
+              "left",
+              "right"
+            ],
+            "type": "string"
+          },
+          "ref": {
+            "description": "A ref from a snapshot, such as @s8f3k2p9:e8.",
+            "pattern": "^@s[a-z0-9]+:e[0-9]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref",
+          "direction"
+        ],
+        "type": "object"
+      },
+      "name": "agent_scroll"
+    },
+    {
+      "description": "Capture one agent window. Returned only when asked for.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "description": "",
+        "properties": {
+          "window": {
+            "description": "A window id from agent_windows or agent_open (the Hyprland address, 0x...).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "window"
+        ],
+        "type": "object"
+      },
+      "name": "agent_shot"
+    }
+  ],
+  "version": 1
+}

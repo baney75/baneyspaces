@@ -1,0 +1,499 @@
+[
+ {
+  "name": "workspaces 1 to 9 all work",
+  "rules": [
+   "R-S1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "switch",
+    "n": 2,
+    "expect": {
+     "monitors": {
+      "A": {
+       "current": 2
+      }
+     }
+    }
+   },
+   {
+    "do": "switch",
+    "n": 3,
+    "expect": {
+     "monitors": {
+      "A": {
+       "current": 3
+      }
+     }
+    }
+   },
+   {
+    "do": "switch",
+    "n": 4,
+    "expect": {
+     "monitors": {
+      "A": {
+       "current": 4
+      }
+     }
+    }
+   },
+   {
+    "do": "switch",
+    "n": 5,
+    "expect": {
+     "monitors": {
+      "A": {
+       "current": 5
+      }
+     }
+    }
+   },
+   {
+    "do": "switch",
+    "n": 6,
+    "expect": {
+     "monitors": {
+      "A": {
+       "current": 6
+      }
+     }
+    }
+   },
+   {
+    "do": "switch",
+    "n": 7,
+    "expect": {
+     "monitors": {
+      "A": {
+       "current": 7
+      }
+     }
+    }
+   },
+   {
+    "do": "switch",
+    "n": 8,
+    "expect": {
+     "monitors": {
+      "A": {
+       "current": 8
+      }
+     }
+    }
+   },
+   {
+    "do": "switch",
+    "n": 9,
+    "expect": {
+     "monitors": {
+      "A": {
+       "current": 9
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "workspace 0 and 10 are refused",
+  "rules": [
+   "R-S1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "switch",
+    "n": 0,
+    "error": "invalid_args"
+   },
+   {
+    "do": "switch",
+    "n": 10,
+    "error": "invalid_args"
+   },
+   {
+    "expect": {
+     "monitors": {
+      "A": {
+       "current": 1
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "switch changes only the display you are on",
+  "rules": [
+   "R-S2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "B"
+   },
+   {
+    "do": "observe_focus_monitor",
+    "monitor": "B"
+   },
+   {
+    "do": "switch",
+    "n": 5,
+    "effects": [
+     {
+      "do": "show_workspace",
+      "monitor": "B",
+      "workspace": 5
+     }
+    ],
+    "expect": {
+     "focused_monitor": "B",
+     "monitors": {
+      "A": {
+       "current": 1
+      },
+      "B": {
+       "current": 5
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "switch on the first display leaves the second alone",
+  "rules": [
+   "R-S2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "B"
+   },
+   {
+    "do": "switch",
+    "n": 4,
+    "effects": [
+     {
+      "do": "show_workspace",
+      "monitor": "A",
+      "workspace": 4
+     }
+    ],
+    "expect": {
+     "monitors": {
+      "A": {
+       "current": 4
+      },
+      "B": {
+       "current": 2
+      }
+     },
+     "current": 4
+    }
+   }
+  ]
+ },
+ {
+  "name": "if another display shows it, you go to that display",
+  "rules": [
+   "R-S3"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "B"
+   },
+   {
+    "do": "switch",
+    "n": 2,
+    "effects": [
+     {
+      "do": "focus_monitor",
+      "monitor": "B"
+     }
+    ],
+    "expect": {
+     "focused_monitor": "B",
+     "current": 2,
+     "monitors": {
+      "A": {
+       "current": 1
+      },
+      "B": {
+       "current": 2
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "going there brings its front window forward",
+  "rules": [
+   "R-S3"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "B"
+   },
+   {
+    "do": "observe_focus_monitor",
+    "monitor": "B"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "observe_focus_monitor",
+    "monitor": "A"
+   },
+   {
+    "do": "switch",
+    "n": 2,
+    "effects": [
+     {
+      "do": "focus_monitor",
+      "monitor": "B"
+     },
+     {
+      "do": "focus_window",
+      "window": "w1"
+     }
+    ],
+    "expect": {
+     "focused_monitor": "B",
+     "active": "w1"
+    }
+   }
+  ]
+ },
+ {
+  "name": "and back to the first display the same way",
+  "rules": [
+   "R-S3"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "B"
+   },
+   {
+    "do": "switch",
+    "n": 2
+   },
+   {
+    "do": "switch",
+    "n": 1,
+    "effects": [
+     {
+      "do": "focus_monitor",
+      "monitor": "A"
+     }
+    ],
+    "expect": {
+     "focused_monitor": "A",
+     "current": 1
+    }
+   }
+  ]
+ },
+ {
+  "name": "switching to the workspace you are on does nothing",
+  "rules": [
+   "R-S4"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "switch",
+    "n": 1,
+    "effects": [],
+    "expect": {
+     "active": "w1"
+    }
+   }
+  ]
+ },
+ {
+  "name": "switch puts back the window you had in front there",
+  "rules": [
+   "R-S5"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "open",
+    "window": "w2",
+    "pid": 2,
+    "app": "foot"
+   },
+   {
+    "do": "activate",
+    "window": "w1"
+   },
+   {
+    "do": "switch",
+    "n": 2
+   },
+   {
+    "do": "switch",
+    "n": 1,
+    "effects": [
+     {
+      "do": "show_workspace",
+      "monitor": "A",
+      "workspace": 1
+     },
+     {
+      "do": "focus_window",
+      "window": "w1"
+     }
+    ],
+    "expect": {
+     "active": "w1"
+    }
+   }
+  ]
+ },
+ {
+  "name": "switch focuses the last opened window when none was chosen",
+  "rules": [
+   "R-S5"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "switch",
+    "n": 2
+   },
+   {
+    "do": "open",
+    "window": "w2",
+    "pid": 2,
+    "app": "foot"
+   },
+   {
+    "do": "open",
+    "window": "w3",
+    "pid": 3,
+    "app": "foot"
+   },
+   {
+    "do": "switch",
+    "n": 1,
+    "expect": {
+     "active": "w1"
+    }
+   },
+   {
+    "do": "switch",
+    "n": 2,
+    "expect": {
+     "active": "w3"
+    }
+   }
+  ]
+ },
+ {
+  "name": "a display showing something outside the nine always switches",
+  "rules": [
+   "R-S6"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "observe_workspace",
+    "monitor": "A",
+    "n": 0,
+    "expect": {
+     "monitors": {
+      "A": {
+       "current": 0
+      }
+     }
+    }
+   },
+   {
+    "do": "switch",
+    "n": 1,
+    "effects": [
+     {
+      "do": "show_workspace",
+      "monitor": "A",
+      "workspace": 1
+     }
+    ],
+    "expect": {
+     "monitors": {
+      "A": {
+       "current": 1
+      }
+     }
+    }
+   }
+  ]
+ }
+]

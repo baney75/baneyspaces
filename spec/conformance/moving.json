@@ -1,0 +1,389 @@
+[
+ {
+  "name": "move sends the front window and follows it",
+  "rules": [
+   "R-V1",
+   "R-V2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "move",
+    "n": 3,
+    "effects": [
+     {
+      "do": "move_window",
+      "window": "w1",
+      "to": "3"
+     },
+     {
+      "do": "show_workspace",
+      "monitor": "A",
+      "workspace": 3
+     },
+     {
+      "do": "focus_window",
+      "window": "w1"
+     }
+    ],
+    "expect": {
+     "workspaces": {
+      "3": [
+       "w1"
+      ],
+      "1": []
+     },
+     "monitors": {
+      "A": {
+       "current": 3
+      }
+     },
+     "active": "w1"
+    }
+   }
+  ]
+ },
+ {
+  "name": "move names its window",
+  "rules": [
+   "R-V1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "open",
+    "window": "w2",
+    "pid": 2,
+    "app": "foot"
+   },
+   {
+    "do": "move",
+    "n": 5,
+    "window": "w1",
+    "expect": {
+     "workspaces": {
+      "5": [
+       "w1"
+      ],
+      "1": [
+       "w2"
+      ]
+     },
+     "active": "w1",
+     "monitors": {
+      "A": {
+       "current": 5
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "moving to the workspace it is on does nothing",
+  "rules": [
+   "R-V1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "move",
+    "n": 1,
+    "effects": []
+   }
+  ]
+ },
+ {
+  "name": "moving with nothing in front is refused",
+  "rules": [
+   "R-V1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "move",
+    "n": 2,
+    "error": "not_found"
+   }
+  ]
+ },
+ {
+  "name": "moving to workspace 10 is refused",
+  "rules": [
+   "R-V1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "move",
+    "n": 10,
+    "error": "invalid_args"
+   }
+  ]
+ },
+ {
+  "name": "moving to the workspace another display shows takes you to that display",
+  "rules": [
+   "R-V2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "B"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "move",
+    "n": 2,
+    "effects": [
+     {
+      "do": "move_window",
+      "window": "w1",
+      "to": "2"
+     },
+     {
+      "do": "focus_monitor",
+      "monitor": "B"
+     },
+     {
+      "do": "focus_window",
+      "window": "w1"
+     }
+    ],
+    "expect": {
+     "focused_monitor": "B",
+     "workspaces": {
+      "2": [
+       "w1"
+      ]
+     },
+     "monitors": {
+      "A": {
+       "current": 1
+      },
+      "B": {
+       "current": 2
+      }
+     },
+     "active": "w1"
+    }
+   }
+  ]
+ },
+ {
+  "name": "move and stay leaves you, your workspaces and your focus alone",
+  "rules": [
+   "R-V3"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "open",
+    "window": "w2",
+    "pid": 2,
+    "app": "foot"
+   },
+   {
+    "do": "move",
+    "n": 6,
+    "window": "w1",
+    "follow": false,
+    "effects": [
+     {
+      "do": "move_window",
+      "window": "w1",
+      "to": "6"
+     }
+    ],
+    "expect": {
+     "active": "w2",
+     "monitors": {
+      "A": {
+       "current": 1
+      }
+     },
+     "workspaces": {
+      "6": [
+       "w1"
+      ],
+      "1": [
+       "w2"
+      ]
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "move and stay of the front window falls back to this workspace",
+  "rules": [
+   "R-V3"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "open",
+    "window": "w2",
+    "pid": 2,
+    "app": "foot"
+   },
+   {
+    "do": "move",
+    "n": 6,
+    "follow": false,
+    "expect": {
+     "active": "w1",
+     "monitors": {
+      "A": {
+       "current": 1
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "a window you drag to another workspace stays there",
+  "rules": [
+   "R-V4"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "open",
+    "window": "w2",
+    "pid": 2,
+    "app": "foot"
+   },
+   {
+    "do": "observe_move",
+    "window": "w2",
+    "n": 6,
+    "effects": [],
+    "expect": {
+     "workspaces": {
+      "6": [
+       "w2"
+      ],
+      "1": [
+       "w1"
+      ]
+     },
+     "active": "w1"
+    }
+   }
+  ]
+ },
+ {
+  "name": "a window dragged away from the front gives the front to this workspace",
+  "rules": [
+   "R-V4"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "open",
+    "window": "w2",
+    "pid": 2,
+    "app": "foot"
+   },
+   {
+    "do": "observe_move",
+    "window": "w2",
+    "n": 6
+   },
+   {
+    "do": "observe_move",
+    "window": "w1",
+    "n": 4,
+    "expect": {
+     "active": null
+    }
+   }
+  ]
+ }
+]

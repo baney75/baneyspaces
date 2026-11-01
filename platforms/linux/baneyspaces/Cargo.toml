@@ -1,0 +1,16 @@
+[package]
+name = "baneyspaces-linux"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "BaneySpaces for Linux (Omarchy, Hyprland): the `baneyspaces` CLI and `baneyspaces daemon`"
+
+[[bin]]
+name = "baneyspaces"
+path = "src/main.rs"
+
+[dependencies]
+baneyspaces-core = { path = "../../../crates/baneyspaces-core" }
+serde.workspace = true
+serde_json.workspace = true
+libc = "0.2"
