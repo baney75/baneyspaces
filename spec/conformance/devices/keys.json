@@ -1,0 +1,225 @@
+[
+ {
+  "name": "the switch chord runs in a VM that taps system keys",
+  "rules": [
+   "R-D7"
+  ],
+  "platform": "macos",
+  "mod": "cmd",
+  "bridge": true,
+  "front": "utm",
+  "chord": {
+   "mods": [
+    "cmd"
+   ],
+   "key": "3"
+  },
+  "expect": "switch 3"
+ },
+ {
+  "name": "the move chord too",
+  "rules": [
+   "R-D7"
+  ],
+  "platform": "macos",
+  "mod": "cmd",
+  "bridge": true,
+  "front": "parallels",
+  "chord": {
+   "mods": [
+    "cmd",
+    "shift"
+   ],
+   "key": "7"
+  },
+  "expect": "move 7"
+ },
+ {
+  "name": "VMware Fusion and VirtualBox",
+  "rules": [
+   "R-D7"
+  ],
+  "platform": "macos",
+  "mod": "cmd",
+  "bridge": true,
+  "front": "vmware-fusion",
+  "chord": {
+   "mods": [
+    "cmd"
+   ],
+   "key": "1"
+  },
+  "expect": "switch 1"
+ },
+ {
+  "name": "VirtualBox",
+  "rules": [
+   "R-D7"
+  ],
+  "platform": "macos",
+  "mod": "cmd",
+  "bridge": true,
+  "front": "virtualbox",
+  "chord": {
+   "mods": [
+    "cmd"
+   ],
+   "key": "9"
+  },
+  "expect": "switch 9"
+ },
+ {
+  "name": "the workspace modifier is whatever the person chose",
+  "rules": [
+   "R-D7"
+  ],
+  "platform": "macos",
+  "mod": "ctrl",
+  "bridge": true,
+  "front": "utm",
+  "chord": {
+   "mods": [
+    "ctrl"
+   ],
+   "key": "2"
+  },
+  "expect": "switch 2"
+ },
+ {
+  "name": "with the other modifier, command-3 belongs to the guest",
+  "rules": [
+   "R-D7"
+  ],
+  "platform": "macos",
+  "mod": "ctrl",
+  "bridge": true,
+  "front": "utm",
+  "chord": {
+   "mods": [
+    "cmd"
+   ],
+   "key": "3"
+  },
+  "expect": null
+ },
+ {
+  "name": "an app that does not capture keys needs no bridge: the normal shortcut already works",
+  "rules": [
+   "R-D7"
+  ],
+  "platform": "macos",
+  "mod": "cmd",
+  "bridge": true,
+  "front": "ios-simulator",
+  "chord": {
+   "mods": [
+    "cmd"
+   ],
+   "key": "3"
+  },
+  "expect": null
+ },
+ {
+  "name": "Tart captures nothing by default",
+  "rules": [
+   "R-D7"
+  ],
+  "platform": "macos",
+  "mod": "cmd",
+  "bridge": true,
+  "front": "tart",
+  "chord": {
+   "mods": [
+    "cmd"
+   ],
+   "key": "3"
+  },
+  "expect": null
+ },
+ {
+  "name": "an app that is not a device app is left alone",
+  "rules": [
+   "R-D7"
+  ],
+  "platform": "macos",
+  "mod": "cmd",
+  "bridge": true,
+  "front": null,
+  "chord": {
+   "mods": [
+    "cmd"
+   ],
+   "key": "3"
+  },
+  "expect": null
+ },
+ {
+  "name": "switched off: the guest gets every key",
+  "rules": [
+   "R-D7"
+  ],
+  "platform": "macos",
+  "mod": "cmd",
+  "bridge": false,
+  "front": "utm",
+  "chord": {
+   "mods": [
+    "cmd"
+   ],
+   "key": "3"
+  },
+  "expect": null
+ },
+ {
+  "name": "copy and paste are the guest's",
+  "rules": [
+   "R-D7"
+  ],
+  "platform": "macos",
+  "mod": "cmd",
+  "bridge": true,
+  "front": "utm",
+  "chord": {
+   "mods": [
+    "cmd"
+   ],
+   "key": "c"
+  },
+  "expect": null
+ },
+ {
+  "name": "an extra modifier makes it another chord, the guest's",
+  "rules": [
+   "R-D7"
+  ],
+  "platform": "macos",
+  "mod": "cmd",
+  "bridge": true,
+  "front": "utm",
+  "chord": {
+   "mods": [
+    "cmd",
+    "alt"
+   ],
+   "key": "3"
+  },
+  "expect": null
+ },
+ {
+  "name": "zero is not a workspace",
+  "rules": [
+   "R-D7"
+  ],
+  "platform": "macos",
+  "mod": "cmd",
+  "bridge": true,
+  "front": "utm",
+  "chord": {
+   "mods": [
+    "cmd"
+   ],
+   "key": "0"
+  },
+  "expect": null
+ }
+]

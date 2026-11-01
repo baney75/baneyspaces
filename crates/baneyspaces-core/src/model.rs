@@ -7,6 +7,7 @@
 //! a rule that is not in `spec/` does not exist.
 
 use serde::{Deserialize, Serialize};
+use crate::devices::Role;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -73,6 +74,13 @@ pub enum Event {
         monitor: Option<MonitorId>,
         #[serde(default)]
         workspace: Option<u8>,
+        /// What the window is for (`spec/devices.md`). A companion lives with the main window of
+        /// its process and is never counted as a window of its own.
+        #[serde(default)]
+        role: Role,
+        /// `"agent"`: the window lives on the agent workspace whatever process opened it.
+        #[serde(default)]
+        pin: Option<String>,
     },
     /// A window that already existed when the model started listening: mirrored exactly where it is.
     /// `workspace` absent means the agent workspace.
@@ -85,6 +93,8 @@ pub enum Event {
         app: String,
         #[serde(default)]
         workspace: Option<u8>,
+        #[serde(default)]
+        role: Role,
     },
     Close {
         window: WindowId,
@@ -212,6 +222,7 @@ struct Window {
     app: String,
     home: Home,
     seq: u64,
+    role: Role,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -293,11 +304,45 @@ impl Model {
     }
     /// Windows parked on the agent workspace, oldest first.
     pub fn agent_windows(&self) -> Vec<&str> {
-        self.ordered(|w| w.home == Home::Agent)
+        self.ordered(|w| w.role != Role::Companion && w.home == Home::Agent)
     }
-    /// Windows on one workspace, oldest first.
+    /// Windows on one workspace, oldest first. A companion (a toolbar, extended controls) is not a
+    /// window of its own, so it does not count here (R-D3).
     pub fn windows_on(&self, n: u8) -> Vec<&str> {
-        self.ordered(|w| w.home == Home::Workspace { n })
+        self.ordered(|w| w.role != Role::Companion && w.home == Home::Workspace { n })
+    }
+    /// The companions of `pid`, oldest first.
+    pub fn companions_of(&self, pid: u32) -> Vec<&str> {
+        self.ordered(|w| w.role == Role::Companion && w.pid == pid)
+    }
+    pub fn role_of(&self, window: &str) -> Option<Role> {
+        self.windows.get(window).map(|w| w.role)
+    }
+    /// The window a companion lives with: the newest main window of its process.
+    fn main_of(&self, window: &str) -> Option<WindowId> {
+        self.main_for(self.windows.get(window)?.pid)
+    }
+    fn main_for(&self, pid: u32) -> Option<WindowId> {
+        self.windows
+            .iter()
+            .filter(|(_, w)| w.pid == pid && w.role == Role::Main)
+            .max_by_key(|(_, w)| w.seq)
+            .map(|(id, _)| id.clone())
+    }
+    /// Puts every companion of `main`'s process where `main` is (R-D2). One effect per companion
+    /// that was elsewhere.
+    fn gather_companions(&mut self, main: &str, effects: &mut Vec<Effect>) {
+        let Some((pid, home)) = self.windows.get(main).map(|w| (w.pid, w.home.clone())) else { return };
+        let strays: Vec<WindowId> = self
+            .companions_of(pid)
+            .into_iter()
+            .filter(|c| self.windows[*c].home != home)
+            .map(String::from)
+            .collect();
+        for c in strays {
+            self.windows.get_mut(&c).unwrap().home = home.clone();
+            effects.push(Effect::MoveWindow { window: c, to: home.label() });
+        }
     }
 
     fn ordered(&self, keep: impl Fn(&Window) -> bool) -> Vec<&str> {
@@ -348,7 +393,7 @@ impl Model {
         let windows: BTreeMap<&str, Value> = self
             .windows
             .iter()
-            .map(|(id, w)| (id.as_str(), json!({ "pid": w.pid, "app": w.app, "home": w.home.label(), "agent_owned": self.is_agent_pid(w.pid, w.start) })))
+            .map(|(id, w)| (id.as_str(), json!({ "pid": w.pid, "app": w.app, "home": w.home.label(), "role": w.role, "agent_owned": self.is_agent_pid(w.pid, w.start) })))
             .collect();
         let pids: Vec<u32> = self.agent_pids.keys().copied().collect();
         let current = self
@@ -382,14 +427,17 @@ impl Model {
                 app,
                 monitor,
                 workspace,
-            } => self.open(window, pid, start, app, monitor, workspace),
+                role,
+                pin,
+            } => self.open(window, pid, start, app, monitor, workspace, role, pin),
             Event::ObserveWindow {
                 window,
                 pid,
                 start,
                 app,
                 workspace,
-            } => self.observe_window(window, pid, start, app, workspace),
+                role,
+            } => self.observe_window(window, pid, start, app, workspace, role),
             Event::Close { window } => Ok(self.close(&window)),
             Event::Switch { n } => self.switch(n),
             Event::Move { n, window, follow } => self.move_window(n, window, follow),
@@ -526,6 +574,7 @@ impl Model {
         self.last_focused.retain(|_, w| w != window);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn open(
         &mut self,
         window: WindowId,
@@ -534,14 +583,21 @@ impl Model {
         app: String,
         monitor: Option<MonitorId>,
         workspace: Option<u8>,
+        role: Role,
+        pin: Option<String>,
     ) -> Result<Vec<Effect>, ModelError> {
         if self.windows.contains_key(&window) {
             return Ok(vec![]);
         }
+        // R-D1: a window that is not tracked is not moved, counted or followed.
+        if role == Role::Ignore {
+            return Ok(vec![]);
+        }
         self.seq += 1;
         let seq = self.seq;
-        // R-A3: a window an agent process opens joins the agent workspace, never yours.
-        if self.is_agent_pid(pid, start) {
+        // R-A3: a window an agent process opens joins the agent workspace, never yours. R-D9: so does
+        // a window the device table pins there (the sandbox view), whoever opened it.
+        if self.is_agent_pid(pid, start) || (pin.as_deref() == Some("agent") && role == Role::Main) {
             self.windows.insert(
                 window.clone(),
                 Window {
@@ -550,12 +606,42 @@ impl Model {
                     app,
                     home: Home::Agent,
                     seq,
+                    role,
                 },
             );
-            return Ok(vec![Effect::MoveWindow {
-                window,
+            let mut effects = vec![Effect::MoveWindow {
+                window: window.clone(),
                 to: "agent".into(),
-            }]);
+            }];
+            if role == Role::Main {
+                self.gather_companions(&window, &mut effects);
+            }
+            return Ok(effects);
+        }
+        // R-D2: a companion opens where its main window is, wherever the compositor put it.
+        if role == Role::Companion {
+            let main_home = self.main_for(pid).and_then(|m| self.windows.get(&m)).map(|m| m.home.clone());
+            if let Some(home) = main_home {
+                let placed = workspace.map(|n| Home::Workspace { n });
+                self.windows.insert(
+                    window.clone(),
+                    Window {
+                        pid,
+                        start,
+                        app,
+                        home: home.clone(),
+                        seq,
+                        role,
+                    },
+                );
+                if placed.as_ref() == Some(&home) {
+                    return Ok(vec![]);
+                }
+                return Ok(vec![Effect::MoveWindow {
+                    window,
+                    to: home.label(),
+                }]);
+            }
         }
         let mon = match monitor.or_else(|| self.focused_monitor.clone()) {
             Some(m) if self.monitors.contains_key(&m) => m,
@@ -578,20 +664,29 @@ impl Model {
                 app,
                 home: Home::Workspace { n: here },
                 seq,
+                role,
             },
         );
+        let mut effects = vec![];
         if placed != here {
             // The compositor put it on a workspace you are not looking at: moved here, silently.
-            return Ok(vec![Effect::MoveWindow {
-                window,
+            effects.push(Effect::MoveWindow {
+                window: window.clone(),
                 to: here.to_string(),
-            }]);
+            });
+        }
+        if role == Role::Main {
+            // R-D2: companions that opened first (a toolbar before the window) come to it.
+            self.gather_companions(&window, &mut effects);
+        }
+        if role == Role::Companion || placed != here {
+            return Ok(effects);
         }
         self.last_focused.insert(here, window.clone());
         if self.focused_monitor.as_deref() == Some(mon.as_str()) {
             self.active = Some(window);
         }
-        Ok(vec![])
+        Ok(effects)
     }
 
     fn observe_window(
@@ -601,8 +696,9 @@ impl Model {
         start: u64,
         app: String,
         workspace: Option<u8>,
+        role: Role,
     ) -> Result<Vec<Effect>, ModelError> {
-        if self.windows.contains_key(&window) {
+        if self.windows.contains_key(&window) || role == Role::Ignore {
             return Ok(vec![]);
         }
         self.seq += 1;
@@ -620,15 +716,29 @@ impl Model {
             Some(n) => Home::Workspace { n: Self::range(n)? },
         };
         self.windows.insert(
-            window,
+            window.clone(),
             Window {
                 pid,
                 start,
                 app,
                 home,
                 seq,
+                role,
             },
         );
+        // R-D2: a window already open when the daemon started is mirrored where it is, but a
+        // companion found elsewhere than its main window is put back with it.
+        if role == Role::Companion {
+            if let Some(main) = self.main_for(pid) {
+                let home = self.windows[&main].home.clone();
+                if self.windows[&window].home != home {
+                    self.windows.get_mut(&window).unwrap().home = home.clone();
+                    effects.push(Effect::MoveWindow { window, to: home.label() });
+                }
+            }
+        } else {
+            self.gather_companions(&window, &mut effects);
+        }
         Ok(effects)
     }
 
@@ -712,6 +822,11 @@ impl Model {
         let w = window
             .or_else(|| self.active.clone())
             .ok_or_else(|| ModelError::new("not_found", "there is no front window to move"))?;
+        // R-D4: a companion is not moved alone. Moving the toolbar moves the window it belongs to.
+        let w = match self.windows.get(&w) {
+            Some(c) if c.role == Role::Companion => self.main_of(&w).unwrap_or(w),
+            _ => w,
+        };
         let win = self
             .windows
             .get(&w)
@@ -737,6 +852,7 @@ impl Model {
             window: w.clone(),
             to: n.to_string(),
         });
+        self.gather_companions(&w, &mut effects);
         if !follow {
             // R-V3: sent and left behind. The window moves; you, your workspaces and your focus do not.
             let visible_here = self.candidate_on(n).is_some()
@@ -765,6 +881,11 @@ impl Model {
         if !self.windows.contains_key(&w) {
             return vec![]; // not ours: a window on a workspace outside the scheme
         }
+        // R-D3: using a companion is using its main window: same follow rules, same record of focus.
+        let w = match self.windows.get(&w) {
+            Some(c) if c.role == Role::Companion => self.main_of(&w).unwrap_or(w),
+            _ => w,
+        };
         let mut effects = vec![];
         let restore = |m: &Self, effects: &mut Vec<Effect>| {
             if let Some(p) = &m.active {
@@ -839,6 +960,16 @@ impl Model {
             Some(n) => Home::Workspace { n: Self::range(n)? },
             None => Home::Agent,
         };
+        // R-D5: a companion dragged off alone goes back to its main window's workspace; the
+        // compositor is told, silently.
+        if self.windows[window].role == Role::Companion {
+            let Some(home) = self.main_of(window).and_then(|m| self.windows.get(&m)).map(|m| m.home.clone()) else {
+                self.windows.get_mut(window).unwrap().home = to;
+                return Ok(vec![]);
+            };
+            self.windows.get_mut(window).unwrap().home = home.clone();
+            return Ok(if home == to { vec![] } else { vec![Effect::MoveWindow { window: window.to_string(), to: home.label() }] });
+        }
         self.forget_focus(window);
         self.windows.get_mut(window).unwrap().home = to;
         if self.active.as_deref() == Some(window) && !self.agent_shown {
@@ -853,7 +984,10 @@ impl Model {
                 self.active = self.candidate();
             }
         }
-        Ok(vec![])
+        // R-D2: the companions go with it.
+        let mut effects = vec![];
+        self.gather_companions(window, &mut effects);
+        Ok(effects)
     }
 
     /// R-G3: the agent workspace appearing on its own (a window activated inside it, a stray
@@ -969,11 +1103,17 @@ impl Model {
         if w.home == Home::Agent {
             return Ok(vec![]);
         }
+        let window = &match w.role {
+            Role::Companion => self.main_of(window).unwrap_or_else(|| window.to_string()),
+            _ => window.to_string(),
+        };
         self.send_to_agent(window);
-        Ok(vec![Effect::MoveWindow {
+        let mut effects = vec![Effect::MoveWindow {
             window: window.to_string(),
             to: "agent".into(),
-        }])
+        }];
+        self.gather_companions(window, &mut effects);
+        Ok(effects)
     }
 
     fn agent_bring(&mut self, window: &str) -> Result<Vec<Effect>, ModelError> {
@@ -995,10 +1135,12 @@ impl Model {
             .filter(|n| *n != 0)
             .unwrap_or(1);
         self.windows.get_mut(window).unwrap().home = Home::Workspace { n };
-        Ok(vec![Effect::MoveWindow {
+        let mut effects = vec![Effect::MoveWindow {
             window: window.to_string(),
             to: n.to_string(),
-        }])
+        }];
+        self.gather_companions(window, &mut effects);
+        Ok(effects)
     }
 }
 

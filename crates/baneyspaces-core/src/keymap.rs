@@ -62,10 +62,36 @@ pub fn render_hypr_lua(binary: &str) -> String {
     s.push_str("hl.animation({ leaf = \"specialWorkspace\", enabled = false })\n\n");
     s.push_str("-- Apps may ask for focus; only you take it. The daemon guards the agent workspace as well.\n");
     s.push_str("hl.config({ misc = { focus_on_activate = false } })\n\n");
+    // R-D7: a VM viewer (virt-viewer, virt-manager, GNOME Boxes) asks Hyprland to stop handling
+    // shortcuts while it has focus. These binds are the person's own keys for their workspaces, so
+    // they ignore the request (`dont_inhibit`, Hyprland's bindp).
+    s.push_str("-- Workspace keys keep working inside a VM that grabs the keyboard (spec/devices.md R-D7).\n");
     for b in linux_binds() {
-        s.push_str(&format!("hl.bind(\"{}\", hl.dsp.exec_cmd(\"{} {}\"), {{ description = \"{}\" }})\n", b.keys, binary, b.args, b.description));
+        s.push_str(&format!("hl.bind(\"{}\", hl.dsp.exec_cmd(\"{} {}\"), {{ description = \"{}\", dont_inhibit = true }})\n", b.keys, binary, b.args, b.description));
+    }
+    // R-D10: device windows with a fixed aspect ratio float; a tiled emulator is stretched out of shape.
+    s.push_str("\n-- Device windows with a fixed aspect ratio float (spec/devices.md R-D10).\n");
+    for (id, regex) in float_classes() {
+        s.push_str(&format!("hl.window_rule({{ name = \"baneyspaces-{id}\", match = {{ class = \"{regex}\" }}, float = true }})\n"));
     }
     s
+}
+
+/// The Linux window classes of device apps that float, as one case-insensitive regex per app.
+pub fn float_classes() -> Vec<(String, String)> {
+    crate::devices::Table::builtin()
+        .apps
+        .iter()
+        .filter(|a| a.float)
+        .filter_map(|a| {
+            let m = a.matches.get("linux")?;
+            let alts: Vec<String> = m.class.iter().map(|c| c.replace('.', "\\.").replace('*', ".*")).collect();
+            if alts.is_empty() {
+                return None;
+            }
+            Some((a.id.clone(), format!("(?i)^({})$", alts.join("|"))))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -102,6 +128,22 @@ mod tests {
         }
         let committed = std::fs::read_to_string(path).expect("platforms/linux/omarchy/baneyspaces.lua");
         assert_eq!(committed, render_hypr_lua("baneyspaces"), "regenerate with: UPDATE_SPEC=1 cargo test -p baneyspaces-core");
+    }
+
+    #[test]
+    fn every_workspace_bind_ignores_a_vm_grabbing_the_keyboard() {
+        let lua = render_hypr_lua("baneyspaces");
+        let binds = lua.lines().filter(|l| l.starts_with("hl.bind(")).count();
+        assert_eq!(binds, 29);
+        assert_eq!(lua.lines().filter(|l| l.starts_with("hl.bind(") && l.contains("dont_inhibit = true")).count(), 29);
+    }
+
+    #[test]
+    fn the_emulator_floats_and_a_terminal_does_not() {
+        let lua = render_hypr_lua("baneyspaces");
+        assert!(lua.contains("float = true"));
+        assert!(lua.contains("(?i)^(emulator|emulator64-.*|qemu-system-.*)$"));
+        assert!(!lua.contains("virt-manager"));
     }
 
     #[test]

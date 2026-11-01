@@ -9,6 +9,7 @@ use crate::paths::Paths;
 use crate::proc;
 use crate::scheme::{decode, lua_str, sh_quote, AGENT_SPECIAL, AGENT_SPECIAL_NAME};
 use baneyspaces_core::agent::{prune_text, ActionRecord, PRUNE_EVERY_SECS};
+use baneyspaces_core::devices::Facts;
 use baneyspaces_core::envelope::{Envelope, Retry};
 use baneyspaces_core::model::{Cause, Effect, Event, Home, Model, ModelError};
 use serde_json::{json, Value};
@@ -476,13 +477,18 @@ impl Core {
         self.reconcile_agents();
         self.adopt_agent_pid(c.pid);
         let start = proc::start_time(c.pid).unwrap_or(0);
+        // R-D1: simulators, emulators and VMs: a toolbar travels with its window, a pinned window
+        // lives on the agent workspace.
+        let comm = proc::comm(c.pid).unwrap_or_default();
+        let decision = baneyspaces_core::devices::classify(&Facts { platform: "linux", class: &c.class, process: &comm, title: &c.title, standard: true, ..Default::default() });
         if existing {
-            let ev = Event::ObserveWindow { window: c.addr.clone(), pid: c.pid, start, app: c.class.clone(), workspace: n };
+            let ev = Event::ObserveWindow { window: c.addr.clone(), pid: c.pid, start, app: c.class.clone(), workspace: n, role: decision.role };
             let _ = self.apply(ev);
             return;
         }
         let monitor = self.monitors().into_iter().find(|m| m.id == c.monitor).map(|m| m.name);
-        let _ = self.apply(Event::Open { window: c.addr.clone(), pid: c.pid, start, app: c.class.clone(), monitor, workspace: n });
+        let pin = decision.agent_home.then(|| "agent".to_string());
+        let _ = self.apply(Event::Open { window: c.addr.clone(), pid: c.pid, start, app: c.class.clone(), monitor, workspace: n, role: decision.role, pin });
         if on_agent && !matches!(self.model.home(&c.addr), Some(Home::Agent)) {
             let _ = self.apply(Event::AgentSend { window: c.addr.clone() });
         }

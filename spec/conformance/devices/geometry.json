@@ -1,0 +1,282 @@
+[
+ {
+  "name": "an app that does not resize itself gets its saved frame back, whatever size it has now",
+  "rules": [
+   "R-D6"
+  ],
+  "resizes_itself": false,
+  "saved": [
+   100,
+   100,
+   400,
+   850
+  ],
+  "current": [
+   850,
+   400
+  ],
+  "screens": [
+   [
+    0,
+    0,
+    1920,
+    1080
+   ]
+  ],
+  "expect": [
+   100,
+   100,
+   400,
+   850
+  ]
+ },
+ {
+  "name": "a resizing app that did not change size comes back where it stood",
+  "rules": [
+   "R-D6"
+  ],
+  "resizes_itself": true,
+  "saved": [
+   100,
+   100,
+   400,
+   850
+  ],
+  "current": [
+   400,
+   850
+  ],
+  "screens": [
+   [
+    0,
+    0,
+    1920,
+    1080
+   ]
+  ],
+  "expect": [
+   100,
+   100,
+   400,
+   850
+  ]
+ },
+ {
+  "name": "a device that rotated while parked keeps the landscape size",
+  "rules": [
+   "R-D6"
+  ],
+  "resizes_itself": true,
+  "saved": [
+   100,
+   100,
+   400,
+   850
+  ],
+  "current": [
+   850,
+   400
+  ],
+  "screens": [
+   [
+    0,
+    0,
+    1920,
+    1080
+   ]
+  ],
+  "expect": [
+   100,
+   100,
+   850,
+   400
+  ]
+ },
+ {
+  "name": "rotated near the right edge, it slides left to fit",
+  "rules": [
+   "R-D6"
+  ],
+  "resizes_itself": true,
+  "saved": [
+   1480,
+   100,
+   400,
+   850
+  ],
+  "current": [
+   850,
+   400
+  ],
+  "screens": [
+   [
+    0,
+    0,
+    1920,
+    1080
+   ]
+  ],
+  "expect": [
+   1070,
+   100,
+   850,
+   400
+  ]
+ },
+ {
+  "name": "rotated back to portrait near the bottom, it slides up to fit",
+  "rules": [
+   "R-D6"
+  ],
+  "resizes_itself": true,
+  "saved": [
+   100,
+   300,
+   850,
+   400
+  ],
+  "current": [
+   400,
+   850
+  ],
+  "screens": [
+   [
+    0,
+    0,
+    1920,
+    1080
+   ]
+  ],
+  "expect": [
+   100,
+   230,
+   400,
+   850
+  ]
+ },
+ {
+  "name": "on a second display it fits that display",
+  "rules": [
+   "R-D6"
+  ],
+  "resizes_itself": true,
+  "saved": [
+   3500,
+   100,
+   300,
+   600
+  ],
+  "current": [
+   600,
+   300
+  ],
+  "screens": [
+   [
+    0,
+    0,
+    1920,
+    1080
+   ],
+   [
+    1920,
+    0,
+    1920,
+    1080
+   ]
+  ],
+  "expect": [
+   3240,
+   100,
+   600,
+   300
+  ]
+ },
+ {
+  "name": "a saved frame that is mostly off screen is centered at the size it has now",
+  "rules": [
+   "R-D6"
+  ],
+  "resizes_itself": true,
+  "saved": [
+   5000,
+   5000,
+   400,
+   850
+  ],
+  "current": [
+   850,
+   400
+  ],
+  "screens": [
+   [
+    0,
+    0,
+    1920,
+    1080
+   ]
+  ],
+  "expect": [
+   535,
+   340,
+   850,
+   400
+  ]
+ },
+ {
+  "name": "a window bigger than the display is not shrunk, only moved to its corner",
+  "rules": [
+   "R-D6"
+  ],
+  "resizes_itself": true,
+  "saved": [
+   100,
+   100,
+   400,
+   400
+  ],
+  "current": [
+   2500,
+   400
+  ],
+  "screens": [
+   [
+    0,
+    0,
+    1920,
+    1080
+   ]
+  ],
+  "expect": [
+   0,
+   100,
+   2500,
+   400
+  ]
+ },
+ {
+  "name": "no saved frame: centered like any window",
+  "rules": [
+   "R-D6"
+  ],
+  "resizes_itself": true,
+  "saved": null,
+  "current": [
+   850,
+   400
+  ],
+  "screens": [
+   [
+    0,
+    0,
+    1920,
+    1080
+   ]
+  ],
+  "expect": [
+   535,
+   340,
+   850,
+   400
+  ]
+ }
+]

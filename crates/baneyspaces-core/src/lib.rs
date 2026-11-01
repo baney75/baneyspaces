@@ -4,11 +4,13 @@
 
 pub mod agent;
 pub mod conformance;
+pub mod devices;
 pub mod envelope;
 pub mod keymap;
 pub mod mcp;
 pub mod model;
 
 pub use agent::{check_scope, ActionLog, ActionRecord, Refusal, WindowFacts};
+pub use devices::{Decision, Facts, Role};
 pub use envelope::{Envelope, ErrorBody, Retry};
 pub use model::{Cause, Effect, Event, Home, Model, ModelError};

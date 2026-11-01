@@ -16,6 +16,11 @@ pub fn parse_start(stat: &str) -> Option<u64> {
 }
 
 #[allow(dead_code)]
+/// The process's executable name (`/proc/<pid>/comm`, at most 15 bytes), for matching device apps.
+pub fn comm(pid: u32) -> Option<String> {
+    std::fs::read_to_string(format!("/proc/{pid}/comm")).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
 pub fn alive(pid: u32) -> bool {
     start_time(pid).is_some()
 }
