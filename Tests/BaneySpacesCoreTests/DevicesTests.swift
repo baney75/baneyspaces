@@ -133,7 +133,7 @@ final class DevicesTests: XCTestCase {
         _ = m.switchTo(2)
         XCTAssertTrue(m.windows(on: 1).isEmpty)
         // if the window goes, its toolbar goes from the model: alone it would count as a window
-        m.sync(seen: [11], alive: [11])
+        m.sync(seen: [], alive: [11])
         XCTAssertTrue(m.windows(on: 6).isEmpty)
         XCTAssertNil(m.workspace(of: 11))
     }
