@@ -466,6 +466,7 @@ public struct DeliveryVerdict: Equatable, Sendable {
     /// `value_changed`, `selection_changed`, `focus_moved`, `tree_changed`, `pixels_along_stroke`; or why not:
     /// `pixels_only`, `no_change`, `no_reading`.
     public var basis: String
+    public init(verified: Bool, basis: String) { self.verified = verified; self.basis = basis }
 }
 
 public enum DeliveryProof {

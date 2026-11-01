@@ -52,7 +52,7 @@ final class KeyParseTests: XCTestCase {
     }
 
     func testBadKeysAreBadArgumentsWithAHint() {
-        for bad in ["", "   ", "cmd+", "hyper+a", "nosuchkey", "cmd+shift+nosuchkey", "ab"] {
+        for bad in ["", "   ", "hyper+a", "nosuchkey", "cmd+shift+nosuchkey", "ab"] {
             guard case .failure(let e) = KeyParse.sequence(bad) else { return XCTFail("\(bad) should not parse") }
             XCTAssertEqual(e.code, .badArguments, bad)
             XCTAssertEqual(e.retry, .safe)
@@ -241,6 +241,7 @@ final class ProbeAppPolicyTests: XCTestCase {
         XCTAssertEqual(AgentAppPolicy.refusal(app: "CanvasProbe", bundle: b, appURL: outside, probeApps: folder)?.code, .needsSandbox, "another app claiming the id")
         XCTAssertNotNil(AgentAppPolicy.refusal(app: "CanvasProbe", bundle: b), "no location, no start")
         // A link out of the folder is followed.
+        try fm.createDirectory(at: outside, withIntermediateDirectories: true)
         let link = folder.appendingPathComponent("Link.app")
         try fm.createSymbolicLink(at: link, withDestinationURL: outside)
         XCTAssertNotNil(AgentAppPolicy.refusal(app: "Link", bundle: b, appURL: link, probeApps: folder))

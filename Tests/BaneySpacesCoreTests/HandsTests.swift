@@ -963,7 +963,7 @@ final class HandsSourceTests: XCTestCase {
 
     func testARefIsBoundToItsSnapshotsWindowAndProcess() throws {
         let router = try Self.code("Sources/BaneySpaces/Hands/HandsRouter.swift")
-        let resolve = try XCTUnwrap(Self.block(after: "private func resolve(", in: router))
+        let resolve = try XCTUnwrap(Self.block(after: "func resolve(", in: router))
         XCTAssertTrue(resolve.contains("w.pid == snap.pid"))
         XCTAssertTrue(resolve.contains("$0.id == snap.window"))
         XCTAssertTrue(resolve.contains(".staleRef"))
@@ -1015,7 +1015,7 @@ final class HandsSourceTests: XCTestCase {
 
     func testEveryWindowOfAnAgentProcessIsInspectedOnEveryUse() throws {
         let router = try Self.code("Sources/BaneySpaces/Hands/HandsRouter.swift")
-        let gate = try XCTUnwrap(Self.block(after: "private func gate(", in: router))
+        let gate = try XCTUnwrap(Self.block(after: "func gate(", in: router))
         XCTAssertTrue(gate.contains("inspectProblem(now)"))
         let inspect = try XCTUnwrap(Self.block(after: "private func inspectProblem(", in: router))
         XCTAssertTrue(inspect.contains("seen.panel") && inspect.contains("HandoffPath.contains(document: doc, in: Self.handoffFolder)"))
