@@ -12,11 +12,17 @@ set -euo pipefail
 # --- identity helpers (shared by arm/check/self-test) ---
 # lsof -F D is hexadecimal; stat %d is decimal. Normalize before compare.
 to_dec() {
-  local x=${1#0x}
-  if [[ "$x" =~ ^[0-9]+$ ]]; then
-    printf '%d' "$x"
-  elif [[ "$x" =~ ^[0-9A-Fa-f]+$ ]]; then
+  # Preserve 0x/0X as hexadecimal even when the digits are 0-9 only.
+  # Bare digit-only (stat %d) stays decimal; bare hex with A-F stays hex.
+  local raw=$1
+  if [[ "$raw" == 0x* || "$raw" == 0X* ]]; then
+    local x=${raw:2}
+    [[ "$x" =~ ^[0-9A-Fa-f]+$ ]] || return 1
     printf '%d' "$((16#$x))"
+  elif [[ "$raw" =~ ^[0-9]+$ ]]; then
+    printf '%d' "$raw"
+  elif [[ "$raw" =~ ^[0-9A-Fa-f]+$ ]]; then
+    printf '%d' "$((16#$raw))"
   else
     return 1
   fi
@@ -72,6 +78,25 @@ require_gate_identity() {
   return 0
 }
 
+# Production rejection checks (self-test must call these, not compare fixtures alone).
+reject_if_replaced() {
+  local txt=$1 disk=$2
+  if [ -z "$txt" ] || [ -z "$disk" ] || [ "$txt" != "$disk" ]; then
+    echo "binary replaced under feet" >&2
+    return 1
+  fi
+  return 0
+}
+
+reject_if_pid_reused() {
+  local gate_start=$1 run_start=$2
+  if [ -z "$gate_start" ] || [ -z "$run_start" ] || [ "$gate_start" != "$run_start" ]; then
+    echo "PID reuse" >&2
+    return 1
+  fi
+  return 0
+}
+
 HOURS=24
 RENDER_ITERS=2
 CI=0
@@ -111,16 +136,38 @@ if [ "$SELFTEST" = 1 ]; then
   if require_gate_identity "" "26:1" "start"; then echo "bad: empty txt accepted"; fail=1; else echo "ok: empty txt rejected"; fi
   if require_gate_identity "26:1" "" "start"; then echo "bad: empty disk accepted"; fail=1; else echo "ok: empty disk rejected"; fi
   if require_gate_identity "26:1" "26:1" ""; then echo "bad: empty proc_start accepted"; fail=1; else echo "ok: empty proc_start rejected"; fi
-  # replacement: txt != disk
-  if [ "$(norm_dev_ino "1a:100")" != "$(norm_dev_ino "1a:200")" ]; then
-    echo "ok: replacement inode mismatch"
+  # 0x-prefixed digit-only hex must stay hex (Sol regression)
+  c=$(norm_dev_ino "0x1000004:99") || { echo "bad: 0x norm"; fail=1; c=; }
+  d=$(norm_dev_ino "16777220:99") || { echo "bad: dec norm"; fail=1; d=; }
+  if [ -n "$c" ] && [ "$c" = "$d" ] && [ "$c" = "16777220:99" ]; then
+    echo "ok: 0x1000004 hex prefix"
   else
-    echo "bad: replacement not detected"; fail=1
+    echo "bad: 0x1000004 got c=$c d=$d"; fail=1
   fi
-  # PID reuse: different proc_start
+  # replacement: production reject_if_replaced must fail when txt != disk
+  if reject_if_replaced "$(norm_dev_ino "1a:100")" "$(norm_dev_ino "1a:200")" 2>/dev/null; then
+    echo "bad: reject_if_replaced accepted mismatch"; fail=1
+  else
+    echo "ok: reject_if_replaced rejects mismatch"
+  fi
+  if reject_if_replaced "$(norm_dev_ino "1a:100")" "$(norm_dev_ino "1a:100")" 2>/dev/null; then
+    echo "ok: reject_if_replaced accepts match"
+  else
+    echo "bad: reject_if_replaced rejected match"; fail=1
+  fi
+  # PID reuse: production reject_if_pid_reused
   gstart="Mon Nov  1 12:00:00 2026"
   rstart="Mon Nov  1 13:00:00 2026"
-  if [ "$gstart" != "$rstart" ]; then echo "ok: PID reuse start mismatch"; else echo "bad: reuse"; fail=1; fi
+  if reject_if_pid_reused "$gstart" "$rstart" 2>/dev/null; then
+    echo "bad: reject_if_pid_reused accepted different starts"; fail=1
+  else
+    echo "ok: reject_if_pid_reused rejects reuse"
+  fi
+  if reject_if_pid_reused "$gstart" "$gstart" 2>/dev/null; then
+    echo "ok: reject_if_pid_reused accepts same start"
+  else
+    echo "bad: reject_if_pid_reused rejected same start"; fail=1
+  fi
   # live helpers against this shell (best-effort)
   me=$$
   if ps -p "$me" >/dev/null 2>&1; then
@@ -249,7 +296,7 @@ else
     fail "could not resolve disk inode for candidate (fail closed)"
   elif [ "$REAL_EXE" != "$REAL_BIN" ]; then
     fail "running pid $PID exe=$EXE_PATH is not candidate $BIN"
-  elif [ "$TXT_INO" != "$DISK_INO" ]; then
+  elif ! reject_if_replaced "$TXT_INO" "$DISK_INO" 2>/dev/null; then
     fail "running text inode $TXT_INO != disk $DISK_INO — binary replaced under feet"
   else
     pass "running pid $PID is candidate binary (txt=disk $TXT_INO)"
@@ -279,7 +326,7 @@ else
     if [ -z "$PID" ] || [ "$GATE_PID" != "$PID" ]; then
       fail "soak-gate pid $GATE_PID != running pid ${PID:-none} — re-arm after restart"
     fi
-    if [ "$GATE_PSTART" != "$PSTART" ]; then
+    if ! reject_if_pid_reused "$GATE_PSTART" "$PSTART" 2>/dev/null; then
       fail "soak-gate proc_start '$GATE_PSTART' != running '$PSTART' — PID reuse; re-arm"
     fi
     if [ -z "$TXT_INO" ] || [ "$GATE_TXT" != "$TXT_INO" ]; then
