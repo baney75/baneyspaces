@@ -35,7 +35,7 @@ pub fn linux_binds() -> Vec<Bind> {
         out.push(Bind { keys: l["move_stay"].as_str().unwrap().replace("{key}", &code), description: format!("BaneySpaces: send window to workspace {n}, stay here"), args: format!("move {n} --stay") });
     }
     out.push(Bind { keys: l["overview"].as_str().unwrap().into(), description: "BaneySpaces: overview".into(), args: "overview".into() });
-    out.push(Bind { keys: l["agent_toggle"].as_str().unwrap().into(), description: "BaneySpaces: show or hide the agent workspace".into(), args: "agent toggle".into() });
+    out.push(Bind { keys: l["agent_toggle"].as_str().unwrap().into(), description: "BaneySpaces: show or hide the agent workspace".into(), args: "agent-workspace toggle".into() });
     out
 }
 

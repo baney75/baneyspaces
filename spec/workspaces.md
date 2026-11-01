@@ -38,6 +38,10 @@ No effects. (The one exception: the agent workspace is covering it, see R-A4.)
 ### R-S4 Switch puts back what you had
 The window you had in front on that workspace, else its oldest window, else nothing.
 
+### R-S5 Outside the nine
+A monitor may show a workspace that is not one of the nine (observed as workspace 0). A switch to
+1 to 9 then always acts, even to 1.
+
 ## Empty means empty
 
 ### R-E1 Nothing in front on an empty workspace
@@ -65,6 +69,11 @@ You go to workspace n of that monitor, onto that monitor if it is another one, w
 
 ### R-V4 Move and stay
 `move n --stay` sends the window and changes nothing else: not your workspace, not your front window.
+
+### R-V5 Moves you make are kept
+A window you move with the compositor's own tools (a drag, a command) is mirrored where it lands. It
+is never moved back. If it was the front window and left the workspace you are looking at, the front
+falls back to that workspace.
 
 ## Following focus
 

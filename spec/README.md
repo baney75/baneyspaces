@@ -24,7 +24,7 @@ checks:
 ```
 
 - `do` is an event: `monitor_added`, `monitor_removed`, `open`, `close`, `switch`, `move`,
-  `activate`, `focus_monitor`, `observe_workspace`, `observe_special`, `observe_focus_monitor`,
+  `activate`, `focus_monitor`, `observe_workspace`, `observe_special`, `observe_focus_monitor`, `observe_move`,
   `agent_register`, `agent_exit`, `agent_show`, `agent_hide`, `agent_toggle`, `agent_send`,
   `agent_bring`. Their fields are the Rust `Event` enum in `crates/baneyspaces-core/src/model.rs`.
 - `effects` is the exact, ordered list the platform must carry out: `show_workspace`,

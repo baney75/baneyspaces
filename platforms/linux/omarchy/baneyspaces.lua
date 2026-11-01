@@ -66,4 +66,4 @@ hl.bind("SUPER + SHIFT + ALT + code:16", hl.dsp.exec_cmd("baneyspaces move 7 --s
 hl.bind("SUPER + SHIFT + ALT + code:17", hl.dsp.exec_cmd("baneyspaces move 8 --stay"), { description = "BaneySpaces: send window to workspace 8, stay here" })
 hl.bind("SUPER + SHIFT + ALT + code:18", hl.dsp.exec_cmd("baneyspaces move 9 --stay"), { description = "BaneySpaces: send window to workspace 9, stay here" })
 hl.bind("SUPER + TAB", hl.dsp.exec_cmd("baneyspaces overview"), { description = "BaneySpaces: overview" })
-hl.bind("SUPER + GRAVE", hl.dsp.exec_cmd("baneyspaces agent toggle"), { description = "BaneySpaces: show or hide the agent workspace" })
+hl.bind("SUPER + GRAVE", hl.dsp.exec_cmd("baneyspaces agent-workspace toggle"), { description = "BaneySpaces: show or hide the agent workspace" })

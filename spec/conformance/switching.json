@@ -394,5 +394,47 @@
     }
    }
   ]
+ },
+ {
+  "name": "a monitor showing a workspace outside the nine always switches",
+  "rules": [
+   "R-S5"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "observe_workspace",
+    "monitor": "A",
+    "n": 0,
+    "expect": {
+     "monitors": {
+      "A": {
+       "current": 0
+      }
+     }
+    }
+   },
+   {
+    "do": "switch",
+    "n": 1,
+    "effects": [
+     {
+      "do": "show_workspace",
+      "monitor": "A",
+      "workspace": 1
+     }
+    ],
+    "expect": {
+     "monitors": {
+      "A": {
+       "current": 1
+      }
+     }
+    }
+   }
+  ]
  }
 ]

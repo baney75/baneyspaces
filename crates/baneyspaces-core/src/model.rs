@@ -98,6 +98,15 @@ pub enum Event {
         monitor: MonitorId,
         n: u8,
     },
+    /// A window the compositor moved (you dragged it, a command did): mirrored, never undone.
+    /// `monitor` and `n` name the workspace; both absent means the agent workspace.
+    ObserveMove {
+        window: WindowId,
+        #[serde(default)]
+        monitor: Option<MonitorId>,
+        #[serde(default)]
+        n: Option<u8>,
+    },
     ObserveSpecial {
         shown: bool,
     },
@@ -372,6 +381,7 @@ impl Model {
             Event::Move { n, window, follow } => self.move_window(n, window, follow),
             Event::Activate { window, cause } => Ok(self.activate(window, cause)),
             Event::ObserveWorkspace { monitor, n } => self.observe_workspace(&monitor, n),
+            Event::ObserveMove { window, monitor, n } => self.observe_move(&window, monitor, n),
             Event::ObserveSpecial { shown } => Ok(self.observe_special(shown)),
             Event::ObserveFocusMonitor { monitor } => self.observe_focus_monitor(&monitor),
             Event::FocusMonitor { monitor } => self.focus_monitor(&monitor),
@@ -748,13 +758,49 @@ impl Model {
         effects
     }
 
+    /// `n` 0 means the monitor shows a workspace outside the nine (a platform's own, or one you keep
+    /// elsewhere). A switch to any of 1 to 9 then always acts.
     fn observe_workspace(&mut self, monitor: &str, n: u8) -> Result<Vec<Effect>, ModelError> {
-        let n = Self::range(n)?;
+        if n != 0 {
+            Self::range(n)?;
+        }
         let m = self
             .monitors
             .get_mut(monitor)
             .ok_or_else(|| ModelError::new("not_found", format!("no monitor {monitor}")))?;
         m.current = n;
+        Ok(vec![])
+    }
+
+    fn observe_move(&mut self, window: &str, monitor: Option<MonitorId>, n: Option<u8>) -> Result<Vec<Effect>, ModelError> {
+        if !self.windows.contains_key(window) {
+            return Ok(vec![]);
+        }
+        let to = match (monitor, n) {
+            (Some(m), Some(n)) => {
+                Self::range(n)?;
+                if !self.monitors.contains_key(&m) {
+                    return Err(ModelError::new("not_found", format!("no monitor {m}")));
+                }
+                Home::Workspace { monitor: m, n }
+            }
+            _ => Home::Agent,
+        };
+        if let Some(Home::Workspace { monitor, n }) = self.windows.get(window).map(|w| w.home.clone()) {
+            if let Some(m) = self.monitors.get_mut(&monitor) {
+                if m.last_focused.get(&n).map(String::as_str) == Some(window) {
+                    m.last_focused.remove(&n);
+                }
+            }
+        }
+        self.windows.get_mut(window).unwrap().home = to;
+        if self.active.as_deref() == Some(window) && !self.agent_shown {
+            let home = self.windows[window].home.clone();
+            let visible = matches!(&home, Home::Workspace { monitor, n } if self.monitors.get(monitor).is_some_and(|m| m.current == *n));
+            if !visible {
+                self.active = self.candidate();
+            }
+        }
         Ok(vec![])
     }
 

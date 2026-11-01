@@ -12,7 +12,7 @@ window id, or a pid.
 | `state` | yes (`state.json`) | yes (`state.json`) | yes |
 | `overview` | yes | records the request; the shell plugin shows it (part 2) | yes |
 | `agent on|off` | yes | not needed (the agent workspace always exists) | yes |
-| `agent show|hide|toggle` | the key | yes | yes |
+| `agent-workspace show|hide|toggle` | the key | yes | yes |
 | `agent status` | yes | yes | yes |
 | `agent windows` | yes | yes | yes |
 | `agent open <app> [args...]` | yes | yes | yes |
