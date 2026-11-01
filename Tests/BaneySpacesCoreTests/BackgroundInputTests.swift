@@ -17,6 +17,10 @@ private func refusal(_ f: BackgroundFacts) -> HandsError? {
     return nil
 }
 
+extension KeyChord {
+    func withLabel(_ l: String) -> KeyChord { KeyChord(keyCode: keyCode, flags: flags, label: l) }
+}
+
 final class KeyParseTests: XCTestCase {
     func chord(_ s: String) throws -> KeyChord { try KeyParse.chord(s).get() }
 
@@ -43,6 +47,12 @@ final class KeyParseTests: XCTestCase {
         XCTAssertEqual(try chord("A").flags, KeyChord.shift, "a capital is Shift and the letter")
         XCTAssertEqual(try chord("cmd++").keyCode, 24, "a trailing plus is the plus key")
         XCTAssertEqual(try chord("cmd++").flags, KeyChord.command | KeyChord.shift)
+    }
+
+    func testACapitalAfterAModifierIsTheSameKeyAsTheLowercase() throws {
+        XCTAssertEqual(try chord("cmd+A").withLabel("x"), try chord("cmd+a").withLabel("x"))
+        XCTAssertEqual(try chord("cmd+S").flags, KeyChord.command, "cmd+S is Save, not Save As")
+        XCTAssertEqual(try chord("cmd+shift+S").flags, KeyChord.command | KeyChord.shift)
     }
 
     func testSequencesAreSeparatedBySpaces() throws {
@@ -126,6 +136,8 @@ final class RouteSelectionTests: XCTestCase {
         XCTAssertEqual(refusal(elementElsewhere)?.code, .notSupported, "the focused element must be inside this window")
         var noFocus = ready(); noFocus.focusedWindow = nil
         XCTAssertEqual(refusal(noFocus)?.code, .notSupported)
+        var noElement = ready(); noElement.focusedElementWindow = nil
+        XCTAssertNotNil(try? BackgroundPlanner.plan(noElement).get(), "the window has the keys and there is no element to be wrong about")
         var noVerifier = ready(); noVerifier.verifier = .none
         XCTAssertEqual(refusal(noVerifier)?.code, .notSupported)
         var pixelsOnly = ready(); pixelsOnly.verifier = .pixels
@@ -144,6 +156,27 @@ final class RouteSelectionTests: XCTestCase {
         // A pointer does not care about sibling windows or the app's key window: it carries the window number.
         var siblings = ready(.pointer); siblings.siblingWindows = 2; siblings.focusedWindow = 1
         XCTAssertNotNil(try? BackgroundPlanner.plan(siblings).get())
+    }
+
+    func testAPointerEventIsNeverPostedWithAnyFieldOfTheRecipeMissing() {
+        var f = ready(.pointer)
+        f.transports = TransportSupport(skyLight: true, publicPid: true, pointerStamps: false)
+        let e = refusal(f)
+        XCTAssertEqual(e?.code, .notSupported)
+        XCTAssertEqual(e?.retry, .never)
+        var publicOnly = ready(.pointer)
+        publicOnly.transports = TransportSupport(skyLight: false, publicPid: true, pointerStamps: false)
+        XCTAssertEqual(refusal(publicOnly)?.code, .notSupported, "the public fallback cannot name the window either")
+        // Keys carry no window fields, so they do not need the stamps.
+        var keys = ready(); keys.transports = TransportSupport(skyLight: false, publicPid: true, pointerStamps: false)
+        XCTAssertNotNil(try? BackgroundPlanner.plan(keys).get())
+    }
+
+    func testAPointInTheTitleBarIsRefused() {
+        var f = ready(.pointer); f.pointInTitleBar = true
+        let e = refusal(f)
+        XCTAssertEqual(e?.code, .badArguments)
+        XCTAssertTrue(e?.suggestion.contains("title bar") ?? false)
     }
 
     func testMinimizedAndHiddenWindowsAreRefused() {
@@ -229,86 +262,138 @@ final class BackgroundScopeAtExecutionTests: XCTestCase {
 }
 
 final class ProbeAppPolicyTests: XCTestCase {
-    func testTheProbeAppStartsOnlyFromItsOwnFolder() throws {
+    func testTheProbeAppStartsOnlyFromTheBundlesProbeFolderAndOnlyWhenItsSignatureWasChecked() throws {
         let fm = FileManager.default
         let root = fm.temporaryDirectory.appendingPathComponent("probe-policy-\(UUID().uuidString)")
-        let folder = root.appendingPathComponent("probe-apps"), other = root.appendingPathComponent("elsewhere")
+        let folder = root.appendingPathComponent("Resources/probe"), other = root.appendingPathComponent("elsewhere")
         for d in [folder, other] { try fm.createDirectory(at: d, withIntermediateDirectories: true) }
         defer { try? fm.removeItem(at: root) }
         let inside = folder.appendingPathComponent("CanvasProbe.app"), outside = other.appendingPathComponent("CanvasProbe.app")
         let b = AgentAppPolicy.canvasProbeBundle
-        XCTAssertNil(AgentAppPolicy.refusal(app: "CanvasProbe", bundle: b, appURL: inside, probeApps: folder))
-        XCTAssertEqual(AgentAppPolicy.refusal(app: "CanvasProbe", bundle: b, appURL: outside, probeApps: folder)?.code, .needsSandbox, "another app claiming the id")
+        XCTAssertNil(AgentAppPolicy.refusal(app: "CanvasProbe", bundle: b, appURL: inside, probeFolder: folder, probeTrusted: true))
+        XCTAssertEqual(AgentAppPolicy.refusal(app: "CanvasProbe", bundle: b, appURL: inside, probeFolder: folder, probeTrusted: false)?.code, .needsSandbox,
+                       "in the folder but the signature was not confirmed")
+        XCTAssertEqual(AgentAppPolicy.refusal(app: "CanvasProbe", bundle: b, appURL: outside, probeFolder: folder, probeTrusted: true)?.code, .needsSandbox, "another place")
         XCTAssertNotNil(AgentAppPolicy.refusal(app: "CanvasProbe", bundle: b), "no location, no start")
+        XCTAssertNotNil(AgentAppPolicy.refusal(app: "CanvasProbe", bundle: b, appURL: inside, probeFolder: nil, probeTrusted: true), "a build without a bundle has no probe app")
         // A link out of the folder is followed.
         try fm.createDirectory(at: outside, withIntermediateDirectories: true)
         let link = folder.appendingPathComponent("Link.app")
         try fm.createSymbolicLink(at: link, withDestinationURL: outside)
-        XCTAssertNotNil(AgentAppPolicy.refusal(app: "Link", bundle: b, appURL: link, probeApps: folder))
-        // Nothing else gains from the folder.
-        XCTAssertNotNil(AgentAppPolicy.refusal(app: "Safari", bundle: "com.apple.Safari", appURL: inside, probeApps: folder))
+        XCTAssertNotNil(AgentAppPolicy.refusal(app: "Link", bundle: b, appURL: link, probeFolder: folder, probeTrusted: true))
+        // Nothing else gains from the folder or the flag.
+        XCTAssertNotNil(AgentAppPolicy.refusal(app: "Safari", bundle: "com.apple.Safari", appURL: inside, probeFolder: folder, probeTrusted: true))
         XCTAssertTrue(AgentAppPolicy.needsSeparateInstance(bundle: b))
+    }
+
+    func testTheTrustCheckComparesTheTeamAndTheRecordedCodeHashInsideTheBundle() throws {
+        let text = try HandsSourceTests.code("Sources/BaneySpaces/Hands/BackgroundWatch.swift")
+        let trust = try XCTUnwrap(HandsSourceTests.block(after: "static func trusted(", in: text))
+        for needed in ["Bundle.main.resourceURL", "SecCodeCheckValidity", "SecStaticCodeCheckValidityWithErrors", "kSecCodeInfoTeamIdentifier",
+                       "kSecCodeInfoUnique", "CanvasProbe.cdhash", "isProbeApp("] { XCTAssertTrue(trust.contains(needed) || text.contains(needed), needed) }
+        let bundle = try String(contentsOf: HandsSourceTests.root.appendingPathComponent("scripts/bundle.sh"), encoding: .utf8)
+        XCTAssertTrue(bundle.contains("Resources/probe/CanvasProbe.app"))
+        XCTAssertTrue(bundle.contains("CanvasProbe.cdhash"), "the hash is recorded when the bundle is built")
+        let codesignProbe = bundle.range(of: "--identifier com.baney.baneyspaces.canvasprobe \"$PROBE\"")
+        let codesignApp = bundle.range(of: "--identifier com.baney.baneyspaces \"$APP\"")
+        XCTAssertNotNil(codesignProbe)
+        XCTAssertTrue(codesignProbe!.lowerBound < codesignApp!.lowerBound, "the probe app is signed before the app that seals it")
+    }
+
+    func testTheLicenceOfPortedCodeIsCopiedIntoTheBundleAndCIChecksIt() throws {
+        let bundle = try String(contentsOf: HandsSourceTests.root.appendingPathComponent("scripts/bundle.sh"), encoding: .utf8)
+        XCTAssertTrue(bundle.contains("cp LICENSES/* \"$APP/Contents/Resources/licenses/\""))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: HandsSourceTests.root.appendingPathComponent("LICENSES/cua-driver-MIT.txt").path))
+        let ci = try String(contentsOf: HandsSourceTests.root.appendingPathComponent(".github/workflows/ci.yml"), encoding: .utf8)
+        XCTAssertTrue(ci.contains("licenses/cua-driver-MIT.txt"), "the bundle job fails if the licence is missing from the built app")
     }
 }
 
 final class DeliveryProofTests: XCTestCase {
     let target: UInt32 = 77
-    func el(_ value: String, window: UInt32? = 77, id: String = "AXTextArea|0,0,100,40", sel: (Int, Int)? = nil) -> ElementReading {
-        ElementReading.text(window: window, identity: id, value: value, selection: sel)
+    func el(_ value: String, window: UInt32? = 77, id: String = "AXTextArea|0,0,100,40", sel: (Int, Int)? = nil, attrs: String? = nil) -> ElementReading {
+        ElementReading.text(window: window, identity: id, value: value, selection: sel, attributes: attrs)
     }
-    func keys(ref: (ElementReading?, ElementReading?) = (nil, nil), focus: (ElementReading?, ElementReading?) = (nil, nil),
-              tree: Bool? = nil, pixels: PixelChange? = nil) -> DeliveryVerdict {
-        DeliveryProof.keys(target: target, ref: (ref.0, ref.1), focus: (focus.0, focus.1), treeChanged: tree, pixels: pixels)
+    let none: ReadingPair = (nil, nil)
+    func keys(_ spec: String, ref: ReadingPair = (nil, nil), focus: ReadingPair = (nil, nil), content: Bool? = nil,
+              window: (WindowReading?, WindowReading?) = (nil, nil), pixels: PixelChange? = nil) -> DeliveryVerdict {
+        DeliveryProof.keys(target: target, chords: try! KeyParse.sequence(spec).get(), ref: ref, focus: focus, content: content, window: window, pixels: pixels)
     }
 
-    func testAChangedValueOnTheExactElementProvesKeys() {
-        let v = keys(ref: (el("a"), el("ab")))
+    func testTypedLettersAreProvedByTheValueOfTheTargetedElement() {
+        let v = keys("h i", ref: (el("a"), el("hia")))
         XCTAssertTrue(v.verified)
         XCTAssertEqual(v.basis, "value_changed")
     }
 
-    func testAChangedSelectionProvesSelectAll() {
-        let v = keys(focus: (el("hello", sel: (5, 0)), el("hello", sel: (0, 5))))
+    func testSelectAllAndMovementAreProvedBySelectionNotByValue() {
+        let v = keys("cmd+a", focus: (el("hello", sel: (5, 0)), el("hello", sel: (0, 5))))
         XCTAssertTrue(v.verified)
         XCTAssertEqual(v.basis, "selection_changed")
+        XCTAssertTrue(keys("alt+Left", focus: (el("ab cd", sel: (5, 0)), el("ab cd", sel: (3, 0)))).verified)
+        XCTAssertTrue(keys("shift+alt+Right", focus: (el("ab cd", sel: (0, 0)), el("ab cd", sel: (0, 2)))).verified)
     }
 
-    func testFocusMovingInsideTheWindowProvesTab() {
-        let v = keys(focus: (el("a", id: "AXTextField|0,0,10,10"), el("b", id: "AXButton|0,20,10,10")))
+    func testAValueChangeDoesNotProveAKeyThatPredictsASelection() {
+        // cmd+a must select; the text changing instead is something else happening.
+        let v = keys("cmd+a", focus: (el("hello", sel: (5, 0)), el("hellox", sel: (5, 0))))
+        XCTAssertFalse(v.verified)
+        XCTAssertEqual(v.basis, "unpredicted_change")
+    }
+
+    func testBoldIsProvedByTheAttributesOfTheTargetedText() {
+        let before = el("plain", sel: (0, 5), attrs: "0+5:font=Helvetica")
+        let v = keys("cmd+b", focus: (before, el("plain", sel: (0, 5), attrs: "0+5:font=Helvetica-Bold")))
+        XCTAssertTrue(v.verified)
+        XCTAssertEqual(v.basis, "attributes_changed")
+        XCTAssertFalse(keys("cmd+b", focus: (before, before), content: false).verified)
+        // A different part of the tree changing does not stand in for it when the attributes can be read.
+        XCTAssertFalse(keys("cmd+b", focus: (before, before), content: true).verified)
+        // Where the element cannot give its attributes, the toggled Bold checkbox is the next best proof.
+        let silent = el("plain", sel: (0, 5))
+        XCTAssertTrue(keys("cmd+b", focus: (silent, silent), content: true).verified)
+    }
+
+    func testTabIsProvedByFocusMovingInsideTheWindow() {
+        let v = keys("Tab", focus: (el("a", id: "AXTextField|0,0,10,10"), el("b", id: "AXButton|0,20,10,10")))
         XCTAssertTrue(v.verified)
         XCTAssertEqual(v.basis, "focus_moved")
     }
 
-    func testATreeChangeProvesAShortcutThatOnlyTogglesState() {
-        let v = keys(tree: true)
-        XCTAssertTrue(v.verified)
-        XCTAssertEqual(v.basis, "tree_changed")
+    func testSaveIsProvedByTheWindowChangingNotByAnyElement() {
+        let edited = WindowReading(titleDigest: 1, edited: true, sheets: 0)
+        let saved = WindowReading(titleDigest: 1, edited: false, sheets: 0)
+        XCTAssertTrue(keys("cmd+s", window: (edited, saved)).verified)
+        XCTAssertEqual(keys("cmd+s", window: (edited, saved)).basis, "window_changed")
+        XCTAssertFalse(keys("cmd+s", focus: (el("a"), el("ab")), window: (edited, edited)).verified, "an element changing is not a save")
+    }
+
+    func testAnAppWithNoTextFocusIsProvedByItsContentAndOnlyByTheNoiseFilteredContent() {
+        // Calculator: no field to type into, so the window's content is what the keys change.
+        XCTAssertTrue(keys("9 asterisk 8 Return", content: true).verified)
+        XCTAssertEqual(keys("9", content: true).basis, "content_changed")
+        XCTAssertFalse(keys("9", content: false).verified)
+        // A text field in focus predicts a change to the field; a changing clock does not stand in for it.
+        let v = keys("h i", ref: (el("a"), el("a")), content: true)
+        XCTAssertFalse(v.verified)
+        XCTAssertEqual(v.basis, "unpredicted_change")
     }
 
     func testAReadingFromAnotherWindowOfTheSameProcessNeverProvesAnything() {
-        // The sibling's field changed; the target's did not. A PID-wide focused-element reader would call this success.
-        let sibling = keys(focus: (el("a", window: 88), el("ab", window: 88)))
-        XCTAssertFalse(sibling.verified)
-        let noWindow = keys(focus: (el("a", window: nil), el("ab", window: nil)))
-        XCTAssertFalse(noWindow.verified, "a reading with no window proves nothing")
-        let mixed = keys(focus: (el("a", window: 77), el("ab", window: 88)))
-        XCTAssertFalse(mixed.verified)
+        XCTAssertFalse(keys("h i", focus: (el("a", window: 88), el("ab", window: 88))).verified)
+        XCTAssertFalse(keys("h i", focus: (el("a", window: nil), el("ab", window: nil))).verified, "a reading with no window proves nothing")
+        XCTAssertFalse(keys("h i", focus: (el("a", window: 77), el("ab", window: 88))).verified)
     }
 
     func testPixelsAloneNeverProveKeys() {
-        let v = keys(ref: (el("a"), el("a")), pixels: PixelChange(insideChanged: 5000, insideTotal: 9000, outsideChanged: 10, outsideTotal: 100))
+        let v = keys("h i", ref: (el("a"), el("a")), pixels: PixelChange(insideChanged: 5000, insideTotal: 9000, outsideChanged: 10, outsideTotal: 100))
         XCTAssertFalse(v.verified)
         XCTAssertEqual(v.basis, "pixels_only")
     }
 
     func testNothingChangedAndNothingReadAreDifferentAnswersNeitherVerified() {
-        XCTAssertEqual(keys(ref: (el("a"), el("a")), tree: false).basis, "no_change")
-        XCTAssertEqual(keys().basis, "no_reading")
-        XCTAssertFalse(keys().verified)
-    }
-
-    func testTheSameReadingTwiceIsNotAChange() {
-        XCTAssertFalse(keys(focus: (el("same", sel: (1, 2)), el("same", sel: (1, 2)))).verified)
+        XCTAssertEqual(keys("h i", ref: (el("a"), el("a")), content: false).basis, "no_change")
+        XCTAssertEqual(keys("h i").basis, "no_reading")
     }
 
     func testContentIsHashedNotKept() {
@@ -319,27 +404,65 @@ final class DeliveryProofTests: XCTestCase {
         XCTAssertNotEqual(ElementReading.digest("abc"), ElementReading.digest("abd"))
     }
 
+    func testThePredictionTableAndWhenSilenceIsEvidence() {
+        func exp(_ s: String, text: Bool) -> Set<KeyEffect> { KeyPrediction.expected(try! KeyParse.sequence(s).get(), focusIsText: text) }
+        XCTAssertEqual(exp("a", text: true), [.text])
+        XCTAssertEqual(exp("Return", text: true), [.text])
+        XCTAssertEqual(exp("a", text: false), [.content])
+        XCTAssertEqual(exp("Left", text: true), [.selection])
+        XCTAssertEqual(exp("cmd+a", text: false), [.selection])
+        XCTAssertEqual(exp("cmd+b", text: true), [.attributes])
+        XCTAssertEqual(exp("cmd+s", text: true), [.window])
+        XCTAssertEqual(exp("Tab", text: true), [.focus])
+        XCTAssertEqual(exp("h cmd+a", text: true), [.text, .selection])
+        XCTAssertTrue(KeyPrediction.certainToShow(try! KeyParse.sequence("h i").get(), focusIsText: true))
+        XCTAssertFalse(KeyPrediction.certainToShow(try! KeyParse.sequence("Home").get(), focusIsText: true), "Home at the top changes nothing")
+        XCTAssertFalse(KeyPrediction.certainToShow(try! KeyParse.sequence("h").get(), focusIsText: false))
+    }
+
+    func testOnlyContentBeyondWhatChangedOnItsOwnCounts() throws {
+        func tree(_ rows: [String]) -> JSONValue {
+            .object(["role": "window", "children": .array(rows.map { .object(["role": "statictext", "name": .string($0), "value": .string($0)]) })])
+        }
+        let base1 = tree(["clock 10:00:01", "display 0"])
+        let base2 = tree(["clock 10:00:02", "display 0"])
+        XCTAssertFalse(ContentChange.changed(base1: base1, base2: base2, after: tree(["clock 10:00:01", "display 0"])), "nothing but what already moved")
+        XCTAssertFalse(ContentChange.changed(base1: base1, base2: base2, after: tree(["clock 10:00:02", "display 0"])), "the clock ticking on is not the action")
+        XCTAssertTrue(ContentChange.changed(base1: base1, base2: base2, after: tree(["clock 10:00:02", "display 72"])))
+    }
+
     func testAStrokeIsProvedByPixelsAlongItWhileTheRestStaysPut() {
         let stroke = PixelChange(insideChanged: 400, insideTotal: 5000, outsideChanged: 3, outsideTotal: 40000)
-        let v = DeliveryProof.pointer(target: target, ref: (nil, nil), focus: (nil, nil), treeChanged: nil, pixels: stroke)
+        let v = DeliveryProof.pointer(target: target, ref: none, focus: none, content: nil, pixels: stroke)
         XCTAssertTrue(v.verified)
         XCTAssertEqual(v.basis, "pixels_along_stroke")
     }
 
-    func testAWholeWindowRepaintOrATinySpeckIsNotAStroke() {
+    func testAWholeWindowRepaintASpeckOrAHoverIsNotAStroke() {
         let repaint = PixelChange(insideChanged: 400, insideTotal: 5000, outsideChanged: 20000, outsideTotal: 40000)
-        XCTAssertFalse(DeliveryProof.pointer(target: target, ref: (nil, nil), focus: (nil, nil), treeChanged: nil, pixels: repaint).verified)
+        XCTAssertFalse(DeliveryProof.pointer(target: target, ref: none, focus: none, content: nil, pixels: repaint).verified)
         let speck = PixelChange(insideChanged: 3, insideTotal: 5000, outsideChanged: 0, outsideTotal: 40000)
-        XCTAssertFalse(DeliveryProof.pointer(target: target, ref: (nil, nil), focus: (nil, nil), treeChanged: nil, pixels: speck).verified)
+        XCTAssertFalse(DeliveryProof.pointer(target: target, ref: none, focus: none, content: nil, pixels: speck).verified)
         let caretElsewhere = PixelChange(insideChanged: 0, insideTotal: 5000, outsideChanged: 12, outsideTotal: 40000)
-        let v = DeliveryProof.pointer(target: target, ref: (nil, nil), focus: (nil, nil), treeChanged: nil, pixels: caretElsewhere)
+        let v = DeliveryProof.pointer(target: target, ref: none, focus: none, content: nil, pixels: caretElsewhere)
         XCTAssertFalse(v.verified)
         XCTAssertEqual(v.basis, "pixels_only")
     }
 
-    func testAPointerOnAControlIsProvedByTheTreeLikeKeys() {
-        let v = DeliveryProof.pointer(target: target, ref: (nil, nil), focus: (nil, nil), treeChanged: true, pixels: nil)
-        XCTAssertTrue(v.verified)
+    func testTheMinimumGrowsWithTheStrokeSoAHoverSizedChangeCannotProveALongDrag() {
+        let path = PointerPath.line(from: CGPoint(x: 0, y: 0), to: CGPoint(x: 300, y: 0), steps: 12)
+        let need = PointerPath.strokeMinimum(path: path, scale: 2)
+        XCTAssertEqual(need, 300)
+        let hoverSized = PixelChange(insideChanged: 60, insideTotal: 5000, outsideChanged: 0, outsideTotal: 40000)
+        XCTAssertTrue(DeliveryProof.pointer(target: target, ref: none, focus: none, content: nil, pixels: hoverSized).verified, "enough for a click")
+        XCTAssertFalse(DeliveryProof.pointer(target: target, ref: none, focus: none, content: nil, pixels: hoverSized, minStroke: need).verified)
+        XCTAssertEqual(PointerPath.strokeMinimum(path: [CGPoint(x: 5, y: 5)], scale: 2), DeliveryProof.minStrokePixels, "a click needs the flat minimum")
+    }
+
+    func testAPointerOnAControlIsProvedByTheTargetWindowChangingNotAnotherWindow() {
+        XCTAssertTrue(DeliveryProof.pointer(target: target, ref: none, focus: none, content: true, pixels: nil).verified)
+        XCTAssertTrue(DeliveryProof.pointer(target: target, ref: none, focus: (el("a", id: "AXTextField|0,0,1,1"), el("a", id: "AXButton|0,9,1,1")), content: nil, pixels: nil).verified)
+        XCTAssertFalse(DeliveryProof.pointer(target: target, ref: none, focus: (el("a", window: 88, id: "x"), el("a", window: 88, id: "y")), content: nil, pixels: nil).verified)
     }
 
     func testNoProofIsUnverifiedWithRetryNever() {
@@ -403,25 +526,67 @@ final class PixelAndGeometryTests: XCTestCase {
 }
 
 final class PostGuardTests: XCTestCase {
-    func testAnyChangeToTheRealPointerIsAFailure() {
-        XCTAssertEqual(PostGuard.pointer(before: CGPoint(x: 5, y: 6), after: CGPoint(x: 5, y: 6)), .unmoved)
-        let moved = PostGuard.pointer(before: CGPoint(x: 5, y: 6), after: CGPoint(x: 5, y: 7))
-        XCTAssertNotNil(moved.error)
-        XCTAssertEqual(moved.error?.code, .actionFailed)
-        XCTAssertEqual(moved.error?.retry, .never)
-        XCTAssertNil(PostGuard.pointer(before: CGPoint(x: 5, y: 6), after: CGPoint(x: 5, y: 6)).error)
+    func fake(_ pids: Int64...) -> [SessionEvent] { pids.map(SessionEvent.init(sourcePid:)) }
+    let a = CGPoint(x: 5, y: 6), b = CGPoint(x: 90, y: 40)
+
+    func testAPointerThatDidNotMoveIsUnmoved() {
+        XCTAssertEqual(PointerAudit.verdict(before: a, after: a, posted: [b], tap: fake(), ownPid: 321), .unmoved)
+        XCTAssertNil(PostGuard.PointerVerdict.unmoved.error)
     }
 
-    func testAPointerThatCouldNotBeReadIsReportedUncheckedNotPassed() {
-        XCTAssertEqual(PostGuard.pointer(before: nil, after: CGPoint(x: 1, y: 1)), .unchecked)
-        XCTAssertEqual(PostGuard.pointer(before: nil, after: nil).label, "unchecked")
+    func testDonovansOwnHandMovingTheMouseIsNotOurFailure() {
+        // The fake tap saw hardware movement (source pid 0): his mouse, while the agent worked.
+        let v = PointerAudit.verdict(before: a, after: b, posted: [CGPoint(x: 2800, y: 1500)], tap: fake(0, 0, 0), ownPid: 321)
+        XCTAssertEqual(v, .userMoved)
+        XCTAssertNil(v.error)
+        XCTAssertEqual(v.label, "user_moved")
+    }
+
+    func testAPointerThatMovedWithNoHardwareToExplainItIsAFailure() {
+        let v = PointerAudit.verdict(before: a, after: b, posted: [CGPoint(x: 2800, y: 1500)], tap: fake(), ownPid: 321)
+        XCTAssertEqual(v, .moved(from: a, to: b))
+        XCTAssertEqual(v.error?.code, .actionFailed)
+        XCTAssertEqual(v.error?.retry, .never)
+        // Events from other software do not explain it either.
+        XCTAssertNotNil(PointerAudit.verdict(before: a, after: b, posted: [], tap: fake(555), ownPid: 321).error)
+    }
+
+    func testAPointerThatLandsWhereWePostedIsAFailureEvenWithHardwareEvents() {
+        let landed = CGPoint(x: 2820, y: 1530)
+        let v = PointerAudit.verdict(before: a, after: landed, posted: [CGPoint(x: 2820.2, y: 1529.9)], tap: fake(0, 0), ownPid: 321)
+        XCTAssertEqual(v, .moved(from: a, to: landed))
+    }
+
+    func testAnEventOfOurOwnReachingTheSessionIsAFailure() {
+        let v = PointerAudit.verdict(before: a, after: a, posted: [b], tap: fake(0, 321, 321), ownPid: 321)
+        XCTAssertEqual(v, .leaked(2))
+        XCTAssertEqual(v.error?.code, .actionFailed)
+    }
+
+    func testNoTapMeansASeenMoveCannotBeBlamedUnlessItLandedOnOurPoint() {
+        XCTAssertEqual(PointerAudit.verdict(before: a, after: b, posted: [CGPoint(x: 2800, y: 1500)], tap: nil, ownPid: 321), .unchecked)
+        XCTAssertEqual(PointerAudit.verdict(before: a, after: b, posted: [b], tap: nil, ownPid: 321), .moved(from: a, to: b))
+        XCTAssertEqual(PointerAudit.verdict(before: nil, after: b, posted: [], tap: fake(), ownPid: 321), .unchecked)
+        XCTAssertEqual(PostGuard.PointerVerdict.unchecked.label, "unchecked")
     }
 
     func testFrontAppChangesAreTold() {
         XCTAssertEqual(PostGuard.front(start: 10, now: 10, target: 500), .same)
         XCTAssertEqual(PostGuard.front(start: 10, now: 500, target: 500), .targetCameForward)
         XCTAssertEqual(PostGuard.front(start: 10, now: 20, target: 500), .other(20))
-        XCTAssertEqual(PostGuard.front(start: nil, now: 20, target: 500), .same)
+    }
+
+    func testAFrontAppThatCouldNotBeReadIsNotAPass() {
+        XCTAssertEqual(PostGuard.front(start: nil, now: 20, target: 500), .unknown)
+        XCTAssertEqual(PostGuard.front(start: 20, now: nil, target: 500), .unknown)
+        XCTAssertEqual(BackgroundRefusal.frontUnknown("TextEdit").retry, .never)
+    }
+
+    func testAnyActivationDuringTheSpanIsAFailureEvenIfItWasBrief() {
+        XCTAssertEqual(PostGuard.activations([], target: 500), .same)
+        XCTAssertEqual(PostGuard.activations([20], target: 500), .other(20))
+        XCTAssertEqual(PostGuard.activations([20, 500, 10], target: 500), .targetCameForward)
+        XCTAssertEqual(PostGuard.activations([500], target: 500), .targetCameForward)
     }
 
     func testTheFrontChangeRefusalSaysPartOfItMayHaveLanded() {
@@ -432,24 +597,138 @@ final class PostGuardTests: XCTestCase {
 }
 
 final class RouteBreakerTests: XCTestCase {
-    func testAnAppThatCameForwardIsShutOutForThatRouteOnly() {
+    func testAnAppThatCameForwardIsShutOutForThatRouteOnlyWhereverItRuns() {
         var b = RouteBreaker()
-        XCTAssertNil(b.block(bundle: "com.apple.TextEdit", kind: .keys))
+        XCTAssertNil(b.block(bundle: "com.apple.TextEdit", pid: 1, kind: .keys))
         b.selfActivated(bundle: "com.apple.TextEdit", kind: .keys)
-        XCTAssertEqual(b.block(bundle: "com.apple.TextEdit", kind: .keys), .selfActivates)
-        XCTAssertNil(b.block(bundle: "com.apple.TextEdit", kind: .pointer))
-        XCTAssertNil(b.block(bundle: "com.apple.calculator", kind: .keys))
+        XCTAssertEqual(b.block(bundle: "com.apple.TextEdit", pid: 1, kind: .keys), .selfActivates)
+        XCTAssertEqual(b.block(bundle: "com.apple.TextEdit", pid: 99, kind: .keys), .selfActivates)
+        XCTAssertNil(b.block(bundle: "com.apple.TextEdit", pid: 1, kind: .pointer))
+        XCTAssertNil(b.block(bundle: "com.apple.calculator", pid: 2, kind: .keys))
     }
 
-    func testTwoPostsWithNoEffectShutTheRouteAndAProofOpensTheCount() {
+    func testDroppedInputShutsOneProcessNotEveryCopyOfTheApp() {
         var b = RouteBreaker()
-        b.noEffect(bundle: "x", kind: .keys)
-        XCTAssertNil(b.block(bundle: "x", kind: .keys))
-        b.proved(bundle: "x", kind: .keys)
-        b.noEffect(bundle: "x", kind: .keys)
-        XCTAssertNil(b.block(bundle: "x", kind: .keys), "a proof in between starts the count again")
-        b.noEffect(bundle: "x", kind: .keys)
-        XCTAssertEqual(b.block(bundle: "x", kind: .keys), .refusesBackgroundInput)
+        b.dropped(pid: 7, kind: .keys)
+        XCTAssertNil(b.block(bundle: "x", pid: 7, kind: .keys))
+        b.proved(pid: 7, kind: .keys)
+        b.dropped(pid: 7, kind: .keys)
+        XCTAssertNil(b.block(bundle: "x", pid: 7, kind: .keys), "a proof in between starts the count again")
+        b.dropped(pid: 7, kind: .keys)
+        XCTAssertEqual(b.block(bundle: "x", pid: 7, kind: .keys), .refusesBackgroundInput)
+        XCTAssertNil(b.block(bundle: "x", pid: 8, kind: .keys), "another copy of the same app is not blamed")
+    }
+}
+
+final class BalancedEventsTests: XCTestCase {
+    struct Stop: Error {}
+    let stopError = HandsError(.actionFailed, "stopped", suggestion: "x", retry: .never)
+
+    /// Runs `events` stopping at the `n`th question (0-based) asked before a new press or move; returns what was posted.
+    func run(_ events: [InputEvent], stopAt n: Int?) -> RunReport {
+        var asked = 0
+        return EventRunner.run(events, stop: {
+            defer { asked += 1 }
+            return asked == n ? self.stopError : nil
+        }, post: { _ in true })
+    }
+
+    /// Every press has its release, last pressed first released, and nothing new follows the stop.
+    func assertBalanced(_ r: RunReport, _ label: String, file: StaticString = #filePath, line: UInt = #line) {
+        var held: [InputEvent] = []
+        for e in r.posted {
+            switch e {
+            case .keyDown, .mouseDown: held.append(e)
+            case .keyUp(let c):
+                guard case .keyDown(let h)? = held.last, h == c else { return XCTFail("\(label): key up out of order", file: file, line: line) }
+                held.removeLast()
+            case .mouseUp:
+                guard case .mouseDown? = held.last else { return XCTFail("\(label): mouse up with no mouse down", file: file, line: line) }
+                held.removeLast()
+            default: break
+            }
+        }
+        XCTAssertTrue(held.isEmpty, "\(label): left pressed: \(held)", file: file, line: line)
+    }
+
+    func nonReleases(_ events: [InputEvent]) -> Int { events.filter { !$0.isRelease }.count }
+
+    func testAStopAtEveryStepOfAChordLeavesNothingPressed() throws {
+        let chords = try KeyParse.sequence("cmd+a b Return").get()
+        let events = InputScript.chords(chords)
+        for n in 0...nonReleases(events) {
+            let r = run(events, stopAt: n)
+            assertBalanced(r, "chord stop \(n)")
+            if n < nonReleases(events) {
+                XCTAssertEqual(r.stopped?.code, .actionFailed, "stop \(n)")
+                XCTAssertEqual(r.posted.filter(\.isPress).count, n, "nothing new is pressed after the stop (\(n))")
+            } else { XCTAssertNil(r.stopped) }
+        }
+    }
+
+    func testAStopAtEveryStepOfAClickLeavesTheButtonUp() {
+        let events = InputScript.hover(at: CGPoint(x: 5, y: 5)) + InputScript.click(at: CGPoint(x: 5, y: 5))
+        for n in 0...nonReleases(events) {
+            let r = run(events, stopAt: n)
+            assertBalanced(r, "click stop \(n)")
+            XCTAssertEqual(r.posted.filter { if case .mouseUp = $0 { return true }; return false }.count, r.posted.filter { if case .mouseDown = $0 { return true }; return false }.count)
+        }
+    }
+
+    func testAStopAtEveryStepOfADragReleasesWhereTheGestureStands() {
+        let path = PointerPath.line(from: CGPoint(x: 10, y: 10), to: CGPoint(x: 100, y: 60), steps: 6)
+        let events = InputScript.hover(at: path[0]) + InputScript.drag(path: path)
+        for n in 0...nonReleases(events) {
+            let r = run(events, stopAt: n)
+            assertBalanced(r, "drag stop \(n)")
+            let downs = r.posted.filter { if case .mouseDown = $0 { return true }; return false }.count
+            if downs == 1, n < nonReleases(events) {
+                // Released where the last event stood, once.
+                guard case .mouseUp(let at)? = r.posted.last else { return XCTFail("drag stop \(n): no release last") }
+                let lastMove = r.posted.dropLast().reversed().compactMap { e -> CGPoint? in
+                    switch e { case .mouseDown(let p), .mouseDragged(let p): return p; default: return nil }
+                }.first
+                XCTAssertEqual(at, lastMove, "drag stop \(n)")
+                XCTAssertEqual(r.released, 1)
+            }
+        }
+    }
+
+    func testTheStopIsNeverAskedBeforeARelease() {
+        var asks = 0
+        var order: [String] = []
+        _ = EventRunner.run(InputScript.chords([KeyChord(keyCode: 0, flags: 0, label: "a")]), stop: { asks += 1; order.append("ask"); return nil },
+                            post: { e in order.append(e.isRelease ? "up" : "down"); return true })
+        XCTAssertEqual(order, ["ask", "down", "up"], "asked before the press only")
+        XCTAssertEqual(asks, 1)
+    }
+
+    func testAnEventThatCannotBeMadeStopsTheRunAndReleasesWhatIsDown() {
+        let c = KeyChord(keyCode: 0, flags: 0, label: "a")
+        var n = 0
+        let r = EventRunner.run([.keyDown(c), .mouseDown(.zero), .mouseUp(.zero), .keyUp(c)], stop: { nil }, post: { e in
+            n += 1
+            if case .mouseDown = e { return false }
+            return true
+        })
+        XCTAssertEqual(r.stopped?.code, .engineError)
+        XCTAssertEqual(r.posted, [.keyDown(c), .keyUp(c)], "the key already down is released")
+        XCTAssertEqual(r.released, 1)
+    }
+
+    func testAReleaseThatFailsToPostDoesNotStopTheOthers() {
+        let a = KeyChord(keyCode: 0, flags: 0, label: "a"), b = KeyChord(keyCode: 11, flags: 0, label: "b")
+        let r = EventRunner.run([.keyDown(a), .keyDown(b), .keyDown(b)], stop: { self.stopError }, post: { e in
+            if case .keyUp(let c) = e, c == b { return false }
+            return true
+        })
+        XCTAssertTrue(r.posted.isEmpty, "stopped before anything")
+        var asked = 0
+        let r2 = EventRunner.run([.keyDown(a), .keyDown(b), .keyDown(b)], stop: { [stopError] in asked += 1; return asked > 2 ? stopError : nil }, post: { e in
+            if case .keyUp(let c) = e, c == b { return false }
+            return true
+        })
+        XCTAssertEqual(r2.posted, [.keyDown(a), .keyDown(b), .keyUp(a)], "a's release is sent although b's could not be")
     }
 }
 
@@ -525,14 +804,29 @@ final class BackgroundPosterSourceTests: XCTestCase {
     func testEveryPostNeedsAPermitAndEveryEntryPointTakesOne() throws {
         let text = try poster()
         XCTAssertTrue(text.contains("private static func post(_ event: CGEvent, _ permit: BackgroundPermit)"))
-        let posts = text.components(separatedBy: "post(event, permit)").count - 1
-        XCTAssertGreaterThanOrEqual(posts, 2)
+        XCTAssertGreaterThanOrEqual(text.components(separatedBy: "post(e, permit)").count - 1, 2)
         for entry in ["static func keys(", "static func pointer("] {
             let sig = try XCTUnwrap(text.range(of: entry))
             let line = text[sig.lowerBound...].prefix(while: { $0 != "{" })
             XCTAssertTrue(line.contains("permit: BackgroundPermit"), "\(entry) takes a permit")
         }
         XCTAssertEqual(text.components(separatedBy: ".postToPid(").count - 1, 1, "one public post site")
+    }
+
+    func testEveryScriptRunsThroughTheBalancedRunner() throws {
+        let text = try poster()
+        XCTAssertEqual(text.components(separatedBy: "EventRunner.run(").count - 1, 2, "keys and pointer both go through it")
+        XCTAssertFalse(text.contains("Thread.sleep(forTimeInterval: 0.008)\n            }"), "no hand-rolled loop of down and up")
+        XCTAssertFalse(text.contains("for down in"), "no loop that can leave a key down")
+    }
+
+    func testAPointerEventIsNeverHalfStamped() throws {
+        let text = try poster()
+        XCTAssertTrue(text.contains("guard let setField = setIntegerField, let setLocation = setWindowLocation else"), "both setters or nothing is posted")
+        XCTAssertFalse(text.contains("default: break"), "no public fallback that silently drops a field")
+        XCTAssertTrue(text.contains("pointerStamps: setIntegerField != nil && setWindowLocation != nil"))
+        for f in ["1", "3", "7", "40", "51", "91", "92", "58"] { XCTAssertTrue(text.contains("setField(raw, \(f),"), "field \(f)") }
+        XCTAssertTrue(text.contains("setLocation(raw,"))
     }
 
     func testOnlyThePosterMakesEvents() throws {
@@ -547,27 +841,67 @@ final class BackgroundPosterSourceTests: XCTestCase {
     func testThePointerPostsNeverMoveTheRealCursor() throws {
         let text = try poster()
         XCTAssertTrue(text.contains("static func pointerLocation()"), "the pointer is sampled, not moved")
-        XCTAssertTrue(text.contains("stamp(event, 40, Int64(permit.pid))"), "the target pid is on every pointer event")
-        XCTAssertTrue(text.contains("stamp(event, 91, window)") && text.contains("stamp(event, 92, window)") && text.contains("stamp(event, 51, window)"))
-        XCTAssertTrue(text.contains("event.flags = CGEventFlags(rawValue: chord.flags)"), "key flags are exactly the chord's, never inherited")
+        XCTAssertTrue(text.contains("event.flags = CGEventFlags(rawValue: chord.flags)") || text.contains("e.flags = CGEventFlags(rawValue: chord.flags)"), "key flags are exactly the chord's, never inherited")
     }
 
-    func testThePipelineChecksScopeAndFactsOnTheProcessQueueBeforeItPosts() throws {
+    func testTheWholeActionIsOneTransactionOnTheProcessQueue() throws {
         let text = try HandsSourceTests.code("Sources/BaneySpaces/Hands/HandsRouter+Background.swift")
-        let perform = try XCTUnwrap(text.range(of: "HandsEngine.shared.perform(window: w, check: scopeCheck)"))
-        let gather = try XCTUnwrap(text.range(of: "gatherFacts(w, kind: kind"))
-        let plan = try XCTUnwrap(text.range(of: "BackgroundPlanner.plan(facts)"))
-        let post = try XCTUnwrap(text.range(of: "BackgroundPoster.keys(chords"))
-        let postPointer = try XCTUnwrap(text.range(of: "BackgroundPoster.pointer(path"))
-        XCTAssertTrue(perform.lowerBound < gather.lowerBound && gather.lowerBound < plan.lowerBound)
-        XCTAssertTrue(plan.lowerBound < post.lowerBound && plan.lowerBound < postPointer.lowerBound)
-        XCTAssertTrue(text.contains("BackgroundPoster.pointerLocation()"), "the pointer is sampled before and after")
+        let transaction = try XCTUnwrap(text.range(of: "HandsEngine.shared.transaction(window: w, check: scopeCheck)"))
+        let transact = try XCTUnwrap(HandsSourceTests.block(after: "private func transact(", in: text))
+        // Inside it, in this order: watch, read before, facts, plan, post, read after.
+        let order = ["ActivationWatch()", "SessionTap()", "refReading()", "gatherFacts(w, kind: kind", "BackgroundPlanner.plan(facts)",
+                     "BackgroundPoster.keys(chords", "BackgroundPoster.pointer(", "DeliveryProof.keys(", "PointerAudit.verdict("]
+        var last = transact.startIndex
+        for marker in order {
+            let r = try XCTUnwrap(transact.range(of: marker), marker)
+            XCTAssertTrue(r.lowerBound >= last, "\(marker) is out of order")
+            last = r.lowerBound
+        }
+        XCTAssertNotNil(transaction)
+        // The readings before the post are the transaction's own, not read outside the queue.
+        XCTAssertFalse(text.contains("HandsEngine.shared.get("), "reads inside the transaction are inline")
+        XCTAssertFalse(text.contains("HandsEngine.shared.snapshot("), "reads inside the transaction are inline")
+        XCTAssertTrue(text.contains("HandsEngine.shared.getInline(") && text.contains("HandsEngine.shared.snapshotInline("))
         XCTAssertEqual(text.components(separatedBy: "BackgroundPoster.keys(").count - 1, 1, "one key post site")
-        XCTAssertEqual(text.components(separatedBy: "BackgroundPoster.pointer(").count - 1, 1, "one pointer post site")
+        XCTAssertEqual(text.components(separatedBy: "BackgroundPoster.pointer(").count - 1, 2, "the hover, then the press")
         XCTAssertTrue(text.contains("host.agentOwned()"), "ownership is read at execution")
         XCTAssertTrue(text.contains("AgentActivity.shared.begin(pid: w.pid, window: w.id)"), "the focus guard is held for the whole action")
         XCTAssertTrue(text.contains("defer { AgentActivity.shared.end(token) }"))
         XCTAssertFalse(text.contains("tryNextRoute"), "no second route after a post")
+    }
+
+    func testTheEngineHasInlineReadsThatRefuseToRunOffTheQueue() throws {
+        let engine = try HandsSourceTests.code("Sources/BaneySpaces/Hands/HandsEngine.swift")
+        XCTAssertTrue(engine.contains("precondition(isOnQueue(of: w.pid), \"getInline runs inside a transaction\")"))
+        XCTAssertTrue(engine.contains("precondition(isOnQueue(of: w.pid), \"snapshotInline runs inside a transaction\")"))
+        XCTAssertTrue(engine.contains("q.setSpecific(key: Self.queueKey, value: pid)"))
+        XCTAssertTrue(engine.contains("func transaction(window w: HandsWindow"))
+    }
+
+    func testTheSpanIsWatchedByTheWorkspaceNotBySamples() throws {
+        let watch = try HandsSourceTests.code("Sources/BaneySpaces/Hands/BackgroundWatch.swift")
+        XCTAssertTrue(watch.contains("NSWorkspace.didActivateApplicationNotification"))
+        XCTAssertTrue(watch.contains("options: .listenOnly"), "the session tap only listens")
+        XCTAssertTrue(watch.contains(".cgSessionEventTap"))
+        let router = try HandsSourceTests.code("Sources/BaneySpaces/Hands/HandsRouter+Background.swift")
+        XCTAssertTrue(router.contains("PostGuard.activations(activations.activated"))
+        XCTAssertTrue(router.contains("PointerAudit.verdict("))
+        // The span closes after the proof loop, not after the post.
+        let loop = try XCTUnwrap(router.range(of: "} while !verdict.verified"))
+        let closing = try XCTUnwrap(router.range(of: "let events = tap.stop()"))
+        XCTAssertTrue(loop.lowerBound < closing.lowerBound)
+    }
+
+    func testOwnershipComparesStartTimeSoAReusedPidFails() throws {
+        let deck = try HandsSourceTests.code("Sources/BaneySpaces/Deck/DeckController.swift")
+        let pids = try XCTUnwrap(HandsSourceTests.block(after: "var pids: Set<Int32>", in: deck))
+        XCTAssertTrue(pids.contains("startedAt: Self.startTime($0)"))
+        var set = AgentOwnedSet()
+        set.add(10, startedAt: 1000)
+        XCTAssertTrue(set.contains(10, startedAt: 1000))
+        XCTAssertFalse(set.contains(10, startedAt: 2000), "the same pid, a different process")
+        let router = try HandsSourceTests.code("Sources/BaneySpaces/Hands/HandsRouter+Background.swift")
+        XCTAssertTrue(router.contains("pidIsAgentOwned: owned.contains(w.pid)"), "owned comes from AgentOwned.pids, which has already compared start times")
     }
 
     func testNoProofIsReturnedAsUnverified() throws {
@@ -587,5 +921,13 @@ final class BackgroundPosterSourceTests: XCTestCase {
         for watched in ["front app", "workspace", "pointer", "key window"] { XCTAssertTrue(text.contains(watched), watched) }
         XCTAssertFalse(text.contains("--force"), "no flag lowers the idle bar")
         XCTAssertFalse(text.contains("\"Notes\""), "never a once-per-user app")
+    }
+
+    func testTheProbeUsesKeysThatAOneLineTextViewCanShowAndCleansUpOnEveryExit() throws {
+        let text = try String(contentsOf: HandsSourceTests.root.appendingPathComponent("scripts/agent-keys-probe.swift"), encoding: .utf8)
+        for needed in ["AXSelectedTextRange", "alt+Left", "shift+alt+Right", "cmd+a", "cmd+b", "Return", "func cleanup()"] { XCTAssertTrue(text.contains(needed), needed) }
+        XCTAssertFalse(text.contains("\"Home\"") || text.contains("\"End\""), "Home and End change nothing in a short document")
+        XCTAssertFalse(text.contains("defer { try?"), "exit skips defer; cleanup() runs before every exit")
+        XCTAssertGreaterThanOrEqual(text.components(separatedBy: "cleanup()").count - 1, 4)
     }
 }

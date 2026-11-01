@@ -1,34 +1,22 @@
 import AppKit
 import BaneySpacesCore
 
-/// Routes shut for an app after it misbehaved (came to the front by itself, or did nothing with background input
-/// twice), for as long as BaneySpaces runs.
+/// Routes shut for an app or process after it misbehaved, for as long as BaneySpaces runs.
 final class BackgroundBreaker {
     static let shared = BackgroundBreaker()
     private let lock = NSLock()
     private var breaker = RouteBreaker()
-    func block(bundle: String, kind: InputKind) -> RouteBlock? { lock.lock(); defer { lock.unlock() }; return breaker.block(bundle: bundle, kind: kind) }
+    func block(bundle: String, pid: Int32, kind: InputKind) -> RouteBlock? { lock.lock(); defer { lock.unlock() }; return breaker.block(bundle: bundle, pid: pid, kind: kind) }
     func update(_ change: (inout RouteBreaker) -> Void) { lock.lock(); change(&breaker); lock.unlock() }
 }
 
-/// What the post on the process queue tells the caller waiting outside it.
-private final class PostOutcome: @unchecked Sendable {
-    private let lock = NSLock()
-    private var _report: BackgroundPoster.Report?
-    private var _front = FrontChange.same
-    private var _pointer = PostGuard.PointerVerdict.unchecked
-    func set(report: BackgroundPoster.Report, front: FrontChange, pointer: PostGuard.PointerVerdict) {
-        lock.lock(); _report = report; _front = front; _pointer = pointer; lock.unlock()
-    }
-    var report: BackgroundPoster.Report? { lock.lock(); defer { lock.unlock() }; return _report }
-    var front: FrontChange { lock.lock(); defer { lock.unlock() }; return _front }
-    var pointer: PostGuard.PointerVerdict { lock.lock(); defer { lock.unlock() }; return _pointer }
-}
-
 /// Phase 4: keys and a pointer, posted to one process that is not in front, with proof read back from the window.
-/// The order for every action: resolve the window, read it, then on the process's queue check scope and facts again,
-/// choose one route (`BackgroundPlanner`), post once, and read the same window back. No proof is `unverified`,
-/// retry never; a second route is never tried after a post.
+///
+/// The whole action is one transaction on the target process's queue: no other action on that process runs between
+/// the readings before, the post and the readings after, so another action's change can never prove this one. Inside
+/// it, in order: watch activations and the session; read the window; check scope and facts again and choose one route
+/// (`BackgroundPlanner`); post once, through `EventRunner` (a stop posts nothing new and releases whatever is down);
+/// read the same window back. No proof is `unverified`, retry never; a second route is never tried after a post.
 extension HandsRouter {
     // MARK: verbs
 
@@ -71,36 +59,81 @@ extension HandsRouter {
         }
     }
 
-    // MARK: the pipeline
+    // MARK: the transaction
 
     private func frontPid() -> Int32? { NSWorkspace.shared.frontmostApplication?.processIdentifier }
 
+    private func inlineValue(_ w: HandsWindow, _ ref: String) -> String? {
+        if case .ok(let v) = HandsEngine.shared.getInline(window: w, ref: ref, property: "value") { return v["value"]?.string ?? "" }
+        return nil
+    }
+
+    private func inlineTree(_ w: HandsWindow) -> JSONValue? {
+        guard case .ok(let d) = HandsEngine.shared.snapshotInline(window: w, interactive: false, compact: true, depth: 10, evidence: true),
+              d["window"]?["id"]?.string == "w-\(w.id)" else { return nil }
+        return d["tree"]
+    }
+
+    /// What the stopped or finished span shows about the front app.
+    private func frontError(_ change: FrontChange, _ w: HandsWindow, kind: InputKind) -> HandsError? {
+        switch change {
+        case .same: return nil
+        case .targetCameForward:
+            BackgroundBreaker.shared.update { $0.selfActivated(bundle: w.bundle, kind: kind) }
+            return BackgroundRefusal.blocked(w.app, .selfActivates)
+        case .other(let p): return BackgroundRefusal.frontChanged(w.app, to: p)
+        case .unknown: return BackgroundRefusal.frontUnknown(w.app)
+        }
+    }
+
     private func background(_ w: HandsWindow, _ scope: ScopeDecision, name: String, kind: InputKind, ref: String?,
                             chords: [KeyChord], path: [CGPoint], drag: Bool) -> HandsEnvelope {
-        // The mark covers the whole action: the readings, the queue wait, the post and the proof, and a short tail.
+        // The mark covers the whole action: the queue wait, the readings, the post and the proof, and a short tail.
         let token = AgentActivity.shared.begin(pid: w.pid, window: w.id)
         defer { AgentActivity.shared.end(token) }
         let scopeCheck = check(w, ref: ref)
         if let e = scopeCheck() { return .failure(e) }
-        guard let server = BackgroundAX.serverWindow(w.id) else {
+        guard BackgroundAX.serverWindow(w.id) != nil else {
             return .failure(HandsError(.windowNotFound, "the window server does not list window \(w.id)", suggestion: "Run `baneyspaces agent windows` and try again.", retry: .safe))
         }
+        let reply = HandsEngine.shared.transaction(window: w, check: scopeCheck) { [self] cancelled in
+            transact(w, scope, name: name, kind: kind, ref: ref, chords: chords, path: path, drag: drag, scopeCheck: scopeCheck, cancelled: cancelled)
+        }
+        switch reply {
+        case .failed(let e): return .failure(e)
+        case .ok(let data): return .success(data)
+        }
+    }
 
-        // Readings before, outside the process queue (the engine's calls use it).
+    /// Runs on the process queue. Everything it reads goes through the engine's inline calls.
+    private func transact(_ w: HandsWindow, _ scope: ScopeDecision, name: String, kind: InputKind, ref: String?, chords: [KeyChord], path: [CGPoint], drag: Bool,
+                          scopeCheck: @escaping HandsEngine.Check, cancelled: () -> Bool) -> HandsEngine.Reply {
+        // From planning to the end of the proof: every activation, and every session event, is seen.
+        let activations = ActivationWatch()
+        let tap = SessionTap()
+        defer { activations.stop(); _ = tap.stop() }
+        guard let frontStart = frontPid() else { return .failed(BackgroundRefusal.frontUnknown(w.app)) }
+        func spanFront() -> FrontChange {
+            let seen = PostGuard.activations(activations.activated, target: w.pid)
+            if seen != .same { return seen }
+            return PostGuard.front(start: frontStart, now: frontPid(), target: w.pid) == .unknown ? .unknown : .same
+        }
+
+        // Readings before. The window's tree is read twice, a moment apart: what changes on its own is noise.
         func refReading() -> ElementReading? {
-            guard let ref, let v = valueOf(w, ref) else { return nil }
+            guard let ref, let v = inlineValue(w, ref) else { return nil }
             return ElementReading.text(window: w.id, identity: ref, value: v)
         }
         func focusReading() -> ElementReading? { BackgroundAX.focus(pid: w.pid).element.map { BackgroundAX.reading(of: $0) } }
-        func tree() -> JSONValue? {
-            if case .success(let d) = read(w, interactive: false, compact: true, register: false) { return d["tree"] }
-            return nil
+        func windowReading() -> WindowReading? {
+            BackgroundAX.windows(pid: w.pid).mapped.first { $0.id == w.id }.map { BackgroundAX.windowReading($0.element) }
         }
-        func capture() -> WindowShot.Pixels? { kind == .pointer ? WindowShot.pixels(window: w.id, check: scopeCheck) : nil }
-
-        let refBefore = refReading(), focusBefore = focusReading(), treeBefore = tree(), shotBefore = capture()
+        let refBefore = refReading(), focusBefore = focusReading(), windowBefore = windowReading()
+        let tree1 = inlineTree(w)
+        Thread.sleep(forTimeInterval: 0.15)
+        let tree2 = inlineTree(w)
         let verifier: VerifierPlan = {
-            switch (treeBefore != nil, shotBefore != nil) {
+            switch (tree1 != nil && tree2 != nil, kind == .pointer && CGPreflightScreenCaptureAccess()) {
             case (true, true): return .axAndPixels
             case (true, false): return .ax
             case (false, true): return .pixels
@@ -108,93 +141,114 @@ extension HandsRouter {
             }
         }()
 
+        // Scope and facts again, at the moment of execution; one route or one refusal.
+        guard let (facts, frame) = gatherFacts(w, kind: kind, verifier: verifier, path: path) else {
+            return .failed(HandsError(.windowNotFound, "window \(w.id) is gone", suggestion: "Run `baneyspaces agent windows` and take a new snapshot.", retry: .afterSnapshot))
+        }
+        let permit: BackgroundPermit
+        switch BackgroundPlanner.plan(facts) {
+        case .failure(let e): return .failed(e)
+        case .success(let p): permit = p
+        }
+        if let e = frontError(spanFront(), w, kind: kind) { return .failed(e) }
+
         // The agent cursor (phase 1b) learns where the hands are working.
         if HandsEvents.hasListener {
-            let at = path.first.map { PointerPath.screenPoint(local: $0, frame: server.frame) }
-            HandsEvents.willAct(HandsActionEvent(kind: name, ref: ref ?? "", window: w.id, pid: w.pid, app: w.app, point: at))
+            HandsEvents.willAct(HandsActionEvent(kind: name, ref: ref ?? "", window: w.id, pid: w.pid, app: w.app, point: path.first.map { PointerPath.screenPoint(local: $0, frame: frame) }))
         }
+        let pointerBefore = BackgroundPoster.pointerLocation()
+        var stopError: HandsError?
+        let stop: () -> HandsError? = {
+            if cancelled() { return HandsError(.timeout, "the caller stopped waiting", suggestion: "Read the element back before trying again.", retry: .never) }
+            return self.frontError(spanFront(), w, kind: kind)
+        }
+        var posted = 0, released = 0
+        var aimed: [CGPoint] = []
+        var shotBefore: WindowShot.Pixels?
 
-        // On the process's queue, at the moment of execution: scope again (the check), the facts again, one route.
-        let outcome = PostOutcome()
-        let reply = HandsEngine.shared.perform(window: w, check: scopeCheck) { [self] cancelled in
-            guard let (facts, frame) = gatherFacts(w, kind: kind, verifier: verifier, path: path) else {
-                return .failed(HandsError(.windowNotFound, "window \(w.id) is gone", suggestion: "Run `baneyspaces agent windows` and take a new snapshot.", retry: .afterSnapshot))
-            }
-            let permit: BackgroundPermit
-            switch BackgroundPlanner.plan(facts) {
-            case .failure(let e): return .failed(e)
-            case .success(let p): permit = p
-            }
-            let frontStart = frontPid()
-            let pointerBefore = BackgroundPoster.pointerLocation()
-            let between: () -> HandsError? = { [self] in
-                if cancelled() { return HandsError(.timeout, "the caller stopped waiting", suggestion: "Read the element back before trying again.", retry: .never) }
-                switch PostGuard.front(start: frontStart, now: frontPid(), target: w.pid) {
-                case .same: return nil
-                case .targetCameForward: return BackgroundRefusal.blocked(w.app, .selfActivates)
-                case .other(let p): return BackgroundRefusal.frontChanged(w.app, to: p)
+        switch kind {
+        case .keys:
+            let report = BackgroundPoster.keys(chords, permit: permit, stop: stop)
+            posted = report.posted.count; released = report.released; stopError = report.stopped
+        case .pointer:
+            let gesture = BackgroundPoster.newGesture()
+            // Arrive first, then look: a hover that tints or outlines is in the picture the press is compared with.
+            let hover = BackgroundPoster.pointer(InputScript.hover(at: path[0]), frame: frame, drag: drag, gesture: gesture, permit: permit, stop: stop)
+            aimed += hover.screenPoints
+            posted += hover.report.posted.count
+            stopError = hover.report.stopped
+            if stopError == nil {
+                Thread.sleep(forTimeInterval: 0.2)
+                shotBefore = verifier.hasPixels ? WindowShot.pixels(window: w.id, check: scopeCheck) : nil
+                if verifier == .pixels, shotBefore == nil {
+                    return .failed(BackgroundRefusal.noVerifier(w.app))     // nothing is pressed yet
                 }
+                let press = BackgroundPoster.pointer(drag ? InputScript.drag(path: path) : InputScript.click(at: path[0]), frame: frame, drag: drag,
+                                                     gesture: gesture, permit: permit, stop: stop)
+                aimed += press.screenPoints
+                posted += press.report.posted.count; released = press.report.released; stopError = press.report.stopped
             }
-            let report = kind == .keys
-                ? BackgroundPoster.keys(chords, permit: permit, between: between)
-                : BackgroundPoster.pointer(path: path, frame: frame, drag: drag, permit: permit, between: between)
-            outcome.set(report: report, front: PostGuard.front(start: frontStart, now: frontPid(), target: w.pid),
-                        pointer: PostGuard.pointer(before: pointerBefore, after: BackgroundPoster.pointerLocation()))
-            return .ok(.object(["posted": .int(report.events)]))
         }
-        switch reply {
-        case .failed(let e): return .failure(e)
-        case .ok: break
-        }
-        guard let report = outcome.report else {
-            return .failure(HandsError(.engineError, "the post left no record", suggestion: "Read the element back before trying again.", retry: .never))
-        }
+        if let stopError { return .failed(finish(stopError, w: w, kind: kind, activations: activations, spanFront: spanFront)) }
 
-        // What the post itself showed. An app that came forward by itself is shut out for the run.
-        if outcome.front == .targetCameForward {
-            BackgroundBreaker.shared.update { $0.selfActivated(bundle: w.bundle, kind: kind) }
-            return .failure(BackgroundRefusal.blocked(w.app, .selfActivates))
-        }
-        if let stopped = report.stopped { return .failure(stopped) }
-        if case .other(let p) = outcome.front { return .failure(BackgroundRefusal.frontChanged(w.app, to: p)) }
-        if let moved = outcome.pointer.error { return .failure(moved) }
-
-        // The proof: the same window read again, until it shows a change or the time is up.
+        // The proof: the same window read again, until it shows what the action predicts or the time is up.
         let deadline = Date().addingTimeInterval(kind == .keys ? 1.5 : 1.2)
         var verdict = DeliveryVerdict(verified: false, basis: "no_reading")
         var diff: AXDiff?
         var pixels: PixelChange?
+        let minStroke: Int = {
+            guard let s = shotBefore else { return DeliveryProof.minStrokePixels }
+            return PointerPath.strokeMinimum(path: path, scale: s.scale)
+        }()
         repeat {
             Thread.sleep(forTimeInterval: 0.15)
-            let refAfter = refReading(), focusAfter = focusReading()
-            if let b = treeBefore, let a = tree() { diff = AXDiff.between(b, a) }
-            if let b = shotBefore, let a = capture(), a.width == b.width, a.height == b.height {
-                let region = PointerPath.region(path: path, margin: 14, scale: b.scale, width: b.width, height: b.height)
-                pixels = PixelDiff.compare(before: b.rgba, after: a.rgba, width: b.width, height: b.height, region: region)
+            if spanFront() != .same { break }
+            let refAfter = refReading(), focusAfter = focusReading(), windowAfter = windowReading()
+            var content: Bool?
+            if let t1 = tree1, let t2 = tree2, let after = inlineTree(w) {
+                content = ContentChange.changed(base1: t1, base2: t2, after: after)
+                diff = AXDiff.between(t1, after)
             }
-            let ref = (before: refBefore, after: refAfter), focus = (before: focusBefore, after: focusAfter)
+            if let b = shotBefore, let a = WindowShot.pixels(window: w.id, check: scopeCheck), a.width == b.width, a.height == b.height {
+                let region = PointerPath.region(path: path, margin: 14, scale: b.scale, width: b.width, height: b.height)
+                let hover = PointerPath.hoverExclusion(path: path, radius: 10, scale: b.scale, width: b.width, height: b.height)
+                pixels = PixelDiff.compare(before: b.rgba, after: a.rgba, width: b.width, height: b.height, region: region, excluding: hover)
+            }
+            let r: ReadingPair = (refBefore, refAfter), f: ReadingPair = (focusBefore, focusAfter)
             verdict = kind == .keys
-                ? DeliveryProof.keys(target: w.id, ref: ref, focus: focus, treeChanged: diff?.changed, pixels: pixels)
-                : DeliveryProof.pointer(target: w.id, ref: ref, focus: focus, treeChanged: diff?.changed, pixels: pixels)
+                ? DeliveryProof.keys(target: w.id, chords: chords, ref: r, focus: f, content: content, window: (windowBefore, windowAfter), pixels: nil)
+                : DeliveryProof.pointer(target: w.id, ref: r, focus: f, content: content, pixels: pixels, minStroke: minStroke)
         } while !verdict.verified && Date() < deadline
 
+        // The span is over: any activation in it fails the action, whatever the proof says.
+        if let e = frontError(spanFront(), w, kind: kind) { return .failed(e) }
+        let events = tap.stop()
+        let pointerVerdict = PointerAudit.verdict(before: pointerBefore, after: BackgroundPoster.pointerLocation(), posted: aimed, tap: events, ownPid: Int64(getpid()))
+        if let e = pointerVerdict.error { return .failed(e) }
+
         guard verdict.verified else {
-            BackgroundBreaker.shared.update { $0.noEffect(bundle: w.bundle, kind: kind) }
-            return .failure(BackgroundRefusal.unverified(basis: verdict.basis))
+            let certain = KeyPrediction.certainToShow(chords, focusIsText: focusBefore?.isText ?? false)
+            BackgroundBreaker.shared.update { if kind == .keys, certain, verdict.basis == "no_change" { $0.dropped(pid: w.pid, kind: kind) } }
+            return .failed(BackgroundRefusal.unverified(basis: verdict.basis))
         }
-        BackgroundBreaker.shared.update { $0.proved(bundle: w.bundle, kind: kind) }
-        var evidence: [String: JSONValue] = ["kind": "delivery_proof", "basis": .string(verdict.basis),
-                                             "pointer": .string(outcome.pointer.label), "front": "unchanged"]
+        BackgroundBreaker.shared.update { $0.proved(pid: w.pid, kind: kind) }
+        var evidence: [String: JSONValue] = ["kind": "delivery_proof", "basis": .string(verdict.basis), "pointer": .string(pointerVerdict.label),
+                                             "front": "unchanged", "released": .int(released)]
         if let diff { evidence["ax"] = diff.json(limit: 3) }
         if let p = pixels {
             evidence["pixels"] = .object(["inside_changed": .int(p.insideChanged), "inside_total": .int(p.insideTotal),
                                           "outside_changed": .int(p.outsideChanged), "outside_total": .int(p.outsideTotal)])
         }
-        return .success(.object([
-            "action": .string(name), "verified": true, "route": .string(kind == .keys ? BackgroundRoute.pidKeys.rawValue : BackgroundRoute.windowPointer.rawValue),
-            "transport": .string(report.transport.rawValue), "events": .int(report.events), "evidence": .object(evidence),
+        return .ok(.object([
+            "action": .string(name), "verified": true, "route": .string(permit.route.rawValue),
+            "transport": .string(permit.transport.rawValue), "events": .int(posted), "evidence": .object(evidence),
             "target": targetJSON(w, scope),
         ]))
+    }
+
+    /// A stop is reported as what it was; an activation seen by the watch outranks a bare "stopped".
+    private func finish(_ stop: HandsError, w: HandsWindow, kind: InputKind, activations: ActivationWatch, spanFront: () -> FrontChange) -> HandsError {
+        frontError(spanFront(), w, kind: kind) ?? stop
     }
 
     /// The facts the planner decides on, read now, on the process queue. nil when the window is gone.
@@ -208,18 +262,22 @@ extension HandsRouter {
         case .denied: scope = .outside
         }
         let axWindows = BackgroundAX.windows(pid: w.pid)
-        let me = axWindows.first { $0.id == w.id }
+        let me = axWindows.mapped.first { $0.id == w.id }
         let hidden = NSRunningApplication(processIdentifier: w.pid)?.isHidden ?? false
         let condition: WindowCondition = hidden ? .appHidden : (me?.minimized == true ? .minimized : .normal)
         let focus = BackgroundAX.focus(pid: w.pid)
         let size = CGSize(width: server.frame.width, height: server.frame.height)
+        let titleBar = me.map { BackgroundAX.titleBarHeight($0.element, windowTop: server.frame.minY) } ?? 0
+        // Windows that cannot be mapped count against the keys: one of them could take the key.
+        let siblings = axWindows.mapped.filter { $0.id != w.id && !$0.minimized }.count + axWindows.unmapped
         let facts = BackgroundFacts(
             kind: kind, app: w.app, pid: w.pid, window: w.id, scope: scope, pidIsAgentOwned: owned.contains(w.pid),
-            windowOwnerPid: server.pid, axWindowResolved: me != nil, siblingWindows: axWindows.filter { $0.id != w.id && !$0.minimized }.count,
+            windowOwnerPid: server.pid, axWindowResolved: me != nil, siblingWindows: siblings,
             condition: condition, hasSheetOrPanel: seen.panel, focusedWindow: focus.window, focusedElementWindow: focus.elementWindow,
             targetIsFront: frontPid() == w.pid, transports: BackgroundPoster.support,
-            block: BackgroundBreaker.shared.block(bundle: w.bundle, kind: kind), verifier: verifier,
-            pointInsideWindow: path.allSatisfy { PointerPath.inside($0, size: size) })
+            block: BackgroundBreaker.shared.block(bundle: w.bundle, pid: w.pid, kind: kind), verifier: verifier,
+            pointInsideWindow: path.allSatisfy { PointerPath.inside($0, size: size) },
+            pointInTitleBar: path.contains { $0.y < titleBar })
         return (facts, server.frame)
     }
 }

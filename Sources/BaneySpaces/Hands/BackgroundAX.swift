@@ -37,13 +37,41 @@ enum BackgroundAX {
         var minimized: Bool
     }
 
-    /// The app's accessibility windows with their window-server ids. Empty when it says nothing.
-    static func windows(pid: pid_t) -> [AppWindow] {
-        guard let list = copy(app(pid), kAXWindowsAttribute) as? [AXUIElement] else { return [] }
-        return list.compactMap { w in
-            guard let id = windowID(of: w) else { return nil }
-            return AppWindow(element: w, id: id, minimized: (copy(w, kAXMinimizedAttribute) as? Bool) ?? false)
+    /// The app's accessibility windows with their window-server ids, and how many it lists that cannot be mapped to
+    /// one (a panel being made, a window `_AXUIElementGetWindow` has no answer for). The unmapped count is kept so a
+    /// caller can fail closed: a key could land in a window nobody can name.
+    static func windows(pid: pid_t) -> (mapped: [AppWindow], unmapped: Int) {
+        guard let list = copy(app(pid), kAXWindowsAttribute) as? [AXUIElement] else { return ([], 0) }
+        var mapped: [AppWindow] = []
+        var unmapped = 0
+        for w in list {
+            guard let id = windowID(of: w) else { unmapped += 1; continue }
+            mapped.append(AppWindow(element: w, id: id, minimized: (copy(w, kAXMinimizedAttribute) as? Bool) ?? false))
         }
+        return (mapped, unmapped)
+    }
+
+    /// The window's own state, for shortcuts that change the window and not an element (Save).
+    static func windowReading(_ w: AXUIElement) -> WindowReading {
+        let title = copy(w, kAXTitleAttribute) as? String
+        let edited = copy(w, "AXEdited" as String) as? Bool
+        let sheets = ((copy(w, kAXChildrenAttribute) as? [AXUIElement]) ?? []).filter { (copy($0, kAXRoleAttribute) as? String) == "AXSheet" }.count
+        return WindowReading(titleDigest: title.map(ElementReading.digest), edited: edited, sheets: sheets)
+    }
+
+    /// How far down the window's title bar reaches, from its top edge, in points: the lowest of its close, minimize
+    /// and zoom buttons plus a margin. 0 for a window without them.
+    static func titleBarHeight(_ w: AXUIElement, windowTop: CGFloat) -> CGFloat {
+        var bottom: CGFloat?
+        for name in [kAXCloseButtonAttribute, kAXMinimizeButtonAttribute, kAXZoomButtonAttribute] {
+            guard let b = copy(w, name), let p = copy(b as! AXUIElement, kAXPositionAttribute), let sz = copy(b as! AXUIElement, kAXSizeAttribute) else { continue }
+            var pt = CGPoint.zero, size = CGSize.zero
+            AXValueGetValue(p as! AXValue, .cgPoint, &pt)
+            AXValueGetValue(sz as! AXValue, .cgSize, &size)
+            bottom = max(bottom ?? 0, pt.y + size.height)
+        }
+        guard let bottom else { return 0 }
+        return max(0, bottom - windowTop) + 6
     }
 
     /// Where the app's keys go: its focused window and the window its focused element is in.
@@ -72,7 +100,24 @@ enum BackgroundAX {
             var range = CFRange()
             if AXValueGetValue(r as! AXValue, .cfRange, &range) { selection = (range.location, range.length) }
         }
-        return ElementReading.text(window: windowID(of: e), identity: "\(role)|\(frame)", value: value, selection: selection)
+        return ElementReading.text(window: windowID(of: e), identity: "\(role)|\(frame)", value: value, selection: selection,
+                                   attributes: value.flatMap { attributesDescription(e, length: $0.utf16.count) })
+    }
+
+    /// The text's attributes (fonts, underline...) run by run, as one string to hash. nil when the element does not answer.
+    static func attributesDescription(_ e: AXUIElement, length: Int) -> String? {
+        guard length > 0, length < 100_000 else { return nil }
+        var range = CFRange(location: 0, length: length)
+        guard let param = AXValueCreate(.cfRange, &range) else { return nil }
+        var out: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(e, kAXAttributedStringForRangeParameterizedAttribute as CFString, param, &out) == .success,
+              let attributed = out as? NSAttributedString else { return nil }
+        var parts: [String] = []
+        attributed.enumerateAttributes(in: NSRange(location: 0, length: attributed.length), options: []) { attrs, r, _ in
+            let keys = attrs.keys.sorted { "\($0)" < "\($1)" }
+            parts.append("\(r.location)+\(r.length):" + keys.map { "\($0)=\(attrs[$0]!)" }.joined(separator: ";"))
+        }
+        return parts.joined(separator: "|")
     }
 
     /// The window server's word on one window: its owner and its frame in screen coordinates. Windows parked

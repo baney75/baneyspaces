@@ -9,14 +9,16 @@
 // BaneySpaces predates phase 4, when the agent workspace is off, or when you come back while it runs.
 //
 // What it does, all through `baneyspaces agent ...` on processes BaneySpaces starts (`agent open`):
-//   1. TextEdit, with another app in front: keys (letters, Return, cmd+a, cmd+b) and menu-free keys (Home, End,
-//      shift+Right), each answered "verified" from a change read back inside that window.
+//   1. TextEdit, with another app in front, one line of plain text: cmd+a then typing a replacement, option+Left and
+//      shift+option+Right (the selected range read back through AXSelectedTextRange), Return making a new line; and, in an
+//      RTF document, cmd+a then cmd+b checked through the text's attributes (and the saved file). Each answered
+//      "verified" by BaneySpaces and then checked again here, by this probe's own reading of the same window.
 //   2. The bench tasks marked phase 4 that these routes can run, replayed from bench/tasks/*.json: calculator-keys,
 //      textedit-select-all-replace, textedit-bold-save-rtf. Each prints PASS or FAIL against the task's own check.
 //      The others (textedit-save-sheet: a Save sheet is never driven; finder-*: Finder is once-per-user and
 //      never started for an agent) print SKIP and why.
-//   3. A canvas: a small test app (scripts/canvas-probe-app.swift, built here) is drawn on from behind with
-//      `drag` and `click-at`; the stroke is checked by pixels, from captures this probe makes itself.
+//   3. A canvas: the small test app built into the BaneySpaces bundle (Resources/probe, scripts/canvas-probe-app.swift) is
+//      drawn on from behind with `drag` and `click-at`; the stroke is checked by pixels, from captures this probe makes itself.
 //   4. Watching, the whole time, every 50 ms: the front app, BaneySpaces' current workspace, the real pointer,
 //      the key window, and any window of the probed apps that shows on another workspace. Zero changes allowed.
 //      A listen-only event tap also counts input: an event from anywhere but this probe or BaneySpaces' own
@@ -33,7 +35,16 @@ let statePath = supportDir.appendingPathComponent("state.json").path
 let scriptDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
 let benchTasks = scriptDir.deletingLastPathComponent().appendingPathComponent("bench/tasks")
 
+var startedPids: [Int] = []
+var runDir: URL?
+/// Quits only the processes this run started and removes its folder. Called before every exit (exit skips `defer`).
+func cleanup() {
+    startedPids.forEach { kill(pid_t($0), SIGTERM) }
+    startedPids = []
+    if let d = runDir { try? FileManager.default.removeItem(at: d) }
+}
 func untested(_ why: String) -> Never {
+    cleanup()
     print("untested live: \(why)")
     exit(3)
 }
@@ -57,6 +68,7 @@ func hidIdleSeconds() -> Double {
 let idle = hidIdleSeconds()
 if idle < 600 { untested("you were active \(Int(idle)) s ago; the probe needs 10 idle minutes (HIDIdleTime >= 600)") }
 guard FileManager.default.isExecutableFile(atPath: cli) else { untested("\(cli) is not installed") }
+guard AXIsProcessTrusted() else { untested("this terminal is not allowed Accessibility, which the probe needs to read AXSelectedTextRange") }
 
 // MARK: talking to BaneySpaces
 
@@ -191,12 +203,10 @@ sampler.start()
 // MARK: fixtures
 
 let handoff = supportDir.appendingPathComponent("hands/handoff")
-let probeApps = supportDir.appendingPathComponent("hands/probe-apps")
-let runDir = handoff.appendingPathComponent("keys-probe-\(Int(Date().timeIntervalSince1970))")
-try? FileManager.default.createDirectory(at: runDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-try? FileManager.default.createDirectory(at: probeApps, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-var startedPids: [Int] = []
-defer { try? FileManager.default.removeItem(at: runDir) }
+let dir = handoff.appendingPathComponent("keys-probe-\(Int(Date().timeIntervalSince1970))")
+try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+runDir = dir
+let runDirURL = dir
 
 let rtfBody = #"{\rtf1\ansi\ansicpg1252\cocoartf2700{\fonttbl\f0\fswiss Helvetica;}\f0\fs24 plain words to make bold\par}"#
 
@@ -242,24 +252,78 @@ func value(_ ref: String) -> String { data(agent(["get", ref, "value"]))["value"
 
 // MARK: 1. TextEdit, keys
 
-print("TextEdit keys (another app stays in front):")
+func axCopy(_ e: AXUIElement, _ name: String) -> CFTypeRef? {
+    var out: CFTypeRef?
+    return AXUIElementCopyAttributeValue(e, name as CFString, &out) == .success ? out : nil
+}
+/// The text element that has the keys in this process, read straight from accessibility.
+func focusedElement(_ pid: Int) -> AXUIElement? {
+    guard let f = axCopy(AXUIElementCreateApplication(pid_t(pid)), kAXFocusedUIElementAttribute) else { return nil }
+    return (f as! AXUIElement)
+}
+func selectedRange(_ pid: Int) -> (Int, Int)? {
+    guard let e = focusedElement(pid), let v = axCopy(e, kAXSelectedTextRangeAttribute) else { return nil }
+    var r = CFRange()
+    return AXValueGetValue(v as! AXValue, .cfRange, &r) ? (r.location, r.length) : nil
+}
+func focusedText(_ pid: Int) -> String? { focusedElement(pid).flatMap { axCopy($0, kAXValueAttribute) as? String } }
+/// Whether any run of the focused text has a bold font, from its attributed string.
+func hasBold(_ pid: Int) -> Bool {
+    guard let e = focusedElement(pid), let text = focusedText(pid), !text.isEmpty else { return false }
+    var range = CFRange(location: 0, length: text.utf16.count)
+    guard let param = AXValueCreate(.cfRange, &range) else { return false }
+    var out: CFTypeRef?
+    guard AXUIElementCopyParameterizedAttributeValue(e, kAXAttributedStringForRangeParameterizedAttribute as CFString, param, &out) == .success,
+          let attributed = out as? NSAttributedString else { return false }
+    var bold = false
+    attributed.enumerateAttributes(in: NSRange(location: 0, length: attributed.length), options: []) { attrs, _, _ in
+        if "\(attrs)".contains("Bold") { bold = true }
+    }
+    return bold
+}
+func expect(_ label: String, _ ok: Bool) {
+    print("  \(ok ? "ok  " : "FAIL") \(label)")
+    if !ok { failures.append(label) }
+}
+
+print("TextEdit keys, one line of text (another app stays in front):")
 if let (win, pid) = open("TextEdit", { () -> String in
-    let f = runDir.appendingPathComponent("keys.txt"); FileManager.default.createFile(atPath: f.path, contents: Data("start".utf8)); return f.path }()) {
+    let f = runDirURL.appendingPathComponent("line.txt"); FileManager.default.createFile(atPath: f.path, contents: Data("alpha beta gamma".utf8)); return f.path }()) {
     if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid_t(pid) { untested("TextEdit came to the front on its own; nothing to prove from behind") }
     if let field = nodes(win).first(where: { canon($0.role) == "textfield" }) {
-        let before = value(field.ref)
         var ok = true
-        ok = press(field.ref, "h i", label: "typing") && ok
-        let typed = value(field.ref)
-        if !(typed != before && typed.contains("hi")) { failures.append("typing: the field did not read back the typed letters"); ok = false }
-        ok = press(field.ref, "Return", label: "typing") && ok
-        if value(field.ref).count != typed.count + 1 { failures.append("typing: Return did not add a line"); ok = false }
-        ok = press(field.ref, "cmd+a", label: "typing") && ok
-        ok = press(field.ref, "Home", label: "menu-free") && ok
-        ok = press(field.ref, "End", label: "menu-free") && ok
-        ok = press(field.ref, "shift+Right", label: "menu-free") && ok
+        ok = press(field.ref, "cmd+a", label: "select all") && ok
+        let all = selectedRange(pid)
+        expect("cmd+a selects all 16 characters (AXSelectedTextRange \(all.map { "\($0.0),\($0.1)" } ?? "unreadable"))", all?.0 == 0 && all?.1 == 16)
+        ok = press(field.ref, "n e w", label: "typing") && ok
+        expect("typing replaced the selection: value is \"new\"", focusedText(pid) == "new")
+        ok = press(field.ref, "alt+Left", label: "option-left") && ok
+        let home = selectedRange(pid)
+        expect("option+Left puts the caret at the start of the word (range \(home.map { "\($0.0),\($0.1)" } ?? "unreadable"))", home?.0 == 0 && home?.1 == 0)
+        ok = press(field.ref, "shift+alt+Right", label: "shift-option-right") && ok
+        let word = selectedRange(pid)
+        expect("shift+option+Right selects the word (range \(word.map { "\($0.0),\($0.1)" } ?? "unreadable"))", word?.0 == 0 && word?.1 == 3)
+        ok = press(field.ref, "Right", label: "collapse") && ok
+        let end = selectedRange(pid)
+        expect("Right collapses the selection to its end (range \(end.map { "\($0.0),\($0.1)" } ?? "unreadable"))", end?.0 == 3 && end?.1 == 0)
+        ok = press(field.ref, "Return", label: "return") && ok
+        expect("Return made a new line: value is \"new\\n\"", focusedText(pid) == "new\n")
         print("scenario keys-typing: \(ok ? "PASS" : "FAIL")")
     } else { failures.append("TextEdit has no text field ref") }
+    quit(pid)
+}
+
+print("TextEdit bold, RTF (another app stays in front):")
+if let (win, pid) = open("TextEdit", { () -> String in
+    let f = runDirURL.appendingPathComponent("bold.rtf"); FileManager.default.createFile(atPath: f.path, contents: Data(rtfBody.utf8)); return f.path }()) {
+    if let field = nodes(win).first(where: { canon($0.role) == "textfield" }) {
+        let was = hasBold(pid)
+        var ok = press(field.ref, "cmd+a", label: "bold: select all")
+        ok = press(field.ref, "cmd+b", label: "bold: cmd+b") && ok
+        let now = hasBold(pid)
+        expect("cmd+b made the selected text bold, read through its attributes (was bold: \(was), now: \(now))", !was && now)
+        print("scenario keys-bold: \(ok && !was && now ? "PASS" : "FAIL")")
+    } else { failures.append("TextEdit (rtf) has no text field ref") }
     quit(pid)
 }
 
@@ -272,7 +336,7 @@ func tmpReplaced(_ s: String, _ dir: URL) -> String { s.replacingOccurrences(of:
 func runTask(_ id: String) {
     guard let d = FileManager.default.contents(atPath: benchTasks.appendingPathComponent("\(id).json").path),
           let task = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { taskResults.append((id, "SKIP (task file missing)")); return }
-    let dir = runDir.appendingPathComponent(id)
+    let dir = runDirURL.appendingPathComponent(id)
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     let setup = task["setup"] as? [String: Any] ?? [:]
     for (name, spec) in setup["files"] as? [String: Any] ?? [:] {
@@ -377,28 +441,12 @@ func darkNear(_ s: Shot, _ x: Int, _ y: Int, _ r: Int) -> Bool {
 }
 
 print("canvas (drawn on from behind):")
-let canvasApp = probeApps.appendingPathComponent("CanvasProbe.app")
-func buildCanvas() -> Bool {
-    try? FileManager.default.removeItem(at: canvasApp)
-    let macos = canvasApp.appendingPathComponent("Contents/MacOS")
-    try? FileManager.default.createDirectory(at: macos, withIntermediateDirectories: true)
-    let plist = """
-    <?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-    <plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.baney.baneyspaces.canvasprobe</string><key>CFBundleName</key><string>Canvas Probe</string>
-    <key>CFBundleExecutable</key><string>CanvasProbe</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleVersion</key><string>1</string>
-    <key>LSMinimumSystemVersion</key><string>13.0</string><key>NSPrincipalClass</key><string>NSApplication</string></dict></plist>
-    """
-    try? plist.write(to: canvasApp.appendingPathComponent("Contents/Info.plist"), atomically: true, encoding: .utf8)
-    let p = Process()
-    p.executableURL = URL(fileURLWithPath: "/usr/bin/swiftc")
-    p.arguments = ["-O", "-o", macos.appendingPathComponent("CanvasProbe").path, scriptDir.appendingPathComponent("canvas-probe-app.swift").path]
-    p.standardOutput = Pipe(); p.standardError = Pipe()
-    do { try p.run() } catch { return false }
-    p.waitUntilExit()
-    return p.terminationStatus == 0
-}
+// The test app ships inside the running BaneySpaces bundle (Resources/probe): the only place BaneySpaces starts it from.
+let bundleURL = NSWorkspace.shared.runningApplications.first { $0.bundleURL?.lastPathComponent == "BaneySpaces.app" }?.bundleURL
+let canvasApp = bundleURL?.appendingPathComponent("Contents/Resources/probe/CanvasProbe.app")
+if canvasApp == nil || !FileManager.default.fileExists(atPath: canvasApp!.path) { untested("the installed BaneySpaces has no Resources/probe/CanvasProbe.app") }
 var canvasPass = false
-if buildCanvas(), let (win, pid) = open(canvasApp.path) {
+if let (win, pid) = open(canvasApp!.path) {
     if let before = shot(win) {
         let scale = Double(before.w) / 400          // the window is 400 points wide
         let from = (x: 60.0, y: 90.0), to = (x: 320.0, y: 230.0)
@@ -430,14 +478,14 @@ if buildCanvas(), let (win, pid) = open(canvasApp.path) {
         } else { failures.append("canvas: no capture after the drag (Screen Recording for BaneySpaces?)") }
     } else { failures.append("canvas: no capture before the drag (Screen Recording for BaneySpaces?)") }
     quit(pid)
-} else { failures.append("canvas: the test app could not be built or started") }
+} else { failures.append("canvas: the test app could not be started (BaneySpaces checks its signature and code hash)") }
 
 // MARK: result
 
 Thread.sleep(forTimeInterval: 1.8)   // late activations arrive after the last action
 lock.lock(); running = false; lock.unlock()
 Thread.sleep(forTimeInterval: 0.3)
-try? FileManager.default.removeItem(at: canvasApp)
+cleanup()
 
 lock.lock()
 let gone = inputFromElsewhere
@@ -455,5 +503,6 @@ if nChanges.isEmpty && failures.isEmpty {
     print("PASS: zero changes to the front app, the workspace, the real pointer and the key window; no stray window; keys, menu-free keys and a canvas stroke verified")
 } else {
     print("FAIL: \(nChanges.count) change(s), \(failures.count) failed requirement(s)")
+    cleanup()
     exit(1)
 }

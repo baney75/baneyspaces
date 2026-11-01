@@ -504,7 +504,8 @@ final class DeckController {
             // The gate every caller of this op goes through, the socket included: only apps verified to start a
             // separate instance, only files from the handoff folder, no URLs.
             let files: [URL]
-            switch AgentOpenGate.check(app: appName, bundle: bundle, targets: Array(args.dropFirst()), handoff: HandsRouter.handoffFolder, appURL: url, probeApps: HandsRouter.probeAppsFolder) {
+            switch AgentOpenGate.check(app: appName, bundle: bundle, targets: Array(args.dropFirst()), handoff: HandsRouter.handoffFolder, appURL: url,
+                                     probeFolder: ProbeAppTrust.folder, probeTrusted: bundle == AgentAppPolicy.canvasProbeBundle && ProbeAppTrust.trusted(url)) {
             case .failure(let e): return .init(ok: false, error: e.message, info: ["code": e.code.rawValue, "suggestion": e.suggestion])
             case .success(let paths): files = paths.map { URL(fileURLWithPath: $0) }
             }

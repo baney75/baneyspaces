@@ -9,12 +9,15 @@ import Foundation
 /// resolves) and needs a `BackgroundPermit`, which only `BackgroundPlanner.plan` can make. Nothing here names the
 /// session or HID taps, warps the pointer, activates, raises or switches anything (a source test reads this file).
 ///
+/// Every script runs through `EventRunner`: a stop means post nothing new, and every key or button already pressed is
+/// released before the run returns.
+///
 /// The recipes (keys carrying explicit flags and no authentication message, which is the path AppKit's menu key
 /// equivalents need; mouse events carrying the window number in fields 51, 91 and 92, the target pid in field 40,
 /// one gesture id in field 58, and the screen point in `CGEventSetWindowLocation`) follow cua-driver's
 /// `keyboard.rs`, `mouse.rs` and `skylight.rs` (MIT, trycua/cua; see NOTICE). SkyLight's functions are found by
-/// name when first needed: a name that does not resolve removes that part of the route, and the public
-/// per-process call takes over. It never crashes the app.
+/// name when first needed: a name that does not resolve removes that part of the route. A pointer event is posted
+/// only with every field of the recipe set; a half-stamped event could be handled by another window.
 enum BackgroundPoster {
     private typealias PostToPid = @convention(c) (pid_t, UnsafeMutableRawPointer) -> Void
     private typealias SetWindowLocation = @convention(c) (UnsafeMutableRawPointer, Double, Double) -> Void
@@ -32,14 +35,10 @@ enum BackgroundPoster {
     private static let setWindowLocation: SetWindowLocation? = symbol("CGEventSetWindowLocation").map { unsafeBitCast($0, to: SetWindowLocation.self) }
     private static let setIntegerField: SetIntegerField? = symbol("SLEventSetIntegerValueField").map { unsafeBitCast($0, to: SetIntegerField.self) }
 
-    /// What this Mac offers. The public call is always there; SkyLight only when its symbol resolved.
-    static var support: TransportSupport { TransportSupport(skyLight: postToPid != nil) }
-
-    struct Report {
-        var transport: PostTransport
-        var events = 0
-        /// Set when posting stopped early; the events before it were posted.
-        var stopped: HandsError?
+    /// What this Mac offers. The public call is always there; SkyLight only when its symbol resolved; the pointer
+    /// recipe only when both of its setters resolved.
+    static var support: TransportSupport {
+        TransportSupport(skyLight: postToPid != nil, pointerStamps: setIntegerField != nil && setWindowLocation != nil)
     }
 
     /// Where the real pointer is, by asking the event system for a fresh event's location (it moves nothing).
@@ -55,100 +54,85 @@ enum BackgroundPoster {
         }
     }
 
-    private static func stamp(_ event: CGEvent, _ field: UInt32, _ value: Int64) {
-        if let set = setIntegerField { set(Unmanaged.passUnretained(event).toOpaque(), field, value); return }
-        // Without SkyLight only the fields the public API names can be written.
-        switch field {
-        case 40: event.setIntegerValueField(.eventTargetUnixProcessID, value: value)
-        case 91: event.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: value)
-        case 92: event.setIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent, value: value)
-        case 1: event.setIntegerValueField(.mouseEventClickState, value: value)
-        default: break
-        }
+    private static func refused(_ why: String) -> RunReport {
+        var r = RunReport()
+        r.stopped = HandsError(.notSupported, why, suggestion: "Use `click`, `toggle`, `select` or `set-value` on an element, or do this in the sandbox (phase 2).", retry: .never)
+        return r
     }
 
     // MARK: keys
 
-    /// Presses each chord: key down, a short gap, key up. `between` runs before every event and may stop the run
-    /// (Donovan's front app changed, the caller gave up); what was posted before that stays posted.
-    static func keys(_ chords: [KeyChord], permit: BackgroundPermit, between: () -> HandsError?) -> Report {
-        var report = Report(transport: permit.transport)
+    /// Presses each chord: key down, a short gap, key up. `stop` is asked before every new press (never before a
+    /// release): when it answers, nothing new is posted and any key already down is released first.
+    static func keys(_ chords: [KeyChord], permit: BackgroundPermit, stop: () -> HandsError?) -> RunReport {
         precondition(permit.route == .pidKeys, "a key post needs a key permit")
-        guard let source = CGEventSource(stateID: .hidSystemState) else {
-            report.stopped = HandsError(.engineError, "the event system gave no source for keys", suggestion: "Try again.", retry: .safe)
-            return report
-        }
-        for chord in chords {
-            for down in [true, false] {
-                if let stop = between() { report.stopped = stop; return report }
-                guard let event = CGEvent(keyboardEventSource: source, virtualKey: chord.keyCode, keyDown: down) else {
-                    report.stopped = HandsError(.engineError, "a key event could not be made", suggestion: "Try again.", retry: .never)
-                    return report
-                }
-                // The physical modifier state is never inherited: the flags are exactly the chord's, even none.
-                event.flags = CGEventFlags(rawValue: chord.flags)
-                post(event, permit)
-                report.events += 1
-                Thread.sleep(forTimeInterval: 0.008)
+        guard let source = CGEventSource(stateID: .hidSystemState) else { return refused("the event system gave no source for keys") }
+        return EventRunner.run(InputScript.chords(chords), stop: stop) { event in
+            let chord: KeyChord, down: Bool
+            switch event {
+            case .keyDown(let c): chord = c; down = true
+            case .keyUp(let c): chord = c; down = false
+            default: return false
             }
+            guard let e = CGEvent(keyboardEventSource: source, virtualKey: chord.keyCode, keyDown: down) else { return false }
+            // The physical modifier state is never inherited: the flags are exactly the chord's, even none.
+            e.flags = CGEventFlags(rawValue: chord.flags)
+            post(e, permit)
+            Thread.sleep(forTimeInterval: 0.008)
+            return true
         }
-        return report
     }
 
     // MARK: pointer
 
-    /// A click (`path` of one point) or a drag along `path`: window-local points, top-left origin. `frame` is the
-    /// window's frame in screen coordinates, so each point becomes `frame.origin + point`. The mouse events are
-    /// posted to the process with the window's number in them; the real pointer is not asked to move.
-    static func pointer(path: [CGPoint], frame: CGRect, drag: Bool, permit: BackgroundPermit, between: () -> HandsError?) -> Report {
-        var report = Report(transport: permit.transport)
-        precondition(permit.route == .windowPointer, "a pointer post needs a pointer permit")
-        guard let first = path.first, let source = CGEventSource(stateID: .hidSystemState) else {
-            report.stopped = HandsError(.engineError, "the event system gave no source for the pointer", suggestion: "Try again.", retry: .safe)
-            return report
-        }
-        let gesture = Int64(truncatingIfNeeded: DispatchTime.now().uptimeNanoseconds & 0x7fff_ffff)
-        let window = Int64(permit.window)
+    struct PointerPost {
+        var report: RunReport
+        /// Where the events were aimed on the screen, for telling them from the real pointer's position.
+        var screenPoints: [CGPoint]
+    }
 
-        func emit(_ type: CGEventType, at local: CGPoint, clickState: Int64, subtype: Int64) -> Bool {
+    /// Posts `events` (window-local points, top-left origin) to the process. `frame` is the window's frame in screen
+    /// coordinates, so each point becomes `frame.origin + point`. The window's number is in every event; the real
+    /// pointer is not asked to move. With any setter of the recipe missing nothing is posted.
+    static func pointer(_ events: [InputEvent], frame: CGRect, drag: Bool, gesture: Int64, permit: BackgroundPermit, stop: () -> HandsError?) -> PointerPost {
+        precondition(permit.route == .windowPointer, "a pointer post needs a pointer permit")
+        guard let setField = setIntegerField, let setLocation = setWindowLocation else {
+            return PointerPost(report: refused("the pointer recipe is incomplete on this Mac, so no pointer event is posted"), screenPoints: [])
+        }
+        guard let source = CGEventSource(stateID: .hidSystemState) else {
+            return PointerPost(report: refused("the event system gave no source for the pointer"), screenPoints: [])
+        }
+        let window = Int64(permit.window)
+        var aimed: [CGPoint] = []
+        let report = EventRunner.run(events, stop: stop) { event in
+            let type: CGEventType, local: CGPoint, state: Int64, subtype: Int64, pause: TimeInterval
+            switch event {
+            case .mouseMoved(let p): (type, local, state, subtype, pause) = (.mouseMoved, p, 0, 3, 0.02)
+            case .mouseDown(let p): (type, local, state, subtype, pause) = (.leftMouseDown, p, 1, drag ? 0 : 3, drag ? 0.03 : 0.06)
+            case .mouseDragged(let p): (type, local, state, subtype, pause) = (.leftMouseDragged, p, 1, 0, 0.012)
+            case .mouseUp(let p): (type, local, state, subtype, pause) = (.leftMouseUp, p, 1, drag ? 0 : 3, 0)
+            default: return false
+            }
             let screen = PointerPath.screenPoint(local: local, frame: frame)
-            guard let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: screen, mouseButton: .left) else { return false }
-            stamp(event, 1, clickState)
-            stamp(event, 3, 0)
-            stamp(event, 7, subtype)
-            stamp(event, 40, Int64(permit.pid))
-            stamp(event, 51, window)
-            stamp(event, 91, window)
-            stamp(event, 92, window)
-            stamp(event, 58, gesture)
-            if let set = setWindowLocation { set(Unmanaged.passUnretained(event).toOpaque(), Double(screen.x), Double(screen.y)) }
-            event.flags = []
-            post(event, permit)
-            report.events += 1
+            guard let e = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: screen, mouseButton: .left) else { return false }
+            let raw = Unmanaged.passUnretained(e).toOpaque()
+            setField(raw, 1, state)
+            setField(raw, 3, 0)
+            setField(raw, 7, subtype)
+            setField(raw, 40, Int64(permit.pid))
+            setField(raw, 51, window)
+            setField(raw, 91, window)
+            setField(raw, 92, window)
+            setField(raw, 58, gesture)
+            setLocation(raw, Double(screen.x), Double(screen.y))
+            e.flags = []
+            post(e, permit)
+            aimed.append(screen)
+            if pause > 0 { Thread.sleep(forTimeInterval: pause) }
             return true
         }
-
-        // A move first: a window that never saw the pointer has stale tracking and would take the press for a miss.
-        struct Step { var type: CGEventType; var point: CGPoint; var state: Int64; var subtype: Int64; var pause: TimeInterval }
-        let gestureSubtype: Int64 = drag ? 0 : 3
-        var steps: [Step] = [Step(type: .mouseMoved, point: first, state: 0, subtype: 3, pause: 0.02),
-                             Step(type: .leftMouseDown, point: first, state: 1, subtype: gestureSubtype, pause: drag ? 0.03 : 0.06)]
-        for p in path.dropFirst() { steps.append(Step(type: .leftMouseDragged, point: p, state: 1, subtype: 0, pause: 0.012)) }
-        steps.append(Step(type: .leftMouseUp, point: path.last ?? first, state: 1, subtype: gestureSubtype, pause: 0))
-        for step in steps {
-            let (type, point, state, subtype, pause) = (step.type, step.point, step.state, step.subtype, step.pause)
-            if let stop = between() {
-                report.stopped = stop
-                // A press left down is released where the gesture stands, to the same process only.
-                if report.events > 1, type != .leftMouseUp { _ = emit(.leftMouseUp, at: point, clickState: 1, subtype: drag ? 0 : 3) }
-                return report
-            }
-            guard emit(type, at: point, clickState: state, subtype: subtype) else {
-                report.stopped = HandsError(.engineError, "a mouse event could not be made", suggestion: "Try again.", retry: .never)
-                return report
-            }
-            if pause > 0 { Thread.sleep(forTimeInterval: pause) }
-        }
-        return report
+        return PointerPost(report: report, screenPoints: aimed)
     }
+
+    static func newGesture() -> Int64 { Int64(truncatingIfNeeded: DispatchTime.now().uptimeNanoseconds & 0x7fff_ffff) }
 }

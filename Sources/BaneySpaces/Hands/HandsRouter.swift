@@ -36,8 +36,6 @@ final class HandsRouter {
 
     /// Files an agent may hand to an app live here.
     static var handoffFolder: URL { HandsEngine.home.appendingPathComponent("handoff", isDirectory: true) }
-    /// The only place an app that is not on the policy's list may start from: the pointer probe's test app (see `AgentAppPolicy`).
-    static var probeAppsFolder: URL { HandsEngine.home.appendingPathComponent("probe-apps", isDirectory: true) }
 
     // MARK: wire
 
@@ -411,7 +409,8 @@ final class HandsRouter {
         let display = url.deletingPathExtension().lastPathComponent
         try? FileManager.default.createDirectory(at: Self.handoffFolder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let files: [String]
-        switch AgentOpenGate.check(app: display, bundle: bundle, targets: req.args["targets"]?.array?.compactMap(\.string) ?? [], handoff: Self.handoffFolder, appURL: url, probeApps: Self.probeAppsFolder) {
+        switch AgentOpenGate.check(app: display, bundle: bundle, targets: req.args["targets"]?.array?.compactMap(\.string) ?? [], handoff: Self.handoffFolder, appURL: url,
+                                     probeFolder: ProbeAppTrust.folder, probeTrusted: bundle == AgentAppPolicy.canvasProbeBundle && ProbeAppTrust.trusted(url)) {
         case .failure(let e): return .failure(e)
         case .success(let f): files = f
         }

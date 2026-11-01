@@ -222,22 +222,45 @@ a window on the agent workspace of a process BaneySpaces started (pid and start 
 fails), or a window Donovan lent, and only while he is not using the app. The window server must still say
 the window belongs to that pid. Any other pid is never posted to.
 
-Delivery proof: the same window is read before and after. Keys are proved by a change on the ref's element or
-the window's focused element (value, selection, focus moving inside the window) or by the window's tree
-changing (a toggled Bold). A reading from another window of the same process never counts. Pixels alone never
-prove keys. A pointer is proved the same way, or, for a surface that exposes nothing, by pixels: at least 24
-changed pixels inside the stroke's box while at most 2% of the rest of the window changed (a repaint or a
-blinking caret is not a stroke). No proof is `unverified` with retry `never`: the events may have landed.
+One action per process at a time: the whole action (readings before, the post, the readings after) is one
+transaction on the target process's queue, the one the engine's calls use, so another action's change can
+never prove this one. The engine's reads inside it are inline calls that refuse to run off the queue.
 
-Guards while posting: before every event the front app is compared with where it started (a change stops the
-rest and is reported; BaneySpaces does not follow it); the real pointer is sampled before and after and any
-change is a failure; an app that comes to the front after being posted to is shut out of that route for the
-run (`not_supported`, the sandbox as the suggestion), and so is one that ignored background input twice.
+Balanced events: a stop (the caller gave up, the front app changed, an event could not be made) means "post
+nothing new", and every key-down and mouse-down already posted gets its matching up, newest first, before the
+action returns. A release is never subject to the stop. `EventRunner` does this for keys and the pointer alike,
+and its tests stop a chord, a click and a drag at every step.
+
+Delivery proof: the same window is read before and after (the window's tree twice before, a moment apart, so
+what changes by itself is noise). Keys pass only when what the keys predict changed, in the target window:
+typed text changes the value of the targeted or focused element, a movement or select-all changes its selected
+range, Tab moves focus, cmd+b changes the text's attributes, a save changes the window (title, edited flag,
+sheet), and in an app with no text in focus (Calculator) the window's content changes beyond the noise. An
+unrelated change does not count. A reading from another window of the same process never counts. Pixels never
+prove keys. A pointer is proved by a change on an element of the target window, or, for a surface that exposes
+nothing, by pixels: the pointer arrives first (a move), the picture before is taken after that, the pixels around
+the start point are left out of a drag, and the stroke needs changed pixels in proportion to its length (never
+under 24) while at most 2% of the rest of the window changes. No proof is `unverified` with retry `never`: the
+events may have landed.
+
+Guards while posting: every app the workspace activates, from planning to the end of verification, is recorded
+(`didActivateApplicationNotification`); any activation in that span, the target's or another's, fails the action
+(the target's also shuts that app out of the route for the run, as does an app that ignored typed text twice, for
+that process only). BaneySpaces does not follow any of them. A front app that cannot be read is not a pass. The
+real pointer is Donovan's: a listen-only session tap runs during the action, and the check fails only when the
+pointer ends where an event was aimed, or moved with no hardware event to explain it, or one of BaneySpaces' own
+events reached the session. His hand moving the mouse is ignored (`pointer: user_moved`).
 
 Refusals, each with a suggestion: not our process (`needs_lend`), window moved to another process
 (`stale_ref`), Donovan is in the app (`in_use`), minimized or hidden window, a sheet or file panel, other windows
-in the process, window is not where the app's keys go, no accessibility window for it, no transport, nothing
-readable to prove it, point outside the window (all `not_supported` except as named).
+in the process (windows accessibility cannot map count too), window is not where the app's keys go, no
+accessibility window for it, no transport, a pointer recipe with any setter missing, a point outside the window or
+in its title bar, nothing readable to prove it (all `not_supported` except as named). Coordinates start at the
+window's top-left corner, title bar included.
+
+The probe's test app ships inside the bundle (Resources/probe), signed with the app's own identity, with its code
+hash recorded in the sealed Resources at build time. BaneySpaces starts it for an agent only from there and only
+when the signature is valid, the team matches (when there is one) and the hash matches.
 
 Ported from cua-driver (MIT, trycua/cua, attributed in NOTICE): the event field recipe for background mouse
 events, key events with explicit flags posted without an authentication envelope (the path AppKit's menu key
