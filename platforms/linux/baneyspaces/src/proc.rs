@@ -15,6 +15,7 @@ pub fn parse_start(stat: &str) -> Option<u64> {
     rest.split_whitespace().nth(19)?.parse().ok()
 }
 
+#[allow(dead_code)]
 pub fn alive(pid: u32) -> bool {
     start_time(pid).is_some()
 }

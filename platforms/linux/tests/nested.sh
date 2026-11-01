@@ -12,6 +12,8 @@
 #   platforms/linux/tests/nested.sh            # builds first if needed
 #   KEEP=1 platforms/linux/tests/nested.sh     # keep the temp dir (logs) afterwards
 set -uo pipefail
+# Noise from the nested D-Bus session and portals is not test output.
+export G_MESSAGES_DEBUG=
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
@@ -66,7 +68,8 @@ eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected '$3', got '$2'"
 
 PIDS=()
 cleanup() {
-  for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null; done
+  # Children first: the host compositor's child is the nested Hyprland, and it must not outlive the test.
+  for p in "${PIDS[@]}"; do pkill -TERM -P "$p" 2>/dev/null; kill "$p" 2>/dev/null; done
   sleep 0.3
   [ -n "${KEEP:-}" ] && echo "kept $TMP" || rm -rf "$TMP"
 }

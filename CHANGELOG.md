@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **BaneySpaces for Linux, part 1 (Omarchy, Hyprland).** `spec/` now holds the workspace rules, the
+  key map, the JSON envelope, the MCP tools and 68 conformance cases every platform replays;
+  `crates/baneyspaces-core` implements them in Rust; `platforms/linux` is a daemon that drives
+  Hyprland's workspaces (nine per monitor, instant) and an agent workspace (`special:agent`) that
+  agents' windows open on without ever taking your screen, plus agent hands over AT-SPI through the
+  pinned agent-desktop. Install files for Omarchy are included but applied nowhere yet. See
+  [platforms/linux/README.md](platforms/linux/README.md).
 - **The "+N" list lets go, and the dock moves.** The window strip and the "+N" list are a panel of their
   own, so opening one no longer resizes or jumps the dock. The dock stays up only while the pointer is
   on its bar or on the list (each with a little room), not anywhere over the whole panel; the list

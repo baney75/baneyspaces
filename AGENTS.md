@@ -34,6 +34,13 @@ A change is done when steps 1–3 pass on its branch and step 4 passes on `main`
 Unit tests and CI only prove the plan logic. They have never caught a visible bug here. If step 4
 can't run, say "untested live" in the report and don't call the bug fixed.
 
+## Linux (`platforms/linux`, `crates/`, `spec/`)
+
+A change there is done when `cargo test`, `platforms/linux/tests/omarchy-scripts.sh` and
+`platforms/linux/tests/nested.sh` pass (nested.sh runs its own headless Hyprland and prints PASS or
+FAIL with counts and whether the real session changed). Never edit or reload the live Hyprland config
+or session to test: use nested.sh. A rule that is not in `spec/` does not ship on one platform alone.
+
 ## Regression ledger
 
 These bugs came back after a reported fix. Read this before touching the code each one names.

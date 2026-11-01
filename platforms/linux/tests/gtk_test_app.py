@@ -24,7 +24,7 @@ class App(Gtk.Application):
         self.entry.update_property([Gtk.AccessibleProperty.LABEL], ["Name field"])
         self.button = Gtk.Button(label="Count")
         self.label = Gtk.Label(label="count 0")
-        self.check = Gtk.CheckButton(label="Enabled")
+        self.check = Gtk.ToggleButton(label="Enabled")
         self.button.connect("clicked", self.on_click)
         for w in (self.entry, self.button, self.label, self.check):
             box.append(w)

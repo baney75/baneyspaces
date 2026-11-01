@@ -24,6 +24,7 @@ pub fn now() -> u64 {
 }
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct Client {
     pub addr: String,
     pub pid: u32,
@@ -46,6 +47,7 @@ pub struct Mon {
     pub disabled: bool,
 }
 
+#[allow(dead_code)]
 pub struct TokenInfo {
     pub agent: String,
     pub app: String,
@@ -68,7 +70,7 @@ pub struct Core {
 
 pub type Shared = Arc<Mutex<Core>>;
 
-fn lock(s: &Shared) -> MutexGuard<'_, Core> {
+pub fn lock(s: &Shared) -> MutexGuard<'_, Core> {
     s.lock().unwrap_or_else(|p| p.into_inner())
 }
 

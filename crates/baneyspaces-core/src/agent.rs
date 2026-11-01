@@ -122,6 +122,7 @@ impl ActionRecord {
     }
 
     /// Builds a record from an envelope result without ever copying `data`.
+    #[allow(clippy::too_many_arguments)]
     pub fn from_result(at: u64, agent: &str, verb: &str, pid: Option<u32>, window: Option<&str>, reference: Option<&str>, route: &str, env: &Envelope) -> Self {
         let (result, refusal) = match (&env.ok, &env.error) {
             (true, _) => ("ok".to_string(), None),
