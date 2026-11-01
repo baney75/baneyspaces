@@ -618,21 +618,29 @@ final class CursorDirectorTests: XCTestCase {
     }
 }
 
-/// A stand-in for the router's per-action path: some work to resolve and read, the target's bounds when the
-/// cursor wants them, the report to the cursor, then the action.
+/// A stand-in for the router's per-action path: some work to resolve and read, the report to the cursor, the target's
+/// bounds read on a lane of their own while the action runs, then the action and its readbacks. The engine's time is
+/// modelled (spin waits); the cursor's code on the action's thread is the real thing.
 private struct FakeHands {
     var resolve: TimeInterval = 0.004
-    var boundsRead: TimeInterval = 0.002
+    var boundsRead: TimeInterval = 0.008
     var act: TimeInterval = 0.012
     var readback: TimeInterval = 0.008
+    static let lane = DispatchQueue(label: "fake-bounds-lane", attributes: .concurrent)
 
     func spin(_ t: TimeInterval) { let end = ProcessInfo.processInfo.systemUptime + t; while ProcessInfo.processInfo.systemUptime < end {} }
 
     func run(_ e: HandsActionEvent) {
         spin(resolve)
         var event = e
-        if HandsEvents.wantsFrame(scope: e.scope, workspace: e.workspace) { spin(boundsRead) } else { event.frame = nil }
+        let wants = HandsEvents.wantsFrame(scope: e.scope, workspace: e.workspace)
+        let id = wants ? HandsEvents.newActionID() : 0
+        event.frame = nil; event.point = nil; event.id = id; event.frameComing = wants
         HandsEvents.willAct(event)
+        if wants {
+            let frame = e.frame, read = boundsRead
+            Self.lane.async { self.spin(read); HandsEvents.frameMeasured(actionID: id, frame: frame) }
+        }
         spin(act)
         spin(readback)
     }
@@ -664,9 +672,9 @@ final class CursorOverheadTests: XCTestCase {
         let without = median(timed(200, listening: false))
         let with = median(timed(200, listening: true))
         queue.sync {}
-        print("CURSOR OVERHEAD (modelled hands: resolve 4 + bounds 2 + act 12 + readback 8 ms): median action without the cursor \(String(format: "%.2f", without)) ms, with it \(String(format: "%.2f", with)) ms, added \(String(format: "%.2f", with - without)) ms")
+        print("CURSOR OVERHEAD (modelled engine: resolve 4 + act 12 + readback 8 ms, bounds read 8 ms on its own lane; the cursor's own code is real): median action without the cursor \(String(format: "%.2f", without)) ms, with it \(String(format: "%.2f", with)) ms, added \(String(format: "%.2f", with - without)) ms")
         XCTAssertLessThan(with - without, 5, "under 5 ms added to the median action")
-        XCTAssertGreaterThan(with - without, 0, "and the measurement saw the bounds read")
+        XCTAssertLessThan(with - without, 1, "the bounds read runs beside the action, so the action pays only the report")
     }
 
     func testWithTheCursorHiddenTheActionPaysNothing() {

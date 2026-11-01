@@ -136,7 +136,9 @@ never moves yours.
 - It never takes focus, clicks or keys. Screenshots and recordings of the agent workspace can
   include it or leave it out (`agent shot --cursor`), so the evidence in a result is the app
   itself.
-- `baneyspaces agent cursor on|off|theme <name>` and a Settings switch. It's on by default.
+- `baneyspaces agent cursor on|theme <name>|status` and a Settings switch. It's on by default. Only Donovan turns it
+  off, in Settings: the cursor is how he sees agents work, so the socket refuses `agent cursor off` (and logs it) and
+  a `behavior.cursor.enabled = false` line in `config.toml` is ignored. Agents may change its theme.
 
 The bench measures it too: drawing the cursor must add under 5 ms to the median action.
 

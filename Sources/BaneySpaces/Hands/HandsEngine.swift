@@ -68,6 +68,19 @@ final class HandsEngine {
         var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
     }
 
+    /// A read lane per process for the cursor's bounds reads, beside the process queue, so an action never waits behind one.
+    /// The engine's adapter is already called from several process queues at once; a read here only asks the app for
+    /// an element's frame, which the Accessibility API serves to any thread. A hung app clogs only its own lane, and
+    /// reads that can't start within their deadline are dropped.
+    private var lanes: [Int32: DispatchQueue] = [:]
+    private func lane(for pid: Int32) -> DispatchQueue {
+        initLock.lock(); defer { initLock.unlock() }
+        if let q = lanes[pid] { return q }
+        let q = DispatchQueue(label: "baneyspaces.hands.bounds.\(pid)", qos: .userInitiated)
+        lanes[pid] = q
+        return q
+    }
+
     private func queue(for pid: Int32) -> DispatchQueue {
         initLock.lock(); defer { initLock.unlock() }
         if let q = queues[pid] { return q }
@@ -208,14 +221,14 @@ final class HandsEngine {
         }
     }
 
-    /// The target's bounds for the agent cursor, read on the window's process queue and handed to `completion`; nobody
-    /// waits for it. Nil when the read couldn't start within `within` seconds of now (the app is busy: the cursor settles
+    /// The target's bounds for the agent cursor, read on the process's read lane and handed to `completion`; nobody
+    /// waits for it, and the action does not queue behind it. Nil when the read couldn't start within `within` seconds of now (the app is busy: the cursor settles
     /// for its last known point), when the scope check fails, or when the engine can't answer. The same scope check and
     /// focus-guard mark as every other call; it only reads.
     func measureBounds(window w: HandsWindow, ref: String, within: TimeInterval, check: @escaping Check, completion: @escaping (CGRect?) -> Void) {
         let queued = ProcessInfo.processInfo.systemUptime
         let token = AgentActivity.shared.begin(pid: w.pid, window: w.id)
-        queue(for: w.pid).async { [self] in
+        lane(for: w.pid).async { [self] in
             defer { AgentActivity.shared.end(token) }
             guard ProcessInfo.processInfo.systemUptime - queued <= within, check() == nil, ready() == nil, let adapter else { return completion(nil) }
             var out: UnsafeMutablePointer<CChar>?
