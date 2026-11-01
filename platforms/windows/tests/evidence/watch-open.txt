@@ -1,0 +1,2 @@
+polls=156520 over 14 s
+NEW w-591880 first_seen_at=2777ms visible_polls=0 :: w-591880 class=Notepad title='Untitled - Notepad' cloaked=0 alpha=0 parked=False rect=26,26 SEEN=False
