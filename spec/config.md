@@ -231,12 +231,16 @@ These settle what the sections above leave open. The conformance cases hold them
   new window joins the workspace of its app's most recent window. `[[rules]]` match on `app` (case-insensitive) and `title` (regex); a rule
   with neither matches nothing. The first match sets `workspace` and `float` for a window that opens (never an agent window).
 - **Hooks** run with `BANEYSPACES_HOOK` set and `BANEYSPACES_WORKSPACE` or `BANEYSPACES_WINDOW`; they are logged to `config.log` and recorded
-  in history. An agent that sets one can make something run that it could not press itself; the history names it.
+  in history. A hook runs with the identity of whoever set or last changed it (the history's caller). One set by `user` or `settings` runs as
+  the user. One set by an agent runs with that agent's launch token in its environment, so `baneyspaces switch 3` from it is refused as from
+  the agent itself; if no process of that agent is running, the hook does not run and a line in `config.log` says so. `config get` and
+  `config.json` (`resolved.hooks_set_by`) show who set each hook, and Settings shows it.
 
 ## Files, history and callers
 
-`config.toml` is rewritten from the settings by every CLI or MCP change, so comments in a hand-edited file are not kept (the earlier text
-stays in `history/`). A file edited by hand is noticed, validated, and recorded as `user`; a file that does not validate leaves the last good
+A CLI or MCP change edits `config.toml` in place: the file is re-read from disk under the lock, and only the settings that changed are
+touched, so comments, blank lines and the order of what the person wrote stay (a changed `[[rules]]` list is written again as a whole).
+A file edited by hand is noticed, validated, and recorded as `user`; a file that does not validate leaves the last good
 config running and `config.json` (`status`) and the trace log say why. `config set` is refused while the file is invalid; `config reset`
 and `config undo` work from the last good config and keep the broken file as `config.toml.invalid-<time>`.
 

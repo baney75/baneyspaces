@@ -405,12 +405,39 @@ impl Service {
     /// What every UI reads: the resolved config plus whether the file on disk is the one running.
     pub fn runtime_json(&self) -> Value {
         let (_, mut r, l) = self.current();
+        r["resolved"]["hooks_set_by"] = self.hook_owners();
         r["status"] = json!({
             "valid": l.file_issues.is_empty(),
             "source": match l.source { Source::File => json!("file"), Source::LastGood(v) => json!({ "history": v }), Source::Defaults => json!("defaults") },
             "issues": l.file_issues.iter().map(Issue::to_json).collect::<Vec<_>>(),
         });
         r
+    }
+
+    /// Who set each hook that is set now: the caller of the version that last changed it. A hook
+    /// that was there before history began, or was set by `system`, counts as the user's.
+    pub fn hook_owners(&self) -> Value {
+        let l = self.load();
+        let all = self.history().all();
+        let hook = |u: &Value, h: &str| u["hooks"][h].as_str().unwrap_or("").to_string();
+        let mut out = Map::new();
+        for h in ["on_switch", "on_window_open"] {
+            let cur = hook(&l.good.user, h);
+            if cur.is_empty() {
+                continue;
+            }
+            let users: Vec<String> = all.iter().map(|v| hook(&self.state_of(v).user, h)).collect();
+            let mut start = users.len();
+            while start > 0 && users[start - 1] == cur {
+                start -= 1;
+            }
+            let owner = match all.get(start) {
+                Some(v) if start < users.len() && start > 0 && v.caller != "system" => v.caller.clone(),
+                _ => "user".to_string(),
+            };
+            out.insert(h.to_string(), json!(owner));
+        }
+        Value::Object(out)
     }
 
     // ---- writing -----------------------------------------------------------------------------
@@ -496,9 +523,11 @@ impl Service {
             })));
         }
         let (mut new, summary) = f(&l.good)?;
-        new.config_text = config::to_toml(&new.user);
+        // Edit the text on disk (re-read under the lock) so a person's comments and layout stay.
+        let plain = config::to_toml(&new.user);
+        new.config_text = if l.file_issues.is_empty() { config::edit_toml(&l.good.config_text, &l.good.user, &new.user).unwrap_or(plain) } else { plain };
         // Re-read what was just rendered so the check sees exactly what would be on disk.
-        new.user = config::parse_document(&new.config_text).unwrap_or_else(|_| json!({}));
+        new.user = config::pruned(&config::parse_document(&new.config_text).unwrap_or_else(|_| json!({})));
         new.themes = new
             .theme_texts
             .iter()
@@ -634,7 +663,13 @@ impl Service {
                             }
                         };
                         match config::get_path(&eff.doc, &path) {
-                            Some(v) => Outcome::only(Envelope::ok(json!({ "path": p, "value": v, "note": note }))),
+                            Some(v) => {
+                                let mut d = json!({ "path": p, "value": v, "note": note });
+                                if path.first().is_some_and(|f| f == "hooks") {
+                                    d["hooks_set_by"] = self.hook_owners();
+                                }
+                                Outcome::only(Envelope::ok(d))
+                            }
                             None => Outcome::only(not_found(format!("{p} has no value"), "`baneyspaces config get` lists every setting; `baneyspaces config schema` says what each may be.")),
                         }
                     }
@@ -1224,6 +1259,69 @@ mod tests {
                 .len(),
             3
         );
+    }
+
+    #[test]
+    fn a_hook_remembers_who_set_it() {
+        let d = Dir::new("hooks");
+        let s = svc(&d);
+        run(&s, "config_set", json!({ "path": "hooks.on_switch", "value_text": "echo user" }), "user");
+        assert_eq!(s.hook_owners(), json!({ "on_switch": "user" }));
+        run(&s, "config_set", json!({ "path": "hooks.on_window_open", "value_text": "baneyspaces switch 3" }), "agent:tester");
+        run(&s, "config_set", json!({ "path": "animation.speed", "value_text": "0.5" }), "user");
+        assert_eq!(s.hook_owners(), json!({ "on_switch": "user", "on_window_open": "agent:tester" }));
+        // An agent that changes it last owns it; setting the same text again does not change the owner.
+        run(&s, "config_set", json!({ "path": "hooks.on_switch", "value_text": "echo agent" }), "agent:b");
+        run(&s, "config_set", json!({ "path": "hooks.on_switch", "value_text": "echo agent" }), "user");
+        assert_eq!(s.hook_owners()["on_switch"], "agent:b");
+        // And the answers show it.
+        let g = run(&s, "config_get", json!({ "path": "hooks" }), "u").env.data.unwrap();
+        assert_eq!(g["hooks_set_by"]["on_window_open"], "agent:tester");
+        assert_eq!(s.runtime_json()["resolved"]["hooks_set_by"]["on_switch"], "agent:b");
+        // A hand edit is the user's.
+        fs::write(d.0.join("config.toml"), "[hooks]\non_switch = \"echo mine\"\n").unwrap();
+        s.observe().unwrap();
+        assert_eq!(s.hook_owners(), json!({ "on_switch": "user" }));
+        // A hook cleared is nobody's.
+        run(&s, "config_unset", json!({ "path": "hooks.on_switch" }), "agent:b");
+        assert_eq!(s.hook_owners(), json!({}));
+    }
+
+    #[test]
+    fn a_commented_file_keeps_its_comments_through_set_and_unset() {
+        let d = Dir::new("comments");
+        let s = svc(&d);
+        let original = "# my BaneySpaces settings\n\n[animation]\n# slower, I like to see it\nspeed = 1.5   # was 1.0\n\n[keys.bindings]\n# a terminal on mod+return\n\"mod+return\" = \"exec foot\"\n\n# behavior below\n[behavior]\nfollow_focus = true\n";
+        fs::write(d.0.join("config.toml"), original).unwrap();
+        let o = run(&s, "config_set", json!({ "path": "keys.bindings.mod+h", "value_text": "exec kitty" }), "agent:x");
+        assert!(o.env.ok, "{:?}", o.env);
+        let t = fs::read_to_string(d.0.join("config.toml")).unwrap();
+        for keep in ["# my BaneySpaces settings", "# slower, I like to see it", "speed = 1.5   # was 1.0", "# a terminal on mod+return", "# behavior below", "\"mod+return\" = \"exec foot\""] {
+            assert!(t.contains(keep), "lost {keep:?} in:\n{t}");
+        }
+        assert!(t.contains("\"mod+h\" = \"exec kitty\""), "{t}");
+        // A change inside an existing table.
+        assert!(run(&s, "config_set", json!({ "path": "animation.speed", "value_text": "0.8" }), "user").env.ok);
+        let t = fs::read_to_string(d.0.join("config.toml")).unwrap();
+        assert!(t.contains("speed = 0.8") && t.contains("# slower, I like to see it") && t.contains("# my BaneySpaces settings"), "{t}");
+        // A new section arrives without disturbing the rest.
+        assert!(run(&s, "config_set", json!({ "path": "behavior.dock.edge", "value_text": "left" }), "user").env.ok);
+        // Unset takes out its own line and keeps the others' comments.
+        assert!(run(&s, "config_unset", json!({ "path": "keys.bindings.mod+h" }), "user").env.ok);
+        assert!(run(&s, "config_unset", json!({ "path": "behavior.dock.edge" }), "user").env.ok);
+        let t = fs::read_to_string(d.0.join("config.toml")).unwrap();
+        assert!(!t.contains("mod+h") && !t.contains("edge"), "{t}");
+        for keep in ["# my BaneySpaces settings", "# slower, I like to see it", "# a terminal on mod+return", "# behavior below", "\"mod+return\" = \"exec foot\"", "follow_focus = true"] {
+            assert!(t.contains(keep), "lost {keep:?} in:\n{t}");
+        }
+        // History has the text as it was written, comments and all, and undo brings it back.
+        assert!(run(&s, "config_undo", json!({ "n": 2 }), "user").env.ok);
+        let t = fs::read_to_string(d.0.join("config.toml")).unwrap();
+        assert!(t.contains("speed = 0.8") && t.contains("# slower, I like to see it") && t.contains("mod+h"), "{t}");
+        // A reset of one section keeps the other sections' comments.
+        assert!(run(&s, "config_reset", json!({ "section": "keys" }), "user").env.ok);
+        let t = fs::read_to_string(d.0.join("config.toml")).unwrap();
+        assert!(t.contains("# slower, I like to see it") && !t.contains("mod+return"), "{t}");
     }
 
     #[test]

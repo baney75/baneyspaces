@@ -201,6 +201,118 @@ pub fn to_toml(v: &Value) -> String {
     }
 }
 
+/// A JSON value as a TOML item. Tables are implicit, so only the ones that hold values get a header.
+fn to_item(v: &Value) -> Option<toml_edit::Item> {
+    use toml_edit::{value, Array, ArrayOfTables, Item, Table};
+    Some(match v {
+        Value::Null => return None,
+        Value::Bool(b) => value(*b),
+        Value::Number(n) => match n.as_i64() {
+            Some(i) => value(i),
+            None => value(n.as_f64()?),
+        },
+        Value::String(s) => value(s.as_str()),
+        Value::Array(a) if !a.is_empty() && a.iter().all(Value::is_object) => {
+            let mut t = ArrayOfTables::new();
+            for o in a {
+                if let Item::Table(tab) = to_item(o)? {
+                    let mut tab = tab;
+                    tab.set_implicit(false);
+                    t.push(tab);
+                }
+            }
+            Item::ArrayOfTables(t)
+        }
+        Value::Array(a) => {
+            let mut arr = Array::new();
+            for x in a {
+                match to_item(x)? {
+                    Item::Value(v) => arr.push(v),
+                    _ => return None,
+                }
+            }
+            value(arr)
+        }
+        Value::Object(o) => {
+            let mut t = Table::new();
+            t.set_implicit(true);
+            for (k, x) in o {
+                if let Some(i) = to_item(x) {
+                    t.insert(k, i);
+                }
+            }
+            Item::Table(t)
+        }
+    })
+}
+
+fn edit_table(t: &mut toml_edit::Table, old: &Value, new: &Value) -> bool {
+    use toml_edit::Item;
+    let (old_o, new_o) = (old.as_object(), new.as_object());
+    let empty = Map::new();
+    let (old_o, new_o) = (old_o.unwrap_or(&empty), new_o.unwrap_or(&empty));
+    for k in old_o.keys() {
+        if !new_o.contains_key(k) {
+            t.remove(k);
+        }
+    }
+    for (k, nv) in new_o {
+        let unchanged = old_o.get(k) == Some(nv);
+        if unchanged && t.contains_key(k) {
+            continue;
+        }
+        let both_tables = nv.is_object() && old_o.get(k).is_some_and(Value::is_object);
+        if both_tables {
+            if let Some(Item::Table(child)) = t.get_mut(k) {
+                edit_table(child, &old_o[k], nv);
+                if child.is_empty() {
+                    t.remove(k);
+                }
+                continue;
+            }
+        }
+        match to_item(nv) {
+            Some(item) => {
+                // An existing setting keeps its key, its comments and the comment after its value.
+                match (t.get_mut(k), item) {
+                    (Some(slot @ Item::Value(_)), Item::Value(mut v)) => {
+                        if let Item::Value(old_v) = slot {
+                            *v.decor_mut() = old_v.decor().clone();
+                        }
+                        *slot = Item::Value(v);
+                    }
+                    (Some(slot), item) => *slot = item,
+                    (None, item) => {
+                        t.insert(k, item);
+                    }
+                }
+            }
+            None => {
+                t.remove(k);
+            }
+        }
+    }
+    true
+}
+
+/// The text of `old_text` with the difference between `old` and `new` applied, comments and layout
+/// kept. `None` when the old text cannot be edited or the edit does not give `new`; the caller then
+/// writes the plain rendering.
+pub fn edit_toml(old_text: &str, old: &Value, new: &Value) -> Option<String> {
+    let mut doc: toml_edit::DocumentMut = old_text.parse().ok()?;
+    edit_table(doc.as_table_mut(), old, new);
+    let mut text = doc.to_string();
+    if !old_text.starts_with('\n') {
+        text = text.trim_start_matches('\n').to_string();
+    }
+    (parse_document(&text).ok().map(|v| pruned(&v)) == Some(pruned(new))).then_some(text)
+}
+
+/// The document without empty tables (an empty section means the defaults).
+pub fn pruned(v: &Value) -> Value {
+    prune(v).unwrap_or_else(|| json!({}))
+}
+
 fn prune(v: &Value) -> Option<Value> {
     match v {
         Value::Object(o) => {

@@ -176,7 +176,7 @@ validated whole, written atomically, recorded in `~/.config/baneyspaces/history/
 
 | Setting | Where it goes |
 | --- | --- |
-| `keys` | `$XDG_STATE_HOME/baneyspaces/hyprland-keys.lua`, run inside Hyprland (`hyprctl eval dofile`). The include loads the same file on a reload, and falls back to the default binds when it is missing or the daemon never ran. Global binds are removed by key and mode binds disabled: Hyprland 0.56.2 crashes when more than one bind is removed through its handle. A chord you bind takes the key from Omarchy's own binding until the next reload. |
+| `keys` | `$XDG_STATE_HOME/baneyspaces/hyprland-keys.lua`, run inside Hyprland (`hyprctl eval dofile`). The include loads the same file on a reload, and falls back to the default binds when it is missing or the daemon never ran. Global binds are removed by key and mode binds disabled (see the workaround below). A chord you bind takes the key from Omarchy's own binding until the next reload. |
 | `theme`, `animation` | `$XDG_RUNTIME_DIR/baneyspaces/config.json`, the one file the UIs read: the effective config, the resolved theme tokens and palette, the final animation numbers (speed and Reduce Motion applied) and `status`. The focus border's animation is also set in Hyprland. Workspace animations stay off. |
 | `behavior`, `rules` | The daemon's model (`Event::Settings`). |
 | `hooks` | Run by the daemon as you, logged to `config.log`. |
@@ -186,6 +186,17 @@ change and refusal. The recovery chord (Super+Shift+Escape held 2 s: Lua timer a
 `baneyspaces config reset keys --notify` and `config reset theme --notify`; it is bound in the include and in every mode, never from config.
 Not exercised by `nested.sh`: the nested host has no input device, so key presses and the 2 s hold cannot be delivered; the test runs the command a
 bind holds.
+
+### Hyprland 0.56.2: never remove more than one bind through its handle
+
+On Hyprland 0.56.2 (commit efb50993780079460b0cbed1363e2166a2de1d9f, the version on Omarchy 4.0.4), calling `:remove()` or `:unbind()` on
+more than one `Keybind` handle returned by `hl.bind` segfaults the compositor (reproduced in the nested session: two binds from one `eval`,
+removed in either order). `hl.unbind("<chord>")` by key is safe, and so is `:set_enabled(false)`. So `hyprland-keys.lua` does not keep and
+remove handles: it records the chords it bound and `hl.unbind`s them before binding again, and it only disables the binds it made inside
+modes (`hl.define_submap`), which stay disabled in Hyprland until the next reload. The cost: a chord you once bound stays unbound
+(Omarchy's own binding for it does not come back) until the next Hyprland reload, and each change to a mode leaves its old, disabled binds
+behind. `nested.sh` (`config.sh`) applies the keys many times and would crash on the old method. When Hyprland fixes this, switch back to
+handles and drop this section.
 
 ## Install on an Omarchy seat (part 2 does this on Chapel1 and Parish1)
 

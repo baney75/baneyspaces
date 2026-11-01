@@ -324,7 +324,8 @@ pub struct Runtime {
     pub svc: Mutex<Service>,
     pub paths: Paths,
     pub hypr: Option<Hypr>,
-    pub hooks: Mutex<(String, String)>,
+    /// (command, who set it) for on_switch, then on_window_open.
+    pub hooks: Mutex<[(String, String); 2]>,
     /// Test only: counts applies.
     pub applies: std::sync::atomic::AtomicU64,
 }
@@ -352,7 +353,7 @@ fn rules_of(doc: &Value) -> Vec<RuleSpec> {
 
 impl Runtime {
     /// Gives the model the behavior settings and keeps the hooks.
-    fn apply_behavior(&self, shared: &Shared, eff: &Effective) {
+    fn apply_behavior(&self, shared: &Shared, eff: &Effective, owners: &Value) {
         let ev = Event::Settings {
             follow_focus: eff.doc["behavior"]["follow_focus"].as_bool(),
             new_window: eff.doc["behavior"]["new_window"].as_str().map(String::from),
@@ -362,20 +363,20 @@ impl Runtime {
         if let Err(e) = c.model.apply(ev) {
             eprintln!("baneyspaces daemon: behavior not applied: {e}");
         }
-        *self.hooks.lock().unwrap_or_else(|p| p.into_inner()) = (
-            eff.doc["hooks"]["on_switch"].as_str().unwrap_or("").into(),
-            eff.doc["hooks"]["on_window_open"]
-                .as_str()
-                .unwrap_or("")
-                .into(),
-        );
+        let hook = |h: &str| {
+            (
+                eff.doc["hooks"][h].as_str().unwrap_or("").to_string(),
+                owners[h].as_str().unwrap_or("user").to_string(),
+            )
+        };
+        *self.hooks.lock().unwrap_or_else(|p| p.into_inner()) = [hook("on_switch"), hook("on_window_open")];
     }
 
     /// Applies an effective config everywhere. `svc` is already locked by the caller.
     pub fn apply(&self, shared: &Shared, svc: &Service, a: &Applied) -> Value {
         self.applies
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            self.apply_behavior(shared, &a.effective);
+            self.apply_behavior(shared, &a.effective, &svc.hook_owners());
             apply_outputs(&self.paths, self.hypr.as_ref(), svc, a)
     }
 
@@ -404,7 +405,7 @@ pub fn start(shared: &Shared, paths: &Paths, hypr: Option<Hypr>) {
         svc: Mutex::new(svc),
         paths: paths.clone(),
         hypr,
-        hooks: Mutex::new((String::new(), String::new())),
+        hooks: Mutex::new([(String::new(), String::new()), (String::new(), String::new())]),
         applies: 0.into(),
     };
     if RT.set(rt).is_err() {
@@ -592,38 +593,46 @@ fn watch(shared: Shared) {
 // ---- hooks -------------------------------------------------------------------------------------
 
 /// Runs a hook command as the user, detached, logged. `which` is `on_switch` or `on_window_open`.
-pub fn fire_hook(which: &'static str, env: Vec<(&'static str, String)>) {
+pub fn fire_hook(shared: &Shared, which: &'static str, env: Vec<(&'static str, String)>) {
     let Some(rt) = runtime() else { return };
-    let cmd = {
+    let (cmd, owner) = {
         let h = rt.hooks.lock().unwrap_or_else(|p| p.into_inner());
-        if which == "on_switch" {
-            h.0.clone()
-        } else {
-            h.1.clone()
-        }
+        h[usize::from(which != "on_switch")].clone()
     };
     if cmd.trim().is_empty() {
         return;
     }
     let home = std::env::var("HOME").unwrap_or_default();
-    let cmd = if let Some(rest) = cmd.strip_prefix("~/") {
-        format!("{home}/{rest}")
-    } else {
-        cmd
+    let cmd = if let Some(rest) = cmd.strip_prefix("~/") { format!("{home}/{rest}") } else { cmd };
+    // A hook runs with the identity of whoever set it. One an agent set carries that agent's launch
+    // token, so `baneyspaces switch 3` from it is refused exactly as from the agent. With no live
+    // process of that agent there is no token to give, and the hook does not run.
+    let token = match owner.strip_prefix("agent:") {
+        None => None,
+        Some(name) => {
+            let c = lock(shared);
+            let found = c.tokens.iter().find(|(t, i)| i.agent == name && !crate::proc::pids_with_token(t).is_empty()).map(|(t, _)| t.clone());
+            drop(c);
+            match found {
+                Some(t) => Some(t),
+                None => {
+                    log_line(&rt.paths, json!({ "time": history::now_rfc3339(), "hook": which, "skipped": format!("{owner} set it and has no running process to run it as"), "command": cmd }));
+                    return;
+                }
+            }
+        }
     };
-    log_line(
-        &rt.paths,
-        json!({ "time": history::now_rfc3339(), "hook": which, "command": cmd }),
-    );
+    log_line(&rt.paths, json!({ "time": history::now_rfc3339(), "hook": which, "set_by": owner, "command": cmd }));
     let mut p = std::process::Command::new("sh");
-    p.arg("-c")
-        .arg(&cmd)
-        .env("BANEYSPACES_HOOK", which)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    // The hook is not an agent and does not carry one's token.
-    p.env_remove("BANEYSPACES_AGENT_TOKEN");
+    p.arg("-c").arg(&cmd).env("BANEYSPACES_HOOK", which).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    match token {
+        Some(t) => {
+            p.env("BANEYSPACES_AGENT_TOKEN", t);
+        }
+        None => {
+            p.env_remove("BANEYSPACES_AGENT_TOKEN");
+        }
+    }
     for (k, v) in env {
         p.env(k, v);
     }

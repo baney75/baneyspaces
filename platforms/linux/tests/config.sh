@@ -197,6 +197,34 @@ baneyspaces switch 8 >/dev/null; sleep 0.8
 check "on_switch ran with the workspace in its environment" sh -c "grep -q '^8$' '$HOOKOUT'"
 check "the hook is in the log" sh -c "grep -q '\"hook\":\"on_switch\"' '$XDG_STATE_HOME/baneyspaces/config.log'"
 eq "and in history" "$(last_summary | cut -c1-15)" "set hooks.on_sw"
+eq "config get hooks says who set each one" "$(baneyspaces config get hooks | jq -r '.data.hooks_set_by.on_switch')" "user"
+baneyspaces config reset hooks >/dev/null
+baneyspaces switch 1 >/dev/null
+
+# --- a hook runs with the identity of whoever set it
+open_hookwin() { hyprctl dispatch "hl.dsp.exec_cmd(\"foot -T $1 sleep 60\")" >/dev/null; for _ in $(seq 1 60); do H clients | jq -e ".[]|select(.title==\"$1\")" >/dev/null && break; sleep 0.1; done; sleep 0.6; }
+HOOKSW="$TMP/hook-switch.json"; rm -f "$HOOKSW" "$TMP/agent-hook-release"
+cat > "$TMP/agent-hook.sh" <<EOF
+baneyspaces config set hooks.on_window_open "baneyspaces switch 3 > $HOOKSW 2>&1" > "$TMP/agent-hook-set.json" 2>&1
+echo done > "$TMP/agent-hook-done"
+while [ ! -e "$TMP/agent-hook-release" ]; do sleep 0.2; done
+EOF
+baneyspaces --agent-id hooker agent run -- sh "$TMP/agent-hook.sh" >/dev/null
+check "(setup) the agent set a hook" wait_for 20 test -e "$TMP/agent-hook-done"
+eq "an agent may set a hook" "$(jq -r .ok "$TMP/agent-hook-set.json")" "true"
+eq "config get says the agent set it" "$(baneyspaces config get hooks | jq -r '.data.hooks_set_by.on_window_open')" "agent:hooker"
+baneyspaces switch 5 >/dev/null; sleep 0.3
+open_hookwin hookwin1
+check "the hook ran" wait_for 5 test -s "$HOOKSW"
+eq "its switch was refused like the agent's own: not_in_scope" "$(jq -r '.error.code' "$HOOKSW" 2>/dev/null)" "not_in_scope"
+eq "and the workspace did not change" "$(H monitors | jq -r '.[]|select(.focused)|.activeWorkspace.id')" "5"
+eq "the log names who it ran as" "$(grep -c '"set_by":"agent:hooker"' "$XDG_STATE_HOME/baneyspaces/config.log")" "1"
+# The agent's process is gone: its hook has no identity to run as, so it does not run.
+touch "$TMP/agent-hook-release"; sleep 2; rm -f "$HOOKSW"
+open_hookwin hookwin2
+eq "with no live process of the agent the hook does not run" "$(test -e "$HOOKSW" && echo ran || echo skipped)" "skipped"
+check "and a line says so" sh -c "grep -q 'has no running process to run it as' '$XDG_STATE_HOME/baneyspaces/config.log'"
+eq "the workspace still did not change" "$(H monitors | jq -r '.[]|select(.focused)|.activeWorkspace.id')" "5"
 baneyspaces config reset hooks >/dev/null
 baneyspaces switch 1 >/dev/null
 

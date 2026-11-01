@@ -1469,8 +1469,8 @@ pub fn run(trace: bool) -> i32 {
                     lock(&shared).on_hypr_event(ev);
                     // Hooks and the config re-apply run with the lock released.
                     match after {
-                        HyprEvent::Workspace { id } if (1..=9).contains(&id) => crate::cfg::fire_hook("on_switch", vec![("BANEYSPACES_WORKSPACE", id.to_string())]),
-                        HyprEvent::OpenWindow { addr } => crate::cfg::fire_hook("on_window_open", vec![("BANEYSPACES_WINDOW", addr)]),
+                        HyprEvent::Workspace { id } if (1..=9).contains(&id) => crate::cfg::fire_hook(&shared, "on_switch", vec![("BANEYSPACES_WORKSPACE", id.to_string())]),
+                        HyprEvent::OpenWindow { addr } => crate::cfg::fire_hook(&shared, "on_window_open", vec![("BANEYSPACES_WINDOW", addr)]),
                         HyprEvent::ConfigReloaded => crate::cfg::reload(&shared),
                         _ => {}
                     }
