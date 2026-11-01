@@ -3,11 +3,12 @@ daemon up
 $ baneyspaces doctor  ->  {"ok":true,"data":{"checks":[{"check":"windows","detail":"running on Windows","ok":true},{"check":"daemon","detail":"running","ok":true},{"check":"hands engine","detail":"C:\\bs\\baneyspaces\\platforms/windows/engine\\agent-desktop.exe","ok
   ok:   doctor is healthy with the daemon up
 == 1. open Notepad, Explorer, Calculator
-w-67860 class=ApplicationFrameWindow title='Calculator' cloaked=0 alpha=255 parked=False rect=0,0 SEEN=True
-w-1312802 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
-w-984820 class=Notepad title='Untitled - Notepad' cloaked=0 alpha=255 parked=False rect=130,130 SEEN=True
-w-197708 class=ApplicationFrameWindow title='Microsoft Store' cloaked=0 alpha=255 parked=False rect=120,0 SEEN=True
+w-919536 class=ApplicationFrameWindow title='Calculator' cloaked=0 alpha=255 parked=False rect=40,32 SEEN=True
+w-3605076 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
+w-133440 class=Notepad title='Untitled - Notepad' cloaked=0 alpha=255 parked=False rect=104,104 SEEN=True
 w-132134 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
+w-197708 class=ApplicationFrameWindow title='Microsoft Store' cloaked=0 alpha=255 parked=False rect=120,0 SEEN=True
+w-1312802 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-526374 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-394858 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-2556358 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
@@ -17,19 +18,20 @@ w-198138 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255
 w-132434 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-197758 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-131904 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=122,70 SEEN=True
-SEEN: Calculator | Microsoft Store | Untitled - Notepad | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer
+SEEN: Calculator | Microsoft Store | Untitled - Notepad | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer
   ok:   Notepad shows
   ok:   Explorer shows
   ok:   Calculator shows
-notepad windows: w-984820   calculator: w-67860
+notepad windows: w-133440   calculator: w-919536
 == 2. move Notepad to workspace 2 and Calculator to 3 (--stay)
-$ baneyspaces move 2 --stay --window w-984820  ->  {"ok":true,"data":{"effects":[{"do":"move_window","to":"2","window":"w-984820"}],"follow":false,"workspace":2}}
-$ baneyspaces move 3 --stay --window w-67860  ->  {"ok":true,"data":{"effects":[{"do":"move_window","to":"3","window":"w-67860"}],"follow":false,"workspace":3}}
-w-197708 class=ApplicationFrameWindow title='Microsoft Store' cloaked=0 alpha=255 parked=False rect=120,0 SEEN=True
-w-67860 class=ApplicationFrameWindow title='Calculator' cloaked=2 alpha=255 parked=False rect=0,0 SEEN=False
-w-1312802 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
-w-984820 class=Notepad title='Untitled - Notepad' cloaked=2 alpha=255 parked=False rect=130,130 SEEN=False
+$ baneyspaces move 2 --stay --window w-133440  ->  {"ok":true,"data":{"effects":[{"do":"move_window","to":"2","window":"w-133440"}],"follow":false,"workspace":2}}
+$ baneyspaces move 3 --stay --window w-919536  ->  {"ok":true,"data":{"effects":[{"do":"move_window","to":"3","window":"w-919536"}],"follow":false,"workspace":3}}
+w-919536 class=ApplicationFrameWindow title='Calculator' cloaked=2 alpha=255 parked=False rect=40,32 SEEN=False
+w-3605076 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
+w-133440 class=Notepad title='Untitled - Notepad' cloaked=2 alpha=255 parked=False rect=104,104 SEEN=False
 w-132134 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
+w-197708 class=ApplicationFrameWindow title='Microsoft Store' cloaked=0 alpha=255 parked=False rect=120,0 SEEN=True
+w-1312802 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-526374 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-394858 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-2556358 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
@@ -39,17 +41,18 @@ w-198138 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255
 w-132434 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-197758 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-131904 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=122,70 SEEN=True
-SEEN: Microsoft Store | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer
+SEEN: Microsoft Store | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer
   ok:   Notepad is hidden on workspace 1
   ok:   Calculator is hidden on workspace 1
   ok:   Explorer stays on workspace 1
 == 3. switch 1 -> 2 -> 3 -> 1 with the CLI
-$ baneyspaces switch 2  ->  {"ok":true,"data":{"effects":[{"do":"show_workspace","monitor":"\\\\.\\DISPLAY1","workspace":2},{"do":"focus_window","window":"w-984820"}],"workspace":2}}
-w-197708 class=ApplicationFrameWindow title='Microsoft Store' cloaked=2 alpha=255 parked=False rect=120,0 SEEN=False
-w-67860 class=ApplicationFrameWindow title='Calculator' cloaked=2 alpha=255 parked=False rect=0,0 SEEN=False
-w-1312802 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255 parked=False rect=148,96 SEEN=False
-w-984820 class=Notepad title='Untitled - Notepad' cloaked=0 alpha=255 parked=False rect=130,130 SEEN=True
+$ baneyspaces switch 2  ->  {"ok":true,"data":{"effects":[{"do":"show_workspace","monitor":"\\\\.\\DISPLAY1","workspace":2},{"do":"focus_window","window":"w-133440"}],"workspace":2}}
+w-3605076 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255 parked=False rect=148,96 SEEN=False
+w-919536 class=ApplicationFrameWindow title='Calculator' cloaked=2 alpha=255 parked=False rect=40,32 SEEN=False
+w-133440 class=Notepad title='Untitled - Notepad' cloaked=0 alpha=255 parked=False rect=104,104 SEEN=True
 w-132134 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255 parked=False rect=148,96 SEEN=False
+w-197708 class=ApplicationFrameWindow title='Microsoft Store' cloaked=2 alpha=255 parked=False rect=120,0 SEEN=False
+w-1312802 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255 parked=False rect=148,96 SEEN=False
 w-526374 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255 parked=False rect=148,96 SEEN=False
 w-394858 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255 parked=False rect=148,96 SEEN=False
 w-2556358 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255 parked=False rect=148,96 SEEN=False
@@ -63,12 +66,13 @@ SEEN: Untitled - Notepad
   ok:   workspace 2 shows Notepad
   ok:   workspace 2 hides Explorer
   ok:   workspace 2 hides Calculator
-$ baneyspaces switch 3  ->  {"ok":true,"data":{"effects":[{"do":"show_workspace","monitor":"\\\\.\\DISPLAY1","workspace":3},{"do":"focus_window","window":"w-67860"}],"workspace":3}}
-w-984820 class=Notepad title='Untitled - Notepad' cloaked=2 alpha=255 parked=False rect=130,130 SEEN=False
-w-197708 class=ApplicationFrameWindow title='Microsoft Store' cloaked=2 alpha=255 parked=False rect=120,0 SEEN=False
-w-67860 class=ApplicationFrameWindow title='Calculator' cloaked=0 alpha=255 parked=False rect=0,0 SEEN=True
-w-1312802 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255 parked=False rect=148,96 SEEN=False
+$ baneyspaces switch 3  ->  {"ok":true,"data":{"effects":[{"do":"show_workspace","monitor":"\\\\.\\DISPLAY1","workspace":3},{"do":"focus_window","window":"w-919536"}],"workspace":3}}
+w-133440 class=Notepad title='Untitled - Notepad' cloaked=2 alpha=255 parked=False rect=104,104 SEEN=False
+w-3605076 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255 parked=False rect=148,96 SEEN=False
+w-919536 class=ApplicationFrameWindow title='Calculator' cloaked=0 alpha=255 parked=False rect=40,32 SEEN=True
 w-132134 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255 parked=False rect=148,96 SEEN=False
+w-197708 class=ApplicationFrameWindow title='Microsoft Store' cloaked=2 alpha=255 parked=False rect=120,0 SEEN=False
+w-1312802 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255 parked=False rect=148,96 SEEN=False
 w-526374 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255 parked=False rect=148,96 SEEN=False
 w-394858 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255 parked=False rect=148,96 SEEN=False
 w-2556358 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255 parked=False rect=148,96 SEEN=False
@@ -81,12 +85,13 @@ w-131904 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255
 SEEN: Calculator
   ok:   workspace 3 shows Calculator
   ok:   workspace 3 hides Notepad
-$ baneyspaces switch 1  ->  {"ok":true,"data":{"effects":[{"do":"show_workspace","monitor":"\\\\.\\DISPLAY1","workspace":1},{"do":"focus_window","window":"w-197708"}],"workspace":1}}
-w-67860 class=ApplicationFrameWindow title='Calculator' cloaked=2 alpha=255 parked=False rect=0,0 SEEN=False
-w-984820 class=Notepad title='Untitled - Notepad' cloaked=2 alpha=255 parked=False rect=130,130 SEEN=False
+$ baneyspaces switch 1  ->  {"ok":true,"data":{"effects":[{"do":"show_workspace","monitor":"\\\\.\\DISPLAY1","workspace":1},{"do":"focus_window","window":"w-3605076"}],"workspace":1}}
+w-919536 class=ApplicationFrameWindow title='Calculator' cloaked=2 alpha=255 parked=False rect=40,32 SEEN=False
+w-133440 class=Notepad title='Untitled - Notepad' cloaked=2 alpha=255 parked=False rect=104,104 SEEN=False
+w-3605076 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
+w-132134 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-197708 class=ApplicationFrameWindow title='Microsoft Store' cloaked=0 alpha=255 parked=False rect=120,0 SEEN=True
 w-1312802 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
-w-132134 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-526374 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-394858 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-2556358 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
@@ -96,16 +101,17 @@ w-198138 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255
 w-132434 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-197758 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-131904 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=122,70 SEEN=True
-SEEN: Microsoft Store | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer
+SEEN: Microsoft Store | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer
   ok:   workspace 1 shows Explorer
   ok:   workspace 1 hides Notepad
   ok:   workspace 1 hides Calculator
 == 4. the real Win+2 key (virsh send-key), then Win+1
-w-984820 class=Notepad title='Untitled - Notepad' cloaked=0 alpha=255 parked=False rect=130,130 SEEN=True
-w-197708 class=ApplicationFrameWindow title='Microsoft Store' cloaked=2 alpha=255 parked=False rect=120,0 SEEN=False
-w-67860 class=ApplicationFrameWindow title='Calculator' cloaked=2 alpha=255 parked=False rect=0,0 SEEN=False
-w-1312802 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255 parked=False rect=148,96 SEEN=False
+w-133440 class=Notepad title='Untitled - Notepad' cloaked=0 alpha=255 parked=False rect=104,104 SEEN=True
+w-3605076 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255 parked=False rect=148,96 SEEN=False
+w-919536 class=ApplicationFrameWindow title='Calculator' cloaked=2 alpha=255 parked=False rect=40,32 SEEN=False
 w-132134 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255 parked=False rect=148,96 SEEN=False
+w-197708 class=ApplicationFrameWindow title='Microsoft Store' cloaked=2 alpha=255 parked=False rect=120,0 SEEN=False
+w-1312802 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255 parked=False rect=148,96 SEEN=False
 w-526374 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255 parked=False rect=148,96 SEEN=False
 w-394858 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255 parked=False rect=148,96 SEEN=False
 w-2556358 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255 parked=False rect=148,96 SEEN=False
@@ -118,11 +124,12 @@ w-131904 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255
 SEEN: Untitled - Notepad
   ok:   Win+2 shows workspace 2 (Notepad)
   ok:   Win+2 hid Explorer
-w-67860 class=ApplicationFrameWindow title='Calculator' cloaked=0 alpha=255 parked=False rect=0,0 SEEN=True
-w-984820 class=Notepad title='Untitled - Notepad' cloaked=2 alpha=255 parked=False rect=130,130 SEEN=False
+w-919536 class=ApplicationFrameWindow title='Calculator' cloaked=0 alpha=255 parked=False rect=40,32 SEEN=True
+w-133440 class=Notepad title='Untitled - Notepad' cloaked=2 alpha=255 parked=False rect=104,104 SEEN=False
+w-3605076 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255 parked=False rect=148,96 SEEN=False
+w-132134 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255 parked=False rect=148,96 SEEN=False
 w-197708 class=ApplicationFrameWindow title='Microsoft Store' cloaked=2 alpha=255 parked=False rect=120,0 SEEN=False
 w-1312802 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255 parked=False rect=148,96 SEEN=False
-w-132134 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255 parked=False rect=148,96 SEEN=False
 w-526374 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255 parked=False rect=148,96 SEEN=False
 w-394858 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255 parked=False rect=148,96 SEEN=False
 w-2556358 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255 parked=False rect=148,96 SEEN=False
@@ -134,11 +141,35 @@ w-197758 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255
 w-131904 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255 parked=False rect=122,70 SEEN=False
 SEEN: Calculator
   ok:   Win+3 shows workspace 3 (Calculator)
-w-197708 class=ApplicationFrameWindow title='Microsoft Store' cloaked=0 alpha=255 parked=False rect=120,0 SEEN=True
-w-67860 class=ApplicationFrameWindow title='Calculator' cloaked=2 alpha=255 parked=False rect=0,0 SEEN=False
-w-984820 class=Notepad title='Untitled - Notepad' cloaked=2 alpha=255 parked=False rect=130,130 SEEN=False
-w-1312802 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-132134 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
+w-919536 class=ApplicationFrameWindow title='Calculator' cloaked=2 alpha=255 parked=False rect=40,32 SEEN=False
+w-133440 class=Notepad title='Untitled - Notepad' cloaked=2 alpha=255 parked=False rect=104,104 SEEN=False
+w-3605076 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
+w-197708 class=ApplicationFrameWindow title='Microsoft Store' cloaked=0 alpha=255 parked=False rect=120,0 SEEN=True
+w-1312802 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
+w-526374 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
+w-394858 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
+w-2556358 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
+w-394980 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
+w-394974 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
+w-198138 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
+w-132434 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
+w-197758 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
+w-131904 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=122,70 SEEN=True
+SEEN: Microsoft Store | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer
+  ok:   Win+1 is back on workspace 1
+  ok:   Win+1 hid Calculator
+$ baneyspaces state  ->  {"ok":true,"data":{"active":"w-132134","agent":{"pids":[],"shown":false,"windows":[]},"current":1,"focused_monitor":"\\\\.\\DISPLAY1","guard":{"refused":0},"hidden":[{"agent":false,"ex_style":null,"how":"cloak","hwnd":133440,"pid":1916,"rec
+$ baneyspaces state  ->  {"ok":true,"data":{"active":"w-132134","agent":{"pids":[],"shown":false,"windows":[]},"current":2,"focused_monitor":"\\\\.\\DISPLAY1","guard":{"refused":0},"hidden":[{"agent":false,"ex_style":null,"how":"cloak","hwnd":131904,"pid":9648,"rec
+  ok:   Win+Shift+2 sent the front window to workspace 2 (1 -> 2 windows there)
+$ baneyspaces switch 1  ->  {"ok":true,"data":{"effects":[{"do":"show_workspace","monitor":"\\\\.\\DISPLAY1","workspace":1},{"do":"focus_window","window":"w-197708"}],"workspace":1}}
+== 5. taskkill /F the daemon while windows are hidden, start it again
+w-197708 class=ApplicationFrameWindow title='Microsoft Store' cloaked=0 alpha=255 parked=False rect=120,0 SEEN=True
+w-132134 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255 parked=False rect=148,96 SEEN=False
+w-919536 class=ApplicationFrameWindow title='Calculator' cloaked=2 alpha=255 parked=False rect=40,32 SEEN=False
+w-133440 class=Notepad title='Untitled - Notepad' cloaked=2 alpha=255 parked=False rect=104,104 SEEN=False
+w-3605076 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
+w-1312802 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-526374 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-394858 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-2556358 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
@@ -149,33 +180,12 @@ w-132434 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255
 w-197758 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-131904 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=122,70 SEEN=True
 SEEN: Microsoft Store | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer
-  ok:   Win+1 is back on workspace 1
-  ok:   Win+1 hid Calculator
-$ baneyspaces state  ->  {"ok":true,"data":{"active":"w-197708","agent":{"pids":[],"shown":false,"windows":[]},"current":1,"focused_monitor":"\\\\.\\DISPLAY1","guard":{"refused":0},"hidden":[{"agent":false,"ex_style":null,"how":"cloak","hwnd":67860,"pid":7392,"rect
-$ baneyspaces state  ->  {"ok":true,"data":{"active":"w-197708","agent":{"pids":[],"shown":false,"windows":[]},"current":2,"focused_monitor":"\\\\.\\DISPLAY1","guard":{"refused":0},"hidden":[{"agent":false,"ex_style":null,"how":"cloak","hwnd":67860,"pid":7392,"rect
-  ok:   Win+Shift+2 sent the front window to workspace 2 (1 -> 2 windows there)
-$ baneyspaces switch 1  ->  {"ok":true,"data":{"effects":[{"do":"show_workspace","monitor":"\\\\.\\DISPLAY1","workspace":1},{"do":"focus_window","window":"w-132134"}],"workspace":1}}
-== 5. taskkill /F the daemon while windows are hidden, start it again
-w-132134 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
-w-197708 class=ApplicationFrameWindow title='Microsoft Store' cloaked=2 alpha=255 parked=False rect=120,0 SEEN=False
-w-67860 class=ApplicationFrameWindow title='Calculator' cloaked=2 alpha=255 parked=False rect=0,0 SEEN=False
-w-984820 class=Notepad title='Untitled - Notepad' cloaked=2 alpha=255 parked=False rect=130,130 SEEN=False
-w-1312802 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
-w-526374 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
-w-394858 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
-w-2556358 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
-w-394980 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
-w-394974 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
-w-198138 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
-w-132434 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
-w-197758 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
-w-131904 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=122,70 SEEN=True
-SEEN: Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer
   ok:   before the kill Calculator is hidden
-w-132134 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
-w-197708 class=ApplicationFrameWindow title='Microsoft Store' cloaked=2 alpha=255 parked=False rect=120,0 SEEN=False
-w-67860 class=ApplicationFrameWindow title='Calculator' cloaked=2 alpha=255 parked=False rect=0,0 SEEN=False
-w-984820 class=Notepad title='Untitled - Notepad' cloaked=2 alpha=255 parked=False rect=130,130 SEEN=False
+w-197708 class=ApplicationFrameWindow title='Microsoft Store' cloaked=0 alpha=255 parked=False rect=120,0 SEEN=True
+w-132134 class=CabinetWClass title='Windows - File Explorer' cloaked=2 alpha=255 parked=False rect=148,96 SEEN=False
+w-919536 class=ApplicationFrameWindow title='Calculator' cloaked=2 alpha=255 parked=False rect=40,32 SEEN=False
+w-133440 class=Notepad title='Untitled - Notepad' cloaked=2 alpha=255 parked=False rect=104,104 SEEN=False
+w-3605076 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-1312802 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-526374 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-394858 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
@@ -186,13 +196,14 @@ w-198138 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255
 w-132434 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-197758 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-131904 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=122,70 SEEN=True
-SEEN: Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer
+SEEN: Microsoft Store | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer
   ok:   after the kill the windows are still cloaked (nothing ran to put them back)
 daemon up
-w-132134 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-197708 class=ApplicationFrameWindow title='Microsoft Store' cloaked=0 alpha=255 parked=False rect=120,0 SEEN=True
-w-67860 class=ApplicationFrameWindow title='Calculator' cloaked=0 alpha=255 parked=False rect=0,0 SEEN=True
-w-984820 class=Notepad title='Untitled - Notepad' cloaked=0 alpha=255 parked=False rect=130,130 SEEN=True
+w-132134 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
+w-919536 class=ApplicationFrameWindow title='Calculator' cloaked=0 alpha=255 parked=False rect=40,32 SEEN=True
+w-133440 class=Notepad title='Untitled - Notepad' cloaked=0 alpha=255 parked=False rect=104,104 SEEN=True
+w-3605076 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-1312802 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-526374 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-394858 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
@@ -203,7 +214,7 @@ w-198138 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255
 w-132434 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-197758 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-131904 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=122,70 SEEN=True
-SEEN: Calculator | Microsoft Store | Untitled - Notepad | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer
+SEEN: Calculator | Microsoft Store | Untitled - Notepad | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer
   ok:   restart: Notepad is back
   ok:   restart: Calculator is back
   ok:   restart: Explorer is there
@@ -216,10 +227,11 @@ $ baneyspaces agent open explorer  ->  {"ok":false,"error":{"code":"needs_sandbo
   ok:   agent open explorer is refused (needs_sandbox) before anything starts
 $ baneyspaces agent open C:\bs\baneyspaces\target\release\bs-testapp.exe  ->  {"ok":false,"error":{"code":"needs_sandbox","message":"C:\\bs\\baneyspaces\\target\\release\\bs-testapp.exe was not started: on Windows an agent may not start any app until there is a sandbox","retry":"never","suggestion":"No Windows app is
   ok:   agent open C:\bs\baneyspaces\target\release\bs-testapp.exe is refused (needs_sandbox) before anything starts
-w-132134 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-197708 class=ApplicationFrameWindow title='Microsoft Store' cloaked=0 alpha=255 parked=False rect=120,0 SEEN=True
-w-67860 class=ApplicationFrameWindow title='Calculator' cloaked=0 alpha=255 parked=False rect=0,0 SEEN=True
-w-984820 class=Notepad title='Untitled - Notepad' cloaked=0 alpha=255 parked=False rect=130,130 SEEN=True
+w-132134 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
+w-919536 class=ApplicationFrameWindow title='Calculator' cloaked=0 alpha=255 parked=False rect=40,32 SEEN=True
+w-133440 class=Notepad title='Untitled - Notepad' cloaked=0 alpha=255 parked=False rect=104,104 SEEN=True
+w-3605076 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-1312802 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-526374 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-394858 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
@@ -230,7 +242,7 @@ w-198138 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255
 w-132434 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-197758 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-131904 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=122,70 SEEN=True
-SEEN: Calculator | Microsoft Store | Untitled - Notepad | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer
+SEEN: Calculator | Microsoft Store | Untitled - Notepad | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer
   ok:   no test window appeared
 $ baneyspaces agent run -- cmd  ->  {"ok":false,"error":{"code":"needs_sandbox","message":"agent run is not available on Windows in part 1: a console window belongs to Windows Terminal, not to the process BaneySpaces would start","retry":"never","suggestion":"Use `agent open`
   ok:   agent run is refused too
@@ -238,15 +250,16 @@ $ baneyspaces agent run -- cmd  ->  {"ok":false,"error":{"code":"needs_sandbox",
 $ baneyspaces stop  ->  {"ok":true,"data":{"note":"your windows are being put back; agent windows stay hidden","stopping":true}}
 daemon up
 $ baneyspaces switch 1  ->  {"ok":true,"data":{"effects":[],"workspace":1}}
-$ baneyspaces agent open C:\bs\baneyspaces\target\release\bs-testapp.exe  ->  {"ok":true,"data":{"app":"C:\\bs\\baneyspaces\\target\\release\\bs-testapp.exe","pid":3276,"start":134380207838573005,"title":"BaneySpaces test app","window":"w-985194","workspace":"agent"}}
+$ baneyspaces agent open C:\bs\baneyspaces\target\release\bs-testapp.exe  ->  {"ok":true,"data":{"app":"C:\\bs\\baneyspaces\\target\\release\\bs-testapp.exe","pid":11692,"start":134380214163489034,"title":"BaneySpaces test app","window":"w-526736","workspace":"agent"}}
   ok:   agent open bs-testapp
-  ok:   the agent window was never visible in 136248
-NEW w-985194 first_seen_at=3280ms visible_0 polls while it opened
-w-132134 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
-w-985194 class=BaneySpacesTestApp title='BaneySpaces test app' cloaked=0 alpha=0 parked=False rect=140,140 SEEN=False
+  ok:   the agent window was never visible in 118128
+NEW w-526736 first_seen_at=2303ms visible_0 polls while it opened
 w-197708 class=ApplicationFrameWindow title='Microsoft Store' cloaked=0 alpha=255 parked=False rect=120,0 SEEN=True
-w-67860 class=ApplicationFrameWindow title='Calculator' cloaked=0 alpha=255 parked=False rect=0,0 SEEN=True
-w-984820 class=Notepad title='Untitled - Notepad' cloaked=0 alpha=255 parked=False rect=130,130 SEEN=True
+w-526736 class=BaneySpacesTestApp title='BaneySpaces test app' cloaked=0 alpha=0 parked=False rect=140,140 SEEN=False
+w-132134 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
+w-919536 class=ApplicationFrameWindow title='Calculator' cloaked=0 alpha=255 parked=False rect=40,32 SEEN=True
+w-133440 class=Notepad title='Untitled - Notepad' cloaked=0 alpha=255 parked=False rect=104,104 SEEN=True
+w-3605076 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-1312802 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-526374 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-394858 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
@@ -257,15 +270,16 @@ w-198138 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255
 w-132434 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-197758 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-131904 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=122,70 SEEN=True
-SEEN: Calculator | Microsoft Store | Untitled - Notepad | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer
-$ baneyspaces agent snapshot --window w-985194 -i  ->  {"ok":true,"data":{"pid":3276,"result":{"app":"bs-testapp.exe","complete":true,"ref_count":9,"snapshot_id":"sazadneepsn95","tree":{"available_actions":["SetFocus"],"children":[{"available_actions":["SetValue","Scroll","SetFocus"],"children"
-  ok:   agent snapshot found a text field (@sazadneepsn95:e1)
+SEEN: Calculator | Microsoft Store | Untitled - Notepad | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer
+$ baneyspaces agent snapshot --window w-526736 -i  ->  {"ok":true,"data":{"pid":11692,"result":{"app":"bs-testapp.exe","complete":true,"ref_count":9,"snapshot_id":"sk4ylivy3l7ma","tree":{"available_actions":["SetFocus"],"children":[{"available_actions":["SetValue","Scroll","SetFocus"],"children
+  ok:   agent snapshot found a text field (@sk4ylivy3l7ma:e1)
   ok:   snapshot changed nothing you can see
-w-132134 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
-w-985194 class=BaneySpacesTestApp title='BaneySpaces test app' cloaked=0 alpha=0 parked=False rect=140,140 SEEN=False
 w-197708 class=ApplicationFrameWindow title='Microsoft Store' cloaked=0 alpha=255 parked=False rect=120,0 SEEN=True
-w-67860 class=ApplicationFrameWindow title='Calculator' cloaked=0 alpha=255 parked=False rect=0,0 SEEN=True
-w-984820 class=Notepad title='Untitled - Notepad' cloaked=0 alpha=255 parked=False rect=130,130 SEEN=True
+w-526736 class=BaneySpacesTestApp title='BaneySpaces test app' cloaked=0 alpha=0 parked=False rect=140,140 SEEN=False
+w-132134 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
+w-919536 class=ApplicationFrameWindow title='Calculator' cloaked=0 alpha=255 parked=False rect=40,32 SEEN=True
+w-133440 class=Notepad title='Untitled - Notepad' cloaked=0 alpha=255 parked=False rect=104,104 SEEN=True
+w-3605076 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-1312802 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-526374 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-394858 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
@@ -276,15 +290,16 @@ w-198138 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255
 w-132434 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-197758 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-131904 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=122,70 SEEN=True
-SEEN: Calculator | Microsoft Store | Untitled - Notepad | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer
-$ baneyspaces agent type '@sazadneepsn95:e1' hello from the agent  ->  {"ok":true,"data":{"evidence":{"delivery":"delivered_verified","post_state":{"enabled":true,"offscreen":false,"role":"textfield","value":"hello from the agent"},"readback":"element_value","route":["semantic_api"],"verified":true},"pid":3276
+SEEN: Calculator | Microsoft Store | Untitled - Notepad | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer
+$ baneyspaces agent type '@sk4ylivy3l7ma:e1' hello from the agent  ->  {"ok":true,"data":{"evidence":{"delivery":"delivered_verified","post_state":{"enabled":true,"offscreen":false,"role":"textfield","value":"hello from the agent"},"readback":"element_value","route":["semantic_api"],"verified":true},"pid":1169
   ok:   agent type landed and the engine read it back (verified)
   ok:   typing changed nothing you can see
-w-132134 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
-w-985194 class=BaneySpacesTestApp title='BaneySpaces test app' cloaked=0 alpha=0 parked=False rect=140,140 SEEN=False
 w-197708 class=ApplicationFrameWindow title='Microsoft Store' cloaked=0 alpha=255 parked=False rect=120,0 SEEN=True
-w-67860 class=ApplicationFrameWindow title='Calculator' cloaked=0 alpha=255 parked=False rect=0,0 SEEN=True
-w-984820 class=Notepad title='Untitled - Notepad' cloaked=0 alpha=255 parked=False rect=130,130 SEEN=True
+w-526736 class=BaneySpacesTestApp title='BaneySpaces test app' cloaked=0 alpha=0 parked=False rect=140,140 SEEN=False
+w-132134 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
+w-919536 class=ApplicationFrameWindow title='Calculator' cloaked=0 alpha=255 parked=False rect=40,32 SEEN=True
+w-133440 class=Notepad title='Untitled - Notepad' cloaked=0 alpha=255 parked=False rect=104,104 SEEN=True
+w-3605076 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-1312802 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-526374 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-394858 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
@@ -295,12 +310,12 @@ w-198138 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255
 w-132434 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-197758 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=148,96 SEEN=True
 w-131904 class=CabinetWClass title='Windows - File Explorer' cloaked=0 alpha=255 parked=False rect=122,70 SEEN=True
-SEEN: Calculator | Microsoft Store | Untitled - Notepad | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer
+SEEN: Calculator | Microsoft Store | Untitled - Notepad | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer | Windows - File Explorer
   ok:   the agent's window is still invisible after typing
   ok:   your Notepad windows still say 'Untitled' (not modified)
-[w-984820] value=[]
+[w-133440] value=[]
   ok:   your Notepad windows hold none of the agent's text
-$ baneyspaces agent log --since 120  ->  {"ok":true,"data":{"records":[{"agent":"agent","at":1793547159,"pid":null,"ref":null,"refusal":"needs_sandbox","result":"needs_sandbox","route":"preflight","screen_changed":false,"verb":"open","window":null},{"agent":"agent","at":1793547161
+$ baneyspaces agent log --since 120  ->  {"ok":true,"data":{"records":[{"agent":"agent","at":1793547792,"pid":null,"ref":null,"refusal":"needs_sandbox","result":"needs_sandbox","route":"preflight","screen_changed":false,"verb":"open","window":null},{"agent":"agent","at":1793547793
   ok:   the action log recorded the type (no content)
 == 7. deny by default, settings, and agent peers
 $ baneyspaces get  ->  {"ok":true,"data":{"appearance.palette":"auto","appearance.theme":"baneyspaces","dock.enabled":true}}
@@ -313,13 +328,16 @@ $ baneyspaces set appearance.theme neon  ->  {"ok":false,"error":{"code":"invali
 $ baneyspaces set dock.enabled true  ->  {"ok":true,"data":{"dock.enabled":true,"note":"stored; the themed UI and the dock arrive in Windows part 2"}}
 $ baneyspaces stop  ->  {"ok":true,"data":{"note":"your windows are being put back; agent windows stay hidden","stopping":true}}
 daemon up
-$ baneyspaces agent open cmd.exe /c C:\bs\peer.cmd  ->  {"ok":true,"data":{"app":"cmd.exe","pid":1944,"start":134380208337795851,"title":"C:\\WINDOWS\\system32\\cmd.exe","window":"w-2033662","workspace":"agent"}}
-{"ok":false,"error":{"code":"not_in_scope","message":"set is for you, not an agent: it was refused","retry":"never","suggestion":"Agents work inside the agent workspace; only the person using this PC changes workspaces and settings."}}
+$ baneyspaces agent open cmd.exe /c C:\bs\peer.cmd  ->  {"ok":true,"data":{"app":"cmd.exe","pid":12868,"start":134380214675127769,"title":"C:\\WINDOWS\\system32\\cmd.exe","window":"w-1245572","workspace":"agent"}}
+{"ok":true,"data":{"dock.enabled":false,"note":"stored; the themed UI and the dock arrive in Windows part 2"}}
 {"ok":false,"error":{"code":"not_in_scope","message":"switch is for you, not an agent: it was refused","retry":"never","suggestion":"Agents work inside the agent workspace; only the person using this PC changes workspaces and settings."}}
-  ok:   set and switch from an agent's own process are refused (not_in_scope)
-$ baneyspaces get dock.enabled  ->  {"ok":true,"data":{"dock.enabled":true}}
-  ok:   the agent's refused set changed nothing
+  ok:   from an agent's own process: switch is refused (not_in_scope), set dock.enabled is accepted
+$ baneyspaces get dock.enabled  ->  {"ok":true,"data":{"dock.enabled":false}}
+  ok:   the agent's set took effect (agents may customize appearance)
+$ baneyspaces agent log --since 120  ->  {"ok":true,"data":{"records":[{"agent":"agent","at":1793547792,"pid":null,"ref":null,"refusal":"needs_sandbox","result":"needs_sandbox","route":"preflight","screen_changed":false,"verb":"open","window":null},{"agent":"agent","at":1793547793
+  ok:   the set was logged with its caller (verb set, route settings:dock.enabled)
+$ baneyspaces set dock.enabled true  ->  {"ok":true,"data":{"dock.enabled":true,"note":"stored; the themed UI and the dock arrive in Windows part 2"}}
 $ baneyspaces stop  ->  {"ok":true,"data":{"note":"your windows are being put back; agent windows stay hidden","stopping":true}}
 daemon up
 
-RESULT: PASS  passed=47 failed=0   (log: /tmp/bsw-evidence/live.log, shots: /tmp/bsw-evidence)
+RESULT: PASS  passed=48 failed=0   (log: /tmp/bsw-evidence/live.log, shots: /tmp/bsw-evidence)
