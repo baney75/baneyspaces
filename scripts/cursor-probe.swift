@@ -137,8 +137,9 @@ final class CursorProbe: NSObject {
         let kinds = ["click", "type", "scroll", "click"]
         let dirs = ["down", "up", "left", "right"]
         var p: CGPoint
-        repeat { p = CGPoint(x: CGFloat.random(in: 80...(size.width - 80), using: &rng), y: CGFloat.random(in: 80...(size.height - 80), using: &rng)) }
-        while let last = last, hypot(p.x - last.x, p.y - last.y) < 300
+        repeat {
+            p = CGPoint(x: CGFloat.random(in: 80...(size.width - 80), using: &rng), y: CGFloat.random(in: 80...(size.height - 80), using: &rng))
+        } while far(p) == false
         last = p
         let kind = kinds[index % kinds.count]
         let e = HandsActionEvent(kind: kind, ref: "@s1:e\(index)", window: 1, pid: 1, app: "Probe", point: p,
@@ -150,6 +151,7 @@ final class CursorProbe: NSObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + (cut ? 0.06 : 0.42)) { self.step() }
     }
     var last: CGPoint?
+    func far(_ p: CGPoint) -> Bool { last.map { hypot(p.x - $0.x, p.y - $0.y) >= 300 } ?? true }
 
     @available(macOS 14, *)
     @objc func tick(_ link: CADisplayLink) {

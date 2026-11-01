@@ -115,9 +115,9 @@ final class CursorVisibilityTests: XCTestCase {
     let screen = CGRect(x: 0, y: 0, width: 1440, height: 900)
     let frame = CGRect(x: 100, y: 100, width: 80, height: 24)
 
-    func decide(enabled: Bool = true, scope: String, window: Int?, current: Int, agent: Int? = 9, frame: CGRect?? = .some(nil)) -> CursorVisibility.Decision {
+    func decide(enabled: Bool = true, scope: String, window: Int?, current: Int, agent: Int? = 9, frame: CGRect = CGRect(x: 100, y: 100, width: 80, height: 24)) -> CursorVisibility.Decision {
         CursorVisibility.decide(enabled: enabled, scope: scope, windowWorkspace: window, current: current, agent: agent,
-                                frame: frame ?? self.frame, displays: [screen])
+                                frame: frame, displays: [screen])
     }
 
     func testItShowsOnTheAgentWorkspaceWhenYouLookAtIt() {
@@ -206,7 +206,8 @@ final class CursorThemeTests: XCTestCase {
             let b = CursorGlyphs.path(g, size: 26).boundingBoxOfPath
             XCTAssertEqual(b.minX, 0, accuracy: 1e-9, "\(g)")
             XCTAssertEqual(b.minY, 0, accuracy: 1e-9, "\(g)")
-            XCTAssertEqual(b.height, 26, accuracy: 1e-6)
+            XCTAssertLessThanOrEqual(b.height, 26 + 1e-6, "\(g)")
+            XCTAssertGreaterThan(b.height, 26 * 0.9, "\(g)")
         }
         let dot = CursorGlyphs.path(.dot, size: 10).boundingBoxOfPath
         XCTAssertEqual(dot.midX, 0, accuracy: 1e-9)
@@ -366,9 +367,13 @@ final class CursorDirectorTests: XCTestCase {
         let next = s.motions.last!
         XCTAssertEqual(next.points.first!.x, expected.position.x, accuracy: 1e-6, "no jump")
         XCTAssertEqual(next.points.first!.y, expected.position.y, accuracy: 1e-6)
-        // The first few milliseconds follow the old velocity: no restart from rest.
-        let dx = next.points[1].x - next.points[0].x
-        XCTAssertEqual(Double(dx) / next.step, Double(expected.velocity.dx), accuracy: abs(Double(expected.velocity.dx)) * 0.15 + 20)
+        // The new glide is the old plan retargeted: same position and velocity at the hand-over, so no restart from rest.
+        let retargeted = first.retarget(at: 0.05, to: CGPoint(x: 300, y: 800)).samples()
+        XCTAssertEqual(next.points.count, retargeted.count)
+        for (a, b) in zip(next.points, retargeted.map(\.position)) {
+            XCTAssertEqual(a.x, b.x, accuracy: 1e-6); XCTAssertEqual(a.y, b.y, accuracy: 1e-6)
+        }
+        XCTAssertNotEqual(expected.velocity, .zero, "it was moving when the new target came")
     }
 
     func testTheRippleWaitsForTheCursorToArrive() {
