@@ -64,6 +64,9 @@ pub enum Event {
     Open {
         window: WindowId,
         pid: u32,
+        /// The process start time (0: unknown). With `pid` it tells a reused pid from the process an agent was given.
+        #[serde(default)]
+        start: u64,
         #[serde(default)]
         app: String,
         #[serde(default)]
@@ -76,6 +79,8 @@ pub enum Event {
     ObserveWindow {
         window: WindowId,
         pid: u32,
+        #[serde(default)]
+        start: u64,
         #[serde(default)]
         app: String,
         #[serde(default)]
@@ -203,6 +208,7 @@ struct Monitor {
 #[derive(Clone, Debug)]
 struct Window {
     pid: u32,
+    start: u64,
     app: String,
     home: Home,
     seq: u64,
@@ -265,6 +271,10 @@ impl Model {
     pub fn home(&self, window: &str) -> Option<&Home> {
         self.windows.get(window).map(|w| &w.home)
     }
+    /// Every window the model tracks.
+    pub fn window_ids(&self) -> Vec<&str> {
+        self.windows.keys().map(String::as_str).collect()
+    }
     pub fn pid_of(&self, window: &str) -> Option<u32> {
         self.windows.get(window).map(|w| w.pid)
     }
@@ -306,7 +316,7 @@ impl Model {
     pub fn is_agent_window(&self, window: &str) -> bool {
         self.windows
             .get(window)
-            .is_some_and(|w| w.home == Home::Agent || self.agent_pids.contains_key(&w.pid))
+            .is_some_and(|w| w.home == Home::Agent || self.is_agent_pid(w.pid, w.start))
     }
 
     /// True when `pid` is a registered agent process and, if both start times are known, the
@@ -338,7 +348,7 @@ impl Model {
         let windows: BTreeMap<&str, Value> = self
             .windows
             .iter()
-            .map(|(id, w)| (id.as_str(), json!({ "pid": w.pid, "app": w.app, "home": w.home.label(), "agent_owned": self.agent_pids.contains_key(&w.pid) })))
+            .map(|(id, w)| (id.as_str(), json!({ "pid": w.pid, "app": w.app, "home": w.home.label(), "agent_owned": self.is_agent_pid(w.pid, w.start) })))
             .collect();
         let pids: Vec<u32> = self.agent_pids.keys().copied().collect();
         let current = self
@@ -368,16 +378,18 @@ impl Model {
             Event::Open {
                 window,
                 pid,
+                start,
                 app,
                 monitor,
                 workspace,
-            } => self.open(window, pid, app, monitor, workspace),
+            } => self.open(window, pid, start, app, monitor, workspace),
             Event::ObserveWindow {
                 window,
                 pid,
+                start,
                 app,
                 workspace,
-            } => self.observe_window(window, pid, app, workspace),
+            } => self.observe_window(window, pid, start, app, workspace),
             Event::Close { window } => Ok(self.close(&window)),
             Event::Switch { n } => self.switch(n),
             Event::Move { n, window, follow } => self.move_window(n, window, follow),
@@ -514,6 +526,7 @@ impl Model {
         &mut self,
         window: WindowId,
         pid: u32,
+        start: u64,
         app: String,
         monitor: Option<MonitorId>,
         workspace: Option<u8>,
@@ -524,11 +537,12 @@ impl Model {
         self.seq += 1;
         let seq = self.seq;
         // R-A3: a window an agent process opens joins the agent workspace, never yours.
-        if self.agent_pids.contains_key(&pid) {
+        if self.is_agent_pid(pid, start) {
             self.windows.insert(
                 window.clone(),
                 Window {
                     pid,
+                    start,
                     app,
                     home: Home::Agent,
                     seq,
@@ -556,6 +570,7 @@ impl Model {
             window.clone(),
             Window {
                 pid,
+                start,
                 app,
                 home: Home::Workspace { n: here },
                 seq,
@@ -579,6 +594,7 @@ impl Model {
         &mut self,
         window: WindowId,
         pid: u32,
+        start: u64,
         app: String,
         workspace: Option<u8>,
     ) -> Result<Vec<Effect>, ModelError> {
@@ -590,7 +606,7 @@ impl Model {
         let mut effects = vec![];
         let home = match workspace {
             None => Home::Agent,
-            Some(_) if self.agent_pids.contains_key(&pid) => {
+            Some(_) if self.is_agent_pid(pid, start) => {
                 effects.push(Effect::MoveWindow {
                     window: window.clone(),
                     to: "agent".into(),
@@ -603,6 +619,7 @@ impl Model {
             window,
             Window {
                 pid,
+                start,
                 app,
                 home,
                 seq,
@@ -886,7 +903,7 @@ impl Model {
         self.agent_pids.insert(pid, start);
         // An agent process has no window on your workspaces.
         let strays: Vec<WindowId> = self
-            .ordered(|w| w.pid == pid && w.home != Home::Agent)
+            .ordered(|w| w.pid == pid && w.home != Home::Agent && (w.start == 0 || start == 0 || w.start == start))
             .into_iter()
             .map(String::from)
             .collect();
@@ -961,7 +978,7 @@ impl Model {
         if w.home != Home::Agent {
             return Ok(vec![]);
         }
-        if self.agent_pids.contains_key(&w.pid) {
+        if self.is_agent_pid(w.pid, w.start) {
             return Err(ModelError::new("agent_window", "that window belongs to a process started for an agent; it stays on the agent workspace"));
         }
         let mon = self

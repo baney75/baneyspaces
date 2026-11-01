@@ -6,7 +6,7 @@
 //! started for an agent; refs are tied to the snapshot, window and process they came from; and
 //! the engine is only ever run headless (no `--headed`), so it posts no global input.
 
-use crate::daemon::{now, record, Core, Shared};
+use crate::daemon::{append_record, now, record, Core, Shared};
 use crate::proc;
 use crate::scheme::AGENT_SPECIAL;
 use baneyspaces_core::agent::{check_scope, ActionRecord, WindowFacts};
@@ -16,6 +16,10 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+
+/// One hands call (listing windows, the action, the read-back) gets this long in all. The client
+/// waits `daemon::CLIENT_TIMEOUT_SECS`, well over it, so the daemon's answer always arrives first.
+pub const BUDGET_SECS: u64 = 50;
 
 #[derive(Clone, Debug)]
 pub struct SnapInfo {
@@ -55,7 +59,8 @@ pub fn snapshot_of(reference: &str) -> Option<&str> {
     (ok_snap && ok_el).then_some(snap)
 }
 
-/// What the user can see, so an action can prove it changed none of it.
+/// What the user can see, so a result can say whether it changed while an action ran. The pointer
+/// is left out: the user moves it all the time, and an agent's call never has to.
 fn screen_state(c: &Core) -> Value {
     let mons: Vec<Value> = c
         .monitors()
@@ -65,7 +70,6 @@ fn screen_state(c: &Core) -> Value {
     json!({
         "monitors": mons,
         "active": c.hypr.json("activewindow").ok().and_then(|v| v["address"].as_str().map(String::from)),
-        "cursor": c.hypr.json("cursorpos").ok(),
     })
 }
 
@@ -131,13 +135,22 @@ pub fn map_engine(verb: &str, resp: &Value) -> Envelope {
     )
 }
 
+/// True when an argument is the engine's headed switch (which allows focus and pointer input).
+fn refuses_headed(args: &[String]) -> bool {
+    // Only options count: after `--` everything is the user's text.
+    args.iter().take_while(|a| a.as_str() != "--").any(|a| a == "--headed" || a.starts_with("--headed="))
+}
+
 /// Runs the engine with a hard timeout. No `--headed`, ever.
 fn run_engine(
     engine: &std::path::Path,
     args: &[String],
     timeout: Duration,
 ) -> Result<Value, Envelope> {
-    debug_assert!(!args.iter().any(|a| a == "--headed"));
+    // The engine is only ever run headless. This is a refusal at run time, not a debug check.
+    if refuses_headed(args) {
+        return Err(Envelope::err("not_supported", "BaneySpaces never runs the engine headed", Retry::Never, "Agents act through the accessibility API only."));
+    }
     let mut child = Command::new(engine)
         .args(args)
         .stdin(Stdio::null())
@@ -194,8 +207,9 @@ fn engine_window(
     pid: u32,
     title: &str,
     start: u64,
+    timeout: Duration,
 ) -> Result<String, Envelope> {
-    let r = run_engine(engine, &["list-windows".into()], Duration::from_secs(20))?;
+    let r = run_engine(engine, &["list-windows".into()], timeout)?;
     let all = r["data"].as_array().cloned().unwrap_or_default();
     let mine: Vec<&Value> = all
         .iter()
@@ -241,6 +255,63 @@ fn engine_window(
             "Give the window a distinct title.",
         )),
     }
+}
+
+const DIRECTIONS: &[&str] = &["up", "down", "left", "right"];
+const PROPERTIES: &[&str] = &["text", "value", "title", "bounds", "role", "states"];
+
+/// The engine's command line for one verb. Option values are attached with `=` so a value that
+/// starts with `--` is data, never another option; positional text goes after `--`.
+pub fn build_argv(verb: &str, args: &Value, window: Option<&str>, reference: &str) -> Result<Vec<String>, Envelope> {
+    let bad = |m: String| Envelope::err("invalid_args", m, Retry::Never, "Run `baneyspaces help`.");
+    let text = |k: &str| args[k].as_str().map(String::from);
+    let mut a: Vec<String> = vec![];
+    match verb {
+        "snapshot" | "find" | "shot" => {
+            let w = window.ok_or_else(|| bad("a window is required".into()))?;
+            a.push(if verb == "shot" { "screenshot".into() } else { verb.into() });
+            a.push(format!("--window-id={w}"));
+            if verb == "snapshot" {
+                if args["interactive"].as_bool().unwrap_or(false) {
+                    a.push("-i".into());
+                }
+                if args["compact"].as_bool().unwrap_or(false) {
+                    a.push("--compact".into());
+                }
+            }
+            if verb == "find" {
+                for k in ["role", "name", "text"] {
+                    if let Some(v) = text(k) {
+                        a.push(format!("--{k}={v}"));
+                    }
+                }
+            }
+        }
+        "get" => {
+            let p = text("property").unwrap_or_else(|| "text".into());
+            if !PROPERTIES.contains(&p.as_str()) {
+                return Err(bad(format!("property must be one of {}", PROPERTIES.join(", "))));
+            }
+            a.extend(["get".into(), format!("--property={p}"), "--".into(), reference.into()]);
+        }
+        "click" | "toggle" => a.extend([verb.into(), "--".into(), reference.into()]),
+        "set-value" | "select" => a.extend([verb.into(), "--".into(), reference.into(), text("value").unwrap_or_default()]),
+        "type" => a.extend(["type".into(), "--".into(), reference.into(), text("text").unwrap_or_default()]),
+        "scroll" => {
+            let d = text("direction").unwrap_or_else(|| "down".into());
+            if !DIRECTIONS.contains(&d.as_str()) {
+                return Err(bad(format!("direction must be one of {}", DIRECTIONS.join(", "))));
+            }
+            a.push("scroll".into());
+            a.push(format!("--direction={d}"));
+            if let Some(n) = args["amount"].as_u64() {
+                a.push(format!("--amount={n}"));
+            }
+            a.extend(["--".into(), reference.into()]);
+        }
+        _ => return Err(bad(format!("unknown verb {verb}"))),
+    }
+    Ok(a)
 }
 
 struct Plan {
@@ -370,78 +441,30 @@ pub fn run(shared: &Shared, agent: &str, args: &Value) -> Envelope {
         }
     };
 
-    // 2. The engine, without the lock.
-    let t = Duration::from_secs(40);
-    let mut argv: Vec<String> = vec![];
-    let win_id;
-    if window_verb {
-        win_id = match engine_window(&engine, plan.pid, &plan.title, plan.start) {
-            Ok(id) => id,
+    // 2. The engine, without the lock, inside one budget.
+    let budget = Instant::now() + Duration::from_secs(BUDGET_SECS);
+    let left = || budget.saturating_duration_since(Instant::now()).max(Duration::from_millis(500));
+    let win_id = if window_verb {
+        match engine_window(&engine, plan.pid, &plan.title, plan.start, left().min(Duration::from_secs(15))) {
+            Ok(id) => Some(id),
             Err(env) => {
                 let c = crate::daemon::lock(shared);
-                record(
-                    &c,
-                    agent,
-                    &verb,
-                    Some(plan.pid),
-                    Some(&plan.window),
-                    None,
-                    "atspi",
-                    &env,
-                );
+                record(&c, agent, &verb, Some(plan.pid), Some(&plan.window), None, "atspi", &env);
                 return env;
             }
-        };
-        match verb.as_str() {
-            "snapshot" => {
-                argv = vec!["snapshot".into(), "--window-id".into(), win_id];
-                if args["interactive"].as_bool().unwrap_or(false) {
-                    argv.push("-i".into());
-                }
-                if args["compact"].as_bool().unwrap_or(false) {
-                    argv.push("--compact".into());
-                }
-            }
-            "find" => {
-                argv = vec!["find".into(), "--window-id".into(), win_id];
-                for k in ["role", "name", "text"] {
-                    if let Some(v) = s(k) {
-                        argv.extend([format!("--{k}"), v]);
-                    }
-                }
-            }
-            _ => argv = vec!["screenshot".into(), "--window-id".into(), win_id],
         }
     } else {
-        let r = reference.clone().unwrap_or_default();
-        let num = |k: &str| args[k].as_u64().map(|n| n.to_string());
-        match verb.as_str() {
-            "get" => {
-                argv = vec![
-                    "get".into(),
-                    r,
-                    "--property".into(),
-                    s("property").unwrap_or_else(|| "text".into()),
-                ]
-            }
-            "click" | "toggle" => argv = vec![verb.clone(), r],
-            "set-value" | "select" => {
-                argv = vec![verb.clone(), "--".into(), r, s("value").unwrap_or_default()]
-            }
-            "type" => argv = vec!["type".into(), "--".into(), r, s("text").unwrap_or_default()],
-            _ => {
-                argv = vec![
-                    "scroll".into(),
-                    r,
-                    "--direction".into(),
-                    s("direction").unwrap_or_else(|| "down".into()),
-                ];
-                if let Some(n) = num("amount") {
-                    argv.extend(["--amount".into(), n]);
-                }
-            }
+        None
+    };
+    let argv = match build_argv(&verb, args, win_id.as_deref(), reference.as_deref().unwrap_or("")) {
+        Ok(a) => a,
+        Err(env) => {
+            let c = crate::daemon::lock(shared);
+            record(&c, agent, &verb, Some(plan.pid), Some(&plan.window), reference.as_deref(), "atspi", &env);
+            return env;
         }
-    }
+    };
+    let t = left();
     let raw = run_engine(&engine, &argv, t);
 
     // 3. Read back, record, answer.
@@ -492,10 +515,9 @@ pub fn run(shared: &Shared, agent: &str, args: &Value) -> Envelope {
         "atspi",
         &env,
     );
-    if changed {
-        rec.result = "screen_changed".into();
-    }
-    c.paths.append("actions.jsonl", &rec.to_line());
+    // The outcome stays what it was; what changed on screen is its own field.
+    rec.screen_changed = changed;
+    append_record(&c, &rec);
     env
 }
 
@@ -581,12 +603,32 @@ mod tests {
     }
 
     #[test]
-    fn the_engine_is_never_run_headed() {
-        let src = include_str!("hands.rs");
-        let flag = ["--", "headed"].concat();
-        // The flag may be named in comments and in the guard's assertion, but never put in an argument list.
-        for pat in [format!("\"{flag}\".into()"), format!("\"{flag}\".to_string()"), format!("format!(\"{flag}")] {
-            assert!(!src.contains(&pat), "{pat}");
-        }
+    fn the_engine_is_never_run_headed_not_even_by_a_value() {
+        assert!(refuses_headed(&["click".into(), "--headed".into()]));
+        assert!(refuses_headed(&["--headed=true".into()]));
+        // A value that looks like the flag is data, because options carry their values with `=`.
+        let a = build_argv("find", &json!({"name":"--headed","role":"--headed"}), Some("w-1"), "").unwrap();
+        assert!(!refuses_headed(&a), "{a:?}");
+        assert!(a.contains(&"--name=--headed".to_string()));
+        // And the check is a refusal at run time, before anything is spawned.
+        let e = run_engine(std::path::Path::new("/nonexistent"), &["--headed".into()], Duration::from_secs(1)).unwrap_err();
+        assert_eq!(e.error.unwrap().code, "not_supported");
+    }
+
+    #[test]
+    fn scroll_direction_and_get_property_are_checked_here_not_trusted() {
+        let bad = build_argv("scroll", &json!({"direction":"--headed"}), None, "@sa:e1").unwrap_err();
+        assert_eq!(bad.error.unwrap().code, "invalid_args");
+        assert!(build_argv("scroll", &json!({"direction":"left","amount":2}), None, "@sa:e1").unwrap().contains(&"--direction=left".to_string()));
+        assert_eq!(build_argv("get", &json!({"property":"--headed"}), None, "@sa:e1").unwrap_err().error.unwrap().code, "invalid_args");
+        let ok = build_argv("get", &json!({"property":"value"}), None, "@sa:e1").unwrap();
+        assert_eq!(ok, ["get", "--property=value", "--", "@sa:e1"]);
+    }
+
+    #[test]
+    fn values_that_start_with_dashes_stay_positional() {
+        let a = build_argv("set-value", &json!({"value":"--headed"}), None, "@sa:e1").unwrap();
+        assert_eq!(a, ["set-value", "--", "@sa:e1", "--headed"]);
+        assert!(!refuses_headed(&a), "text after `--` is data, even when it spells the flag");
     }
 }

@@ -24,6 +24,7 @@ window id, or a pid.
 | `agent lend|return` | the user only | `not_supported` (later) | the user only |
 | `keys [--platform P]` | yes | yes | yes |
 | `daemon` | the app | yes | the app |
+| `stop` | quit the app | yes (the uninstall script uses it) | quit the app |
 | `mcp` | yes | yes | yes |
 | `doctor` | yes | yes | yes |
 
@@ -43,3 +44,14 @@ holds snapshot text, values, typed text or captures. Records older than 30 days 
 
 `baneyspaces mcp` serves [mcp-tools.json](mcp-tools.json) over stdio. There is no tool that switches,
 moves or lists your workspaces.
+
+## Global flags
+
+`--text` and `--agent-id ID` (or `--agent-id=ID`) are read only **before** the command. After the
+command every argument belongs to it (`agent find --text needle` filters by text).
+
+## Without the daemon
+
+On Linux `switch` and `move` (including `--stay`) fall back to Hyprland's own dispatch when the
+daemon is down, so the bound keys keep working; the reply says `fallback: hyprland`. Everything else
+returns `daemon_down`.

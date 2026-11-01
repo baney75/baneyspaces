@@ -48,7 +48,7 @@ TMP="$(mktemp -d /tmp/bs-nested.XXXXXX)"; chmod 700 "$TMP"
 mkdir -p "$TMP/run" "$TMP/home" "$TMP/state" "$TMP/config"; chmod 700 "$TMP/run"
 export XDG_RUNTIME_DIR="$TMP/run" HOME="$TMP/home" XDG_STATE_HOME="$TMP/state" XDG_CONFIG_HOME="$TMP/config"
 BIN="$REPO/target/debug"
-export PATH="$BIN:$PATH" BANEYSPACES_ENGINE="$REPO/platforms/linux/engine/agent-desktop"
+export PATH="$BIN:$PATH" BANEYSPACES_ENGINE="$REPO/platforms/linux/engine/agent-desktop" BANEYSPACES_TEST_OPS=1
 unset HYPRLAND_INSTANCE_SIGNATURE WAYLAND_DISPLAY DISPLAY
 
 PASS=0; FAIL=0
@@ -94,6 +94,9 @@ for n = 1, 9 do
 end
 hl.bind("SUPER + TAB", hl.dsp.focus({ workspace = "e+1" }), { description = "Omarchy: next workspace" })
 dofile("$REPO/platforms/linux/omarchy/baneyspaces.lua")
+-- the autostart file, only when the test turns it on (lifecycle.sh)
+local flag = io.open("$TMP/autostart-on", "r")
+if flag then flag:close(); dofile("$REPO/platforms/linux/omarchy/baneyspaces-autostart.lua") end
 EOF
 
 # --- host compositor (headless cage) and Hyprland inside it
@@ -121,6 +124,7 @@ special() { H monitors | jq -r '[.[]|.specialWorkspace.name]|map(select(.=="spec
 cursor() { H cursorpos | jq -c .; }
 cfg_errors() { hyprctl configerrors | grep -v '^$' | head -5; }
 M1=HEADLESS-1; M2=HEADLESS-2
+ctl() { echo "$1" | socat - UNIX-CONNECT:"$XDG_RUNTIME_DIR/baneyspaces/ctl.sock"; }
 
 echo "== nested Hyprland up: $(hyprctl version | head -1)"
 eq "test config has no errors" "$(cfg_errors)" ""
@@ -289,6 +293,7 @@ eq "keys are not supported in part 1" "$(baneyspaces agent press @sa:e1 Return |
 if [ -x "$BANEYSPACES_ENGINE" ] && [ -f "$HERE/hands.sh" ]; then
   . "$HERE/hands.sh"
 fi
+. "$HERE/hardening.sh"
 
 echo "== monitors come and go"
 baneyspaces focus-monitor $M2 >/dev/null; baneyspaces switch 6 >/dev/null; sleep 0.2
@@ -315,6 +320,8 @@ echo "== state.json"
 check "state.json exists and is the model" sh -c "jq -e '.version==1 and .platform==\"linux\" and (.monitors|length)>=1' '$XDG_STATE_HOME/baneyspaces/state.json'"
 check "the daemon is still alive" kill -0 $DPID
 check "the daemon logged no panic" sh -c "! grep -q panicked '$TMP/daemon.log'"
+
+. "$HERE/lifecycle.sh"
 
 echo
 echo "passed $PASS, failed $FAIL"

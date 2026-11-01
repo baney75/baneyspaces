@@ -1,6 +1,7 @@
 //! `baneyspaces` for Linux (Omarchy, Hyprland). The CLI sends one request to `baneyspaces daemon`
 //! and prints the envelope; `baneyspaces mcp` serves the agent tools over stdio.
 
+mod apps;
 mod daemon;
 mod hands;
 mod hypr;
@@ -36,12 +37,70 @@ const HELP: &str = "baneyspaces (Linux, Hyprland)
   agent press|key|pointer ...    not supported yet (phase 3-4)
   keys [--hypr-lua]              the key map for this platform
   daemon [--trace]               run the daemon (Omarchy autostarts it)
+  stop                           stop the daemon (uninstall.sh does this)
   mcp                            MCP server on stdio (agent tools only)
   doctor                         what works and what does not
 
-Flags: --agent-id ID (names you in the action log), --text (short human output).
+Flags, before the command: --agent-id ID (names you in the action log), --text (short human output).
+With no daemon running, `switch` and `move` fall back to Hyprland's own dispatch.
 Every command prints one JSON envelope: {ok, data} or {ok:false, error:{code, message, retry, suggestion}}.
 ";
+
+/// Flags that belong to the command line as a whole, accepted only before the command so that a
+/// command's own `--text` or `--agent-id` reaches it untouched.
+#[derive(Default, Debug, PartialEq, Eq)]
+struct Globals {
+    text: bool,
+    agent: Option<String>,
+}
+
+fn split_globals(mut args: Vec<String>) -> (Globals, Vec<String>) {
+    let mut g = Globals::default();
+    loop {
+        match args.first().map(String::as_str) {
+            Some("--text") => {
+                g.text = true;
+                args.remove(0);
+            }
+            Some("--agent-id") if args.len() >= 2 => {
+                g.agent = Some(args[1].clone());
+                args.drain(..2);
+            }
+            Some(a) if a.starts_with("--agent-id=") => {
+                g.agent = Some(a["--agent-id=".len()..].to_string());
+                args.remove(0);
+            }
+            _ => return (g, args),
+        }
+    }
+}
+
+/// What a workspace key does when the daemon is not running: Hyprland's own dispatch, so a
+/// reload before the daemon starts (or a crashed daemon) leaves the keys working.
+fn fallback(req: &Value) -> Option<Envelope> {
+    let a = &req["args"];
+    let n = a["n"].as_str().map(String::from).or_else(|| a["n"].as_u64().map(|n| n.to_string()))?;
+    if n.len() != 1 || !('1'..='9').contains(&n.chars().next()?) {
+        return None;
+    }
+    let lua = match req["op"].as_str()? {
+        "switch" => format!("hl.dsp.focus({{ workspace = \"{n}\" }})"),
+        "move" => {
+            let follow = !a["stay"].as_bool().unwrap_or(false);
+            match a["window"].as_str() {
+                Some(w) if w.chars().all(|c| c.is_ascii_alphanumeric()) => format!("hl.dsp.window.move({{ workspace = \"{n}\", follow = {follow}, window = \"address:{w}\" }})"),
+                Some(_) => return None,
+                None => format!("hl.dsp.window.move({{ workspace = \"{n}\", follow = {follow} }})"),
+            }
+        }
+        _ => return None,
+    };
+    let hypr = hypr::Hypr::from_env().ok()?;
+    Some(match hypr.dispatch(&lua) {
+        Ok(()) => Envelope::ok(json!({ "fallback": "hyprland", "note": "baneyspaces daemon is not running; Hyprland's own dispatch was used" })),
+        Err(e) => Envelope::err("compositor_error", e.to_string(), if e.uncertain() { Retry::Never } else { Retry::Safe }, "Is Hyprland running?"),
+    })
+}
 
 fn fail(code: &str, msg: &str, sug: &str) -> Envelope {
     Envelope::err(code, msg, Retry::Never, sug)
@@ -101,7 +160,7 @@ fn request(mut a: Vec<String>) -> Result<Value, Envelope> {
             need(&a, 1, "focus-monitor <name>")?;
             req("focus_monitor", json!({ "monitor": a[0] }))
         }
-        "ls" | "state" | "overview" => req(&cmd, json!({})),
+        "ls" | "state" | "overview" | "stop" => req(&cmd, json!({})),
         "agent-workspace" => {
             need(&a, 1, "agent-workspace show|hide|toggle")?;
             match a[0].as_str() {
@@ -300,9 +359,10 @@ fn doctor(paths: &paths::Paths) -> Envelope {
 }
 
 fn main() {
-    let mut args: Vec<String> = std::env::args().skip(1).collect();
-    let text = take_switch(&mut args, "--text");
-    let agent = take(&mut args, "--agent-id")
+    let (globals, args) = split_globals(std::env::args().skip(1).collect());
+    let text = globals.text;
+    let agent = globals
+        .agent
         .or_else(|| std::env::var("BANEYSPACES_AGENT_ID").ok())
         .unwrap_or_else(|| "agent".into());
     let paths = paths::Paths::from_env();
@@ -341,10 +401,55 @@ fn main() {
         _ => match request(args) {
             Ok(mut req) => {
                 req["agent"] = json!(agent);
-                print(&daemon::call(&paths, &req), text)
+                let mut env = daemon::call(&paths, &req);
+                // With no daemon the workspace keys must still work: fall back to what Hyprland does.
+                if env.error.as_ref().is_some_and(|e| e.code == "daemon_down") {
+                    if let Some(fb) = fallback(&req) {
+                        env = fb;
+                    }
+                }
+                print(&env, text)
             }
             Err(e) => print(&e, text),
         },
     };
     std::process::exit(code);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn v(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_commands_own_text_flag_reaches_the_command() {
+        let (g, rest) = split_globals(v(&["agent", "find", "--window", "0x1", "--text", "needle"]));
+        assert!(!g.text);
+        let req = request(rest).unwrap();
+        assert_eq!(req["args"]["text"], "needle");
+        assert_eq!(req["args"]["verb"], "find");
+    }
+
+    #[test]
+    fn globals_are_taken_only_before_the_command() {
+        let (g, rest) = split_globals(v(&["--text", "--agent-id", "claude", "ls"]));
+        assert_eq!((g.text, g.agent.as_deref()), (true, Some("claude")));
+        assert_eq!(rest, v(&["ls"]));
+        let (g, rest) = split_globals(v(&["--agent-id=x", "state"]));
+        assert_eq!(g.agent.as_deref(), Some("x"));
+        assert_eq!(rest, v(&["state"]));
+        let (g, rest) = split_globals(v(&["agent", "open", "app", "--text", "--agent-id", "y"]));
+        assert_eq!(g, Globals::default());
+        assert_eq!(rest.len(), 6, "application arguments are kept verbatim");
+    }
+
+    #[test]
+    fn the_fallback_knows_switch_and_move_and_nothing_else() {
+        assert!(fallback(&json!({"op":"ls","args":{}})).is_none());
+        assert!(fallback(&json!({"op":"switch","args":{"n":"10"}})).is_none());
+        assert!(fallback(&json!({"op":"move","args":{"n":"3","window":"0x1; evil"}})).is_none());
+    }
 }

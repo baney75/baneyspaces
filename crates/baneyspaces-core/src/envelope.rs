@@ -22,6 +22,9 @@ pub struct ErrorBody {
     pub message: String,
     pub retry: Retry,
     pub suggestion: String,
+    /// Extra facts about the failure (windows that appeared, which step failed). Never content.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub data: Option<Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -36,7 +39,7 @@ pub struct Envelope {
 /// Every error code the envelope may carry (`spec/envelope.md`).
 pub const CODES: &[&str] = &[
     "invalid_args", "not_found", "ambiguous", "not_in_scope", "needs_lend", "in_use", "not_supported", "daemon_down",
-    "stale_ref", "single_instance", "timeout", "engine_missing", "engine_error", "agent_window", "no_monitor", "internal",
+    "stale_ref", "single_instance", "needs_sandbox", "timeout", "engine_missing", "engine_error", "agent_window", "no_monitor", "compositor_error", "internal",
 ];
 
 impl Envelope {
@@ -46,7 +49,15 @@ impl Envelope {
 
     pub fn err(code: &str, message: impl Into<String>, retry: Retry, suggestion: impl Into<String>) -> Self {
         debug_assert!(CODES.contains(&code), "unknown envelope code {code}");
-        Self { ok: false, data: None, error: Some(ErrorBody { code: code.into(), message: message.into(), retry, suggestion: suggestion.into() }) }
+        Self { ok: false, data: None, error: Some(ErrorBody { code: code.into(), message: message.into(), retry, suggestion: suggestion.into(), data: None }) }
+    }
+
+    /// Attaches facts to an error (`error.data`).
+    pub fn with_data(mut self, data: Value) -> Self {
+        if let Some(e) = self.error.as_mut() {
+            e.data = Some(data);
+        }
+        self
     }
 
     pub fn to_json(&self) -> String {

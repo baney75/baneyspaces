@@ -8,6 +8,7 @@ Every `baneyspaces` command and every MCP tool result is one JSON object.
 ```
 
 - `ok` is a boolean. `data` is present when `ok` is true; `error` when it is false. Never both.
+- `error.data` (optional): extra facts about the failure, never content.
 - `error.code`: one of the codes below. `error.message`: for a person. `error.suggestion`: what to
   do next, always present (may be empty only for `internal`).
 - `error.retry`:
@@ -32,10 +33,12 @@ Every `baneyspaces` command and every MCP tool result is one JSON object.
 | `not_supported` | Not on this platform or phase (keys and pointer on Linux part 1). |
 | `daemon_down` | `baneyspaces daemon` is not running. |
 | `stale_ref` | The ref, window or process changed since the snapshot. |
-| `single_instance` | The app forwarded to a running instance; it can't be driven as an agent process. |
-| `timeout` | Waited and nothing arrived. |
+| `single_instance` | The app forwarded to a running instance; it can't be driven as an agent process. `error.data.windows_that_appeared` lists windows that opened meanwhile (left where they are). |
+| `needs_sandbox` | The app is already running for the user and would hand the request to that copy; refused before launch. |
+| `timeout` | Waited and nothing arrived. From a client: the request was sent and no answer came, so it may have been carried out (`retry` never). A failure to connect is `daemon_down` instead. |
 | `engine_missing` | The hands engine is not built or not found. |
 | `engine_error` | The hands engine failed; `message` carries its code. |
 | `agent_window` | A move of an agent window to your workspaces. |
 | `no_monitor` | No monitor is connected. |
+| `compositor_error` | The compositor refused a command or did not answer. `retry` is `safe` only for a clean refusal before anything moved, otherwise `never`; `error.data` says which. The daemon re-reads the compositor before the next command. |
 | `internal` | A bug. |

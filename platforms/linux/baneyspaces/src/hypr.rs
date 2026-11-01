@@ -7,6 +7,28 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::Duration;
 
+/// Why a request to Hyprland failed. A refusal means Hyprland answered and said no; an I/O error
+/// (a timeout, a closed socket) means the request may or may not have been carried out.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HyprError {
+    Refused(String),
+    Io(String),
+}
+
+impl HyprError {
+    pub fn uncertain(&self) -> bool {
+        matches!(self, HyprError::Io(_))
+    }
+}
+
+impl std::fmt::Display for HyprError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HyprError::Refused(m) | HyprError::Io(m) => f.write_str(m),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Hypr {
     dir: PathBuf,
@@ -117,6 +139,12 @@ impl Hypr {
         Ok(Self { dir })
     }
 
+    /// A client for a socket directory that may not exist (tests).
+    #[cfg(test)]
+    pub fn at(dir: PathBuf) -> Self {
+        Self { dir }
+    }
+
     pub fn dir(&self) -> &std::path::Path {
         &self.dir
     }
@@ -141,25 +169,21 @@ impl Hypr {
     }
 
     /// A Lua dispatcher such as `hl.dsp.focus({ workspace = "3" })`.
-    pub fn dispatch(&self, lua: &str) -> Result<(), String> {
+    pub fn dispatch(&self, lua: &str) -> Result<(), HyprError> {
         self.ok(&format!("/dispatch {lua}"))
     }
 
     /// Lua run in the compositor (`hl.workspace_rule`, `hl.animation`, `hl.config`).
-    pub fn eval(&self, lua: &str) -> Result<(), String> {
+    pub fn eval(&self, lua: &str) -> Result<(), HyprError> {
         self.ok(&format!("/eval {lua}"))
     }
 
-    fn ok(&self, cmd: &str) -> Result<(), String> {
-        let r = self.send(cmd).map_err(|e| format!("hyprland: {e}"))?;
+    fn ok(&self, cmd: &str) -> Result<(), HyprError> {
+        let r = self.send(cmd).map_err(|e| HyprError::Io(format!("hyprland: {e}")))?;
         if r.trim() == "ok" {
             Ok(())
         } else {
-            Err(format!(
-                "hyprland refused `{}`: {}",
-                cmd.chars().take(120).collect::<String>(),
-                r.trim()
-            ))
+            Err(HyprError::Refused(format!("hyprland refused `{}`: {}", cmd.chars().take(120).collect::<String>(), r.trim())))
         }
     }
 
@@ -171,6 +195,12 @@ impl Hypr {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_timeout_is_uncertain_and_a_refusal_is_not() {
+        assert!(HyprError::Io("x".into()).uncertain());
+        assert!(!HyprError::Refused("x".into()).uncertain());
+    }
 
     #[test]
     fn events_parse() {

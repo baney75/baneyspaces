@@ -310,5 +310,40 @@
     }
    }
   ]
+ },
+ {
+  "name": "a window found at start with a reused pid stays on your workspace",
+  "rules": [
+   "R-P2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "agent_register",
+    "pid": 500,
+    "start": 77
+   },
+   {
+    "do": "observe_window",
+    "window": "w1",
+    "pid": 500,
+    "start": 99,
+    "workspace": 1,
+    "effects": [],
+    "expect": {
+     "workspaces": {
+      "1": [
+       "w1"
+      ]
+     },
+     "agent": {
+      "windows": []
+     }
+    }
+   }
+  ]
  }
 ]

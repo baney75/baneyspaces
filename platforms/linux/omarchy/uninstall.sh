@@ -18,6 +18,12 @@ BEGIN="-- >>> baneyspaces (managed by baneyspaces install.sh) >>>"; END="-- <<< 
 say() { printf '%s%s\n' "$([ "$DRY" = 1 ] && echo '[dry-run] ')" "$*"; }
 do_() { if [ "$DRY" = 1 ]; then say "$*"; else eval "$@"; fi; }
 
+# Stop the daemon first: left running it would keep re-applying its settings on the next reload and
+# keep undoing focus changes. (It also exits by itself on a reload once the block is gone.)
+BS="$BIN_DIR/baneyspaces"; [ -x "$BS" ] || BS="$(command -v baneyspaces || true)"
+say "stop the baneyspaces daemon"
+if [ -n "$BS" ]; then do_ "'$BS' stop >/dev/null 2>&1 || true"; fi
+
 if [ -f "$MAIN" ] && grep -qF -- "$BEGIN" "$MAIN"; then
   say "remove the baneyspaces block from $MAIN"
   if [ "$DRY" = 0 ]; then
@@ -35,6 +41,14 @@ if [ -f "$MAIN" ] && grep -qF -- "$BEGIN" "$MAIN"; then
         for (i = 1; i <= out; i++) print buf[i]
       }' "$MAIN" > "$tmp"
     cat "$tmp" > "$MAIN"; rm -f "$tmp"
+    # Byte for byte: if the original had no trailing newline, the rewrite above added one. Take it
+    # off again when that makes the file equal to the backup taken at install.
+    orig="$(sed -n 's/.*"backup":"\([^"]*\)".*/\1/p' "$STATE/install.json" 2>/dev/null)/hyprland.lua"
+    if [ -f "$orig" ] && ! cmp -s "$orig" "$MAIN" && [ -n "$(tail -c1 "$orig")" ]; then
+      tmp="$(mktemp)"; head -c -1 "$MAIN" > "$tmp"
+      if cmp -s "$orig" "$tmp"; then cat "$tmp" > "$MAIN"; fi
+      rm -f "$tmp"
+    fi
   fi
 else
   say "no baneyspaces block in $MAIN"

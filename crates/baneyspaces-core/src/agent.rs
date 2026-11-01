@@ -88,6 +88,10 @@ pub struct ActionRecord {
     pub route: String,
     pub result: String,
     pub refusal: Option<String>,
+    /// True when what the user sees changed while the action ran. A separate fact: it says nothing
+    /// about the outcome (`result`) and is not caused by the agent unless nothing else moved.
+    #[serde(default)]
+    pub screen_changed: bool,
 }
 
 /// The log keeps 30 days (`RETENTION_DAYS`).
@@ -116,6 +120,16 @@ impl ActionLog {
     }
 }
 
+/// Drops records older than 30 days from the text of an action log. `None` when nothing was old
+/// enough, so the caller rewrites the file only when it must.
+pub fn prune_text(text: &str, now: u64) -> Option<String> {
+    let mut log = ActionLog::parse(text);
+    (log.prune(now) > 0).then(|| log.render())
+}
+
+/// How often the append path looks for old records (at most once an hour).
+pub const PRUNE_EVERY_SECS: u64 = 3600;
+
 impl ActionRecord {
     pub fn to_line(&self) -> String {
         serde_json::to_string(self).unwrap_or_default()
@@ -129,12 +143,12 @@ impl ActionRecord {
             (false, Some(e)) => (e.code.clone(), if matches!(e.code.as_str(), "not_in_scope" | "needs_lend" | "in_use" | "not_supported" | "stale_ref" | "single_instance") { Some(e.code.clone()) } else { None }),
             (false, None) => ("internal".into(), None),
         };
-        Self { at, agent: agent.into(), verb: verb.into(), pid, window: window.map(String::from), reference: reference.map(String::from), route: route.into(), result, refusal }
+        Self { at, agent: agent.into(), verb: verb.into(), pid, window: window.map(String::from), reference: reference.map(String::from), route: route.into(), result, refusal, screen_changed: false }
     }
 }
 
 /// Fields a record may carry, for the test that keeps content out of the log.
-pub const RECORD_FIELDS: &[&str] = &["at", "agent", "verb", "pid", "window", "ref", "route", "result", "refusal"];
+pub const RECORD_FIELDS: &[&str] = &["at", "agent", "verb", "pid", "window", "ref", "route", "result", "refusal", "screen_changed"];
 
 /// True when a JSON value is a record with exactly the allowed fields.
 pub fn is_content_free(v: &Value) -> bool {
@@ -199,7 +213,7 @@ mod tests {
     #[test]
     fn log_prunes_after_thirty_days_and_holds_no_content() {
         let day = 86_400;
-        let rec = |at| ActionRecord { at, agent: "a".into(), verb: "click".into(), pid: Some(1), window: Some("w".into()), reference: Some("@s1:e2".into()), route: "atspi".into(), result: "ok".into(), refusal: None };
+        let rec = |at| ActionRecord { at, agent: "a".into(), verb: "click".into(), pid: Some(1), window: Some("w".into()), reference: Some("@s1:e2".into()), route: "atspi".into(), result: "ok".into(), refusal: None, screen_changed: false };
         let mut log = ActionLog { records: vec![rec(0), rec(31 * day), rec(40 * day)] };
         assert_eq!(log.prune(40 * day), 1);
         assert_eq!(log.records.len(), 2);

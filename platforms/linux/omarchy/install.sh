@@ -43,11 +43,14 @@ if grep -qF -- "$BEGIN" "$MAIN"; then say "already installed in $MAIN (the block
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP="$STATE/backup/$STAMP"
 say "keys replaced: $(grep -c '^hl.unbind' "$HERE/baneyspaces.lua") unbinds, $(grep -c '^hl.bind' "$HERE/baneyspaces.lua") bindings (see $HERE/baneyspaces.lua)"
-say "backup of $MAIN -> $BACKUP/hyprland.lua"
-do_ "mkdir -p '$BACKUP' && cp -p '$MAIN' '$BACKUP/hyprland.lua'"
-# What the keys did before, for the record: Omarchy's binding table, if Hyprland is reachable.
-if command -v hyprctl >/dev/null && [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && [ "$DRY" = 0 ]; then
-  hyprctl -j binds > "$BACKUP/binds-before.json" 2>/dev/null || true
+if [ "$ALREADY" = 0 ]; then
+  # Only the first install backs up: a later one would copy a file that already has the block.
+  say "backup of $MAIN -> $BACKUP/hyprland.lua"
+  do_ "mkdir -p '$BACKUP' && cp -p '$MAIN' '$BACKUP/hyprland.lua'"
+  # What the keys did before, for the record: Omarchy's binding table, if Hyprland is reachable.
+  if command -v hyprctl >/dev/null && [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && [ "$DRY" = 0 ]; then
+    hyprctl -j binds > "$BACKUP/binds-before.json" 2>/dev/null || true
+  fi
 fi
 
 say "include files -> $DEST"
@@ -81,8 +84,9 @@ if [ "$BINARY" = 1 ]; then
 fi
 
 say "manifest -> $STATE/install.json"
-if [ "$DRY" = 0 ]; then
+if [ "$DRY" = 0 ] && [ "$ALREADY" = 0 ]; then
   mkdir -p "$STATE"
   printf '{"installed":"%s","backup":"%s","main":"%s","include":"%s"}\n' "$STAMP" "$BACKUP" "$MAIN" "$DEST" > "$STATE/install.json"
 fi
 say "done. Hyprland has not been reloaded. Run: hyprctl reload && hyprctl configerrors"
+say "the reload starts the daemon (the autostart file hooks config.reloaded); until it is up the workspace keys use Hyprland's own dispatch"

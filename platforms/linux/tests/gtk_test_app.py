@@ -12,8 +12,10 @@ from gi.repository import Gio, GLib, Gtk  # noqa: E402
 
 class App(Gtk.Application):
     def __init__(self):
-        # NON_UNIQUE: every run is its own process, never a forward to a running instance.
-        super().__init__(application_id="dev.baneyspaces.TestApp", flags=Gio.ApplicationFlags.NON_UNIQUE)
+        # By default every run is its own process (NON_UNIQUE). With --unique it is a normal
+        # single-instance GApplication: a second run forwards to the first and exits.
+        unique = "--unique" in sys.argv
+        super().__init__(application_id="dev.baneyspaces.TestApp", flags=Gio.ApplicationFlags.DEFAULT_FLAGS if unique else Gio.ApplicationFlags.NON_UNIQUE)
         self.count = 0
 
     def do_activate(self):
@@ -42,4 +44,4 @@ class App(Gtk.Application):
 
 
 if __name__ == "__main__":
-    sys.exit(App().run([]))
+    sys.exit(App().run([]))  # arguments are read above, not by GApplication

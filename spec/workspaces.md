@@ -147,7 +147,17 @@ them and its tests are the cases. An agent action proceeds only when all hold:
    start time (`needs_lend` if not, `stale_ref` if the pid was reused or the window changed hands).
 3. The snapshot the ref came from is of that same window and process (`stale_ref` otherwise).
 
-An agent only drives a process BaneySpaces started for it as a new instance, verified by pid. An app
-that forwards to a running instance (a single-instance app) opens no window of its own process: the
-open fails with `single_instance` and nothing of yours is touched. Every action leaves a record
-without content (agent id, verb, pid, window id, ref, route, result, refusal), kept 30 days.
+An agent only drives a process BaneySpaces started for it as a new instance, verified by pid and
+start time. Every pid check is start-time aware, and a registered process that dies or whose pid is
+reused is forgotten (a window of a reused pid is never an agent window; conformance cases in
+`agent.json`). An app that would forward to a copy you already run is refused before launch
+(`needs_sandbox`) unless it is known to start a separate process. If one forwards anyway, its window
+opens in your process on your workspace; it is left where it is and the `single_instance` error
+reports it in `error.data`. Every action leaves a record without content (agent id, verb, pid,
+window id, ref, route, result, refusal, screen_changed), kept 30 days.
+
+Callers: a caller of the control socket that carries a launch token BaneySpaces issued, or is a
+registered agent process, is refused the operations that belong to the user (switch, move, focus
+monitor, show or hide the agent workspace, park or bring a window, overview, stop) with
+`not_in_scope`. This is accident-proofing, not a boundary against a hostile process of your own
+user (the Mac's threat model is the same).

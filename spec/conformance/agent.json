@@ -946,5 +946,253 @@
     }
    }
   ]
+ },
+ {
+  "name": "a reused pid does not make your window an agent window",
+  "rules": [
+   "R-A3"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "agent_register",
+    "pid": 500,
+    "start": 77
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 500,
+    "app": "foot",
+    "start": 99,
+    "effects": []
+   },
+   {
+    "expect": {
+     "agent": {
+      "windows": [],
+      "pids": [
+       500
+      ]
+     },
+     "workspaces": {
+      "1": [
+       "w1"
+      ]
+     },
+     "active": "w1",
+     "windows": {
+      "w1": {
+       "agent_owned": false
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "the same pid with the same start time is the agent process",
+  "rules": [
+   "R-A3"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "agent_register",
+    "pid": 500,
+    "start": 77
+   },
+   {
+    "do": "open",
+    "window": "a1",
+    "pid": 500,
+    "app": "foot",
+    "start": 77,
+    "effects": [
+     {
+      "do": "move_window",
+      "window": "a1",
+      "to": "agent"
+     }
+    ]
+   },
+   {
+    "expect": {
+     "agent": {
+      "windows": [
+       "a1"
+      ]
+     },
+     "windows": {
+      "a1": {
+       "agent_owned": true
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "a window whose start time is unknown is judged by pid alone",
+  "rules": [
+   "R-A3"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "agent_register",
+    "pid": 500,
+    "start": 77
+   },
+   {
+    "do": "open",
+    "window": "a1",
+    "pid": 500,
+    "app": "foot",
+    "effects": [
+     {
+      "do": "move_window",
+      "window": "a1",
+      "to": "agent"
+     }
+    ]
+   },
+   {
+    "expect": {
+     "agent": {
+      "windows": [
+       "a1"
+      ]
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "a reused pid's window on your workspace is not guarded as an agent window",
+  "rules": [
+   "R-G1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "agent_register",
+    "pid": 500,
+    "start": 77
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 500,
+    "app": "foot",
+    "start": 99
+   },
+   {
+    "do": "open",
+    "window": "w2",
+    "pid": 600,
+    "app": "foot"
+   },
+   {
+    "do": "activate",
+    "window": "w1",
+    "cause": "user",
+    "effects": [],
+    "expect": {
+     "active": "w1",
+     "guard": {
+      "refused": 0
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "registering a process leaves a reused pid's window alone",
+  "rules": [
+   "R-A3"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 500,
+    "app": "foot",
+    "start": 99
+   },
+   {
+    "do": "agent_register",
+    "pid": 500,
+    "start": 77,
+    "effects": [],
+    "expect": {
+     "agent": {
+      "windows": []
+     },
+     "workspaces": {
+      "1": [
+       "w1"
+      ]
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "a bring of a window whose pid was reused is allowed",
+  "rules": [
+   "R-A2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "agent_register",
+    "pid": 500,
+    "start": 77
+   },
+   {
+    "do": "observe_window",
+    "window": "w1",
+    "pid": 500,
+    "start": 99
+   },
+   {
+    "do": "agent_bring",
+    "window": "w1",
+    "effects": [
+     {
+      "do": "move_window",
+      "window": "w1",
+      "to": "1"
+     }
+    ],
+    "expect": {
+     "workspaces": {
+      "1": [
+       "w1"
+      ]
+     }
+    }
+   }
+  ]
  }
 ]

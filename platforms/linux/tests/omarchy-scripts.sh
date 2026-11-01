@@ -4,7 +4,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; OM="$HERE/../omarchy"
 T="$(mktemp -d /tmp/bs-omarchy.XXXXXX)"; trap 'rm -rf "$T"' EXIT
 export HOME="$T/home"; unset XDG_STATE_HOME XDG_DATA_HOME; mkdir -p "$HOME/.config/hypr" "$T/src/target/debug" "$T/src/platforms/linux/engine"
-printf 'hl_stub\n' > "$T/src/target/debug/baneyspaces"; chmod +x "$T/src/target/debug/baneyspaces"
+printf '#!/bin/sh\necho "$@" >> "$HOME/stub.calls"\n' > "$T/src/target/debug/baneyspaces"; chmod +x "$T/src/target/debug/baneyspaces"
 printf '#!/bin/sh\n' > "$T/src/platforms/linux/engine/agent-desktop"; chmod +x "$T/src/platforms/linux/engine/agent-desktop"
 cat > "$HOME/.config/hypr/hyprland.lua" <<'LUA'
 dofile((os.getenv("OMARCHY_PATH") or "/usr/share/omarchy") .. "/default/hypr/bootstrap.lua")
@@ -21,7 +21,8 @@ M="$HOME/.config/hypr/hyprland.lua"
 chk "dry-run exits 0 and says it is a dry run" grep -q '^\[dry-run\]' "$T/dry.out"
 chk "dry-run changes nothing" test "$(cat "$M")" = "$ORIG"
 chk "dry-run creates no files" test ! -e "$HOME/.config/hypr/baneyspaces" -a ! -e "$HOME/.local"
-"$OM/uninstall.sh" --dry-run >/dev/null 2>&1; chk "uninstall dry-run changes nothing" test "$(cat "$M")" = "$ORIG"
+"$OM/uninstall.sh" --dry-run >"$T/udry.out" 2>&1; chk "uninstall dry-run changes nothing" test "$(cat "$M")" = "$ORIG"
+chk "uninstall dry-run says it would stop the daemon" grep -q 'dry-run.*stop the baneyspaces daemon' "$T/udry.out"
 
 "$OM/install.sh" --src "$T/src" >"$T/in.out" 2>&1 || { cat "$T/in.out"; no "install ran"; }
 chk "the block is appended" grep -qF -- '>>> baneyspaces' "$M"
@@ -37,9 +38,18 @@ chk "the script never touched bindings.lua" test ! -e "$HOME/.config/hypr/bindin
 chk "a second install adds no second block" test "$(grep -cF -- '>>> baneyspaces' "$M")" = 1
 
 "$OM/uninstall.sh" >/dev/null 2>&1
+chk "uninstall stops the daemon (it ran `baneyspaces stop`)" grep -qx 'stop' "$HOME/stub.calls"
 chk "uninstall restores hyprland.lua byte for byte" cmp -s "$T/orig.lua" "$M"
 chk "uninstall removes the include" test ! -e "$HOME/.config/hypr/baneyspaces"
 chk "uninstall keeps the state (backups, log) by default" test -d "$HOME/.local/state/baneyspaces"
+# A hyprland.lua that does not end in a newline comes back exactly as it was.
+printf 'require("hypr.bindings")\n-- my own line, no newline at the end' > "$M"; cp "$M" "$T/orig2.lua"
+"$OM/install.sh" --src "$T/src" >/dev/null 2>&1
+chk "install on a file with no trailing newline adds the block" grep -qF -- '>>> baneyspaces' "$M"
+"$OM/uninstall.sh" >/dev/null 2>&1
+chk "uninstall restores a file with no trailing newline byte for byte" cmp -s "$T/orig2.lua" "$M"
+printf 'a\n\n' > "$M"; cp "$M" "$T/orig3.lua"; "$OM/install.sh" --src "$T/src" >/dev/null 2>&1; "$OM/uninstall.sh" >/dev/null 2>&1
+chk "and a file that ends in a blank line" cmp -s "$T/orig3.lua" "$M"
 "$OM/uninstall.sh" --purge >/dev/null 2>&1
 chk "--purge removes the binary and the state" sh -c "[ ! -e '$HOME/.local/bin/baneyspaces' ] && [ ! -e '$HOME/.local/state/baneyspaces' ]"
 echo "passed $((N-F)), failed $F"; [ "$F" = 0 ] && echo "PASS: omarchy-scripts.sh ($N checks)" || { echo "FAIL: omarchy-scripts.sh"; exit 1; }

@@ -46,18 +46,65 @@ isolation line, drawn by process:
 
 - an agent acts only on a window that is on `special:agent` (Hyprland is asked every time) **and**
   whose process the daemon registered (pid and start time, so a reused pid fails);
-- an app that hands the request to an instance already running opens no window of its own process:
-  `single_instance`, and nothing of yours is touched;
+- every pid check is start-time aware: the daemon forgets an agent process when it dies or its pid
+  is reused (on each window that opens and every 2 s), so a recycled pid is never an agent;
+- an app that would hand the request to a copy you already run is refused **before** it starts
+  (`needs_sandbox`), unless it is on the short list of apps known to start a separate process
+  (terminals, viewers; Chromium and Firefox with a private profile under BaneySpaces' own folder;
+  Ghostty with `--gtk-single-instance=false`). Deny by default, like the Mac's allowlist;
+- if an app slips past that (the same program under another path, service activation) and forwards,
+  its window opens in **your** process on your workspace. Nothing can prevent that after launch.
+  The daemon leaves the window where it is, and the `single_instance` error lists it
+  (`error.data.windows_that_appeared`). This is a known limit, in the ledger in `AGENTS.md`;
 - a window of yours that you park there (`agent move`) is guarded but not drivable (`needs_lend`);
 - each ref is tied to the snapshot, window and process it came from (`stale_ref` otherwise).
 
-The focus-follow guard ignores any activation of an agent window (and any activation caused by an
-app rather than you): your previous window is put back and `guard.refused` counts it. If the agent
-workspace appears without you asking, it is hidden again. Only `baneyspaces agent-workspace
-show|hide|toggle` (Super+\`) shows it.
+**A known limit.** The exec rule that keeps a window off your screen applies to the app BaneySpaces
+launches. A window that a process *inside* an agent's shell opens later (a GUI app started from
+`agent run -- claude`) is adopted by its launch token and moved to the agent workspace, but Hyprland
+has already shown it for a moment, and warped the pointer to it. Your front window and workspaces are
+put back by the guard; the pointer is not. `hardening.sh` excludes the pointer from that one check.
+
+**Agents cannot run your commands.** The control socket reads the caller's pid (`SO_PEERCRED`). A
+caller that carries a launch token the daemon issued (an agent's shell, anything it started) or is a
+registered agent process is refused `switch`, `move`, `focus-monitor`, `agent-workspace`,
+`agent move|bring`, `overview` and `stop` with `not_in_scope`, and the attempt is logged. This
+guards against accidents, such as an agent shell running `baneyspaces switch 3`; it is not a
+boundary against a hostile process of your own user, which could unset its environment. The same
+threat model as the Mac app. The launch tokens are kept in `tokens.json` (0600) so a restart still
+recognises a terminal an agent left running.
+
+**The focus-follow guard.** Any activation of an agent window is undone: your previous window is put
+back and `guard.refused` counts it. If the agent workspace appears without you asking, it is hidden
+again. Only `baneyspaces agent-workspace show|hide|toggle` (Super+\`) shows it.
+
+**R-F2 (an app asking does not move you) rests on one Hyprland setting here.** Hyprland's events do
+not say who caused a focus change, so the daemon treats every activation it sees as yours and does
+not try to guess otherwise. What keeps an app from pulling you to another workspace is
+`misc:focus_on_activate = false`. The include sets it, the daemon sets it again on every config
+reload, and every 2 seconds the daemon reads it back and turns it off if something turned it on
+(`nested.sh` flips it and watches the daemon put it back). If that setting is lost for a moment, an
+app's request can follow until the next check.
 
 Every action appends one line to `$XDG_STATE_HOME/baneyspaces/actions.jsonl` (agent id, verb, pid,
-window, ref, route, result, refusal; never content), 30 days, read with `baneyspaces agent log`.
+window, ref, route, result, refusal, `screen_changed`; never content), read with `baneyspaces agent
+log`. Records older than 30 days are dropped when a line is appended (looked for at most once an
+hour) and at start. `screen_changed` is its own field: the outcome stays in `result`, and the pointer
+is not part of the comparison.
+
+## When the compositor says no, or the daemon is slow
+
+A switch or move whose Hyprland dispatch fails comes back `compositor_error`, never `ok`, and the
+daemon re-reads Hyprland before the next command. `retry` is `safe` only when Hyprland refused
+cleanly before anything moved; a timeout, or a failure after an earlier step went through, is
+`never`. The CLI waits 90 s for the daemon; one hands call has a 50 s budget inside that. A
+connection failure is `daemon_down` (safe); silence after the request was sent is `timeout` with
+retry `never`.
+
+With no daemon running (a reload before it started, a crash) the bound workspace keys fall back to
+Hyprland's own dispatch for `switch` and `move`, so they never go dead. The autostart file starts the
+daemon on `hyprland.start` and on every `config.reloaded`; the daemon exits on a reload once the
+BaneySpaces block is gone from `hyprland.lua`, and `uninstall.sh` stops it first.
 
 ## Agent hands
 
@@ -85,7 +132,7 @@ Part 1 does not apply it to any seat.
 ## Tests
 
 ```sh
-cargo test                                  # core, the 78 conformance cases, the daemon's pure parts
+cargo test                                  # core, the 85 conformance cases, the daemon's pure parts
 platforms/linux/tests/omarchy-scripts.sh    # install/uninstall against a throwaway HOME
 platforms/linux/tests/nested.sh             # the integration test; prints PASS or FAIL with counts
 ```
