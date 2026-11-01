@@ -70,6 +70,24 @@ public final class SystemHostFacts: HostFactsReading {
     }
 
     public func listener() -> ProbeListener? { TCPProbeListener(ipv6: false) }
+    public func listener6() -> ProbeListener? { TCPProbeListener(ipv6: true) }
+
+    public func currentAddresses() -> [String] {
+        var found: [String] = []
+        var list: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&list) == 0 else { return [] }
+        defer { freeifaddrs(list) }
+        var p = list
+        while let i = p {
+            defer { p = i.pointee.ifa_next }
+            guard let a = i.pointee.ifa_addr, i.pointee.ifa_flags & UInt32(IFF_UP) != 0, a.pointee.sa_family == UInt8(AF_INET) else { continue }
+            let name = String(cString: i.pointee.ifa_name), ip = numericHost(a)
+            guard SandboxNetwork.isUsableIPv4(ip), !found.contains(ip) else { continue }
+            if name.hasPrefix("bridge") || name.hasPrefix("vmenet") || name.hasPrefix("vmnet") { continue } // as HostFacts.ipv4
+            found.append(ip)
+        }
+        return found
+    }
 
     public func read() -> HostFacts {
         var facts = HostFacts(tailscaleInstalled: Self.tailscalePaths.contains(where: exists))
@@ -85,6 +103,13 @@ public final class SystemHostFacts: HostFactsReading {
                     guard SandboxNetwork.isUsableIPv4(ip) else { continue }
                     if !facts.addresses.contains(where: { $0.ip == ip }) {
                         facts.addresses.append(.init("this Mac's address on \(name)", ip, iface: name))
+                    }
+                } else if a.pointee.sa_family == UInt8(AF_INET6), name.hasPrefix("bridge") || name.hasPrefix("vmenet") {
+                    // The Mac's side of the guest's link, for the guest-root IPv6 test (link-local and unique-local only).
+                    var v6 = ip.lowercased()
+                    if let pct = v6.firstIndex(of: "%") { v6 = String(v6[..<pct]) }
+                    if (v6.hasPrefix("fe80:") || v6.hasPrefix("fd")), !facts.bridge6.contains(where: { $0.ip == v6 }) {
+                        facts.bridge6.append(.init("this Mac's IPv6 address on \(name)", v6, iface: name))
                     }
                 }
             }

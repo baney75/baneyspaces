@@ -39,11 +39,13 @@ final class AppSandbox: SandboxWindowHost {
         DispatchQueue.global(qos: .utility).async { [service] in service?.manager.stopAll() }
     }
 
-    /// At launch, sandbox on or off: takes the sandbox lock, puts back the files of a slot a crash left bound and
-    /// deletes VMs it left behind.
+    /// At launch, sandbox on or off: deletes VMs a crash left behind and, once they are verified gone, puts back the
+    /// files of any slot they held. With the sandbox off the lock is given up again straight after, so nothing else
+    /// (the probe) is locked out while the app merely runs.
     func cleanupAtLaunch() {
+        let keep = SandboxSettings.load().enabled
         DispatchQueue.global(qos: .utility).async { [service] in
-            do { try service?.manager.startupCleanup() } catch { NSLog("BaneySpaces sandbox: %@", "\(error)") }
+            do { try service?.manager.startupCleanup(keepOwnership: keep) } catch { NSLog("BaneySpaces sandbox: %@", "\(error)") }
         }
     }
 

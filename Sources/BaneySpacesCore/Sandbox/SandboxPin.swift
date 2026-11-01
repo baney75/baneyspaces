@@ -30,8 +30,12 @@ public struct SandboxSettings: Equatable, Sendable {
     public var enabled: Bool
     public var memoryGB: Int
     public var cpus: Int
+    /// How much a guest may write into its handoff folder before the sandbox stops it (the host's disk is not the guest's).
+    public var handoffGB: Int
+    public static let handoffChoices = [1, 2, 5, 10]
 
-    public init(enabled: Bool = false, memoryGB: Int = 4, cpus: Int = 4) {
+    public init(enabled: Bool = false, memoryGB: Int = 4, cpus: Int = 4, handoffGB: Int = 2) {
+        self.handoffGB = Self.handoffChoices.contains(handoffGB) ? handoffGB : 2
         self.enabled = enabled
         self.memoryGB = Self.memoryChoices.contains(memoryGB) ? memoryGB : 4
         self.cpus = Self.cpuChoices.contains(cpus) ? cpus : 4
@@ -41,7 +45,7 @@ public struct SandboxSettings: Equatable, Sendable {
     public func clamped(hostMemoryGB: Int, hostCPUs: Int) -> SandboxSettings {
         let mem = Self.memoryChoices.last { $0 <= max(2, hostMemoryGB / 4) } ?? 2
         let cpu = Self.cpuChoices.last { $0 <= max(2, hostCPUs / 2) } ?? 2
-        return SandboxSettings(enabled: enabled, memoryGB: min(memoryGB, mem), cpus: min(cpus, cpu))
+        return SandboxSettings(enabled: enabled, memoryGB: min(memoryGB, mem), cpus: min(cpus, cpu), handoffGB: handoffGB)
     }
 
     /// Why this Mac can't run the sandbox, nil if it can. A macOS guest needs 4 GB, and the sandbox may take
@@ -51,17 +55,19 @@ public struct SandboxSettings: Equatable, Sendable {
         hostMemoryGB >= 16 ? nil : "this Mac has \(hostMemoryGB) GB of memory; the sandbox needs 16 GB (a 4 GB macOS guest is at most a quarter of it)"
     }
 
-    public static let enabledKey = "sandboxEnabled", memoryKey = "sandboxMemoryGB", cpuKey = "sandboxCPUs"
+    public static let enabledKey = "sandboxEnabled", memoryKey = "sandboxMemoryGB", cpuKey = "sandboxCPUs", handoffKey = "sandboxHandoffGB"
 
     public static func load(_ d: UserDefaults = .standard) -> SandboxSettings {
         SandboxSettings(enabled: d.bool(forKey: enabledKey),
                         memoryGB: d.object(forKey: memoryKey) as? Int ?? 4,
-                        cpus: d.object(forKey: cpuKey) as? Int ?? 4)
+                        cpus: d.object(forKey: cpuKey) as? Int ?? 4,
+                        handoffGB: d.object(forKey: handoffKey) as? Int ?? 2)
     }
 
     public func save(_ d: UserDefaults = .standard) {
         d.set(enabled, forKey: Self.enabledKey)
         d.set(memoryGB, forKey: Self.memoryKey)
         d.set(cpus, forKey: Self.cpuKey)
+        d.set(handoffGB, forKey: Self.handoffKey)
     }
 }

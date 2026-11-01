@@ -8,7 +8,7 @@ public struct SandboxPaths: Equatable, Sendable {
     /// Where a task's folder rests while no guest has it: `handoff/<task>`.
     public var handoffRoot: URL { root.appendingPathComponent("handoff") }
     /// One private folder per VM, the only host path that VM is given. A task's files are moved in when its
-    /// guest takes over and moved back out when it ends.
+    /// guest takes over and copied back out, as plain files only, when it ends.
     public var slots: URL { root.appendingPathComponent("slots") }
     public var registry: URL { root.appendingPathComponent("live.json") }
     public var logs: URL { root.appendingPathComponent("logs") }
@@ -27,8 +27,18 @@ public struct SandboxPaths: Equatable, Sendable {
 /// **A folder is never shared by two guests.** A running VM can't gain a share, so every VM, the warm clone
 /// included, is started with a share of its own: an empty slot folder no other guest has. The task's files
 /// are moved into the slot (a rename: instant, and the guest sees them at once) only when that VM takes over
-/// as the working guest, after the previous guest is dead, and moved back to `handoff/<task>` when it ends.
-/// A VM that was ever bound to a task is never reused: it is deleted at the end of the task.
+/// as the working guest, after the previous guest is dead.
+///
+/// **Nothing the guest made is ever followed or trusted on the host.** When a guest ends, its slot is walked
+/// with `lstat`/`fstatat` and only regular files with one link and directories are copied out (opened with
+/// `O_NOFOLLOW`, created `0600`/`0700`, never with the guest's modes). Symlinks, hard-linked files, devices,
+/// FIFOs and sockets are skipped, listed in `SANDBOX-SKIPPED.txt` beside the results, and reported. A host
+/// process reading a live slot must open files with `O_NOFOLLOW` too.
+///
+/// **A slot is never deleted before its files are safe.** It is removed only when every entry was copied (or
+/// deliberately skipped) and the registry entry is cleared; on any failure, or while its VM may still run, the
+/// slot and its registry entry stay and the release is retried (`tick`, next launch). Nothing here overwrites
+/// a name that exists in the task folder.
 public enum SandboxHandoff {
     /// A task name is a plain file name: letters, digits, dot, dash, underscore, starting with a letter or digit.
     public static func valid(_ task: String) -> Bool {
@@ -43,6 +53,19 @@ public enum SandboxHandoff {
     }
 
     private static let lock = NSLock()
+    /// Walk limits: a guest can make a tree of any shape.
+    static let maxDepth = 64, maxEntries = 200_000
+
+    public struct ReleaseResult: Equatable, Sendable {
+        /// Every entry was copied or deliberately skipped, and the slot and its registry entry are gone.
+        public var complete: Bool
+        public var copied: Int
+        /// Entries the guest made that were not copied (symlinks, hard links, devices, FIFOs, sockets), by relative path.
+        public var skipped: [String]
+        public var failure: String?
+    }
+
+    // MARK: folders and slots
 
     /// The task's resting folder, made (owner only) if it isn't there. Throws for a bad name, and for a folder
     /// that turns out to be a symlink, which would share somewhere else.
@@ -71,57 +94,226 @@ public enum SandboxHandoff {
         return url
     }
 
-    /// Moves the task's files into `slot` (this VM takes over) and records it, so a crash can put them back.
+    /// Removes a slot that never held a task's files (a warm clone's). Refuses one the registry knows.
+    public static func removeUnboundSlot(_ slot: URL, paths: SandboxPaths) {
+        lock.lock(); defer { lock.unlock() }
+        // An unreadable registry could be hiding a bound slot: then nothing is removed.
+        guard let reg = readRegistry(paths), reg[slot.lastPathComponent] == nil else { return }
+        try? FileManager.default.removeItem(at: slot)
+    }
+
+    // MARK: bind
+
+    /// Moves the task's files into `slot` (this VM takes over) and records it so a crash can put them back.
+    /// All or nothing: if any entry can't move, the ones that did go back and this throws.
     public static func bind(task: String, slot: URL, paths: SandboxPaths) throws {
         let folder = try folder(for: task, paths: paths)
         lock.lock(); defer { lock.unlock() }
-        var reg = readRegistry(paths)
+        guard var reg = readRegistry(paths) else { throw SandboxError("handoff_failed", "the sandbox's record of live folders (live.json) is unreadable; not touching any files") }
         reg[slot.lastPathComponent] = task
         try writeRegistry(reg, paths)
-        try move(from: folder, to: slot)
+        let fm = FileManager.default
+        var moved: [(URL, URL)] = []
+        do {
+            for name in try fm.contentsOfDirectory(atPath: folder.path) {
+                let from = folder.appendingPathComponent(name), to = slot.appendingPathComponent(name)
+                try fm.moveItem(at: from, to: to)
+                moved.append((from, to))
+            }
+        } catch {
+            for (from, to) in moved.reversed() { try? fm.moveItem(at: to, to: from) }
+            reg[slot.lastPathComponent] = nil
+            try? writeRegistry(reg, paths)
+            throw SandboxError("handoff_failed", "could not hand the task's files to the sandbox: \(error.localizedDescription)")
+        }
     }
 
-    /// Moves the files back to the task's folder and forgets the slot. Never called while a guest may still run.
-    public static func release(slot: URL, paths: SandboxPaths) {
+    // MARK: release
+
+    /// Copies what the guest left in `slot` into the task's folder, plain files only, then removes the slot and
+    /// its registry entry. Never called while a guest may still run. See the type comment for the rules.
+    @discardableResult
+    public static func release(slot: URL, paths: SandboxPaths, limitBytes: Int64 = 10 << 30) -> ReleaseResult {
         lock.lock(); defer { lock.unlock() }
-        var reg = readRegistry(paths)
-        if let task = reg[slot.lastPathComponent], let folder = try? folder(for: task, paths: paths) {
-            try? move(from: slot, to: folder)
+        guard var reg = readRegistry(paths) else {
+            return ReleaseResult(complete: false, copied: 0, skipped: [], failure: "live.json is unreadable")
+        }
+        guard let task = reg[slot.lastPathComponent] else {
+            return ReleaseResult(complete: true, copied: 0, skipped: [], failure: nil) // nothing was bound: nothing to lose
+        }
+        guard let folder = try? folder(for: task, paths: paths) else {
+            return ReleaseResult(complete: false, copied: 0, skipped: [], failure: "the task folder for \(task) is not usable")
+        }
+        var ctx = Walk(limitBytes: limitBytes)
+        copyTree(from: slot.path, to: folder.path, relative: "", depth: 0, ctx: &ctx)
+        if !ctx.skipped.isEmpty { writeSkippedNote(ctx.skipped, in: folder) }
+        guard ctx.failure == nil else {
+            return ReleaseResult(complete: false, copied: ctx.copied, skipped: ctx.skipped, failure: ctx.failure)
         }
         reg[slot.lastPathComponent] = nil
         try? writeRegistry(reg, paths)
+        try? FileManager.default.removeItem(at: slot) // a leftover here is only the guest's junk; the files are safe
+        return ReleaseResult(complete: true, copied: ctx.copied, skipped: ctx.skipped, failure: nil)
     }
 
-    public static func removeSlot(_ slot: URL) { try? FileManager.default.removeItem(at: slot) }
+    /// The slots whose files have not been given back (their VM is gone or going), by VM name and task.
+    public static func pending(paths: SandboxPaths) -> [String: String] {
+        lock.lock(); defer { lock.unlock() }
+        return readRegistry(paths) ?? [:]
+    }
 
-    /// After a crash: every bound slot's files go back to their task folders, every slot goes.
-    public static func recover(paths: SandboxPaths) {
-        let fm = FileManager.default
-        lock.lock()
-        let reg = readRegistry(paths)
-        lock.unlock()
-        for name in reg.keys { release(slot: paths.slots.appendingPathComponent(name), paths: paths) }
-        for name in (try? fm.contentsOfDirectory(atPath: paths.slots.path)) ?? [] {
-            removeSlot(paths.slots.appendingPathComponent(name))
+    struct Walk {
+        var limitBytes: Int64
+        var bytes: Int64 = 0
+        var entries = 0
+        var copied = 0
+        var skipped: [String] = []
+        var failure: String?
+    }
+
+    private static func note(_ ctx: inout Walk, skipping path: String, because kind: String) {
+        if ctx.skipped.count < 200 { ctx.skipped.append("\(GuestHands.sanitize(path, max: 200)) (\(kind))") }
+    }
+
+    private static func copyTree(from src: String, to dst: String, relative: String, depth: Int, ctx: inout Walk) {
+        guard ctx.failure == nil else { return }
+        guard depth <= maxDepth else { ctx.failure = "the handoff folder is nested deeper than \(maxDepth) levels"; return }
+        var dirfd = open(src, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        if dirfd < 0, errno == EACCES {
+            // The guest chose a mode we can't read: it is our own file (virtiofs maps it to this user), so open it up.
+            _ = chmod(src, 0o700)
+            dirfd = open(src, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         }
-    }
-
-    /// Moves each entry of `from` into `to` by rename. A name already there gets a suffix: nothing is overwritten.
-    static func move(from: URL, to: URL) throws {
-        let fm = FileManager.default
-        for name in try fm.contentsOfDirectory(atPath: from.path) {
-            var target = to.appendingPathComponent(name)
-            var n = 1
-            while fm.fileExists(atPath: target.path) || (try? fm.destinationOfSymbolicLink(atPath: target.path)) != nil {
-                n += 1
-                target = to.appendingPathComponent("\(name) (sandbox \(n))")
+        guard dirfd >= 0 else { ctx.failure = "could not open \(relative.isEmpty ? "the slot" : relative): errno \(errno)"; return }
+        defer { close(dirfd) }
+        guard let dir = fdopendir(dup(dirfd)) else { ctx.failure = "could not list \(relative)"; return }
+        defer { closedir(dir) }
+        var names: [String] = []
+        while let e = readdir(dir) {
+            let name = withUnsafePointer(to: &e.pointee.d_name) { $0.withMemoryRebound(to: CChar.self, capacity: Int(NAME_MAX) + 1) { String(cString: $0) } }
+            if name == "." || name == ".." { continue }
+            names.append(name)
+        }
+        for name in names {
+            guard ctx.failure == nil else { return }
+            ctx.entries += 1
+            if ctx.entries > maxEntries { ctx.failure = "more than \(maxEntries) entries in the handoff folder"; return }
+            let rel = relative.isEmpty ? name : relative + "/" + name
+            var st = stat()
+            guard fstatat(dirfd, name, &st, AT_SYMLINK_NOFOLLOW) == 0 else { ctx.failure = "could not look at \(rel)"; return }
+            switch st.st_mode & S_IFMT {
+            case S_IFREG:
+                if st.st_nlink > 1 { note(&ctx, skipping: rel, because: "hard link"); continue }
+                copyFile(dirfd: dirfd, name: name, size: Int64(st.st_size), to: dst, relative: rel, ctx: &ctx)
+            case S_IFDIR:
+                let target = uniquePath(in: dst, name: name)
+                guard mkdir(target, 0o700) == 0 else { ctx.failure = "could not make a folder for \(rel)"; return }
+                copyTree(from: src + "/" + name, to: target, relative: rel, depth: depth + 1, ctx: &ctx)
+            case S_IFLNK: note(&ctx, skipping: rel, because: "symbolic link")
+            case S_IFIFO: note(&ctx, skipping: rel, because: "FIFO")
+            case S_IFSOCK: note(&ctx, skipping: rel, because: "socket")
+            default: note(&ctx, skipping: rel, because: "device or special file")
             }
-            try fm.moveItem(at: from.appendingPathComponent(name), to: target)
         }
     }
 
-    static func readRegistry(_ paths: SandboxPaths) -> [String: String] {
-        guard let d = try? Data(contentsOf: paths.registry), let o = try? JSONDecoder().decode([String: String].self, from: d) else { return [:] }
+    private static func copyFile(dirfd: Int32, name: String, size: Int64, to dstDir: String, relative: String, ctx: inout Walk) {
+        ctx.bytes += size
+        if ctx.bytes > ctx.limitBytes { ctx.failure = "the handoff folder is larger than \(ctx.limitBytes >> 30) GB; nothing more was copied out"; return }
+        // O_NONBLOCK so a file swapped for a FIFO can't hang us; O_NOFOLLOW so a swapped-in link isn't followed.
+        let fd = openat(dirfd, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard fd >= 0 else { ctx.failure = "could not open \(relative) without following links"; return }
+        defer { close(fd) }
+        var st = stat()
+        guard fstat(fd, &st) == 0, st.st_mode & S_IFMT == S_IFREG, st.st_nlink == 1 else { note(&ctx, skipping: relative, because: "changed while copying"); return }
+        let target = uniquePath(in: dstDir, name: name)
+        let out = open(target, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard out >= 0 else { ctx.failure = "could not create \(relative) in the task folder"; return }
+        defer { close(out) }
+        var buf = [UInt8](repeating: 0, count: 1 << 20)
+        while true {
+            let n = read(fd, &buf, buf.count)
+            if n == 0 { break }
+            if n < 0 { ctx.failure = "could not read \(relative)"; unlink(target); return }
+            var off = 0
+            while off < n {
+                let w = buf.withUnsafeBytes { write(out, $0.baseAddress! + off, n - off) }
+                if w <= 0 { ctx.failure = "could not write \(relative) (disk full?)"; unlink(target); return }
+                off += w
+            }
+        }
+        ctx.copied += 1
+    }
+
+    /// A path in `dir` for `name` that doesn't exist: the name as is, else its stem cut to fit plus a short id,
+    /// so the result is always a valid file name (at most 255 bytes) and nothing is overwritten.
+    static func uniquePath(in dir: String, name: String) -> String {
+        func exists(_ p: String) -> Bool { var s = stat(); return lstat(p, &s) == 0 }
+        let first = dir + "/" + cut(name, to: 240)
+        if !exists(first) { return first }
+        let ext = (name as NSString).pathExtension
+        let stem = ext.isEmpty ? name : String(name.dropLast(ext.count + 1))
+        for _ in 0..<1000 {
+            let id = String(UUID().uuidString.prefix(6)).lowercased()
+            let candidate = dir + "/" + cut(stem, to: 200) + " (sandbox \(id))" + (ext.isEmpty ? "" : "." + cut(ext, to: 20))
+            if !exists(candidate) { return candidate }
+        }
+        return dir + "/" + UUID().uuidString
+    }
+
+    /// `s` cut to at most `bytes` UTF-8 bytes, on a character boundary.
+    static func cut(_ s: String, to bytes: Int) -> String {
+        var out = ""
+        for ch in s {
+            if out.utf8.count + String(ch).utf8.count > bytes { break }
+            out.append(ch)
+        }
+        return out
+    }
+
+    private static func writeSkippedNote(_ skipped: [String], in folder: URL) {
+        let text = "The sandbox did not copy these entries the guest made, because they are links, hard links or special files\n"
+            + "that could point at files outside the handoff folder:\n\n" + skipped.joined(separator: "\n") + "\n"
+        let path = uniquePath(in: folder.path, name: "SANDBOX-SKIPPED.txt")
+        let fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { return }
+        defer { close(fd) }
+        _ = text.withCString { write(fd, $0, strlen($0)) }
+    }
+
+    // MARK: size (the slot's quota)
+
+    /// Bytes of regular files in `slot` (their apparent size, so a sparse file counts as large), walked with `lstat`
+    /// and never through a link. Stops counting at `stopAfter` and after 100,000 entries.
+    public static func size(of slot: URL, stopAfter: Int64 = Int64.max) -> Int64 {
+        var total: Int64 = 0
+        var seen = 0
+        func walk(_ path: String, _ depth: Int) {
+            guard depth <= maxDepth, total <= stopAfter, seen < 100_000, let dir = opendir(path) else { return }
+            defer { closedir(dir) }
+            while let e = readdir(dir) {
+                let name = withUnsafePointer(to: &e.pointee.d_name) { $0.withMemoryRebound(to: CChar.self, capacity: Int(NAME_MAX) + 1) { String(cString: $0) } }
+                if name == "." || name == ".." { continue }
+                seen += 1
+                var st = stat()
+                guard lstat(path + "/" + name, &st) == 0 else { continue }
+                switch st.st_mode & S_IFMT {
+                case S_IFREG: total += Int64(st.st_size)
+                case S_IFDIR: walk(path + "/" + name, depth + 1)
+                default: break
+                }
+            }
+        }
+        walk(slot.path, 0)
+        return total
+    }
+
+    // MARK: registry
+
+    /// The record of which slot holds which task's files; empty when there is no file yet, nil when it can't be read.
+    static func readRegistry(_ paths: SandboxPaths) -> [String: String]? {
+        guard FileManager.default.fileExists(atPath: paths.registry.path) else { return [:] }
+        guard let d = try? Data(contentsOf: paths.registry), let o = try? JSONDecoder().decode([String: String].self, from: d) else { return nil }
         return o
     }
 

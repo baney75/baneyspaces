@@ -10,12 +10,15 @@ public struct HostFacts: Equatable, Sendable {
         public init(_ label: String, _ ip: String, iface: String = "") { self.label = label; self.ip = ip; self.iface = iface }
     }
     public var addresses: [Address]
+    /// IPv6 addresses of the vmnet bridge (link-local and unique-local): the Mac's side of the guest's link.
+    public var bridge6: [Address] = []
     public var router: String?
     public var tailscaleInstalled: Bool
     /// Set when the Application Firewall could be dropping the probe, which would look like a block.
     public var firewallProblem: String?
     public init(addresses: [Address] = [], router: String? = nil,
-                tailscaleInstalled: Bool = false, firewallProblem: String? = nil) {
+                tailscaleInstalled: Bool = false, firewallProblem: String? = nil, bridge6: [Address] = []) {
+        self.bridge6 = bridge6
         self.addresses = addresses; self.router = router
         self.tailscaleInstalled = tailscaleInstalled; self.firewallProblem = firewallProblem
     }
@@ -36,6 +39,9 @@ public protocol ProbeListener: AnyObject {
 public protocol HostFactsReading: AnyObject {
     func read() -> HostFacts
     func listener() -> ProbeListener?
+    func listener6() -> ProbeListener?
+    /// Just the IPv4 addresses that go into the block list (no subprocesses): cheap enough to read every few seconds.
+    func currentAddresses() -> [String]
 }
 
 /// What one guest probe saw.
@@ -135,6 +141,11 @@ public enum SandboxSelfcheck {
         public var problems: [String]
         public var gateway: String?
         public var passed: Bool { problems.isEmpty }
+        /// True when the guest could reach something it must not, or the check could not prove it can't (not a
+        /// plain "no internet"). Such a result from ANY guest puts the isolation of the working guest in doubt too.
+        public var breach: Bool {
+            problems.contains { $0.contains("can reach") || $0.contains("not proven") || $0.contains("listener saw") || $0.contains("IPv6 addresses") }
+        }
     }
 
     /// Reads the guest script's output against the probes that were sent. Pure: tested with canned text.
@@ -191,6 +202,56 @@ public enum SandboxSelfcheck {
         }
         if hostHits > 0 { problems.append("the host listener saw \(hostHits) connection(s) from the guest") }
         return Report(problems: problems, gateway: gateway)
+    }
+
+    /// What a guest that is root can do over IPv6 once it switches IPv6 back on, gives itself an address in the
+    /// Mac's bridge prefix and tries the Mac's bridge addresses (link-local with its scope, and unique-local): the
+    /// answer must be nothing. This is the enforcement test for the host side: Softnet drops every frame that is not
+    /// IPv4 (measured with tcpdump on the bridge: guest frames were all IPv4 while the guest sent IPv6), so the guest's
+    /// own setting is not what keeps it out. Returns the problems; the guest ends with IPv6 off again.
+    public static func rootIPv6Attempt(vm: String, tart: SandboxTart, hostFacts: HostFactsReading) -> [String] {
+        let facts = hostFacts.read()
+        guard let listener = hostFacts.listener6() else { return ["could not open an IPv6 listener on this Mac to test against"] }
+        defer { listener.close() }
+        let targets = facts.bridge6
+        guard !targets.isEmpty else { return ["this Mac's vmnet bridge has no IPv6 address to test against (is the guest running?)"] }
+        let ula = targets.first { !$0.ip.hasPrefix("fe80:") }?.ip
+        let prefix = ula.map { $0.split(separator: ":").prefix(4).joined(separator: ":") }
+        var s = "export PATH=/usr/bin:/bin:/usr/sbin:/sbin\nsudo -n networksetup -setv6automatic Ethernet >/dev/null 2>&1; sleep 5\n"
+        if let prefix { s += "sudo -n ifconfig en0 inet6 \(prefix)::99 prefixlen 64 >/dev/null 2>&1; sleep 4\n" }
+        s += "echo \"HAS6 $(ifconfig en0 | grep -c 'inet6 ')\"\n"
+        for (i, t) in targets.enumerated() {
+            let addr = t.ip.hasPrefix("fe80:") ? t.ip + "%en0" : t.ip
+            s += "(out=$(/usr/bin/nc -6 -vz -G 4 -w 5 '\(addr)' \(listener.port) 2>&1); printf 'RC=%s %s' \"$?\" \"$(printf %s \"$out\" | tr '\\n' ' ')\" > /tmp/bsx-v6-\(i)) &\n"
+        }
+        s += "wait\n"
+        for i in targets.indices { s += "echo \"V6PROBE \(i) $(cat /tmp/bsx-v6-\(i) 2>/dev/null)\"; rm -f /tmp/bsx-v6-\(i)\n" }
+        if let prefix { s += "sudo -n ifconfig en0 inet6 \(prefix)::99 delete >/dev/null 2>&1\n" }
+        s += "sudo -n networksetup -setv6off Ethernet >/dev/null 2>&1\n"
+        let r = tart.guest(vm, s, timeout: 90)
+        tart.clock.sleep(0.2)
+        var problems: [String] = []
+        guard r.ok else { return ["the guest-root IPv6 test could not run (tart exec failed \(r.status))"] }
+        var has6 = 0
+        var results: [Int: String] = [:]
+        for line in r.stdout.split(separator: "\n") {
+            if line.hasPrefix("HAS6 ") { has6 = Int(line.dropFirst(5).trimmingCharacters(in: .whitespaces)) ?? 0 }
+            else if line.hasPrefix("V6PROBE ") {
+                let rest = line.dropFirst(8)
+                if let sp = rest.firstIndex(of: " "), let n = Int(rest[rest.startIndex..<sp]) { results[n] = String(rest[sp...]) }
+            }
+        }
+        if has6 == 0 { problems.append("the guest did not get IPv6 back, so the test proved nothing") }
+        for (i, t) in targets.enumerated() {
+            switch classify(results[i] ?? "") {
+            case .blocked: break
+            case .reachable(let d): problems.append("a root guest with IPv6 on reached \(t.label) \(t.ip) over IPv6 (\(d))")
+            case .inconclusive(let d): problems.append("IPv6 isolation from \(t.label) \(t.ip) was not proven: \(d)")
+            }
+        }
+        let hits = listener.accepted()
+        if hits > 0 { problems.append("the host's IPv6 listener saw \(hits) connection(s) from the guest") }
+        return problems
     }
 
     /// Switches IPv6 off in the guest (every network service). A rooted guest could switch it back on, so the

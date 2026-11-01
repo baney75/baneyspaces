@@ -17,8 +17,9 @@ public enum SandboxProbe {
 
     /// `markerCheck` proves the guest is clean after a reset: a file written before it must be gone.
     public static func run(manager: SandboxManager, tart: SandboxTart, resets: Int = 3, clock: SandboxClock,
-                           warmLimit: TimeInterval = 900, log: (String) -> Void = { _ in }) -> Report {
+                           warmLimit: TimeInterval = 900, plantLinks: Bool = true, log: (String) -> Void = { _ in }) -> Report {
         var report = Report()
+        try? FileManager.default.removeItem(at: manager.paths.handoffRoot.appendingPathComponent("probe")) // the probe's own task folder, fresh
         func step(_ name: String, _ body: () throws -> (Bool, String)) {
             let t0 = clock.now()
             var ok = false, detail = ""
@@ -64,16 +65,43 @@ public enum SandboxProbe {
             let st = manager.snapshot().resetStats
             return (st.p90WithinBudget, st.summary)
         }
+        step("a root guest that turns IPv6 back on reaches nothing over IPv6") {
+            guard let vm = manager.snapshot().vm else { return (false, "no VM") }
+            let problems = SandboxSelfcheck.rootIPv6Attempt(vm: vm, tart: tart, hostFacts: manager.facts)
+            let after = SandboxSelfcheck.run(vm: vm, tart: tart, hostFacts: manager.facts)
+            return (problems.isEmpty && after.passed, problems.isEmpty ? "link-local and unique-local unreachable; IPv6 off again" : problems.joined(separator: "; "))
+        }
         step("guest hands stub answers status") {
             let g = manager.guestCall(GuestHands.Request(verb: "status"))
             return (g.ok && g.data?["daemon"] == "stub", g.ok ? "daemon=\(g.data?["daemon"] ?? "?") macos=\(g.data?["macos"] ?? "?")" : (g.error?.suggestion ?? "no answer"))
+        }
+        if plantLinks {
+            step("guest plants symlinks (to a host file and to a host folder) next to real files in its handoff folder") {
+                guard let vm = manager.snapshot().vm else { return (false, "no VM") }
+                let share = SandboxPin.guestHandoffPath
+                let r = tart.guest(vm, "ln -s /etc/hosts '\(share)/evil-link' && mkdir '\(share)/sub' && ln -s /Users '\(share)/sub/dirlink' && echo ok > '\(share)/real.txt' && echo nested > '\(share)/sub/n.txt' && ls '\(share)' | wc -l", timeout: 30)
+                return (r.ok, r.ok ? "planted" : GuestHands.sanitize(r.tail))
+            }
         }
         step("down") {
             let name = manager.snapshot().vm
             let s = try manager.down()
             let present = (try? tart.localVMs()) ?? ["?"]
             let gone = name != nil && !present.contains(name!) && s.vm == nil
-            return (s.phase == .stopped && gone, gone ? "stopped, \(name ?? "?") deleted" : "\(name ?? "no VM") is still there")
+            var detail = gone ? "stopped, \(name ?? "?") deleted" : "\(name ?? "no VM") is still there"
+            var ok = s.phase == .stopped && gone
+            if plantLinks {
+                // Nothing the guest planted was followed or carried over: only the real file came back.
+                let folder = manager.paths.handoffRoot.appendingPathComponent("probe")
+                let names = Set((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? [])
+                func isLink(_ rel: String) -> Bool { var st = stat(); return lstat(folder.appendingPathComponent(rel).path, &st) == 0 && st.st_mode & S_IFMT == S_IFLNK }
+                func exists(_ rel: String) -> Bool { var st = stat(); return lstat(folder.appendingPathComponent(rel).path, &st) == 0 }
+                let clean = names.contains("real.txt") && exists("sub/n.txt") && !exists("evil-link") && !exists("sub/dirlink")
+                    && !isLink("evil-link") && !isLink("sub/dirlink") && names.contains("SANDBOX-SKIPPED.txt")
+                ok = ok && clean
+                detail += clean ? "; real.txt and sub/n.txt came back, the two symlinks did not" : "; handoff folder has: \(names.sorted())"
+            }
+            return (ok, detail)
         }
         return report
     }

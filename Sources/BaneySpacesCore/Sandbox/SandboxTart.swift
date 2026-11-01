@@ -105,9 +105,10 @@ public final class SandboxTart {
     }
 
     /// Waits until the guest agent answers `tart exec`. Throws if `proc` exits first or time runs out.
-    public func waitForAgent(vm: String, proc: RunningProcess, timeout: TimeInterval, poll: TimeInterval = 1) throws {
+    public func waitForAgent(vm: String, proc: RunningProcess, timeout: TimeInterval, poll: TimeInterval = 1, cancelled: () -> Bool = { false }) throws {
         let deadline = clock.now() + timeout
         while true {
+            if cancelled() { throw SandboxError("shutting_down", "BaneySpaces is quitting") }
             if !proc.isRunning { throw SandboxError("vm_exited", "the VM exited before its guest agent answered") }
             let r = tart(["exec", vm, "/usr/bin/true"], timeout: 30)
             if r.ok { return }
@@ -124,9 +125,10 @@ public final class SandboxTart {
     }
 
     /// Waits until the guest has mounted the handoff share (after a resume the guest takes a moment).
-    public func waitForShare(vm: String, timeout: TimeInterval) throws {
+    public func waitForShare(vm: String, timeout: TimeInterval, cancelled: () -> Bool = { false }) throws {
         let deadline = clock.now() + timeout
         while true {
+            if cancelled() { throw SandboxError("shutting_down", "BaneySpaces is quitting") }
             if guest(vm, "test -d '\(SandboxPin.guestHandoffPath)'", timeout: 20).ok { return }
             if clock.now() > deadline { throw SandboxError("share_timeout", "the guest did not mount the handoff folder in \(Int(timeout)) s") }
             clock.sleep(0.25)

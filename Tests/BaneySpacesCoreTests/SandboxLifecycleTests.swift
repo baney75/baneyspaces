@@ -426,7 +426,10 @@ final class SandboxHandoffIsolationTests: XCTestCase {
         try Data("guest".utf8).write(to: slot.appendingPathComponent("a.txt"))
         try Data("yours".utf8).write(to: rest.appendingPathComponent("a.txt"))
         SandboxHandoff.release(slot: slot, paths: paths)
-        XCTAssertEqual(names(rest), ["a.txt", "a.txt (sandbox 2)"])
+        let after = names(rest)
+        XCTAssertEqual(after.count, 2)
+        XCTAssertTrue(after.contains("a.txt"))
+        XCTAssertTrue(after.contains { $0.hasPrefix("a (sandbox ") && $0.hasSuffix(").txt") }, "\(after)")
         XCTAssertEqual(try String(contentsOf: rest.appendingPathComponent("a.txt")), "yours")
     }
 }

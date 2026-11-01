@@ -31,10 +31,11 @@ softnet         0.25.0
                 for --net-softnet and it drops privileges). BaneySpaces puts that folder first on Tart's PATH.
                   scripts/install-sandbox.sh does this (sha256-checked, idempotent, repairs a wrong mode)
 
-ipv6            Softnet's rules are IPv4. IPv6 is therefore switched off inside the guest (`networksetup -setv6off` on
-                every service, before the first check) and the in-guest self-check fails if the guest has any IPv6
-                address but loopback. A guest that is root can switch it back on, and this pin does not claim Softnet
-                filters IPv6 for it: the residual is documented in docs/sandbox.md.
+ipv6            Softnet 0.25.0 forwards IPv4 only. Measured 2026-11-01 on rectory1 with `tcpdump -i bridge100 ether src <guest mac>`:
+                a guest with root, IPv6 re-enabled, a static address in the bridge's prefix, and ping6/nc -6 to ff02::1, the
+                Mac's link-local and unique-local emitted 389 frames, all IPv4, none IPv6. The probe repeats the guest-root
+                attempt every run (SandboxSelfcheck.rootIPv6Attempt), and IPv6 is also switched off in the guest and asserted.
+                A Softnet update must pass the probe before this pin moves.
 
 image           ghcr.io/cirruslabs/macos-tahoe-base@sha256:4aaa751fa7538902d73c767f27a066fc87e83f183069da4e4b5022863abd4c77
   macOS         Tahoe 26.6.2 (guest), host 27.2

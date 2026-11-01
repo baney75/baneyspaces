@@ -38,8 +38,16 @@ enum SandboxCommand {
         let (service, tart) = SandboxSystem.make(settings: { cfg })
         if verb == "view" { FileHandle.standardError.write(Data("view needs the app: it places the window on the agent workspace\n".utf8)); exit(2) }
         if verb == "probe" {
+            // The app holds the sandbox while it is on in Settings: say so, instead of reporting a sandbox failure.
+            do { try service.manager.startupCleanup() } catch let e as SandboxError where e.code == "not_owner" {
+                print("sandbox-probe SKIPPED: BaneySpaces has the sandbox (it is on in Settings > Agents). Turn it off there or quit BaneySpaces, then run the probe again.")
+                exit(2)
+            } catch let e as SandboxError where e.code == "busy" {
+                print("sandbox-probe SKIPPED: \(e.message)")
+                exit(2)
+            } catch { print("sandbox-probe FAIL: \(error)"); exit(1) }
             let resets = args.firstIndex(of: "--resets").flatMap { $0 + 1 < args.count ? Int(args[$0 + 1]) : nil } ?? 3
-            let report = SandboxProbe.run(manager: service.manager, tart: tart, resets: resets, clock: SystemClock(),
+            let report = SandboxProbe.run(manager: service.manager, tart: tart, resets: resets, clock: SystemClock(), plantLinks: true,
                                           log: { print($0); fflush(stdout) })
             service.manager.shutdown(deadline: 120) // the warm clone goes too: the probe leaves nothing behind (no UI to keep responsive here)
             let left = (try? tart.leftovers()) ?? ["?"]

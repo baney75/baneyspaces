@@ -785,6 +785,11 @@ struct SetupView: View {
                 }.fixedSize()
             }
             .disabled(!model.sandbox.enabled || model.sandboxRunning)
+            Picker("Handoff folder limit", selection: Binding(get: { model.sandbox.handoffGB }, set: { var s = model.sandbox; s.handoffGB = $0; model.setSandbox(s) })) {
+                ForEach(SandboxSettings.handoffChoices, id: \.self) { Text("\($0) GB").tag($0) }
+            }
+            .fixedSize().disabled(!model.sandbox.enabled)
+            Text("A guest that writes more than this into its handoff folder is stopped.").font(.callout).foregroundStyle(.secondary)
             Text("Takes effect the next time the sandbox starts.").font(.callout).foregroundStyle(.secondary)
             Text(model.sandboxState).font(.callout)
             Text("Disk used: \(model.sandboxDisk)").font(.callout).foregroundStyle(.secondary)

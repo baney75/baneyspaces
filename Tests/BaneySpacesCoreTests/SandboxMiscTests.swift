@@ -149,7 +149,7 @@ final class SandboxServiceTests: XCTestCase {
 
     func testProbeSequencePassesAgainstTheFakeAndLeavesNothing() {
         let r = Rig.make(); defer { r.manager.shutdown(); try? FileManager.default.removeItem(at: r.dir) }
-        let report = SandboxProbe.run(manager: r.manager, tart: r.st, resets: 3, clock: r.clock)
+        let report = SandboxProbe.run(manager: r.manager, tart: r.st, resets: 3, clock: r.clock, plantLinks: false)
         XCTAssertTrue(report.passed, report.steps.filter { !$0.ok }.map { "\($0.name): \($0.detail)" }.joined(separator: "\n"))
         r.manager.shutdown()
         XCTAssertTrue(r.tart.ours().isEmpty)

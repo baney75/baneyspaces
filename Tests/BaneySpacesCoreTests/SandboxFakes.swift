@@ -18,12 +18,14 @@ final class FakeProc: RunningProcess {
     private let lock = NSLock()
     private var running = true
     var onRelease: (() -> Void)?
+    /// A process that ignores kill, like a guest that won't stop.
+    var immortal = false
     init() { FakeProc.next += 1; pid = FakeProc.next }
     func release() { onRelease?() }
     var isRunning: Bool { lock.lock(); defer { lock.unlock() }; return running }
     func stop() { lock.lock(); running = false; lock.unlock() }
-    func terminate() { stop() }
-    func kill() { stop() }
+    func terminate() { if !immortal { stop() } }
+    func kill() { if !immortal { stop() } }
     func waitForExit(timeout: TimeInterval) -> Bool { !isRunning }
 }
 
@@ -47,6 +49,8 @@ final class FakeTart: ProcessRunning {
     var onSpawn: ((_ args: [String]) -> Void)?
     var order: [String] = []
     var v6Addresses = 0
+    var spawnImmortal = false
+    var v6Leak = false
     var firewallState = "Firewall is disabled. (State = 0)"
     var stubFail: ProcessResult?
 
@@ -94,6 +98,12 @@ final class FakeTart: ProcessRunning {
             if args.last == "/usr/bin/true" { return ProcessResult(status: 0) }
             let script = args.last ?? ""
             if script.contains("GATEWAY") { return ProcessResult(status: 0, stdout: checkOutput(script)) }
+            if script.contains("V6PROBE") {
+                let n = script.components(separatedBy: "echo \"V6PROBE ").count - 1
+                var out = "HAS6 2\n"
+                for i in 0..<n { out += "V6PROBE \(i) " + (v6Leak && i == 0 ? "RC=0 succeeded!" : "RC=1 nc: connectx failed: Operation timed out") + "\n" }
+                return ProcessResult(status: 0, stdout: out)
+            }
             if script.contains("route -n get default | awk") { return ProcessResult(status: 0, stdout: "192.168.64.1\n") }
             if script.contains("IFS= read -r line") {
                 stdinSeen.append(stdin ?? "")
@@ -128,6 +138,7 @@ final class FakeTart: ProcessRunning {
         guard vms[vm] != nil else { throw SandboxError("run_failed", "no such VM \(vm)") }
         if vms[vm]?.suspended == true && failResume { throw SandboxError("run_failed", "cannot restore state") }
         let p = FakeProc()
+        p.immortal = spawnImmortal
         p.onRelease = { [unowned self] in self.lock.lock(); self.order.append("release"); self.lock.unlock() }
         vms[vm]?.proc = p
         vms[vm]?.suspended = false
@@ -140,10 +151,14 @@ final class FakeTart: ProcessRunning {
 
 final class FakeHostFacts: HostFactsReading {
     var facts = HostFacts(addresses: [.init("this Mac's address on en0", "192.168.1.20", iface: "en0"), .init("this Mac's tailnet address", "100.101.102.103", iface: "utun4")],
-                          router: "192.168.1.1", tailscaleInstalled: true)
+                          router: "192.168.1.1", tailscaleInstalled: true,
+                          bridge6: [.init("this Mac's IPv6 address on bridge100", "fe80::5c9b:a6ff:fe68:4164", iface: "bridge100"),
+                                    .init("this Mac's IPv6 address on bridge100", "fdc5:5ced:8bd3:9a9f:1447:5955:8b2d:5e2d", iface: "bridge100")])
     final class L: ProbeListener { var port: UInt16 = 51000; var hits = 0; func accepted() -> Int { hits }; func close() {} }
     var listenerHits = 0
     func read() -> HostFacts { facts }
+    func currentAddresses() -> [String] { facts.ipv4 }
+    func listener6() -> ProbeListener? { let l = L(); l.hits = listenerHits; return l }
     func listener() -> ProbeListener? { let l = L(); l.hits = listenerHits; return l }
 }
 

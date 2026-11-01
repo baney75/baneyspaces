@@ -52,6 +52,8 @@ public final class SandboxManager {
         public var slot: URL
         public var graphics: Bool
         public var startedAt: TimeInterval
+        /// The hash of the Softnet rules this VM was started with: when the Mac's addresses change it goes stale.
+        public var rulesHash: String
     }
 
     public struct Snapshot: Sendable {
@@ -71,6 +73,10 @@ public final class SandboxManager {
         public var rulesHash: String?
         public var pendingDeletes: [String]
         public var lastUp: UpTiming?
+        /// Task files still in a slot whose guest is gone or going (slot name -> task); retried until they are safe.
+        public var pendingRestores: [String: String]
+        /// Entries the last guest made that were not copied out (links, hard links, special files).
+        public var skippedOnRelease: [String]
     }
 
     public struct UpTiming: Equatable, Sendable {
@@ -120,21 +126,31 @@ public final class SandboxManager {
     private var pendingDeletes: Set<String> = []
     private var owned = false
     private var lockFD: Int32 = -1
+    /// Every VM process spawned and not known dead, so quitting can kill one that is still booting.
+    private var inflight: [RunningProcess] = []
+    /// A check on a clone found the isolation broken: the working guest is stopped by the next `tick`.
+    private var isolationAlarm: String?
+    private var warmRulesHash: String?
+    private var skippedOnRelease: [String] = []
+    /// How much a guest may write into its handoff folder (bytes); `tick` stops a guest past it.
+    var handoffLimit: () -> Int64 = { 2 << 30 }
 
     public init(tart: SandboxTart, facts: HostFactsReading, clock: SandboxClock = SystemClock(), paths: SandboxPaths = SandboxPaths(),
                 settings: @escaping () -> SandboxSettings, makeID: @escaping () -> String = { String(UUID().uuidString.prefix(8)).lowercased() },
                 memory: MemoryReading = SystemMemory(), hostMemoryGB: Int = Int(ProcessInfo.processInfo.physicalMemory >> 30)) {
         self.memory = memory; self.hostMemoryGB = hostMemoryGB
         self.tart = tart; self.facts = facts; self.clock = clock; self.paths = paths; self.settings = settings; self.makeID = makeID
+        self.handoffLimit = { [settings] in Int64(settings().handoffGB) << 30 }
     }
 
     deinit { if lockFD >= 0 { close(lockFD) } }
 
     // MARK: ownership and startup cleanup
 
-    /// Takes the exclusive lock (one manager per Mac), puts back the files of any slot a crash left bound, and
-    /// deletes every `bsx-*` VM that crash left behind. Runs once, before the first operation. Nothing is
-    /// ever deleted without this lock.
+    /// Takes the exclusive lock (one manager per Mac), makes sure no `bsx-*` VM from an earlier run is left, and only
+    /// then puts back the files of any slot that run left bound. If a leftover guest can't be verified deleted the
+    /// lock is given up again and this throws `busy`: nothing is owned, and no slot is touched while its guest may
+    /// still be writing to it. Nothing is ever deleted without the lock.
     func ensureOwner() throws {
         ownerLock.lock(); defer { ownerLock.unlock() }
         if owned { return }
@@ -144,17 +160,49 @@ public final class SandboxManager {
             if fd >= 0 { close(fd) }
             throw SandboxError("not_owner", "another BaneySpaces process owns the sandbox: use `baneyspaces sandbox …` (no --local) while the app runs", vmDeleted: true)
         }
+        guard tart.deleteAllOurs() else {
+            flock(fd, LOCK_UN); close(fd)
+            let e = SandboxError("busy", "a sandbox VM from an earlier run would not stop; its files stay where they are until it is gone. Try again shortly.", vmDeleted: false, retry: "after")
+            fail(e.description)
+            throw e
+        }
         lockFD = fd
         owned = true
-        let cleaned = tart.deleteAllOurs()
-        SandboxHandoff.recover(paths: paths)
-        if !cleaned { fail("a leftover sandbox VM could not be deleted") }
+        recoverSlots()
     }
 
     private var isOwner: Bool { ownerLock.lock(); defer { ownerLock.unlock() }; return owned }
 
-    /// Takes the Mac-wide lock and cleans up after a crash. The app calls it at launch, sandbox on or off.
-    public func startupCleanup() throws { try ensureOwner() }
+    /// Every slot the registry still lists has a dead guest by now (all `bsx-*` VMs are deleted): give the files back.
+    private func recoverSlots() {
+        for (name, _) in SandboxHandoff.pending(paths: paths) {
+            let r = SandboxHandoff.release(slot: paths.slots.appendingPathComponent(name), paths: paths)
+            if !r.skipped.isEmpty { state.lock(); skippedOnRelease = r.skipped; state.unlock() }
+            if !r.complete { fail("could not give back the files in \(name): \(r.failure ?? "unknown")") }
+        }
+        // Slots that held no task's files are the guest's alone.
+        for name in (try? FileManager.default.contentsOfDirectory(atPath: paths.slots.path)) ?? [] {
+            SandboxHandoff.removeUnboundSlot(paths.slots.appendingPathComponent(name), paths: paths)
+        }
+    }
+
+    /// Takes the Mac-wide lock and cleans up after a crash. With `keepOwnership: false` (the sandbox is off) the lock
+    /// is given up again, so nothing else (the probe) is kept out while the app merely runs.
+    public func startupCleanup(keepOwnership: Bool = true) throws {
+        try ensureOwner()
+        if !keepOwnership {
+            ownerLock.lock(); defer { ownerLock.unlock() }
+            state.lock(); let busy = working != nil || warmName != nil; state.unlock()
+            if !busy, owned { owned = false; flock(lockFD, LOCK_UN); close(lockFD); lockFD = -1 }
+        }
+    }
+
+    /// Files whose guest is gone but not yet given back (slot name -> task), without any slot a live VM holds.
+    private func pendingRestoresLocked() -> [String: String] {
+        var all = SandboxHandoff.pending(paths: paths)
+        if let w = working { all[w.slot.lastPathComponent] = nil }
+        return all
+    }
 
     // MARK: status
 
@@ -165,7 +213,8 @@ public final class SandboxManager {
                         warmLocation: warmState == .ready ? warmLocation : .disk, resetStats: SandboxResetStats(samples: resetSamples),
                         selfcheck: verifying ? "verifying" : (selfcheckStamp == nil ? (selfcheckProblems.isEmpty ? "none" : "failed") : "passed"),
                         selfcheckProblems: selfcheckProblems, lastReset: lastReset, lastError: lastError,
-                        rulesHash: selfcheckStamp, pendingDeletes: pendingDeletes.sorted(), lastUp: lastUp)
+                        rulesHash: selfcheckStamp, pendingDeletes: pendingDeletes.sorted(), lastUp: lastUp,
+                        pendingRestores: pendingRestoresLocked(), skippedOnRelease: skippedOnRelease)
     }
 
     /// A sandbox command: keeps the warm clone in memory for the next 15 minutes.
@@ -177,6 +226,35 @@ public final class SandboxManager {
 
     private func asSandboxError(_ error: Error) -> SandboxError {
         (error as? SandboxError) ?? SandboxError("error", "\(error)")
+    }
+
+    /// Starts a `tart run` and records the process the moment it exists, so quitting can kill a guest that is
+    /// still booting. Refuses once shutdown has begun, and kills a process that began just as it did.
+    private func spawn(_ vm: String, _ options: TartRunOptions, hold: Bool = false) throws -> RunningProcess {
+        if isShuttingDown { throw SandboxError("shutting_down", "BaneySpaces is quitting") }
+        let p = try tart.spawnRun(vm: vm, options: options, hold: hold)
+        state.lock()
+        inflight.removeAll { !$0.isRunning }
+        inflight.append(p)
+        let quitting = shuttingDown
+        state.unlock()
+        if quitting { p.kill(); throw SandboxError("shutting_down", "BaneySpaces is quitting") }
+        return p
+    }
+
+    /// Checked by every wait loop.
+    private var cancelled: () -> Bool { { [weak self] in self?.isShuttingDown ?? true } }
+
+    /// Gives a dead guest's files back and says whether they are safe (and the slot gone). While the guest's process
+    /// may still run, or on any failure, the slot and its registry entry stay and this returns false; `tick` retries.
+    @discardableResult
+    private func giveBack(_ slot: URL) -> Bool {
+        let r = SandboxHandoff.release(slot: slot, paths: paths, limitBytes: max(handoffLimit(), 1 << 20) * 2)
+        state.lock()
+        if !r.skipped.isEmpty { skippedOnRelease = r.skipped }
+        if !r.complete { lastError = "the task's files are still in \(slot.lastPathComponent): \(r.failure ?? "unknown"); they will be retried" }
+        state.unlock()
+        return r.complete
     }
 
     // MARK: up
@@ -219,7 +297,8 @@ public final class SandboxManager {
         guard bad.isEmpty else { throw SandboxError("rules_weak", bad.joined(separator: "; ")) }
         let got = try acquireClean(task: task, rules: rules, cfg: cfg, allowWait: true)
         state.lock()
-        working = Working(name: got.name, proc: got.proc, task: task, slot: got.slot, graphics: false, startedAt: clock.now())
+        working = Working(name: got.name, proc: got.proc, task: task, slot: got.slot, graphics: false, startedAt: clock.now(), rulesHash: got.rulesHash)
+        isolationAlarm = nil
         state.unlock()
         let booted = clock.now()
         let report = SandboxSelfcheck.run(vm: got.name, tart: tart, hostFacts: facts)
@@ -238,7 +317,7 @@ public final class SandboxManager {
         startWarmBuild(cfg: cfg)
     }
 
-    struct Acquired { var name: String; var proc: RunningProcess; var slot: URL; var viaWarm: Bool }
+    struct Acquired { var name: String; var proc: RunningProcess; var slot: URL; var viaWarm: Bool; var rulesHash: String }
 
     /// The warm clone taken over, or a cold boot. A failed step deletes what it made (and puts the task's
     /// files back) before throwing.
@@ -271,12 +350,18 @@ public final class SandboxManager {
 
     /// Makes the warm clone the working VM: its own slot gets the task's files, then it is promoted (running in
     /// memory) or resumed (saved on disk). It is spent either way. The previous working guest is already dead.
+    /// A running clone started under other Softnet rules than today's (the Mac's addresses changed) is saved to
+    /// disk first and resumed with the current ones.
     private func takeOverWarm(task: String, rules: SandboxNetwork.Rules) throws -> Acquired {
+        state.lock()
+        let stale = warmState == .ready && warmLocation == .memory && warmRulesHash != rules.hash
+        state.unlock()
+        if stale { saveWarmToDisk() }
         state.lock()
         guard warmState == .ready, let name = warmName else { state.unlock(); throw SandboxError("no_warm", "no warm clone") }
         let inMemory = warmLocation == .memory
         let running = warmProc
-        warmState = .none; warmName = nil; warmProc = nil; warmLocation = .disk
+        warmState = .none; warmName = nil; warmProc = nil; warmLocation = .disk; warmRulesHash = nil
         state.unlock()
         let slot = paths.slots.appendingPathComponent(name)
         var proc: RunningProcess? = inMemory ? running : nil
@@ -288,22 +373,24 @@ public final class SandboxManager {
             bound = true
             if inMemory {
                 guard let p = proc, p.isRunning else { throw SandboxError("vm_exited", "the warm clone had exited") }
-                try tart.waitForAgent(vm: name, proc: p, timeout: 20, poll: 0.1)
+                try tart.waitForAgent(vm: name, proc: p, timeout: 20, poll: 0.1, cancelled: cancelled)
             } else {
-                let p = try tart.spawnRun(vm: name, options: TartRunOptions(rules: rules, handoff: slot.path))
+                let p = try spawn(name, TartRunOptions(rules: rules, handoff: slot.path))
                 proc = p
-                try tart.waitForAgent(vm: name, proc: p, timeout: resumeLimit, poll: 0.1)
+                try tart.waitForAgent(vm: name, proc: p, timeout: resumeLimit, poll: 0.1, cancelled: cancelled)
             }
             acquireLap?("resume")
-            try tart.waitForShare(vm: name, timeout: 30)
+            try tart.waitForShare(vm: name, timeout: 30, cancelled: cancelled)
             acquireLap?("share")
             acquiredFrom = inMemory ? .memory : .disk
-            return Acquired(name: name, proc: proc!, slot: slot, viaWarm: true)
+            return Acquired(name: name, proc: proc!, slot: slot, viaWarm: true, rulesHash: rules.hash)
         } catch {
             if let p = proc, p.isRunning { p.kill(); _ = p.waitForExit(timeout: 5) }
-            if bound { SandboxHandoff.release(slot: slot, paths: paths) }
-            _ = tart.deleteVerified(name, proc: proc, force: true)
-            SandboxHandoff.removeSlot(slot)
+            let dead = proc?.isRunning != true
+            let safe = !bound || (dead && giveBack(slot))   // the files go back before anything is deleted
+            let gone = tart.deleteVerified(name, proc: proc, force: true)
+            if bound && !safe && gone { giveBack(slot) }
+            if !bound { SandboxHandoff.removeUnboundSlot(slot, paths: paths) }
             throw error
         }
     }
@@ -317,20 +404,22 @@ public final class SandboxManager {
         do {
             slot = try SandboxHandoff.makeSlot(vm: name, paths: paths)
             try tart.cloneAndSize(image: SandboxPin.image, vm: name, memoryGB: cfg.memoryGB, cpus: cfg.cpus)
-            let p = try tart.spawnRun(vm: name, options: TartRunOptions(rules: rules, handoff: slot!.path))
+            let p = try spawn(name, TartRunOptions(rules: rules, handoff: slot!.path))
             proc = p
-            try tart.waitForAgent(vm: name, proc: p, timeout: bootLimit)
+            try tart.waitForAgent(vm: name, proc: p, timeout: bootLimit, cancelled: cancelled)
             SandboxSelfcheck.harden(vm: name, tart: tart)
             try SandboxHandoff.bind(task: task, slot: slot!, paths: paths)
             bound = true
-            try tart.waitForShare(vm: name, timeout: 60)
+            try tart.waitForShare(vm: name, timeout: 60, cancelled: cancelled)
             acquiredFrom = .disk
-            return Acquired(name: name, proc: p, slot: slot!, viaWarm: false)
+            return Acquired(name: name, proc: p, slot: slot!, viaWarm: false, rulesHash: rules.hash)
         } catch {
             if let p = proc, p.isRunning { p.kill(); _ = p.waitForExit(timeout: 5) }
-            if bound, let slot { SandboxHandoff.release(slot: slot, paths: paths) }
+            let dead = proc?.isRunning != true
+            let safe = !bound || (dead && giveBack(slot!))
             let gone = tart.deleteVerified(name, proc: proc, force: true)
-            if let slot { SandboxHandoff.removeSlot(slot) }
+            if bound && !safe && gone, let slot { giveBack(slot) }
+            if !bound, let slot { SandboxHandoff.removeUnboundSlot(slot, paths: paths) }
             let e = asSandboxError(error)
             throw SandboxError(e.code, e.message, vmDeleted: gone, retry: e.retry)
         }
@@ -358,34 +447,42 @@ public final class SandboxManager {
         let gone = destroyWorking()
         saveWarmToDisk() // the task is over: give the memory back
         set(gone ? .stopped : .error)
-        if !gone { throw SandboxError("not_deleted", "the sandbox VM could not be deleted", vmDeleted: false) }
+        if !gone { throw SandboxError("not_deleted", "the sandbox VM could not be deleted, or its files could not be given back yet; both are retried and nothing was discarded", vmDeleted: false, retry: "after") }
         return snapshot()
     }
 
-    /// Kills and deletes the working VM and gives the task's files back; true when it is verifiably gone (or
-    /// there was none). The files only move once the process is dead.
+    /// Kills and deletes the working VM and gives the task's files back; true when it is verifiably gone and the files
+    /// are safe (or there was none). The files move only once the process is dead, and the slot is only ever removed by
+    /// a release that copied everything: a VM that won't die, or a release that fails, leaves both in place for `tick`.
     @discardableResult
     private func destroyWorking() -> Bool {
         state.lock()
         let w = working
         working = nil
         state.unlock()
-        guard let w else { return retryPendingDeletes() }
+        guard let w else { return retryPending() }
         if let p = w.proc, p.isRunning { p.kill(); _ = p.waitForExit(timeout: 5) }
-        if w.proc?.isRunning != true { SandboxHandoff.release(slot: w.slot, paths: paths) }
-        let ok = tart.deleteVerified(w.name, proc: w.proc, force: true)
-        if ok { SandboxHandoff.removeSlot(w.slot) } else { state.lock(); pendingDeletes.insert(w.name); state.unlock() }
-        return ok && retryPendingDeletes()
+        var restored = false
+        if w.proc?.isRunning != true { restored = giveBack(w.slot) }
+        let gone = tart.deleteVerified(w.name, proc: w.proc, force: true)
+        if gone && !restored { restored = giveBack(w.slot) } // it is certainly dead now
+        if !gone { state.lock(); pendingDeletes.insert(w.name); state.unlock() }
+        return gone && restored && retryPending()
     }
 
-    private func retryPendingDeletes() -> Bool {
+    /// Retries deletes that didn't take and files not yet given back. A slot is released only when its VM is verified
+    /// absent from Tart, so a guest that may still run never has its folder touched.
+    private func retryPending() -> Bool {
         state.lock(); let list = pendingDeletes; state.unlock()
         var ok = true
         for vm in list {
-            if tart.deleteVerified(vm, force: true) {
-                SandboxHandoff.removeSlot(paths.slots.appendingPathComponent(vm))
-                state.lock(); pendingDeletes.remove(vm); state.unlock()
-            } else { ok = false }
+            if tart.deleteVerified(vm, force: true) { state.lock(); pendingDeletes.remove(vm); state.unlock() } else { ok = false }
+        }
+        guard let present = try? tart.localVMs() else { return false }
+        for (slotName, _) in SandboxHandoff.pending(paths: paths) where !present.contains(slotName) {
+            state.lock(); let live = working?.name == slotName; state.unlock()
+            if live { continue }
+            if !giveBack(paths.slots.appendingPathComponent(slotName)) { ok = false }
         }
         return ok
     }
@@ -426,19 +523,20 @@ public final class SandboxManager {
         state.lock(); working = nil; state.unlock()
         if let p = old.proc, p.isRunning { p.kill(); _ = p.waitForExit(timeout: 5) }
         let oldDead = old.proc?.isRunning != true
-        if oldDead { SandboxHandoff.release(slot: old.slot, paths: paths) }
+        let oldSafe = oldDead && giveBack(old.slot)
         lap("kill")
         acquireLap = { lap($0) }
         defer { acquireLap = nil }
         var timing = SandboxResetTiming(route: route, seconds: 0)
         var verifyLater: String?
         do {
-            guard oldDead else { throw SandboxError("not_stopped", "the old sandbox VM would not stop", vmDeleted: false) }
+            guard oldDead else { throw SandboxError("not_stopped", "the old sandbox VM would not stop; its files stay where they are", vmDeleted: false, retry: "after") }
+            guard oldSafe else { throw SandboxError("handoff_pending", "the task's files could not be given back yet, so the next guest does not get them: \(snapshot().lastError ?? "")", vmDeleted: false, retry: "after") }
             if route == .swapAfterWait, !waitForWarm(limit: warmWaitLimit) { route = .cold }
             let got = try acquireClean(task: old.task, rules: rules, cfg: cfg, allowWait: false)
             if !got.viaWarm { route = .cold }
             state.lock()
-            working = Working(name: got.name, proc: got.proc, task: old.task, slot: got.slot, graphics: false, startedAt: clock.now())
+            working = Working(name: got.name, proc: got.proc, task: old.task, slot: got.slot, graphics: false, startedAt: clock.now(), rulesHash: got.rulesHash)
             state.unlock()
             let skipped = try recheck(rules: rules, vm: got.name)
             lap("check")
@@ -448,15 +546,13 @@ public final class SandboxManager {
             timing = SandboxResetTiming(route: route, seconds: clock.now() - t0, steps: steps, from: got.viaWarm ? acquiredFrom : .disk)
         } catch {
             let e = asSandboxError(error)
-            _ = tart.deleteVerified(old.name, proc: old.proc, force: true)
-            SandboxHandoff.removeSlot(old.slot)
+            let gone0 = tart.deleteVerified(old.name, proc: old.proc, force: true)
+            if gone0 { giveBack(old.slot) }   // idempotent: nothing is removed unless every file is safe
             let gone = destroyWorking()
             fail(e.description); set(.error)
             throw SandboxError(e.code, e.message, vmDeleted: gone && e.vmDeleted, retry: e.retry)
         }
-        if tart.deleteVerified(old.name, proc: old.proc, force: true) {
-            SandboxHandoff.removeSlot(old.slot)
-        } else {
+        if !tart.deleteVerified(old.name, proc: old.proc, force: true) {
             state.lock(); pendingDeletes.insert(old.name); state.unlock()
         }
         startWarmBuild(cfg: cfg)
@@ -555,23 +651,34 @@ public final class SandboxManager {
             if wasCurrent { warmState = .failed; warmName = nil; warmProc = nil; warmLocation = .disk; lastError = "warm clone: \(why)" }
             state.unlock()
             _ = tart.deleteVerified(name, proc: proc, force: true)
-            if let slot { SandboxHandoff.removeSlot(slot) }
+            if let slot { SandboxHandoff.removeUnboundSlot(slot, paths: paths) }
         }
         do {
             let rules = SandboxNetwork.rules(hostAddresses: facts.read().ipv4)
             slot = try SandboxHandoff.makeSlot(vm: name, paths: paths)
             try tart.cloneAndSize(image: SandboxPin.image, vm: name, memoryGB: cfg.memoryGB, cpus: cfg.cpus)
             guard current() else { return abandon("cancelled") }
-            let p = try tart.spawnRun(vm: name, options: TartRunOptions(rules: rules, handoff: slot!.path))
+            let p = try spawn(name, TartRunOptions(rules: rules, handoff: slot!.path))
             proc = p
             state.lock()
-            if warmName == name { warmProc = p }
+            if warmName == name { warmProc = p; warmRulesHash = rules.hash }
             state.unlock()
-            try tart.waitForAgent(vm: name, proc: p, timeout: bootLimit)
+            guard current() else { p.kill(); return abandon("cancelled") }
+            try tart.waitForAgent(vm: name, proc: p, timeout: bootLimit, cancelled: cancelled)
             guard current() else { return abandon("cancelled") }
             SandboxSelfcheck.harden(vm: name, tart: tart)
             let report = SandboxSelfcheck.run(vm: name, tart: tart, hostFacts: facts)
-            guard report.passed else { return abandon("self-check failed: " + report.problems.joined(separator: "; ")) }
+            guard report.passed else {
+                // A clone that can reach what it must not says the isolation is broken for the working guest too (same
+                // image, same Softnet): the stamp goes and `tick` stops that guest. A plain "no internet" does not.
+                if report.breach {
+                    state.lock()
+                    selfcheckStamp = nil; selfcheckProblems = report.problems
+                    isolationAlarm = "a new clone's self-check found the isolation broken: " + report.problems.joined(separator: "; ")
+                    state.unlock()
+                }
+                return abandon("self-check failed: " + report.problems.joined(separator: "; "))
+            }
             _ = tart.guest(name, "rm -rf /tmp/bsx-* 2>/dev/null; sync", timeout: 30)
             guard current() else { return abandon("cancelled") }
             // Decided now: the build takes a minute, and the sandbox may have gone idle or the Mac tight.
@@ -632,7 +739,7 @@ public final class SandboxManager {
         if let group, group.wait(timeout: .now() + 60) == .timedOut { fail("the warm build did not stop in 60 s") }
         guard let name else { return }
         if tart.deleteVerified(name, proc: p, force: true) {
-            SandboxHandoff.removeSlot(paths.slots.appendingPathComponent(name))
+            SandboxHandoff.removeUnboundSlot(paths.slots.appendingPathComponent(name), paths: paths)
         } else {
             state.lock(); pendingDeletes.insert(name); state.unlock()
         }
@@ -654,7 +761,30 @@ public final class SandboxManager {
             destroyWorking()
             set(.stopped)
         }
-        if !snapshot().pendingDeletes.isEmpty { _ = retryPendingDeletes() }
+        // A new clone's check found the isolation broken: the guest in use runs on the same image and rules.
+        state.lock(); let alarm = isolationAlarm; isolationAlarm = nil; state.unlock()
+        if let alarm, currentWorking() != nil {
+            destroyWorking(); fail(alarm); set(.error)
+        }
+        // The Mac's addresses changed (a new network, a VPN): the guest's block list is out of date, so it is stopped.
+        if let w = currentWorking() {
+            let now = SandboxNetwork.rules(hostAddresses: facts.currentAddresses()).hash
+            if now != w.rulesHash {
+                destroyWorking()
+                fail("the Mac's network addresses changed, so the sandbox's block list was out of date; the sandbox was stopped and its files are in the task folder. Run `baneyspaces sandbox up` again.")
+                set(.stopped)
+            }
+        }
+        // A guest that fills its handoff folder fills the host's disk: past the cap it is stopped.
+        if let w = currentWorking() {
+            let limit = handoffLimit()
+            if SandboxHandoff.size(of: w.slot, stopAfter: limit) > limit {
+                destroyWorking()
+                fail("handoff_full: the guest wrote more than \(limit >> 20) MB into its handoff folder; the sandbox was stopped and what fits is in the task folder")
+                set(.error)
+            }
+        }
+        if !snapshot().pendingDeletes.isEmpty || !pendingRestoresLocked().isEmpty { _ = retryPending() }
         state.lock()
         let hold = warmState == .ready && warmLocation == .memory
         let last = lastActivity, running = warmProc?.isRunning ?? false
@@ -670,16 +800,17 @@ public final class SandboxManager {
         }
     }
 
-    /// App quit. Never blocks the main thread on a lifecycle operation: every process is killed at once (the
-    /// state lock only), then the deletes and the files going back run on their own thread, and this waits at
-    /// most `deadline` seconds for them. What is left is cleaned up at the next launch. A manager that never
-    /// took the owner lock deletes nothing.
+    /// App quit. Never blocks the main thread on a lifecycle operation: every VM process, including one still booting
+    /// (they are all recorded the moment they exist), is killed at once under the state lock, nothing can be spawned
+    /// after, and the deletes and the files going back run on their own thread; this waits at most `deadline`
+    /// seconds for them. What is left is cleaned up at the next launch. A manager that never took the owner lock
+    /// deletes nothing.
     public func shutdown(deadline: TimeInterval = 5) {
         state.lock()
         shuttingDown = true
-        let w = working?.proc, p = warmProc
+        let procs = inflight + [working?.proc, warmProc].compactMap { $0 }
         state.unlock()
-        w?.kill(); p?.kill()
+        for p in procs { p.kill() }
         let done = DispatchSemaphore(value: 0)
         Thread.detachNewThread { [self] in
             defer { done.signal() }
@@ -699,10 +830,7 @@ public final class SandboxManager {
     private func teardown() {
         destroyWorking()
         dropWarm()
-        if isOwner {
-            _ = tart.deleteAllOurs()
-            SandboxHandoff.recover(paths: paths)
-        }
+        if isOwner, tart.deleteAllOurs() { recoverSlots() }
         set(.stopped)
     }
 
@@ -713,7 +841,7 @@ public final class SandboxManager {
         try ensureOwner()
         dropWarm()
         let vmsGone = tart.deleteAllOurs()
-        SandboxHandoff.recover(paths: paths)
+        if vmsGone { recoverSlots() }
         let imageGone = tart.deleteImage()
         guard vmsGone && imageGone else { throw SandboxError("not_deleted", "some sandbox images could not be deleted", vmDeleted: vmsGone) }
     }
@@ -777,18 +905,18 @@ public final class SandboxManager {
         do {
             // Held at a barrier: the claim is in place before the program runs a single instruction, so its
             // window can't open anywhere else first.
-            let p = try tart.spawnRun(vm: w.name, options: TartRunOptions(graphics: graphics, rules: rules, handoff: w.slot.path), hold: graphics)
+            let p = try spawn(w.name, TartRunOptions(graphics: graphics, rules: rules, handoff: w.slot.path), hold: graphics)
             if graphics, let host, let workspace, !host.claim(pid: p.pid, workspace: workspace) {
                 // Nothing of the program has run: it never showed a window. Back to headless, and say so.
                 p.kill(); _ = p.waitForExit(timeout: 5)
-                let back = try tart.spawnRun(vm: w.name, options: TartRunOptions(graphics: false, rules: rules, handoff: w.slot.path))
+                let back = try spawn(w.name, TartRunOptions(graphics: false, rules: rules, handoff: w.slot.path))
                 state.lock(); working?.proc = back; working?.graphics = false; state.unlock()
-                try tart.waitForAgent(vm: w.name, proc: back, timeout: resumeLimit, poll: 0.25)
+                try tart.waitForAgent(vm: w.name, proc: back, timeout: resumeLimit, poll: 0.25, cancelled: cancelled)
                 throw SandboxError("claim_failed", "could not reserve the agent workspace for the window in time; the sandbox is still headless", vmDeleted: false)
             }
             p.release()
-            state.lock(); working?.proc = p; working?.graphics = graphics; state.unlock()
-            try tart.waitForAgent(vm: w.name, proc: p, timeout: resumeLimit, poll: 0.25)
+            state.lock(); working?.proc = p; working?.graphics = graphics; working?.rulesHash = rules.hash; state.unlock()
+            try tart.waitForAgent(vm: w.name, proc: p, timeout: resumeLimit, poll: 0.25, cancelled: cancelled)
         } catch let e as SandboxError where e.code == "claim_failed" {
             throw e
         } catch {

@@ -8,7 +8,9 @@
 // (the same SandboxManager the app uses, with the real Tart), and checks that nothing you would see
 // changed: the workspace you are on (state.json `current`) and the app in front, sampled every 100 ms
 // while the probe runs, and that no VM window ever exists. A change you made yourself (real input in
-// the last 0.4 s) is not counted. Prints "sandbox-probe PASS" and exits 0 only if the probe passed, no bsx-* VM
+// the last 0.4 s) is not counted. A front-app change with no input and no VM window or process involved is
+// printed as a note (this Mac runs other agents); a workspace change with no input, a VM window, or a VM process in
+// front fails the probe. Prints "sandbox-probe PASS" and exits 0 only if the probe passed, no bsx-* VM
 // is left, and nothing changed. Needs Tart and the root-owned Softnet (sandbox/PIN) and the pinned image.
 import AppKit
 import Foundation
@@ -55,7 +57,8 @@ print("before: \(before)")
 // A change in workspace or front app with real input in the last 0.4 s is you. One with none was made
 // by software, and that is what fails the probe. Any VM window at all fails it too.
 var last = before
-var softwareChanges: [String] = []
+var softwareChanges: [String] = []     // the workspace you are on changed with no input from you: fails the probe
+var unattributed: [String] = []        // the front app changed with no input and no VM window or process was involved: reported, not failed
 var vmWindowSightings = 0
 var frontWasVM = false
 let lock = NSLock()
@@ -67,7 +70,10 @@ let watcher = Thread {
         let now = look()
         lock.lock()
         if now != last {
-            if idle() > 0.4 { softwareChanges.append("\(last) -> \(now)") }
+            if idle() > 0.4 {
+                let a = last.components(separatedBy: ", front app ")[0], b = now.components(separatedBy: ", front app ")[0]
+                if a != b { softwareChanges.append("\(last) -> \(now)") } else { unattributed.append("\(last) -> \(now)") }
+            }
             last = now
         }
         if vmWindows() > 0 { vmWindowSightings += 1 }
@@ -81,14 +87,16 @@ watcher.start()
 
 let t0 = Date()
 let (status, _) = sh([bin, "sandbox", "--local", "probe"] + extra)
+if status == 2 { print("sandbox-probe SKIPPED (see above): nothing was tested"); exit(2) }
 lock.lock(); running = false; lock.unlock()
 Thread.sleep(forTimeInterval: 0.3)
 let after = look()
 print(String(format: "probe took %.0f s", Date().timeIntervalSince(t0)))
 print("after:  \(after)")
 lock.lock()
-let changes = softwareChanges, windows = vmWindowSightings, vmFront = frontWasVM
+let changes = softwareChanges, windows = vmWindowSightings, vmFront = frontWasVM, others = unattributed
 lock.unlock()
+if !others.isEmpty { print("note: the front app changed with no input from you but no VM window or process was involved (other software on this Mac, not the sandbox):\n  " + others.joined(separator: "\n  ")) }
 if !changes.isEmpty { print("screen CHANGED with no input from you:\n  " + changes.joined(separator: "\n  ")) }
 if windows > 0 { print("a VM window appeared (\(windows) samples)") }
 if vmFront { print("a VM process came to the front") }
