@@ -185,7 +185,19 @@ pub fn activate(eff: &Effective, approved: &BTreeSet<String>) -> (Effective, Vec
         !pending(&segs)
     };
     let top = vec!["keys".to_string(), "bindings".to_string()];
+    let removed: Vec<Binding> = a.bindings.iter().filter(|b| !keep(&top, b)).cloned().collect();
     a.bindings.retain(|b| keep(&top, b));
+    // Inert means as if it were not there: a default it was about to replace stays bound.
+    for r in &removed {
+        let default = crate::config::default_bindings(a.platform).into_iter().find(|(sp, _)| crate::chord::parse(sp, &a.modifier).ok().as_ref() == Some(&r.chord));
+        if let Some((spelling, text)) = default {
+            if !a.bindings.iter().any(|b| b.chord == r.chord) {
+                if let Ok(action) = crate::action::parse(&text) {
+                    a.bindings.push(Binding { spelling, chord: r.chord.clone(), text, action });
+                }
+            }
+        }
+    }
     for (m, bs) in a.modes.iter_mut() {
         let prefix = vec!["keys".to_string(), "modes".to_string(), m.clone()];
         bs.retain(|b| keep(&prefix, b));

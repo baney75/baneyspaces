@@ -26,22 +26,47 @@ the file on first launch, and the old store is kept read-only for one release.
 
 ## Who may change what
 
-Agents may change anything in this file (Donovan, 2026-11-01: "agents should be able to customize in
-any way they choose"). Every change is recorded in `history/` and in the trace log, with the caller:
-`user`, `settings`, or `agent:<name>`. Three things stay out of reach of every edit, so nobody gets
-locked out of their own machine:
+Agents may change what looks and feels (Donovan, 2026-11-01: "agents should be able to customize in any way they choose"):
+themes, palettes, animations, behavior, rules and key bindings to plain actions (`switch`, `move`, `overview`, `mode`, ...). Every change is
+recorded in `history/` and in the trace log, with the caller: `user`, `settings`, or `agent:<name>`. The caller is read from the peer, never
+from a flag, and an agent that edits `config.toml` directly is recorded as `user` (nothing on the machine can tell the two apart), which is
+why the next rule does not depend on it.
+
+**Executable configuration waits for a click** (lead's decision, round 1 of the review of #122). These are *pending*, and inert, until
+a person approves them in Settings:
+
+- every `hooks.*` entry that is not empty;
+- every key binding (in `keys.bindings` or a mode) whose action is `exec ...`, `agent run ...`, or a `config`, `theme` or `set` command.
+
+Cosmetic configuration, and bindings to plain CLI actions, take effect at once as before. Inert means as if the entry were not there: a
+default it would have replaced stays bound. The rules:
+
+1. **Approval is per entry**, keyed by a SHA-256 of (path, value). Any change to the value, or the same value on another path, is a new entry
+   and is pending. Setting a value back to one that was approved is approved again.
+2. **Approvals are stored outside `config.toml`**, in `approvals.json` in the state directory (mode 0600), and are written **only by the
+   Settings UI on a real click**: a pending list with Approve and Remove per entry. Approve adds the entry's id; Remove is a plain
+   `config unset`. **No CLI, MCP or control-socket operation approves**: `config approve` and the `config_approve` operation are refused
+   (`not_in_scope`) with a message pointing to Settings. (The Linux daemon has one test-only operation, `test_settings_approve`, behind
+   `BANEYSPACES_TEST_OPS=1`, which `nested.sh` uses in place of the click.)
+3. **What is pending is visible.** `config get` returns a `pending` list (`id`, `path`, `value`, `kind`, `written_by_hint`) beside the
+   configured values, which still show the pending entries; `config.json` (`pending`) carries the same for Settings. `written_by_hint` is
+   the caller of the version that last set the value in the kept history, and is a hint only: a hand edit reads `user`, and a value older than
+   the 50 kept versions has no writer. Approval never depends on it.
+4. **A hook that is approved runs as the user**, with no agent token. An approved binding runs when its key is pressed.
+
+Three things stay out of reach of every edit, so nobody gets locked out of their own machine:
 
 1. **The recovery chord.** Hold the platform modifier with Shift and Escape for two seconds
-   (⌘⇧Esc, Super+Shift+Esc, Win+Shift+Esc). It restores the default keys and the default theme
-   and shows what was undone. Config can't rebind or remove it.
+   (⌘⇧Esc, Super+Shift+Esc, Win+Shift+Esc). It restores the default keys and the default theme, leaves any mode, and shows what was undone.
+   The hold is continuous: all three keys stay down for the whole two seconds, any release cancels it, and a tap followed by a later
+   Escape does not count. It works from every mode. Config can't rebind or remove it.
 2. **The reset command.** `baneyspaces config reset` and Settings › Reset always work.
-3. **Validation.** A change that fails the schema, leaves no binding to switch to some workspace,
-   or sets an animation over 1000 ms is refused with the exact path and reason. The running
-   config doesn't change.
+3. **Validation.** A change that fails the schema, leaves no binding to switch to some workspace, or sets an animation over 1000 ms is
+   refused with the exact path and reason. The running config doesn't change.
 
-Workspace and window operations (switch, move, show the agent workspace) are still refused to agent
-processes at run time. Agents may still bind those operations to keys for the person to press. That
-is the line: an agent can change what your keys do, but it can't press them for you.
+Workspace and window operations (switch, move, show the agent workspace) are still refused to agent processes at run time. Agents may still
+bind those operations to keys for the person to press. That is the line: an agent can change what your keys do, but it can't press them for
+you, and a command it wants run needs a click.
 
 ## Interface
 
@@ -230,11 +255,8 @@ These settle what the sections above leave open. The conformance cases hold them
 - **Behavior.** `follow_focus = false`: your own activation of a window on another workspace does not take you there. `new_window = "app"`: a
   new window joins the workspace of its app's most recent window. `[[rules]]` match on `app` (case-insensitive) and `title` (regex); a rule
   with neither matches nothing. The first match sets `workspace` and `float` for a window that opens (never an agent window).
-- **Hooks** run with `BANEYSPACES_HOOK` set and `BANEYSPACES_WORKSPACE` or `BANEYSPACES_WINDOW`; they are logged to `config.log` and recorded
-  in history. A hook runs with the identity of whoever set or last changed it (the history's caller). One set by `user` or `settings` runs as
-  the user. One set by an agent runs with that agent's launch token in its environment, so `baneyspaces switch 3` from it is refused as from
-  the agent itself; if no process of that agent is running, the hook does not run and a line in `config.log` says so. `config get` and
-  `config.json` (`resolved.hooks_set_by`) show who set each hook, and Settings shows it.
+- **Hooks** run with `BANEYSPACES_HOOK` set and `BANEYSPACES_WORKSPACE` or `BANEYSPACES_WINDOW`, once approved (see Who may change
+  what); they are logged to `config.log` and recorded in history, and run as the user.
 
 ## Files, history and callers
 
@@ -242,25 +264,28 @@ A CLI or MCP change edits `config.toml` in place: the file is re-read from disk 
 touched, so comments, blank lines and the order of what the person wrote stay (a changed `[[rules]]` list is written again as a whole).
 A file edited by hand is noticed, validated, and recorded as `user`; a file that does not validate leaves the last good
 config running and `config.json` (`status`) and the trace log say why. `config set` is refused while the file is invalid; `config reset`
-and `config undo` work from the last good config and keep the broken file as `config.toml.invalid-<time>`.
+and `config undo` work from the last good config and keep every broken file they write over (`config.toml`, and each `themes/*.toml` that
+differs) as `*.invalid-<time>`. A theme file that cannot be read (not UTF-8, over 1 MiB) is reported as a warning and never touched.
 
 `history/NNNNNNNN.json`: `{format: 1, seq, time (RFC 3339 UTC), caller, summary (one line), config (the text of config.toml), themes
-({name: text})}`. The first change also records the state before it (`system`). `config undo [n]` removes the newest n versions and restores
-the one before; repeating it goes further back. Writes use a temp file, `fsync` and `rename`.
+({name: text}), undo?}`. The first change also records the state before it (`system`). **Undo is history too**: `config undo [n]` writes a
+new version holding the state n live versions back (`undo: n`, summary `undo n: back to version K ...`) and deletes nothing. The live
+versions are the changes not already stepped over by a later undo, so repeating it goes further back. An agent may undo only versions it made
+itself (`not_in_scope` otherwise); `user` and `settings` may undo anything. Writes use a temp file, `fsync` and `rename`.
 
 The caller is taken from the peer, never from a flag: a process that carries an agent launch token is `agent:<name of the launch>`; a call
 over MCP is `agent:<id>`; a CLI with `--agent-id` is `agent:<id>`; Settings sends `settings`; anything else is `user`.
 
 A refused change is the envelope code `config_invalid` with `error.data.issues` (`{path, code, reason}`): `unknown_key`, `type`, `range`,
 `value`, `length`, `bad_key`, `bad_chord`, `reserved_chord`, `duplicate_chord`, `bad_action`, `bad_mod`, `lockout`, `wrong_curve`, `too_long`,
-`bad_theme`, `bad_palette`, `bad_regex`, `bad_url`, `required`, `syntax`.
+`bad_theme`, `bad_palette`, `bad_regex`, `bad_url`, `required`, `pending_approval` (a warning), `syntax`.
 
 ## Conformance case format
 
 `conformance/config/*.json` are arrays of `{name, platform?, omarchy?, reduce_motion?, themes?, steps}`. A step has `do` (`set`, `unset`,
-`apply`, `validate`, `reset`, `undo`, `edit_file`, `theme_create`, `theme_set`, `theme_delete`, `recovery`, `check`), its arguments, and
-optionally `expect` (`"ok"` or `{error, issues: [{path, code}]}`), `effective` (dotted path to value), `resolved` (JSON pointer into
-`config.json` to value), `history` (`len`, `callers` newest first) and `file` (the exact text of `config.toml`).
+`apply`, `validate`, `reset`, `undo`, `approve` (the Settings click), `approve_by_command` (must be refused), `edit_file`, `theme_create`, `theme_set`, `theme_delete`, `recovery`, `check`), its arguments, and
+optionally `expect` (`"ok"` or `{error, issues: [{path, code}]}`), `effective` (dotted path to value), `configured` (dotted path into what is configured, pending entries included), `absent` (dotted paths that must not be in what runs),
+`pending` (the paths waiting for a click, exactly), `resolved` (JSON pointer into `config.json` to value), `history` (`len`, `callers` newest first) and `file` (the exact text of `config.toml`).
 
 ## Conformance
 

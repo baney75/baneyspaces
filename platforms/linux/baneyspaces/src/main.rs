@@ -379,8 +379,22 @@ fn config_request(cmd: &str, mut a: Vec<String>) -> Result<(Value, bool), Envelo
             req(&format!("config_{sub}"), json!({ "text": read_doc(&a[0])? }))
         }
         "schema" | "history" => req(&format!("config_{sub}"), json!({})),
-        "diff" => req("config_diff", json!({ "version": a.first().and_then(|v| v.parse::<u64>().ok()) })),
-        "undo" => req("config_undo", json!({ "n": a.first().and_then(|v| v.parse::<u64>().ok()) })),
+        "diff" => match a.first().map(|v| v.parse::<u64>()) {
+            None => req("config_diff", json!({})),
+            Some(Ok(n)) => req("config_diff", json!({ "version": n })),
+            Some(Err(_)) => Err(fail("invalid_args", &format!("usage: config diff [version]; {:?} is not a version number", a[0]), "`baneyspaces config history` lists the versions.")),
+        },
+        "undo" => match a.first().map(|v| v.parse::<u64>()) {
+            None => req("config_undo", json!({})),
+            Some(Ok(n)) if n >= 1 => req("config_undo", json!({ "n": n })),
+            _ => Err(fail("invalid_args", &format!("usage: config undo [n]; {:?} is not a whole number of 1 or more", a[0]), "baneyspaces config undo [n]")),
+        },
+        "approve" | "approve-all" => Err(Envelope::err(
+            "not_in_scope",
+            "Approving an executable setting (a hook, or a key binding that runs a command or changes the configuration) is done by a click in Settings, never by a command",
+            Retry::Never,
+            "Open BaneySpaces Settings and Approve the entry in the pending list. `baneyspaces config get` shows what is waiting.",
+        )),
         "reset" => req("config_reset", json!({ "section": a.first() })),
         other => Err(fail("invalid_args", &format!("unknown config command {other:?}"), "config get|set|unset|apply|validate|schema|diff|undo|history|reset")),
     }
@@ -402,7 +416,7 @@ fn config_call(paths: &paths::Paths, req: &Value, declared: Option<&str>) -> Env
     let env = daemon::call_timeout(paths, req, wait);
     let unreachable = env.error.as_ref().is_some_and(|e| e.code == "daemon_down" || (op == "config_reset" && e.code == "timeout"));
     if op == "config_reset" && unreachable {
-        let svc = cfg::local_service(true);
+        let svc = cfg::local_service(false);
         let out = svc.dispatch(op, &req["args"], &caller());
         let mut env = out.env;
         if let Some(a) = out.applied {

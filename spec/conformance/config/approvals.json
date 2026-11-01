@@ -314,6 +314,39 @@
     ]
   },
   {
+    "name": "a pending binding that replaces a default leaves the default bound",
+    "steps": [
+      {
+        "do": "set",
+        "path": "keys.bindings.super+1",
+        "value": "exec foot",
+        "caller": "agent:x",
+        "expect": "ok",
+        "pending": [
+          "keys.bindings.\"super+1\""
+        ],
+        "effective": {
+          "keys.bindings.mod+1": "switch 1"
+        },
+        "absent": [
+          "keys.bindings.super+1"
+        ]
+      },
+      {
+        "do": "approve",
+        "path": "keys.bindings.\"super+1\"",
+        "value": "exec foot",
+        "pending": [],
+        "effective": {
+          "keys.bindings.super+1": "exec foot"
+        },
+        "absent": [
+          "keys.bindings.mod+1"
+        ]
+      }
+    ]
+  },
+  {
     "name": "no command approves (user)",
     "steps": [
       {

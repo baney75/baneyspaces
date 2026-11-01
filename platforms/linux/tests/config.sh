@@ -38,6 +38,7 @@ CFG="$XDG_CONFIG_HOME/baneyspaces"
 RTJ="$XDG_RUNTIME_DIR/baneyspaces/config.json"
 KEYS_LUA="$XDG_STATE_HOME/baneyspaces/hyprland-keys.lua"
 INCLUDE="$REPO/platforms/linux/omarchy/baneyspaces.lua"
+declare -F special >/dev/null || special() { H monitors | jq -r '[.[]|.specialWorkspace.name]|map(select(.=="special:agent"))|length'; }
 bs_binds() { H binds | jq -c "[.[]|select(.submap==\"\" and ((.description//\"\")|startswith(\"BaneySpaces\")))]|length"; }
 has_bind() { H binds | jq -e "[.[]|select(.description==\"$1\")]|length > 0" >/dev/null; }
 last_caller() { baneyspaces config history | jq -r '.data.versions[0].caller'; }
@@ -64,25 +65,50 @@ BASE_BINDS="$(bs_binds)"
 eq "defaults: 29 key bindings and the recovery chord" "$BASE_BINDS" "30"
 
 # --- an agent-token process sets a binding through the CLI
-HPRESS="$TMP/h-pressed"; rm -f "$HPRESS"
+HDESC="BaneySpaces: agent-workspace show"   # a plain action: free for an agent, and a description of its own
+EPRESS="$TMP/e-pressed"; rm -f "$EPRESS"
 cat > "$TMP/agent-config.sh" <<EOF
-baneyspaces config set 'keys.bindings."mod+h"' 'exec touch $HPRESS' > "$TMP/agent-set.json" 2>&1
+baneyspaces config set 'keys.bindings."mod+h"' 'agent-workspace show' > "$TMP/agent-set.json" 2>&1
+baneyspaces config set 'keys.bindings."mod+e"' 'exec touch $EPRESS' > "$TMP/agent-exec.json" 2>&1
 baneyspaces config set 'keys.bindings."super+shift+escape"' 'exec true' > "$TMP/agent-rebind.json" 2>&1
 baneyspaces config set 'keys.bindings."mod+shift+escape"' 'none' > "$TMP/agent-unbind.json" 2>&1
 baneyspaces config set animation.dock.in.duration_ms 5000 > "$TMP/agent-long.json" 2>&1
+baneyspaces config approve hooks.on_switch x > "$TMP/agent-approve.json" 2>&1
 echo done > "$TMP/agent-done"
 sleep 60
 EOF
 baneyspaces --agent-id tester agent run -- sh "$TMP/agent-config.sh" >/dev/null
 check "(setup) the agent process ran its commands" wait_for 20 test -e "$TMP/agent-done"
-eq "an agent may set a binding" "$(jq -r '.ok' "$TMP/agent-set.json")" "true"
-eq "the history records the caller from the peer's token, not from a flag" "$(baneyspaces config history | jq -r '[.data.versions[]|select(.summary|startswith("set keys.bindings"))][0].caller')" "agent:tester"
-eq "Hyprland's binds changed: the new binding is there" "$(has_bind 'BaneySpaces: exec touch '"$HPRESS" && echo yes)" "yes"
+eq "an agent may set a binding to a plain action" "$(jq -r '.ok' "$TMP/agent-set.json")" "true"
+eq "the history records the caller from the peer's token, not from a flag" "$(baneyspaces config history | jq -r '[.data.versions[]|select(.summary|startswith("set keys.bindings"))]|last.caller')" "agent:tester"
+eq "Hyprland's binds changed: the new binding is there" "$(has_bind "$HDESC" && echo yes)" "yes"
 eq "and it is one more bind than before" "$(bs_binds)" "$((BASE_BINDS+1))"
-check "config.toml holds only that" sh -c "grep -q 'mod+h' '$CFG/config.toml' && ! grep -q 'speed' '$CFG/config.toml'"
-press_cfg "BaneySpaces: exec touch $HPRESS"
-check "pressing it ran the action" test -e "$HPRESS"
+check "config.toml holds the agent's settings" sh -c "grep -q 'mod+h' '$CFG/config.toml' && ! grep -q 'speed' '$CFG/config.toml'"
+baneyspaces agent-workspace hide >/dev/null
+press_cfg "$HDESC"; sleep 0.5
+eq "pressing it ran the action (the agent workspace came up)" "$(special)" "1"
+baneyspaces agent-workspace hide >/dev/null; sleep 0.3
 eq "the same agent cannot press workspace keys (switch is still the user's)" "$(baneyspaces --agent-id tester agent run -- sh -c 'baneyspaces switch 3 > '"$TMP"'/agent-switch.json; sleep 20' >/dev/null; wait_for 10 test -s "$TMP/agent-switch.json"; jq -r .error.code "$TMP/agent-switch.json")" "not_in_scope"
+
+# --- executable settings wait for a click
+eq "an agent may set a binding that runs a command, but it is pending" "$(jq -r '.data.pending[0].path' "$TMP/agent-exec.json")" 'keys.bindings."mod+e"'
+eq "it is not bound in Hyprland" "$(has_bind 'BaneySpaces: exec touch '"$EPRESS" && echo bound || echo inert)" "inert"
+eq "config get shows it as pending, with who wrote it as a hint" "$(baneyspaces config get | jq -r '.data.pending[0]|[.path,.kind,.written_by_hint]|join(" ")')" 'keys.bindings."mod+e" exec binding agent:tester'
+eq "config.json lists it for Settings" "$(jq -r '.pending[0].value' "$RTJ")" "exec touch $EPRESS"
+eq "and keeps it out of what runs" "$(jq -r '.effective.keys.bindings["mod+e"] // "absent"' "$RTJ")" "absent"
+eq "config approve is refused with a pointer to Settings" "$(jq -r '.error.code + " " + (.error.message|test("click in Settings")|tostring)' "$TMP/agent-approve.json")" "not_in_scope true"
+eq "as is the socket op" "$(ctl '{"op":"config_approve","args":{"path":"keys.bindings.\"mod+e\"","value":"exec touch '"$EPRESS"'"}}' | jq -r .error.code)" "not_in_scope"
+eq "and a user's CLI" "$(baneyspaces config approve 'keys.bindings."mod+e"' | jq -r .error.code)" "not_in_scope"
+check "nothing wrote approvals.json" test ! -e "$XDG_STATE_HOME/baneyspaces/approvals.json"
+eq "the test-only Settings click approves it" "$(ctl '{"op":"test_settings_approve","args":{"path":"keys.bindings.\"mod+e\"","value":"exec touch '"$EPRESS"'"}}' | jq -r '.data.live.keys')" "applied"
+eq "now it is bound" "$(has_bind 'BaneySpaces: exec touch '"$EPRESS" && echo yes)" "yes"
+check "approvals.json is private" test "$(stat -c %a "$XDG_STATE_HOME/baneyspaces/approvals.json")" = 600
+press_cfg "BaneySpaces: exec touch $EPRESS"
+check "and pressing it runs the command" wait_for 3 test -e "$EPRESS"
+baneyspaces config set 'keys.bindings."mod+e"' "exec touch $EPRESS; true" >/dev/null
+eq "any change to the value makes it pending again, and unbound" "$(has_bind 'BaneySpaces: exec touch '"$EPRESS; true" && echo bound || echo inert)" "inert"
+baneyspaces config unset 'keys.bindings."mod+e"' >/dev/null
+eq "Remove is an unset: free for anyone" "$(baneyspaces config get | jq -r '.data.pending|length')" "0"
 
 # --- the recovery chord cannot be rebound or removed
 eq "binding the recovery chord is refused" "$(jq -r '.error.data.issues[0].code' "$TMP/agent-rebind.json")" "reserved_chord"
@@ -93,19 +119,23 @@ eq "exactly one recovery bind" "$(H binds | jq '[.[]|select(.description=="Baney
 check "the keys file does not bind it" sh -c "! grep -qi 'super + shift + escape' '$KEYS_LUA'"
 printf '[keys.bindings]\n"super+shift+escape" = "exec true"\n' > "$TMP/rebind.toml"
 eq "apply refuses it too" "$(baneyspaces config apply "$TMP/rebind.toml" | jq -r .error.data.issues[0].code)" "reserved_chord"
-eq "the running config is unchanged by the refusals" "$(baneyspaces config get keys.bindings.mod+h | jq -r .data.value)" "exec touch $HPRESS"
+eq "the running config is unchanged by the refusals" "$(baneyspaces config get keys.bindings.mod+h | jq -r .data.value)" "agent-workspace show"
 
-# --- undo removes the bind
+# --- undo removes the bind, and is recorded
 baneyspaces config undo >/dev/null
-check "undo takes the bind out of Hyprland" wait_for 5 sh -c "! hyprctl -j binds | jq -e '[.[]|select(.description==\"BaneySpaces: exec touch $HPRESS\")]|length > 0' >/dev/null"
+eq "an agent cannot undo what the user did" "$(baneyspaces --agent-id tester agent run -- sh -c 'baneyspaces config undo 1 > '"$TMP"'/agent-undo.json; sleep 20' >/dev/null; wait_for 10 test -s "$TMP/agent-undo.json"; jq -r .error.code "$TMP/agent-undo.json")" "not_in_scope"
+UNDONE=0
+while has_bind "$HDESC" && [ $UNDONE -lt 12 ]; do baneyspaces config undo >/dev/null; UNDONE=$((UNDONE+1)); done
+check "undo takes the bind out of Hyprland" wait_for 5 sh -c "! hyprctl -j binds | jq -e '[.[]|select(.description==\"$HDESC\")]|length > 0' >/dev/null"
 eq "back to the defaults' count" "$(bs_binds)" "$BASE_BINDS"
 check "and out of config.toml" sh -c "! grep -q 'mod+h' '$CFG/config.toml'"
-eq "undo is recorded in the log" "$(grep -c '"op":"config_undo"' "$XDG_STATE_HOME/baneyspaces/config.log")" "1"
+check "undo is in the log" sh -c "grep -q '\"op\":\"config_undo\"' '$XDG_STATE_HOME/baneyspaces/config.log'"
+eq "undo is a version in history, and nothing was deleted" "$(baneyspaces config history | jq -r '([.data.versions[]|select(.summary|startswith("undo"))]|length > 0) and ([.data.versions[]|select(.summary|startswith("set keys.bindings"))]|length > 0)')" "true"
 eq "the workspace keys still work after all this" "$(baneyspaces switch 5 | jq -r .ok; baneyspaces switch 1 >/dev/null)" "true"
 
 # --- keys: a rebind of a default, a mode, and the lockout
-baneyspaces config set 'keys.bindings."mod+3"' 'exec true' >/dev/null
-eq "a default can be rebound" "$(baneyspaces config get 'keys.bindings.mod+3' | jq -r .data.value)" "exec true"
+baneyspaces config set 'keys.bindings."mod+3"' 'move 7' >/dev/null
+eq "a default can be rebound" "$(baneyspaces config get 'keys.bindings.mod+3' | jq -r .data.value)" "move 7"
 baneyspaces config set keys.modes.resize.h 'window resize -40 0' >/dev/null
 baneyspaces config set 'keys.bindings."mod+r"' 'mode resize' >/dev/null
 check "a mode is a Hyprland submap" sh -c "hyprctl -j binds | jq -e '[.[]|select(.submap==\"resize\")]|length >= 2' >/dev/null"
@@ -119,24 +149,102 @@ baneyspaces config reset keys >/dev/null
 eq "reset keys restores the defaults in Hyprland" "$(bs_binds)" "$BASE_BINDS"
 
 # --- the recovery chord's commands put the defaults back (what the hold runs)
-baneyspaces config set 'keys.bindings."mod+h"' 'exec true' >/dev/null
+baneyspaces config set 'keys.bindings."mod+h"' 'agent-workspace hide' >/dev/null
 baneyspaces config set theme.name minimal >/dev/null
-eq "(setup) a custom key and theme are in" "$(has_bind 'BaneySpaces: exec true' && echo yes)" "yes"
+eq "(setup) a custom key and theme are in" "$(has_bind 'BaneySpaces: agent-workspace hide' && echo yes)" "yes"
 RECOVERY_CMDS="$(sed -n 's/.*hl.exec_cmd("\(baneyspaces config reset [a-z]* --notify\)").*/\1/p' "$INCLUDE")"
 eq "the include runs reset keys and reset theme" "$(echo "$RECOVERY_CMDS" | tr '\n' ';')" "baneyspaces config reset keys --notify;baneyspaces config reset theme --notify;"
 echo "$RECOVERY_CMDS" | while read -r c; do sh -c "$c" >/dev/null 2>&1; done
-eq "recovery restored the default keys" "$(has_bind 'BaneySpaces: exec true' && echo yes || echo no)" "no"
+eq "recovery restored the default keys" "$(has_bind 'BaneySpaces: agent-workspace hide' && echo yes || echo no)" "no"
 eq "and the default theme" "$(jq -r .effective.theme.name "$RTJ")" "$DEFTHEME"
 eq "recovery is recorded in history" "$(baneyspaces config history | jq -r '.data.versions[0].summary')" "reset theme"
 
+# --- the hold itself: the include's Lua, driven directly (no input device in the nested host)
+# hl.is_key_down is replaced by a table the test controls; the timers and the commands are real.
+cat > "$TMP/hold-stub.lua" <<'EOF'
+REAL_IS_KEY_DOWN = REAL_IS_KEY_DOWN or hl.is_key_down
+ST = { Escape = true, Super_L = true, Shift_L = true }
+hl.is_key_down = function(k) return ST[k] == true end
+EOF
+cat > "$TMP/hold-A.lua" <<'EOF'
+ST = { Escape = true, Super_L = true, Shift_L = true }
+__baneyspaces_recovery_press()
+EOF
+cat > "$TMP/hold-B.lua" <<'EOF'
+ST = { Escape = true, Super_L = true, Shift_L = true }
+__baneyspaces_recovery_press()
+hl.timer(function() ST.Shift_L = false end, { timeout = 1000, type = "oneshot" })
+EOF
+cat > "$TMP/hold-C.lua" <<'EOF'
+ST = { Escape = true, Super_L = true, Shift_L = true }
+__baneyspaces_recovery_press()
+hl.timer(function() ST = { Escape = false, Super_L = false, Shift_L = false } end, { timeout = 250, type = "oneshot" })
+hl.timer(function() ST = { Escape = true, Super_L = false, Shift_L = false } end, { timeout = 900, type = "oneshot" })
+EOF
+cat > "$TMP/hold-D.lua" <<'EOF'
+ST = { Escape = true, Super_L = true, Shift_L = true }
+__baneyspaces_recovery_press()
+hl.timer(function() ST.Escape = false end, { timeout = 700, type = "oneshot" })
+hl.timer(function() ST.Escape = true; __baneyspaces_recovery_press() end, { timeout = 800, type = "oneshot" })
+EOF
+hold_prep() { baneyspaces config reset >/dev/null; baneyspaces config set 'keys.bindings."mod+g"' 'agent-workspace hide' >/dev/null; baneyspaces config set theme.name minimal >/dev/null; }
+resets_in_history() { baneyspaces config history | jq '[.data.versions[]|select(.summary|test("^reset (keys|theme)$"))]|length'; }
+hyprctl eval "dofile(\"$TMP/hold-stub.lua\")" >/dev/null
+eq "the stub answers like the real function for the names the include uses" "$(hyprctl eval 'local f = io.open("'$TMP'/kd","w"); f:write(tostring(REAL_IS_KEY_DOWN("Escape")), tostring(REAL_IS_KEY_DOWN("Super_L")), tostring(REAL_IS_KEY_DOWN("Shift_L")), tostring((REAL_IS_KEY_DOWN("Nope_Key")))); f:close()' >/dev/null; sleep 0.2; cat "$TMP/kd")" "falsefalsefalsenil"
+hold_prep; R0="$(resets_in_history)"
+hyprctl eval "dofile(\"$TMP/hold-A.lua\")" >/dev/null; sleep 1.4
+eq "held 1.4 s: nothing yet" "$(resets_in_history)" "$R0"
+sleep 1.4
+eq "held 2 s with all three keys: keys and theme are reset" "$(resets_in_history)" "$((R0+2))"
+eq "(and the keys are the defaults)" "$(has_bind 'BaneySpaces: agent-workspace hide' && echo custom || echo default)" "default"
+hold_prep; R0="$(resets_in_history)"
+hyprctl eval "dofile(\"$TMP/hold-B.lua\")" >/dev/null; sleep 3.2
+eq "Shift let go at 1 s: no reset" "$(resets_in_history)" "$R0"
+eq "(the custom key is still there)" "$(has_bind 'BaneySpaces: agent-workspace hide' && echo custom || echo default)" "custom"
+hyprctl eval "dofile(\"$TMP/hold-C.lua\")" >/dev/null; sleep 3.2
+eq "a tap, then Escape alone at the 2 s mark: no reset" "$(resets_in_history)" "$R0"
+hyprctl eval "dofile(\"$TMP/hold-D.lua\")" >/dev/null; sleep 1.5
+eq "released and pressed again: the first press is void, the new one has not had 2 s" "$(resets_in_history)" "$R0"
+sleep 1.8
+eq "and the new press, held through, resets once" "$(resets_in_history)" "$((R0+2))"
+
+# --- the chord works from inside a mode, and the reset leaves the mode
+hold_prep
+baneyspaces config set keys.modes.resize.h 'window resize -40 0' >/dev/null
+baneyspaces config set 'keys.bindings."mod+r"' 'mode resize' >/dev/null
+hyprctl dispatch 'hl.dsp.submap("resize")' >/dev/null; sleep 0.3
+eq "(setup) Hyprland is in the resize mode" "$(hyprctl submap)" "resize"
+eq "the chord is bound in the mode" "$(H binds | jq '[.[]|select(.submap=="resize" and .description=="BaneySpaces: recovery (hold 2 s)")]|length >= 1')" "true"
+R0="$(resets_in_history)"
+hyprctl eval "dofile(\"$TMP/hold-A.lua\")" >/dev/null; sleep 3.2
+eq "held inside the mode: the reset ran" "$(resets_in_history)" "$((R0+2))"
+eq "and the person is back in the default mode" "$(hyprctl submap)" "default"
+eq "with the global keys active" "$(bs_binds)" "$BASE_BINDS"
+# Removing a mode while in it (not by the chord) also leaves it.
+hold_prep
+baneyspaces config set keys.modes.resize.h 'window resize -40 0' >/dev/null
+baneyspaces config set 'keys.bindings."mod+r"' 'mode resize' >/dev/null
+hyprctl dispatch 'hl.dsp.submap("resize")' >/dev/null; sleep 0.3
+baneyspaces config unset 'keys.bindings."mod+r"' >/dev/null
+baneyspaces config unset keys.modes.resize >/dev/null; sleep 0.5
+eq "removing the mode you are in leaves it" "$(hyprctl submap)" "default"
+hyprctl eval 'hl.is_key_down = REAL_IS_KEY_DOWN' >/dev/null
+baneyspaces config reset >/dev/null
+
 # --- recovery works with the daemon down
 DP="$(ctl '{"op":"ping"}' | jq -r .data.pid)"
-baneyspaces config set 'keys.bindings."mod+h"' 'exec true' >/dev/null
+baneyspaces config set 'keys.bindings."mod+h"' 'agent-workspace hide' >/dev/null
 kill -TERM "$DP"; wait_for 6 sh -c '! baneyspaces state 2>/dev/null | jq -e .ok >/dev/null'
 R="$(baneyspaces config reset keys)"
 eq "reset keys works with no daemon" "$(echo "$R" | jq -r '.ok')" "true"
 eq "and says it went through the local path" "$(echo "$R" | jq -r '.data.via')" "local (the daemon is not running)"
-check "and Hyprland has the defaults again" wait_for 5 sh -c "! hyprctl -j binds | jq -e '[.[]|select(.description==\"BaneySpaces: exec true\")]|length > 0' >/dev/null"
+check "and Hyprland has the defaults again" wait_for 5 sh -c "! hyprctl -j binds | jq -e '[.[]|select(.description==\"BaneySpaces: agent-workspace hide\")]|length > 0' >/dev/null"
+# A keys file that fails to run (a Hyprland update, an old binary) must not leave the session with no keys.
+mkdir -p "$XDG_STATE_HOME/baneyspaces"; echo 'error("boom: keys file broken")' > "$KEYS_LUA"
+hyprctl reload >/dev/null; sleep 1.5
+eq "a broken keys file falls back to the default keys on a reload" "$(bs_binds)" "$BASE_BINDS"
+check "and says why" sh -c "grep -q boom '$XDG_STATE_HOME/baneyspaces/keys-error.txt'"
+eq "with the recovery chord bound" "$(has_bind 'BaneySpaces: recovery (hold 2 s)' && echo yes)" "yes"
 baneyspaces daemon --trace >>"$TMP/daemon.log" 2>&1 & DPID=$!; PIDS+=($DPID)
 check "(the daemon starts again)" wait_for 8 sh -c 'baneyspaces state 2>/dev/null | jq -e .ok >/dev/null'
 
@@ -144,14 +252,14 @@ check "(the daemon starts again)" wait_for 8 sh -c 'baneyspaces state 2>/dev/nul
 cat > "$CFG/config.toml.new" <<'EOF'
 # edited by hand
 [keys.bindings]
-"mod+y" = "exec true"
+"mod+y" = "agent-workspace hide"
 EOF
 mv "$CFG/config.toml.new" "$CFG/config.toml"
-check "a hand edit reaches Hyprland within a few seconds" wait_for 5 has_bind 'BaneySpaces: exec true'
+check "a hand edit reaches Hyprland within a few seconds" wait_for 5 has_bind 'BaneySpaces: agent-workspace hide'
 eq "history says the user did it" "$(last_caller)" "user"
 printf '[keys\nnot toml' > "$CFG/config.toml"
 sleep 1
-eq "a broken file leaves the last good keys running" "$(has_bind 'BaneySpaces: exec true' && echo yes)" "yes"
+eq "a broken file leaves the last good keys running" "$(has_bind 'BaneySpaces: agent-workspace hide' && echo yes)" "yes"
 eq "and the status says what is wrong" "$(jq -r '.status.valid|tostring' "$RTJ")" "false"
 eq "a change through the CLI is refused until the file is fixed" "$(baneyspaces config set animation.speed 2 | jq -r .error.code)" "config_invalid"
 baneyspaces config reset keys >/dev/null
@@ -190,41 +298,42 @@ eq "follow_focus = false: activating it yourself does not take you to 7" "$(H mo
 baneyspaces config set behavior.follow_focus true >/dev/null
 baneyspaces config reset >/dev/null
 
-# --- hooks run as you, are logged, and are in history
+# --- hooks are executable: pending until a click in Settings, then they run as you
+open_hookwin() { hyprctl dispatch "hl.dsp.exec_cmd(\"foot -T $1 sleep 60\")" >/dev/null; for _ in $(seq 1 60); do H clients | jq -e ".[]|select(.title==\"$1\")" >/dev/null && break; sleep 0.1; done; sleep 0.8; }
 HOOKOUT="$TMP/hook-out"; rm -f "$HOOKOUT"
-baneyspaces config set hooks.on_switch "echo \$BANEYSPACES_WORKSPACE >> $HOOKOUT" >/dev/null
+HCMD="echo \$BANEYSPACES_WORKSPACE >> $HOOKOUT"
+baneyspaces config set hooks.on_switch "$HCMD" >/dev/null
+eq "a hook set by you is pending too" "$(baneyspaces config get hooks | jq -r '.data.pending[0].path')" "hooks.on_switch"
 baneyspaces switch 8 >/dev/null; sleep 0.8
-check "on_switch ran with the workspace in its environment" sh -c "grep -q '^8$' '$HOOKOUT'"
+eq "so it does not run" "$(test -e "$HOOKOUT" && echo ran || echo inert)" "inert"
+ctl "$(jq -nc --arg v "$HCMD" '{op:"test_settings_approve",args:{path:"hooks.on_switch",value:$v}}')" >/dev/null
+baneyspaces switch 7 >/dev/null; sleep 0.8
+check "once approved it runs, with the workspace in its environment" sh -c "grep -q '^7$' '$HOOKOUT'"
 check "the hook is in the log" sh -c "grep -q '\"hook\":\"on_switch\"' '$XDG_STATE_HOME/baneyspaces/config.log'"
-eq "and in history" "$(last_summary | cut -c1-15)" "set hooks.on_sw"
-eq "config get hooks says who set each one" "$(baneyspaces config get hooks | jq -r '.data.hooks_set_by.on_switch')" "user"
+baneyspaces config set hooks.on_switch "$HCMD; true" >/dev/null
+rm -f "$HOOKOUT"; baneyspaces switch 6 >/dev/null; sleep 0.8
+eq "a changed hook is pending again and does not run" "$(test -e "$HOOKOUT" && echo ran || echo inert)" "inert"
 baneyspaces config reset hooks >/dev/null
 baneyspaces switch 1 >/dev/null
 
-# --- a hook runs with the identity of whoever set it
-open_hookwin() { hyprctl dispatch "hl.dsp.exec_cmd(\"foot -T $1 sleep 60\")" >/dev/null; for _ in $(seq 1 60); do H clients | jq -e ".[]|select(.title==\"$1\")" >/dev/null && break; sleep 0.1; done; sleep 0.6; }
-HOOKSW="$TMP/hook-switch.json"; rm -f "$HOOKSW" "$TMP/agent-hook-release"
+# An agent sets a hook that switches workspaces: it does not run, and no command makes it.
+HOOKSW="$TMP/hook-switch.json"; rm -f "$HOOKSW" "$TMP/agent-hook-done"
 cat > "$TMP/agent-hook.sh" <<EOF
 baneyspaces config set hooks.on_window_open "baneyspaces switch 3 > $HOOKSW 2>&1" > "$TMP/agent-hook-set.json" 2>&1
 echo done > "$TMP/agent-hook-done"
-while [ ! -e "$TMP/agent-hook-release" ]; do sleep 0.2; done
+sleep 30
 EOF
 baneyspaces --agent-id hooker agent run -- sh "$TMP/agent-hook.sh" >/dev/null
 check "(setup) the agent set a hook" wait_for 20 test -e "$TMP/agent-hook-done"
 eq "an agent may set a hook" "$(jq -r .ok "$TMP/agent-hook-set.json")" "true"
-eq "config get says the agent set it" "$(baneyspaces config get hooks | jq -r '.data.hooks_set_by.on_window_open')" "agent:hooker"
+eq "it is pending, with the agent as the hint" "$(baneyspaces config get hooks | jq -r '.data.pending[0]|[.path,.written_by_hint]|join(" ")')" "hooks.on_window_open agent:hooker"
 baneyspaces switch 5 >/dev/null; sleep 0.3
 open_hookwin hookwin1
-check "the hook ran" wait_for 5 test -s "$HOOKSW"
-eq "its switch was refused like the agent's own: not_in_scope" "$(jq -r '.error.code' "$HOOKSW" 2>/dev/null)" "not_in_scope"
-eq "and the workspace did not change" "$(H monitors | jq -r '.[]|select(.focused)|.activeWorkspace.id')" "5"
-eq "the log names who it ran as" "$(grep -c '"set_by":"agent:hooker"' "$XDG_STATE_HOME/baneyspaces/config.log")" "1"
-# The agent's process is gone: its hook has no identity to run as, so it does not run.
-touch "$TMP/agent-hook-release"; sleep 2; rm -f "$HOOKSW"
+eq "a window opens and the hook does not run" "$(test -e "$HOOKSW" && echo ran || echo inert)" "inert"
+eq "the workspace did not change" "$(H monitors | jq -r '.[]|select(.focused)|.activeWorkspace.id')" "5"
+ctl "$(jq -nc --arg v "baneyspaces switch 3 > $HOOKSW 2>&1" '{op:"test_settings_approve",args:{path:"hooks.on_window_open",value:$v}}')" >/dev/null
 open_hookwin hookwin2
-eq "with no live process of the agent the hook does not run" "$(test -e "$HOOKSW" && echo ran || echo skipped)" "skipped"
-check "and a line says so" sh -c "grep -q 'has no running process to run it as' '$XDG_STATE_HOME/baneyspaces/config.log'"
-eq "the workspace still did not change" "$(H monitors | jq -r '.[]|select(.focused)|.activeWorkspace.id')" "5"
+check "approved in Settings (the test op), it runs" wait_for 5 test -s "$HOOKSW"
 baneyspaces config reset hooks >/dev/null
 baneyspaces switch 1 >/dev/null
 

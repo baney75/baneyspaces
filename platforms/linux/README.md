@@ -179,13 +179,27 @@ validated whole, written atomically, recorded in `~/.config/baneyspaces/history/
 | `keys` | `$XDG_STATE_HOME/baneyspaces/hyprland-keys.lua`, run inside Hyprland (`hyprctl eval dofile`). The include loads the same file on a reload, and falls back to the default binds when it is missing or the daemon never ran. Global binds are removed by key and mode binds disabled (see the workaround below). A chord you bind takes the key from Omarchy's own binding until the next reload. |
 | `theme`, `animation` | `$XDG_RUNTIME_DIR/baneyspaces/config.json`, the one file the UIs read: the effective config, the resolved theme tokens and palette, the final animation numbers (speed and Reduce Motion applied) and `status`. The focus border's animation is also set in Hyprland. Workspace animations stay off. |
 | `behavior`, `rules` | The daemon's model (`Event::Settings`). |
-| `hooks` | Run by the daemon as you, logged to `config.log`. |
+| `hooks` | Run by the daemon as you once approved, logged to `config.log`. |
 
 `config.toml` and `themes/*.toml` are watched with inotify; a hand edit is applied within a second. `config.log` in the state directory keeps every
 change and refusal. The recovery chord (Super+Shift+Escape held 2 s: Lua timer and `hl.is_key_down` in the include) runs
 `baneyspaces config reset keys --notify` and `config reset theme --notify`; it is bound in the include and in every mode, never from config.
 Not exercised by `nested.sh`: the nested host has no input device, so key presses and the 2 s hold cannot be delivered; the test runs the command a
 bind holds.
+
+### Executable settings wait for a click
+
+A hook, and a key binding whose action is `exec ...`, `agent run ...` or a `config`/`theme`/`set` command, is **pending** until approved in
+Settings (`spec/config.md`, Who may change what). Pending entries are listed in `config.json` under `pending` (`id`, `path`, `value`, `kind`,
+`written_by_hint`) and in `baneyspaces config get`; the daemon runs and binds none of them. **The Settings surface (Quickshell, part 2) must
+show that list with Approve and Remove per entry.** Approve is the only write that approves, and only on a real click: add
+`"<id>": {"path": ..., "value": ..., "time": ...}` to `"approved"` in `$XDG_STATE_HOME/baneyspaces/approvals.json` (0600, written
+atomically: a temp file in the same directory, then `rename`), where `id` is the lowercase-hex SHA-256 of `path`, a NUL byte and `value` (the
+`id` in the pending entry). The daemon watches the file and applies at once. Remove is `baneyspaces config unset <path>`. The daemon has no
+operation that approves (`config_approve` and `baneyspaces config approve` answer `not_in_scope` and point to Settings); under
+`BANEYSPACES_TEST_OPS=1` it has `test_settings_approve`, which `nested.sh` uses in place of the click. Same-user processes can still write the
+file: this keeps an honest tool from approving by accident, as the agent token does for `switch` and `move`; it is not a boundary against a
+hostile process of your own user.
 
 ### Hyprland 0.56.2: never remove more than one bind through its handle
 
