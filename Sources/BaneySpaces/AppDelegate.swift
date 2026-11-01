@@ -186,6 +186,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         c.model.parkedApps = { [weak self] in self?.parkedRows() ?? [] }
         c.model.onToggleParked = { [weak self] id in self?.toggleParked(id) }
         c.model.updateInfo = { [weak self] in self?.updateInfo() ?? .init() }
+        c.model.onUpdatesShown = { [weak self] in self?.refreshCommandLineTools() }
         c.model.onCheckForUpdates = { [weak self] in self?.checkForUpdates() }
         c.model.onOfferUpdate = { [weak self] in if let r = self?.updater.available { self?.updater.offer(r) } }
         c.model.onSetUpdateChannel = { [weak self] in self?.updater.channel = $0 }
@@ -546,8 +547,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let n = started && deck.started ? deck.unseenCount : 0
         statusItem.button?.title = n > 0 ? " \(n)" : ""
         statusItem.button?.imagePosition = .imageLeading
-        // The menu no longer has an "Update to…" line; a waiting release says so here and in Settings > Updates.
-        statusItem.button?.toolTip = updater.available.map { "BaneySpaces: \($0.isNightly ? "a new nightly build" : $0.name) is available. See Settings > Updates." }
     }
 
     private func startDeck() {
@@ -594,22 +593,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         spaces.refresh()
         var apps: [Int: [String]] = [:]
         for n in Workspaces.range { apps[n] = spaces.apps(on: n) }
-        for row in MenuLayout.rows(current: spaces.model.current, apps: apps) {
+        let entries = MenuLayout.entries(rows: MenuLayout.rows(current: spaces.model.current, apps: apps),
+                                         finished: deck.started ? deck.unseenCount : 0, update: updateNotice())
+        for entry in entries { menu.addItem(menuItem(for: entry)) }
+    }
+
+    /// Each entry `MenuLayout.entries` lists, as the one menu item it is. Every item the menu holds
+    /// is built here or in `item(_:_:key:)`, which `MenuLayoutTests` counts.
+    private func menuItem(for entry: MenuEntry) -> NSMenuItem {
+        switch entry {
+        case .workspace(let row):
             let it = item(row.title, #selector(pick(_:)), key: "\(row.workspace)")
             it.keyEquivalentModifierMask = Modifier.current.menuFlags
             it.tag = row.workspace
             it.state = row.isCurrent ? .on : .off
             it.toolTip = row.fullList
-            menu.addItem(it)
+            return it
+        case .showAll:
+            return item("Show All Workspaces", #selector(showViewer))
+        case .find:
+            let find = item("Find or Install an App…", #selector(showLauncher))
+            if Launcher.onCmdSpace { find.keyEquivalent = " "; find.keyEquivalentModifierMask = [.command] }
+            return find
+        case .settings:
+            return item("Settings…", #selector(showSetup), key: ",")
+        case .quit:
+            return item("Quit BaneySpaces", #selector(quit), key: "q")
+        case .finished(let count):
+            // Clicking an agent goes to it and marks it seen, which drops it from this list.
+            return deck.finishedMenuItem(title: MenuLayout.finishedTitle(count))
+        case .update(let notice):
+            let it = item(notice.menuTitle, #selector(offerUpdate))
+            if notice.installing {
+                it.action = nil
+                it.isEnabled = false
+            } else {
+                it.attributedTitle = NSAttributedString(string: it.title, attributes: [.font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)])
+            }
+            return it
+        case .separator:
+            return .separator()
         }
-        menu.addItem(.separator())
-        menu.addItem(item("Show All Workspaces", #selector(showViewer)))
-        let find = item("Find or Install an App…", #selector(showLauncher))
-        if Launcher.onCmdSpace { find.keyEquivalent = " "; find.keyEquivalentModifierMask = [.command] }
-        menu.addItem(find)
-        menu.addItem(.separator())
-        menu.addItem(item("Settings…", #selector(showSetup), key: ","))
-        menu.addItem(item("Quit BaneySpaces", #selector(quit), key: "q"))
     }
 
     private func item(_ title: String, _ action: Selector, key: String = "") -> NSMenuItem {
@@ -617,6 +641,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         it.target = self
         return it
     }
+
+    /// A release waiting or installing, if any: the menu's "Update to …" row and Settings > Updates.
+    private func updateNotice() -> UpdateNotice? {
+        if let r = updater.installing { return UpdateNotice(name: r.name, isNightly: r.isNightly, installing: true) }
+        return updater.available.map { UpdateNotice(name: $0.name, isNightly: $0.isNightly, installing: false) }
+    }
+
+    @objc private func offerUpdate() { if let r = updater.available { updater.offer(r) } }
 
     @objc private func pick(_ sender: NSMenuItem) { spaces.switchTo(sender.tag) }
 
@@ -702,25 +734,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// What Settings > Updates shows: the build you have, the channel, and any release waiting.
     private func updateInfo() -> SetupModel.UpdateInfo {
-        func name(_ r: Release) -> String { r.isNightly ? "the nightly build" : r.name }
-        return .init(have: Updater.buildDescription, channel: updater.channel, daily: updater.checksAutomatically,
-                     nightlyNeedsTools: !commandLineTools, installing: updater.installing.map(name),
-                     available: updater.available.map(name))
+        .init(have: Updater.buildDescription, channel: updater.channel, daily: updater.checksAutomatically,
+              nightlyNeedsTools: !commandLineTools, notice: updateNotice())
     }
 
-    /// Asked once: it runs a process, and a Mac gains the tools only by a deliberate install.
-    private lazy var commandLineTools = Updater.hasCommandLineTools
+    /// Whether Apple's command line tools are installed, as of the last look: `refreshCommandLineTools`
+    /// looks again (it runs a process, so off the main thread) whenever Settings > Updates appears.
+    private var commandLineTools = true
+
+    private func refreshCommandLineTools() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let found = Updater.hasCommandLineTools
+            DispatchQueue.main.async {
+                guard let self, self.commandLineTools != found else { return }
+                self.commandLineTools = found
+                self.setup.model.reload()
+            }
+        }
+    }
 
     private func checkForUpdates() { updater.check(manual: true) }
 
     private func toggleParked(_ id: String) {
+        guard started else { return }
         ParkedApps.toggle(id)
         // Checking an app again gives it a fresh try at parking.
         if ParkedApps.bundleIDs.contains(id) { SlowMovers.bundleIDs.remove(id) }
         spaces.reapply()
     }
 
-    private func bringBack() { spaces.gatherOnOne() }
+    private func bringBack() {
+        guard started else { return }
+        spaces.gatherOnOne()
+    }
 
     @objc private func showViewer() { viewer.open() }
 

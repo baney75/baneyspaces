@@ -87,8 +87,10 @@ workspaces in the same 3×3 grid as the number keys, with every window's app and
 
 The menu bar icon shows the number of the workspace you're on. Its menu lists the workspaces in
 use and one empty one to start fresh on, then **Show All Workspaces**, **Find or Install an App…**,
-**Settings…** (⌘,) and **Quit BaneySpaces** (⌘Q). Every switch, **Bring Every Window Back**,
-the update controls and About live in Settings, one click away.
+**Settings…** (⌘,) and **Quit BaneySpaces** (⌘Q). Two more rows appear only while there is
+something to act on: **N Agents Finished While You Were Away** (a list; click one to go to it) and
+**Update to …**. Every switch, **Bring Every Window Back**, the update controls and About live in
+Settings, one click away.
 
 ## Workspace Dock
 
@@ -298,8 +300,8 @@ Spotlight.
 
 ### Updates
 
-BaneySpaces looks for a new version once a day and, when there is one, the menu bar icon's tooltip says so and **Settings > Updates** shows
-**Update to BaneySpaces …**. Check by hand there with **Check for Updates Now…**. Nothing installs until you press **Update Now** in the window that
+BaneySpaces looks for a new version once a day and, when there is one, the menu bar menu shows **Update to BaneySpaces …** (the row is there only while
+a release is waiting) and so does **Settings > Updates**. Check by hand there with **Check for Updates Now…**. Nothing installs until you press **Update Now** in the window that
 shows what changed. The update installs the same way the first install did, into the folder the
 app is in. A stable release downloads the ready-made app; a Nightly build, or a copy that was
 built on your Mac (while the command line tools are installed), is built on your Mac, so the

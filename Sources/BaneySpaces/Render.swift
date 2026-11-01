@@ -90,7 +90,7 @@ enum Render {
         setup.parkedApps = { [.init(id: "com.apple.Safari", name: "Safari", on: false, animates: false),
                             .init(id: "com.trycua.spaces.macos", name: "Cua Spaces", on: true, animates: false),
                             .init(id: "com.mitchellh.ghostty", name: "Ghostty", on: true, animates: true)] }
-        setup.update = .init(have: "0.3.0 (abc1234)", channel: .stable, daily: true, nightlyNeedsTools: false, installing: nil, available: "BaneySpaces 0.3.1")
+        setup.update = .init(have: "0.3.0 (abc1234)", channel: .stable, daily: true, nightlyNeedsTools: false, notice: UpdateNotice(name: "BaneySpaces 0.3.1", isNightly: false, installing: false))
         setup.finished = [.init(id: "a", label: "Claude Code · baneyspaces")]
         guard save(SetupView(model: setup, close: {}).background(Color(nsColor: .windowBackgroundColor)),
                    "setup.png", CGSize(width: 560, height: 0)) else { return 1 }

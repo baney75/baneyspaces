@@ -491,15 +491,42 @@ final class DeckController {
 
     // MARK: finished agents
 
-    /// Agents that finished while you were away, for Settings > Dock (they were in the menu bar menu).
+    /// Agents that finished while you were away, for Settings > Dock.
     func finishedRows() -> [(id: String, label: String)] {
         engine.attention.unseen.compactMap { engine.item($0) }.map { ($0.id, $0.label) }
     }
 
-    /// Goes to the agent a "Finished While You Were Away" row names.
+    /// Goes to the agent a "Finished While You Were Away" row names, and marks it seen.
     func focusFinished(_ id: String) {
         guard let row = engine.item(id) else { return }
         focus(row)
+    }
+
+    /// The menu bar menu's row for agents that finished while you were away: a submenu, one item
+    /// for each. The app adds it only while there is one.
+    func finishedMenuItem(title: String) -> NSMenuItem {
+        let parent = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        for (id, label) in finishedRows() {
+            let i = NSMenuItem(title: label, action: #selector(DeckMenuTarget.focusRow(_:)), keyEquivalent: "")
+            i.representedObject = id
+            i.target = menuTarget
+            sub.addItem(i)
+        }
+        parent.submenu = sub
+        return parent
+    }
+
+    private lazy var menuTarget = DeckMenuTarget(owner: self)
+}
+
+/// Menu items need an Objective-C target; this one forwards to the Deck.
+final class DeckMenuTarget: NSObject {
+    weak var owner: DeckController?
+    init(owner: DeckController) { self.owner = owner }
+    @objc func focusRow(_ item: NSMenuItem) {
+        guard let id = item.representedObject as? String else { return }
+        owner?.focusFinished(id)
     }
 }
 

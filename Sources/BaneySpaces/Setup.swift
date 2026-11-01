@@ -31,7 +31,10 @@ final class SetupModel: ObservableObject {
     @Published var hooks: HookState = .on
     @Published var tab: SettingsTab = .general {
         // The app list changes while the window is open; it's read when you look at it.
-        didSet { if tab == .automation { reloadParked() } }
+        didSet {
+            if tab == .automation { reloadParked() }
+            if tab == .updates { onUpdatesShown?() }
+        }
     }
     var onUninstall: (() -> Void)?
     /// Everything the menu bar menu's Options, Updates and About items used to do (2026-10-31).
@@ -54,11 +57,13 @@ final class SetupModel: ObservableObject {
         var channel = UpdateChannel.stable
         var daily = true
         var nightlyNeedsTools = false
-        var installing: String?
-        var available: String?
+        /// A release waiting, or installing.
+        var notice: UpdateNotice?
     }
     @Published var update = UpdateInfo()
     var updateInfo: () -> UpdateInfo = { UpdateInfo() }
+    /// The Updates tab came up: look again for the command line tools, which a Mac can gain while this runs.
+    var onUpdatesShown: (() -> Void)?
     var onCheckForUpdates: (() -> Void)?
     var onOfferUpdate: (() -> Void)?
     var onSetUpdateChannel: ((UpdateChannel) -> Void)?
@@ -68,6 +73,12 @@ final class SetupModel: ObservableObject {
     @Published var finished: [FinishedRow] = []
     var finishedRows: () -> [FinishedRow] = { [] }
     var onFocusFinished: ((String) -> Void)?
+
+    /// Goes to the agent, which marks it seen; the list drops it at once instead of at the next tick.
+    func focusFinished(_ id: String) {
+        onFocusFinished?(id)
+        finished = finishedRows()
+    }
     @Published var launcherOnCmdSpace = Launcher.onCmdSpace
     @Published var searchEngine = Launcher.searchEngine { didSet { Launcher.searchEngine = searchEngine } }
     @Published var agent = Launcher.agent { didSet { Launcher.agent = agent } }
@@ -147,9 +158,14 @@ final class SetupModel: ObservableObject {
         if info != update { update = info }
         let rows = finishedRows()
         if rows != finished { finished = rows }
+        // Apps come and go while the window sits open or closed on this tab.
+        if tab == .automation { reloadParked() }
     }
 
-    func reloadParked() { parkedRows = parkedApps() }
+    func reloadParked() {
+        let rows = parkedApps()
+        if rows != parkedRows { parkedRows = rows }
+    }
 
     func toggleParked(_ id: String) {
         onToggleParked?(id)
@@ -553,7 +569,7 @@ struct SetupView: View {
         if !model.finished.isEmpty {
             section("Finished while you were away") {
                 ForEach(model.finished) { row in
-                    Button { model.onFocusFinished?(row.id) } label: {
+                    Button { model.focusFinished(row.id) } label: {
                         Label(row.label, systemImage: "checkmark.circle").lineLimit(1)
                     }
                     .buttonStyle(.link)
@@ -593,6 +609,10 @@ struct SetupView: View {
         section("Keep usable by automation") {
             Text("Checked apps aren't hidden on other workspaces, so tools like Cua can still click and type in them. Their windows are parked just out of view instead.")
                 .font(.callout).foregroundStyle(.secondary)
+            if !model.ready {
+                Text("Available once BaneySpaces has Accessibility access (General tab).")
+                    .font(.callout).foregroundStyle(.orange)
+            }
             if model.parkedRows.isEmpty {
                 Text("No apps with windows yet.").font(.callout).foregroundStyle(.secondary)
             } else {
@@ -607,13 +627,14 @@ struct SetupView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(height: CGFloat(min(model.parkedRows.count, 8)) * 24)
+                .disabled(!model.ready)
             }
         }
 
         section("If windows get tangled") {
             Text("Gathers every window onto workspace 1, all visible. It gets you out of any tangle.")
                 .font(.callout).foregroundStyle(.secondary)
-            Button("Bring Every Window Back") { model.onBringBack?() }
+            Button("Bring Every Window Back") { model.onBringBack?() }.disabled(!model.ready)
         }
     }
 
@@ -622,13 +643,13 @@ struct SetupView: View {
     @ViewBuilder private var updates: some View {
         section("Software update") {
             Text("You have \(model.update.have).").foregroundStyle(.secondary)
-            if let installing = model.update.installing {
-                Label("Updating to \(installing)…", systemImage: "arrow.down.circle")
-            } else if let available = model.update.available {
+            if let notice = model.update.notice, notice.installing {
+                Label(notice.menuTitle, systemImage: "arrow.down.circle")
+            } else if let notice = model.update.notice {
                 HStack {
-                    Label("\(available) is available.", systemImage: "arrow.down.circle.fill").font(.headline)
+                    Label(notice.sentence, systemImage: "arrow.down.circle.fill").font(.headline)
                     Spacer()
-                    Button("Update to \(available)…") { model.onOfferUpdate?() }
+                    Button(notice.menuTitle) { model.onOfferUpdate?() }
                 }
                 Text("Shows what's new first. Nothing installs until you press Update Now.")
                     .font(.callout).foregroundStyle(.secondary)
@@ -933,6 +954,11 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
                 self.window?.close()
             }
         }
+        // The window taking the keyboard (opened, or clicked back to) reads the lists again.
+        NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] _ in
+            self?.model.reload()
+            self?.model.reloadParked()
+        }
         // Coming back from System Settings re-checks at once instead of waiting for the next tick.
         activeObserver = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification,
                                                                 object: nil, queue: .main) { [weak self] _ in
@@ -948,6 +974,8 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         if !model.ready { model.tab = .general }
         model.dockAgentStatus = WorkspaceDock.agentStatus
         model.reload()
+        model.reloadParked()
+        if model.tab == .updates { model.onUpdatesShown?() }
         model.reloadBangs()
         model.startWatching()
         NSApp.activate(ignoringOtherApps: true)

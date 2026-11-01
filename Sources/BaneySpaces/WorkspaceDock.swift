@@ -814,7 +814,7 @@ final class DockModel: ObservableObject {
 
     /// The apps a tile shows as "+N", and its tile.
     var moreApps: (tile: Tile, apps: [App])? {
-        guard let n = more, let t = tiles.first(where: { $0.id == n }), t.apps.count > DockModel.iconsShown + 1 else { return nil }
+        guard let n = more, let t = tiles.first(where: { $0.id == n }), DockLabel.hidden(t.apps.count, shown: DockModel.iconsShown) > 0 else { return nil }
         return (t, Array(t.apps.dropFirst(DockModel.iconsShown)))
     }
 
@@ -1192,9 +1192,11 @@ struct DockView: View {
             // keeps the dock up) never reaches far into the screen. The panel resizes with it, and
             // the bar stays put because the panel is pinned to its edge.
             label.modifier(SizeReport(size: $sideSize))
-                .offset(sideOffset(hoverKey))
+                .offset(sideOffset(labelKey))
         } else {
             label.frame(height: 24)
+                .modifier(SizeReport(size: $sideSize))
+                .offset(sideOffset(labelKey))
         }
     }
 
@@ -1211,6 +1213,23 @@ struct DockView: View {
         }
     }
 
+    /// The dock key for what the label names: a file drag's target, then where a drag would
+    /// land, then what the pointer is on. A drag over nothing centers the label.
+    private var labelKey: String {
+        if let file = model.fileDrag {
+            switch file.target {
+            case .app(let n, let id): return "\(n):\(id)"
+            case .tile(let n): return "tile:\(n)"
+            case nil: return ""
+            }
+        }
+        if model.drag != nil {
+            guard let to = model.dropTarget else { return "" }
+            return model.tiles.contains { $0.id == to } ? "tile:\(to)" : "btn:new"
+        }
+        return hoverKey
+    }
+
     /// Across from `key` along the dock, but never past either end of it.
     private func sideOffset(_ key: String) -> CGSize {
         guard let c = frames[key].map({ CGPoint(x: $0.midX, y: $0.midY) }), barSize != .zero, sideSize != .zero, stackSize != .zero else { return .zero }
@@ -1224,10 +1243,17 @@ struct DockView: View {
         return CGSize(width: min(max(c.x - stackSize.width / 2, -room), room), height: 0)
     }
 
+    /// The widest the label's text gets: with its padding it stays inside the dock's 480 pt panel,
+    /// so a long label never widens the panel past the dock.
+    static let labelMaxWidth: CGFloat = 420
+
     @ViewBuilder private var label: some View {
         if let text = labelText {
-            Text(text)
-                .font(.system(size: 12, weight: .semibold))
+            WidthCap(max: Self.labelMaxWidth) {
+                Text(text)
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1).truncationMode(.tail)
+            }
                 .padding(.horizontal, 10).padding(.vertical, 4)
                 .background(Capsule().fill(Color.black.opacity(0.78)))
                 .overlay(Capsule().strokeBorder(Color.white.opacity(0.12)))
@@ -1255,16 +1281,11 @@ struct DockView: View {
             return "Move \(drag.name) to Workspace \(to)"
         }
         switch model.hover {
-        case .tile(let n): return model.tiles.first { $0.id == n }.map(title)
+        case .tile(let n): return model.tiles.first { $0.id == n }.map { title($0) }
         case .app(let n, let id):
             guard let app = model.tiles.first(where: { $0.id == n })?.apps.first(where: { $0.id == id }) else { return nil }
             let elsewhere = model.tiles.filter { $0.id != n && $0.apps.contains { $0.pid == app.pid } }.map { String($0.id) }
-            // The tile already says which workspace; the label adds only what the icon can't.
-            var parts = [app.name]
-            if app.windows > 1 { parts.append("\(app.windows) windows") }
-            if !elsewhere.isEmpty { parts.append("also on \(elsewhere.count == 1 ? "Workspace" : "Workspaces") \(elsewhere.joined(separator: ", "))") }
-            if let agent = app.agent { parts.append(agent.summary) }
-            return parts.joined(separator: " · ")
+            return DockLabel.appTitle(name: app.name, windows: app.windows, elsewhere: elsewhere, agent: app.agent?.summary)
         case .newWorkspace: return model.firstEmpty.map { "Go to Empty Workspace \($0)" }
         case .launcher: return "Find or Install an App"
         case .overview: return "Show All Workspaces"
@@ -1348,11 +1369,11 @@ struct DockView: View {
         .onHover { inside in model.onStrip = inside }
     }
 
-    private func title(_ tile: DockModel.Tile) -> String {
-        guard !tile.apps.isEmpty else { return "Workspace \(tile.id) · empty" }
+    /// The tile's label names the apps it shows; VoiceOver (`shown: .max`) hears them all.
+    private func title(_ tile: DockModel.Tile, shown: Int = DockModel.iconsShown) -> String {
         let apps = tile.apps.map { $0.windows > 1 ? "\($0.name) (\($0.windows))" : $0.name }
         let agent = tile.agents.max { $0.state.urgency < $1.state.urgency }
-        return (["Workspace \(tile.id)", apps.joined(separator: ", ")] + [agent?.summary].compactMap { $0 }).joined(separator: " · ")
+        return DockLabel.tileTitle(workspace: tile.id, apps: apps, agent: agent?.summary, shown: shown)
     }
 
     private func isHovered(_ tile: DockModel.Tile) -> Bool {
@@ -1392,7 +1413,7 @@ struct DockView: View {
         .modifier(HoverScale(scale: hovered ? 1.06 : 1, anchor: .bottom, spring: .spring(response: 0.25, dampingFraction: 0.72)))
         .contextMenu { tileMenu(tile) }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(title(tile) + (tile.isCurrent ? ", current" : ""))
+        .accessibilityLabel(title(tile, shown: .max) + (tile.isCurrent ? ", current" : ""))
         .accessibilityAction { model.onPick(tile.id) }
     }
 
@@ -1504,13 +1525,14 @@ struct DockView: View {
         } else if apps.count == 2 {
             HStack(spacing: 2) { ForEach(apps) { appIcon($0, in: tile, size: 28 * k) } }
         } else {
-            let shown = apps.count > 4 ? Array(apps.prefix(DockModel.iconsShown)) : apps
+            let hidden = DockLabel.hidden(apps.count, shown: DockModel.iconsShown)
+            let shown = hidden > 0 ? Array(apps.prefix(DockModel.iconsShown)) : apps
             LazyVGrid(columns: [GridItem(.fixed(24 * k), spacing: 3), GridItem(.fixed(24 * k), spacing: 3)], spacing: 3) {
                 ForEach(shown) { appIcon($0, in: tile, size: 24 * k) }
-                if apps.count > 4 {
+                if hidden > 0 {
                     // Rest on it (or click it) to list the apps it stands for, each one clickable.
                     let open = model.hover == .more(tile.id) || model.more == tile.id
-                    Text("+\(apps.count - DockModel.iconsShown)")
+                    Text("+\(hidden)")
                         .font(.system(size: 10, weight: .bold, design: .rounded)).foregroundStyle(.white.opacity(open ? 1 : 0.85))
                         .frame(width: 24 * k, height: 24 * k)
                         .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.white.opacity(open ? 0.24 : 0.12)))
@@ -1519,7 +1541,7 @@ struct DockView: View {
                         .onHover { model.setHover(.more(tile.id), $0) }
                         .onTapGesture { model.more = tile.id }
                         .accessibilityElement(children: .ignore)
-                        .accessibilityLabel("\(apps.count - DockModel.iconsShown) more apps on workspace \(tile.id)")
+                        .accessibilityLabel("\(hidden) more apps on workspace \(tile.id)")
                         .accessibilityAddTraits(.isButton)
                         .accessibilityAction { model.more = tile.id }
                 }
