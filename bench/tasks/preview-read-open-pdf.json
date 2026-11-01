@@ -1,0 +1,56 @@
+{
+  "id": "preview-read-open-pdf",
+  "app": "Preview",
+  "category": "preview",
+  "goal": "A PDF is open in Preview. Read the access code printed on its first page and report it exactly. Change nothing.",
+  "place": "host",
+  "setup": {
+    "requires": {
+      "installed": [
+        "Preview"
+      ],
+      "exclusive": [
+        "Preview"
+      ]
+    },
+    "settle_s": 1.5,
+    "files": {
+      "reading.pdf": {
+        "pdf_pages": 3,
+        "text": "Access code {nonce}"
+      }
+    },
+    "open": [
+      {
+        "app": "Preview",
+        "as": "pdf",
+        "targets": [
+          "{tmp}/reading.pdf"
+        ],
+        "title": "reading.pdf"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "snapshot",
+      "window": "pdf",
+      "answer_from": "tree_text"
+    }
+  ],
+  "check": {
+    "kind": "all",
+    "checks": [
+      {
+        "kind": "answer",
+        "contains": "{nonce}"
+      },
+      {
+        "kind": "window_title",
+        "window": "pdf",
+        "contains": "reading.pdf"
+      }
+    ]
+  },
+  "requires_tool_call": true
+}

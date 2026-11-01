@@ -20,6 +20,8 @@ jobs:
           fetch-depth: 0
       - name: Check the tag matches VERSION
         run: test "${GITHUB_REF_NAME#v}" = "$(cat VERSION)" || { echo "Tag $GITHUB_REF_NAME doesn't match VERSION $(cat VERSION)"; exit 1; }
+      - name: Build the hands engine
+        run: BANEYSPACES_ARM64_ONLY=1 scripts/build-engine.sh
       - name: Test
         run: swift test
       - name: Bundle the app

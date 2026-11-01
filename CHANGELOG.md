@@ -9,6 +9,21 @@
   agents' windows open on without ever taking your screen, plus agent hands over AT-SPI through the
   pinned agent-desktop. Install files for Omarchy are included but applied nowhere yet. See
   [platforms/linux/README.md](platforms/linux/README.md).
+- **BaneySpaces' overview replaces macOS's Mission Control.** The trackpad swipe up with three or four
+  fingers (as your trackpad settings have it), a hot corner set to Mission Control, the Mission Control
+  key and ⌃↑ all open the overview, and a swipe down closes it. macOS's own "Desktop" view is switched
+  off in the Dock, and any hot corner that was Mission Control is remapped to nothing and answered by
+  BaneySpaces. Settings › Keys › **Use BaneySpaces' overview instead of Mission Control** (on) turns it
+  back off: every setting returns exactly as it was, as does uninstalling. The trackpad swipe uses
+  macOS's private trackpad framework, loaded at run time and checked against the touches it gets; if
+  it can't load or isn't recognised, Settings says so. Mission Control comes back when BaneySpaces quits;
+  if it stops any other way (a crash, the app dragged to the Trash), a launch agent puts it back after
+  a minute, 30 seconds after an update's quit, and Mission Control is switched off only once that agent
+  is loaded and what was there is saved to disk (so a crash in between still leaves the way back); if
+  either can't be done, Mission Control stays on and Settings says why. The launch agent being
+  switched off later, or Mission Control turned back on by hand, makes BaneySpaces let go; an older
+  build started later doesn't keep it off. A Magic Mouse's two-finger
+  double tap opens nothing while this is on.
 - **The "+N" list lets go, and the dock moves.** The window strip and the "+N" list are a panel of their
   own, so opening one no longer resizes or jumps the dock. The dock stays up only while the pointer is
   on its bar or on the list (each with a little room), not anywhere over the whole panel; the list
@@ -30,6 +45,12 @@
   that finished while you were away list under **Dock**. When agents have finished, or an update
   is waiting, a row for it appears in the menu (and goes away when there's nothing to act on); the
   update controls are also in Settings > Updates.
+- **Agent hands, phase 1.** `baneyspaces agent snapshot|find|get|click|type|set-value|press|scroll|select|toggle|shot|open|windows`
+  read and act on apps on the agent workspace (or an app you lend with `baneyspaces agent lend`, which asks you in a sheet) without touching your screen, and print one
+  JSON envelope each; `baneyspaces mcp` serves the same tools to Claude Code and Codex. Built on agent-desktop
+  (Apache-2.0, pinned). Cua Spaces no longer starts on the Keep Usable by Automation list.
+- **`agent open` starts a separate copy of an app, and its windows are on the agent workspace,** not yours. Only TextEdit and Preview (on a file from the handoff folder) and Calculator start; everything else answers `needs_sandbox`.
+
 - **The Workspace Dock goes down once the pointer leaves it.** It used to stay up while the pointer
   rested above or beside it, over the app underneath, because it counted the empty room it keeps for
   its hover label. Now only the dock itself counts, plus the window strip while it's open.

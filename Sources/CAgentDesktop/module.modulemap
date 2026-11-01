@@ -1,0 +1,4 @@
+module CAgentDesktop [system] {
+    header "include/agent_desktop.h"
+    export *
+}

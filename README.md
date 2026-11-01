@@ -66,8 +66,39 @@ Prefer to keep ⌘1 for your browser's first tab? Pick ⌃, ⌥ or ⌃⌥ in set
 
 ## See everything at once
 
-Press the Mission Control key (F3 on Apple keyboards) or ⌃↑, and BaneySpaces shows all nine
-workspaces in the same 3×3 grid as the number keys, with every window's app and title.
+Press the Mission Control key (F3 on Apple keyboards) or ⌃↑, swipe up with three or four fingers
+on the trackpad (whichever your trackpad settings give Mission Control), or push the pointer into a
+hot corner you had set to Mission Control, and BaneySpaces shows all nine workspaces in the same 3×3
+grid as the number keys, with every window's app and title. A swipe down, Esc or the same key again
+puts you back.
+
+**macOS's Mission Control is replaced, not joined.** BaneySpaces switches it off in the Dock, so the
+"Desktop" view never opens from the trackpad, a hot corner or the keys, and it remaps any hot corner
+that was set to Mission Control to nothing and answers that corner itself. It saves what was there
+first. To get Mission Control back, turn off **Settings › Keys › Use BaneySpaces' overview instead of
+Mission Control**: every setting goes back exactly as it was. Quitting BaneySpaces and uninstalling
+do the same, and the Dock restarts each time. If BaneySpaces stops without quitting (a crash, or
+the app dragged to the Trash), a small launch agent puts Mission Control back once no BaneySpaces
+has run for a minute (30 seconds after an update's restart that never came back). The agent stays
+installed across quits, so macOS doesn't announce a new background item at every launch; it goes
+when you turn the Settings switch off or uninstall, and does nothing while BaneySpaces isn't
+holding Mission Control off. BaneySpaces
+switches Mission Control off only after that agent is written, loaded and checked, and after what
+was there is saved to disk; if either can't be done, Mission Control stays on and Settings says
+why. If the agent is switched off later (the Background Item notice), BaneySpaces gives Mission
+Control back instead of holding it off without a way back. Only a build that knows this takeover
+counts as running: an older BaneySpaces started later does not keep Mission Control off. To get
+Mission Control back yourself, turn off the Settings switch; if BaneySpaces isn't running, use
+`defaults delete com.apple.dock mcx-expose-disabled; killall Dock` (and set any hot corner you had
+on Mission Control back in System Settings). Doing that while BaneySpaces runs also works: it
+notices within 20 seconds and switches its own overview off.
+
+App Exposé (⌃↓) goes with Mission Control, and so does a Magic Mouse's two-finger double tap,
+which opens nothing while this is on. The trackpad swipe uses macOS's private trackpad framework,
+loaded when BaneySpaces starts and checked against the touches it gets; if macOS won't load it or
+reports touches in a layout BaneySpaces doesn't read, Settings says so and the other ways in still
+work. Only trackpads are watched, with each trackpad's own finger settings, and Show Desktop and
+pinch gestures aren't taken for a swipe.
 
 - **Click a workspace,** or press its number, to go there. The arrow keys move the highlight
   and Return goes to it.
@@ -287,8 +318,9 @@ Everything else is optional and already set sensibly:
 - **Your keys.** ⌘ by default, or ⌃, ⌥ or ⌃⌥ with what each one gives up. macOS uses ⌘⇧3, ⌘⇧4
   and ⌘⇧5 for screenshots and claims them first; **Free Them** turns those off so they can move
   windows (⌃⌘⇧3 and ⌃⌘⇧4 still capture to the clipboard), and **Turn Them Back On** undoes it.
-- **See every workspace at once.** The Mission Control key and ⌃↑ open the overview, or switch
-  that off to keep them for Mission Control.
+- **See every workspace at once.** The Mission Control key, ⌃↑, a three- or four-finger swipe up and
+  any hot corner you had set to Mission Control open the overview in place of macOS's. Switch **Use
+  BaneySpaces' overview instead of Mission Control** off to get Mission Control back as it was.
 - **Start with your Mac.** On unless you turn it off. If macOS wants you to approve it, setup
   shows a button that opens Login Items.
 
@@ -382,10 +414,54 @@ Ghostty of its own for the agent, a separate process from yours, so nothing the 
 there can stall your terminals. `scripts/agent-hands-probe.swift` (phase 1) proves it on your Mac: an
 agent's command runs there, and only your own keyboard and mouse change what you see.
 
-BaneySpaces is also the hands agents use there: snapshot an app, act on what's in it, check the
-result, all on the agent workspace and never in the foreground. That replaces Cua's driver, which
-is no longer used. The plan, the rules and the phases are in
-[docs/agent-computer-use.md](docs/agent-computer-use.md).
+### The hands: snapshot an app, act on it, check the result
+
+BaneySpaces is also the hands agents use there. They read an app's accessibility tree, act on what's in
+it and check the result, all on the agent workspace and never in the foreground. Cua's driver is no longer
+used. The engine is [agent-desktop](https://github.com/vercel-labs/agent-desktop) (Apache-2.0), built from a
+pinned commit by `make install` and linked into the app; the scope and focus guards, the evidence and the
+MCP server are BaneySpaces'.
+
+```sh
+baneyspaces agent open TextEdit notes.txt       # on the agent workspace; files only from the handoff folder; prints the window id
+baneyspaces agent snapshot --app TextEdit -i    # refs for what an agent can act on
+baneyspaces agent type @s8f3k2p9:e2 "Hello"     # act on a ref; the result carries what it read back
+baneyspaces agent click|set-value|toggle|scroll|select|press <ref> …
+baneyspaces agent find --window 4211 --role button --name Save
+baneyspaces agent get @s8f3k2p9:e2 value        # check from the live element
+baneyspaces agent shot --window 4211            # one window as a PNG in BaneySpaces' shots folder, even while parked (needs Screen Recording)
+baneyspaces agent windows                       # the windows an agent may use right now
+claude mcp add baneyspaces -- baneyspaces mcp   # the same tools over MCP, for Claude Code and Codex
+```
+
+You, not an agent, lend an app from your workspaces. `baneyspaces agent lend Excel --for 20m` shows a sheet in BaneySpaces
+(Don't Lend is the default button) and only a real click on **Lend** lends it: a click posted by a program, or an
+accessibility press, is refused, and running the command (or an agent running it) lends nothing by itself. Nothing sent
+to the deck socket lends. Run the command again for an app that is lent and the sheet offers **Take Back**. A lend names
+that process and its windows as they are then, is refused while you use the app (`in_use`: in front, or used in the last 30
+seconds), ends after 30 minutes (up to 8 hours) or, if you gave `--session`, when that session ends, and is listed in
+`state.json` and `baneyspaces doctor`. Agents can't lend: the MCP server has no such tool and an agent's `lend` answers
+`needs_lend`. `agent move` moves only windows of apps BaneySpaces started for an agent; send your own window with its
+workspace key. `agent open` starts only apps verified to run a separate copy that restores nothing of yours (TextEdit and
+Preview on a file from the handoff folder, and Calculator); every other app, Finder, browsers and password managers
+included, answers `needs_sandbox`, and a window of the agent's copy that shows a document from outside the handoff
+folder, or an Open or Save panel, is off limits. The agent workspace protects you from accidents; it is not a security
+boundary (see [docs/agent-computer-use.md](docs/agent-computer-use.md)).
+
+Every command prints one JSON envelope: `{"ok":true,"data":{…}}`, or `{"ok":false,"error":{"code","message",
+"retry","suggestion"}}` with `retry` one of `safe`, `after_snapshot`, `never`. Four rules, all enforced by the app:
+an agent acts only on windows on the agent workspace or on an app you lent (anything else answers
+`outside_agent_workspace`, and reads are refused the same way; scope is checked again right before every engine call);
+an action never activates an app, raises a window, moves the pointer or posts a global keystroke (`press` answers
+`not_supported` until keys can reach one background app); BaneySpaces ignores an app activation an agent action
+caused, for the window the action worked on and only while it ran, so your workspace doesn't follow it and your own
+windows of the same app still do; and every action returns what it verified from the exact window it targeted.
+`scripts/agent-hands-probe.swift` proves the rest on your Mac: 200 actions in TextEdit (a temporary document) and
+Calculator while it samples your front app, workspace, pointer, front window and any window
+appearing on another workspace every 50 ms.
+
+`make build` and `make test` build the engine first (Rust is needed once; `scripts/build-engine.sh`). The plan,
+the rules and the phases are in [docs/agent-computer-use.md](docs/agent-computer-use.md).
 
 **Phones.** Android phones (USB debugging on) and iPhones show in `baneyspaces ls` and the launcher the moment they're
 plugged in. A row opens the phone's screen: scrcpy for Android, iPhone Mirroring for an iPhone.
@@ -419,7 +495,8 @@ app as usual instead, and its menu entry says so.
   keyboard entry holds Secure Input, macOS lets no other app see keystrokes. That applies to
   every global shortcut, not just these.
 - **Windows on other macOS desktops are left alone.** Keep one macOS desktop in Mission Control
-  and let the nine workspaces do the rest.
+  and let the nine workspaces do the rest. To close extra desktops, turn off **Use BaneySpaces'
+  overview instead of Mission Control** first, since macOS's is switched off while it's on.
 - **An agent pressing ⌘1–⌘9 in the foreground switches workspaces,** the same as you would.
   Background key delivery to one app doesn't.
 

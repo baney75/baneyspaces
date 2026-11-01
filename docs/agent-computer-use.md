@@ -78,6 +78,10 @@ in both, because the sandbox runs a headless BaneySpaces hands daemon inside the
 the VM-only setups (agent-desktop in a VM, posted 2026-10-31) can't do: they give up your real apps
 entirely, and you manage the VM window yourself.
 
+## What each place protects against
+
+The agent workspace protects Donovan from accidents: an agent acting on the wrong window, stealing focus, switching his workspace, touching an app he is using, or opening his documents by mistake. It is not a security boundary. Every agent on the Mac runs as his macOS user and can already read his files and run commands, so nothing BaneySpaces does on the host can stop a hostile same-user process (for example one that rewrites BaneySpaces' files under ~/Library or drives an Open panel on purpose). Anything untrusted (web content, downloads, remote callers, code that isn't ours) runs in the sandbox, which is the security boundary.
+
 ## Lending
 
 Lending is the only way an agent touches a window you were already using, and only you can do it:

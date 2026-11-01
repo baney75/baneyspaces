@@ -1,0 +1,58 @@
+{
+  "id": "preview-next-page",
+  "app": "Preview",
+  "category": "menu",
+  "goal": "Go to the next page of the PDF in Preview using the Go menu.",
+  "place": "host",
+  "setup": {
+    "requires": {
+      "installed": [
+        "Preview"
+      ],
+      "exclusive": [
+        "Preview"
+      ]
+    },
+    "settle_s": 1.5,
+    "files": {
+      "doc.pdf": {
+        "pdf_pages": 3
+      }
+    },
+    "open": [
+      {
+        "app": "Preview",
+        "as": "pdf",
+        "targets": [
+          "{tmp}/doc.pdf"
+        ],
+        "title": "doc.pdf"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "menu",
+      "window": "pdf",
+      "path": [
+        "Go",
+        "Next Page"
+      ]
+    },
+    {
+      "do": "wait",
+      "ms": 600
+    }
+  ],
+  "check": {
+    "kind": "window_title",
+    "window": "pdf",
+    "contains": "page 2 of 3"
+  },
+  "expected_fail": {
+    "baneyspaces": {
+      "phase": "later",
+      "why": "phase 1 reads the window surface only; the menu bar surface is not in its verb list"
+    }
+  }
+}

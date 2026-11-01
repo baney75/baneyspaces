@@ -1,12 +1,13 @@
 import AppKit
+import BaneySpacesCore
 import CoreGraphics
 
 /// Catches the Mission Control key (F3 on Apple keyboards) and ⌃↑ before macOS does, and opens
 /// the BaneySpaces viewer instead. An event tap needs the same Accessibility access BaneySpaces
 /// already has. Turning it off hands the keys straight back to Mission Control.
 final class MissionControlKeys {
-    static let missionControlKey: Int64 = 160
-    static let upArrow: Int64 = 126
+    static let missionControlKey = BaneySpacesCore.MissionControlKey.missionControl
+    static let upArrow = BaneySpacesCore.MissionControlKey.upArrow
     static let tabKey: Int64 = 48
     static let escapeKey: Int64 = 53
 
@@ -157,10 +158,10 @@ final class MissionControlKeys {
     }
 
     static func isMissionControl(_ event: CGEvent) -> Bool {
-        let code = event.getIntegerValueField(.keyboardEventKeycode)
-        if code == missionControlKey { return true }
-        let mods = event.flags.intersection([.maskControl, .maskCommand, .maskAlternate, .maskShift])
-        return takeControlUp && code == upArrow && mods == .maskControl
+        let f = event.flags
+        return BaneySpacesCore.MissionControlKey.matches(
+            code: event.getIntegerValueField(.keyboardEventKeycode), control: f.contains(.maskControl), command: f.contains(.maskCommand),
+            option: f.contains(.maskAlternate), shift: f.contains(.maskShift), controlUpIsMissionControl: takeControlUp)
     }
 
     private static let callback: CGEventTapCallBack = { _, type, event, _ in

@@ -17,7 +17,7 @@ extension AXUIElement {
         set(size: f.size)
     }
 
-    /// The macOS window number (CGWindowID), the ID BaneySpaces and cua-driver use; 0 when unknown.
+    /// The macOS window number (CGWindowID), the ID BaneySpaces and `baneyspaces agent` use; 0 when unknown.
     var windowNumber: UInt32 { windowID ?? 0 }
 
     func raise() { AXUIElementPerformAction(self, kAXRaiseAction as CFString) }
