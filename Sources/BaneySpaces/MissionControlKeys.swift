@@ -70,6 +70,8 @@ final class MissionControlKeys {
     var onTabUp: () -> Void = {}
     var onCmdReleased: () -> Void = {}
     var onCancel: () -> Void = {}
+    /// An arrow pressed during a gesture: right or down is forward, left or up is back.
+    var onArrow: (_ forward: Bool) -> Void = { _ in }
     /// Read on the tap thread; set when a ⌘Tab gesture starts, cleared when it ends.
     private static let gestureLock = NSLock()
     private static var _inGesture = false
@@ -221,6 +223,11 @@ final class MissionControlKeys {
                 swallowTab = true
                 DispatchQueue.main.async { me.onCancel() }
             }
+            return nil
+        }
+        // Arrows step the same way Tab does; a held arrow keeps stepping.
+        if inGesture, let forward = SwitcherSelection.arrow(keyCode: code) {
+            if type == .keyDown { DispatchQueue.main.async { me.onArrow(forward) } }
             return nil
         }
         // Any other key while the switcher is up is swallowed, as the system switcher does:

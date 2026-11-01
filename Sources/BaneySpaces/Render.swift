@@ -105,10 +105,10 @@ enum Render {
         let switcher = SwitcherModel()
         let icon = { (path: String) in NSWorkspace.shared.icon(forFile: path) }
         switcher.tiles = [
-            .init(n: 1, icons: [icon("/Applications/Safari.app"), icon("/System/Applications/Notes.app"), icon("/System/Applications/Utilities/Terminal.app")], count: 3),
-            .init(n: 2, icons: [icon("/System/Applications/Mail.app"), icon("/System/Applications/Calendar.app")], count: 2),
-            .init(n: 5, icons: [icon("/System/Applications/Photos.app")], count: 1),
-            .init(n: 3, icons: [icon("/System/Applications/Music.app")], count: 1),
+            .init(n: 1, icons: [icon("/Applications/Safari.app"), icon("/System/Applications/Notes.app"), icon("/System/Applications/Utilities/Terminal.app")], count: 3, isCurrent: true),
+            .init(n: 2, icons: [icon("/System/Applications/Mail.app"), icon("/System/Applications/Calendar.app")], count: 2, isCurrent: false),
+            .init(n: 5, icons: [icon("/System/Applications/Photos.app")], count: 1, isCurrent: false),
+            .init(n: 3, icons: [icon("/System/Applications/Music.app")], count: 1, isCurrent: false),
         ]
         switcher.selected = 1
         guard save(SwitcherView(model: switcher), "switcher.png", CGSize(width: 520, height: 0)) else { return 1 }

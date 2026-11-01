@@ -6,7 +6,8 @@ import os
 /// ⌘Tab across workspaces: hold ⌘, tap Tab to step, let go to go there. ⌘⇧Tab steps back;
 /// Esc cancels. In app mode it steps through every app with a window, on any workspace, most
 /// recently used first, and letting go lands on that app's window wherever it is. In workspace
-/// mode it steps through workspaces with windows, most recent first.
+/// mode it steps through workspaces with windows, most recent first, with the one you're on
+/// first even when it's empty. The arrow keys step too.
 ///
 /// Holding Tab on an app with more than one window opens the window bar: that app's windows,
 /// on every workspace, to tab through the same way. Holding Tab again goes back to the apps.
@@ -46,7 +47,9 @@ final class WorkspaceSwitcher {
         if isRepeat { return held(at: time, via: "repeat") }
         guard !isShowing else {
             // Wait to see whether this press is a tap (step when it's let go) or a hold (stay).
-            // Workspaces have no window bar, so a press there steps at once.
+            // Workspaces have no window bar, so a press there steps at once and leaves nothing
+            // pending: the first press of the gesture used deferStep false, so Tab's release
+            // returns nil and can't step a second time (SwitcherSelectionTests pins it).
             if model.mode == .apps {
                 hold.press(at: time, forward: forward, deferStep: true)
                 checkHold(pressedAt: time)
@@ -59,19 +62,20 @@ final class WorkspaceSwitcher {
         checkHold(pressedAt: time)
         model.windowBar = nil
         model.mode = MissionControlKeys.cmdTabMode == .workspaces ? .workspaces : .apps
+        model.maxWidth = activeVisibleFrame().map { Double($0.width) } ?? SwitcherLayout.narrowScreen
         if model.mode == .workspaces {
             let order = spaces.switcherOrder()
-            Trace.log("cmdTab show order=\(order) current=\(spaces.model.current)")
+            let current = spaces.model.current
+            Trace.log("cmdTab show order=\(order) current=\(current)")
             model.tiles = order.map { n in
-                SwitcherModel.Tile(n: n, icons: icons(on: n), count: spaces.entries(on: n).count)
+                SwitcherModel.Tile(n: n, icons: icons(on: n), count: spaces.entries(on: n).count, isCurrent: n == current)
             }
         } else {
             model.apps = appTiles()
             Trace.log("cmdTab show apps=\(model.apps.count) current=\(spaces.model.current)")
         }
         // The first tap lands on the previous one, like the app switcher.
-        let c = model.count
-        model.selected = c > 1 ? (forward ? 1 : c - 1) : 0
+        model.selected = SwitcherSelection.first(count: model.count, forward: forward)
         show()
     }
 
@@ -109,14 +113,18 @@ final class WorkspaceSwitcher {
         advance(forward)
     }
 
-    /// One step through the window bar if it's open, otherwise through the list.
+    /// An arrow key during the gesture: one step, the same as a Tab tap.
+    func arrow(forward: Bool) {
+        guard isShowing else { return }
+        advance(forward)
+    }
+
+    /// One step through the window bar if it's open, otherwise through the cards as drawn.
     private func advance(_ forward: Bool) {
         if let bar = model.windowBar {
-            let c = bar.windows.count
-            model.windowBar!.selected = (bar.selected + (forward ? 1 : c - 1)) % c
-        } else if model.count > 0 {
-            let c = model.count
-            model.selected = (model.selected + (forward ? 1 : c - 1)) % c
+            model.windowBar!.selected = SwitcherSelection.advance(selected: bar.selected, count: bar.windows.count, forward: forward)
+        } else {
+            model.selected = SwitcherSelection.advance(selected: model.selected, count: model.count, forward: forward)
         }
     }
 
@@ -194,14 +202,31 @@ final class WorkspaceSwitcher {
         )
     }
 
-    /// The bar changed size: keep it centered.
+    /// The bar changed size: keep it centered on the display it's on.
     private func relayout() {
-        guard let p = panel, let host = p.contentView as? NSHostingView<SwitcherView> else { return }
+        guard let p = panel, let host = p.contentView as? NSHostingView<SwitcherView>,
+              let visible = p.screen?.visibleFrame ?? activeVisibleFrame() else { return }
+        p.setFrame(SwitcherPanelFrame.center(content: contentSize(host), visibleFrame: visible), display: true)
+    }
+
+    /// The display under the pointer, else the main one, less the menu bar and the Dock.
+    private func activeVisibleFrame() -> CGRect? {
+        let screens = NSScreen.screens
+        return SwitcherPanelFrame.activeVisibleFrame(
+            pointer: NSEvent.mouseLocation,
+            screens: screens.map { (frame: $0.frame, visible: $0.visibleFrame) },
+            main: NSScreen.main.flatMap { m in screens.firstIndex { $0 === m } }
+        )
+    }
+
+    /// Workspace tiles are sized from `SwitcherLayout`; the other rows are measured.
+    private func contentSize(_ host: NSHostingView<SwitcherView>) -> CGSize {
+        if model.mode == .workspaces, model.windowBar == nil {
+            return SwitcherLayout.panelSize(tileCount: model.tiles.count, maxWidth: model.maxWidth)
+        }
+        // Lay out the new tiles first; otherwise fittingSize still reports the last gesture's size.
         host.layoutSubtreeIfNeeded()
-        let size = host.fittingSize
-        let screen = p.screen ?? NSScreen.main
-        guard let frame = screen?.frame else { return }
-        p.setFrame(NSRect(x: frame.midX - size.width / 2, y: frame.midY - size.height / 2, width: size.width, height: size.height), display: true)
+        return host.fittingSize
     }
 
     /// Every app with a window, most recently used first; an app on two workspaces once for each.
@@ -227,11 +252,12 @@ final class WorkspaceSwitcher {
         }
     }
 
+    /// The workspace's apps in the dock tile's order: the one used there last first.
     private func icons(on n: Int) -> [NSImage] {
-        var seen = Set<pid_t>()
-        return spaces.entries(on: n).compactMap { e -> NSImage? in
-            guard seen.insert(e.pid).inserted else { return nil }
-            return NSRunningApplication(processIdentifier: e.pid)?.icon
+        var seen = Set<String>()
+        let keys = spaces.entries(on: n).map { "\($0.pid)" }.filter { seen.insert($0).inserted }
+        return DockAppOrder.sort(keys, activatedAt: spaces.activations.on(n)).compactMap { key in
+            pid_t(key).flatMap { NSRunningApplication(processIdentifier: $0)?.icon }
         }
     }
 
@@ -239,12 +265,8 @@ final class WorkspaceSwitcher {
         let p = panel ?? makePanel()
         panel = p
         let host = p.contentView as! NSHostingView<SwitcherView>
-        // Lay out the new tiles first; otherwise fittingSize still reports the last gesture's size.
-        host.layoutSubtreeIfNeeded()
-        let size = host.fittingSize
-        if let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main {
-            p.setFrame(NSRect(x: screen.frame.midX - size.width / 2, y: screen.frame.midY - size.height / 2,
-                              width: size.width, height: size.height), display: true)
+        if let visible = activeVisibleFrame() {
+            p.setFrame(SwitcherPanelFrame.center(content: contentSize(host), visibleFrame: visible), display: true)
         }
         p.orderFrontRegardless()
         // A panel kept for hours has been seen to stay off screen though it was ordered in
@@ -296,6 +318,8 @@ final class SwitcherModel: ObservableObject {
         let n: Int
         let icons: [NSImage]
         let count: Int
+        /// The workspace you're on: always listed, even empty, and marked.
+        let isCurrent: Bool
         var id: Int { n }
     }
     struct AppTile: Identifiable {
@@ -327,6 +351,8 @@ final class SwitcherModel: ObservableObject {
     @Published var tiles: [Tile] = []
     @Published var apps: [AppTile] = []
     @Published var selected = 0
+    /// Width of the display the panel opens on, for how many workspace tiles fit on a row.
+    @Published var maxWidth = SwitcherLayout.narrowScreen
     var count: Int { mode == .apps ? apps.count : tiles.count }
 }
 
@@ -429,37 +455,49 @@ struct SwitcherView: View {
         }
     }
 
+    /// Rows of tiles sized from `SwitcherLayout`, not a lazy grid: a LazyVGrid's fitting size
+    /// came out far taller than one row, and the panel is framed from the same numbers.
     private var workspaceRow: some View {
-        // Wrap so nine tiles still fit a 1,024 pt display (Sol on #145).
-        let columns = Array(
-            repeating: GridItem(.fixed(108), spacing: 12),
-            count: SwitcherLayout.workspaceColumns(tileCount: model.tiles.count)
-        )
-        return LazyVGrid(columns: columns, spacing: 12) {
-            ForEach(Array(model.tiles.enumerated()), id: \.element.id) { i, tile in
-                let on = i == model.selected
-                VStack(spacing: 8) {
-                    Text("\(tile.n)")
-                        .font(Chrome.font(34, .bold, rounded: true))
-                        .foregroundStyle(Chrome.wash())
-                    HStack(spacing: -6) {
-                        ForEach(Array(tile.icons.prefix(4).enumerated()), id: \.offset) { _, icon in
-                            Image(nsImage: icon).resizable().frame(width: 26, height: 26)
-                        }
-                    }
-                    .frame(height: 26)
-                    Text(tile.count == 0 ? "Empty" : tile.count == 1 ? "1 window" : "\(tile.count) windows")
-                        .font(Chrome.font(10)).foregroundStyle(Chrome.wash(0.65))
+        let cols = SwitcherLayout.workspaceColumns(tileCount: model.tiles.count, maxWidth: model.maxWidth)
+        let size = SwitcherLayout.panelSize(tileCount: model.tiles.count, maxWidth: model.maxWidth)
+        let pad = SwitcherLayout.padding / 2
+        return VStack(alignment: .leading, spacing: SwitcherLayout.spacing) {
+            ForEach(SwitcherLayout.rows(tileCount: model.tiles.count, columns: cols), id: \.lowerBound) { row in
+                HStack(spacing: SwitcherLayout.spacing) {
+                    ForEach(row, id: \.self) { i in workspaceTile(model.tiles[i], on: i == model.selected) }
                 }
-                .frame(width: 108, height: 128)
-                .background(Chrome.shape(.switcherTile).fill(on ? Chrome.cell(0.16) : Chrome.cell(0.05)))
-                .overlay(Chrome.shape(.switcherTile).strokeBorder(on ? Chrome.wash(0.55) : Chrome.edge(0),
-                                                                  lineWidth: Chrome.width(.switcherTile, focused: on)))
-                .accessibilityLabel("Workspace \(tile.n), \(tile.count) windows\(on ? ", selected" : "")")
             }
         }
+        .frame(width: size.width - 2 * pad, height: size.height - 2 * pad, alignment: .topLeading)
     }
 
+    private func workspaceTile(_ tile: SwitcherModel.Tile, on: Bool) -> some View {
+        VStack(spacing: 8) {
+            Text("\(tile.n)")
+                .font(Chrome.font(34, .bold, rounded: true))
+                .foregroundStyle(Chrome.wash())
+            HStack(spacing: -6) {
+                ForEach(Array(tile.icons.prefix(4).enumerated()), id: \.offset) { _, icon in
+                    Image(nsImage: icon).resizable().frame(width: 26, height: 26)
+                }
+            }
+            .frame(height: 26)
+            Text(SwitcherTileText.caption(count: tile.count, isCurrent: tile.isCurrent))
+                .font(Chrome.font(10, tile.isCurrent ? .semibold : .regular))
+                .foregroundStyle(Chrome.wash(tile.isCurrent ? 0.9 : 0.65))
+        }
+        .frame(width: SwitcherLayout.tileWidth, height: SwitcherLayout.tileHeight)
+        .background(Chrome.shape(.switcherTile).fill(on ? Chrome.cell(0.16) : Chrome.cell(0.05)))
+        .overlay(Chrome.shape(.switcherTile).strokeBorder(on ? Chrome.wash(0.55) : Chrome.edge(0),
+                                                          lineWidth: Chrome.width(.switcherTile, focused: on)))
+        // The workspace you're on carries its own color along the top edge, selected or not.
+        .overlay(alignment: .top) {
+            if tile.isCurrent {
+                Chrome.pill().fill(Chrome.workspace(tile.n)).frame(width: 28, height: 4).padding(.top, 6)
+            }
+        }
+        .accessibilityLabel("Workspace \(tile.n)\(tile.isCurrent ? ", current" : ""), \(tile.count) windows\(on ? ", selected" : "")")
+    }
 
 }
 

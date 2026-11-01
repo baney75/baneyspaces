@@ -186,6 +186,7 @@ final class WorkspaceDock {
         model.onShowLauncher = { [weak self] in self?.hide(); self?.onShowLauncher() }
         model.onTurnOff = { [weak self] in self?.onTurnOff() }
         model.onSetEdge = { [weak self] e in self?.onSetEdge(e) }
+        model.onReplayOrder = { [weak self] in self?.reload() }
         model.onSetAgentStatus = { [weak self] on in self?.onSetAgentStatus(on) }
         model.onOpenFiles = { [weak self] urls, pid, n in self?.open(urls, with: pid, on: n) }
         model.openable = { [weak self] pid in self?.openable(by: pid) ?? [] }
@@ -1105,9 +1106,17 @@ final class DockModel: ObservableObject {
     var onSetEdge: (DockEdge) -> Void = { _ in }
     @Published var agentStatus = WorkspaceDock.agentStatus
     var onSetAgentStatus: (Bool) -> Void = { _ in }
+    /// Tiles whose icon order was held still under the pointer while a newer one waited.
+    private var replayOwedOn: Set<Int> = []
+    /// The pointer left a tile that held an order: the controller reloads to show the new one.
+    var onReplayOrder: () -> Void = {}
     @Published var hover: Hover? {
         didSet {
             hoverChanged()
+            if !replayOwedOn.isEmpty, !replayOwedOn.contains(where: { $0 == hoveredTile }) {
+                replayOwedOn = []
+                onReplayOrder()
+            }
             // A side dock's label column grows and shrinks with what's hovered.
             if edge.isVertical, (hover == nil) != (oldValue == nil) || hover != oldValue { onLayoutChange() }
         }
@@ -1228,6 +1237,7 @@ final class DockModel: ObservableObject {
 
     func load(from spaces: Spaces) {
         spaces.refresh()
+        replayOwedOn = []
         var byPid: [String: Spaces.Entry] = [:]
         var entries: [Int: [Spaces.Entry]] = [:]
         for n in Workspaces.range {
@@ -1240,7 +1250,8 @@ final class DockModel: ObservableObject {
         // Each agent sits on the tile that holds its window, so its badge marks the app it runs in.
         let placed = !agentStatus ? [:] : DockTiles.place(agents(), windows: entries.mapValues { $0.map(\.id) }, current: current)
         let last = spaces.model.lastFocused
-        tiles = DockTiles.make(current: current, windows: entries.mapValues { $0.map { "\($0.pid)" } }).map { t in
+        tiles = DockTiles.make(current: current, windows: entries.mapValues { $0.map { "\($0.pid)" } },
+                               activatedAt: spaces.activations.all).map { t in
             let here = entries[t.workspace] ?? []
             let agents = placed[t.workspace] ?? []
             // The one that needs you most wins: asking, then an error, then finished, then working.
@@ -1258,8 +1269,10 @@ final class DockModel: ObservableObject {
             var order = DockTiles.agentsInView(apps.map(\.id), flagged: Set(apps.filter { $0.agent != nil }.map(\.id)), shown: DockModel.iconsShown)
             // Under the pointer, icons hold still: an agent starting elsewhere mustn't swap
             // another app into the slot you're about to click.
-            if hoveredTile == t.workspace, let before = tiles.first(where: { $0.id == t.workspace })?.apps.map(\.id),
-               Set(before) == Set(order) { order = before }
+            let held = DockAppOrder.held(proposed: order, previous: tiles.first(where: { $0.id == t.workspace })?.apps.map(\.id),
+                                         hovering: hoveredTile == t.workspace)
+            order = held.order
+            if held.replayOwed { replayOwedOn.insert(t.workspace) }
             apps.sort { order.firstIndex(of: $0.id)! < order.firstIndex(of: $1.id)! }
             var tile = Tile(id: t.workspace, apps: apps, isCurrent: t.isCurrent)
             tile.agents = agents

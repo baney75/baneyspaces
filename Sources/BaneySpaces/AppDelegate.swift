@@ -196,6 +196,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         keys.onTabUp = { [weak self] in self?.switcher.tabReleased() }
         keys.onCmdReleased = { [weak self] in self?.switcher.commit() }
         keys.onCancel = { [weak self] in self?.switcher.cancel() }
+        keys.onArrow = { [weak self] forward in self?.switcher.arrow(forward: forward) }
         return keys
     }()
     private lazy var setup: SetupWindowController = {
@@ -433,6 +434,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
                 guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
                 self?.spaces.appLeft(app.processIdentifier)
+                if name == NSWorkspace.didTerminateApplicationNotification { self?.spaces.appQuit(app.processIdentifier) }
             }
         }
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification,
@@ -444,6 +446,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard self.started else { return }
             self.spaces.appActivated(app)
             self.deck.appChanged()
+            // The app used last goes first on its tile, so a dock in view reorders now.
+            self.dock.reload()
         }
         // Once another app is in front, the viewer and the empty-workspace holder step aside.
         NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification,
