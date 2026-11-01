@@ -1,48 +1,202 @@
 {
  "version": 1,
- "default": {"omarchy": "omarchy", "macos": "baneyspaces", "windows": "baneyspaces", "linux": "baneyspaces"},
+ "default": {
+  "omarchy": "omarchy",
+  "macos": "baneyspaces",
+  "windows": "baneyspaces",
+  "linux": "baneyspaces"
+ },
  "themes": {
   "baneyspaces": {
    "label": "BaneySpaces",
-   "radius": {"panel": 14, "tile": 10, "row": 8},
-   "border": {"width": 0.5, "role": "border", "opacity": 0.35, "focused_role": "accent", "focused_width": 1.5},
-   "fill": {"role": "surface", "opacity": 0.72, "blur": true},
-   "shadow": true,
-   "font": {"family": "system-sans", "size": 12, "weight": "medium"},
-   "space": {"gap": 8, "padding": 10, "tile": 52},
+   "radius": {
+    "bar": 24,
+    "tile": 16,
+    "row": 7,
+    "list": 14
+   },
+   "border": {
+    "width": 1,
+    "role": "light",
+    "gradient": [
+     0.22,
+     0.06
+    ],
+    "focused_role": "workspace",
+    "focused_width": 1.5
+   },
+   "fill": {
+    "material": "ultra-thin",
+    "tint_role": "light",
+    "tint_opacity": 0.07,
+    "opacity": 0.88,
+    "adjustable": true
+   },
+   "shadow": {
+    "radius": 24,
+    "y": 10,
+    "opacity": 0.45
+   },
+   "font": {
+    "family": "system-sans",
+    "size": 12,
+    "weight": "medium"
+   },
+   "space": {
+    "gap": 8,
+    "padding": 10,
+    "tile": 52
+   },
    "indicator": "dot",
-   "motion": {"in_ms": 180, "out_ms": 140, "list_in_ms": 140, "list_out_ms": 100, "row_ms": 80, "scale_from": 0.96, "lift": 1.04}
+   "motion": {
+    "in_ms": 180,
+    "out_ms": 140,
+    "list_in_ms": 140,
+    "list_out_ms": 100,
+    "row_ms": 80,
+    "scale_from": 0.96,
+    "lift": 1.04
+   }
   },
   "omarchy": {
    "label": "Omarchy",
-   "radius": {"panel": 0, "tile": 0, "row": 0},
-   "border": {"width": 2, "role": "border", "opacity": 1.0, "focused_role": "accent", "focused_width": 2},
-   "fill": {"role": "background", "opacity": 1.0, "blur": false},
-   "shadow": false,
-   "font": {"family": "monospace", "size": 12, "weight": "regular"},
-   "space": {"gap": 5, "padding": 10, "tile": 48},
+   "radius": {
+    "bar": 0,
+    "tile": 0,
+    "row": 0,
+    "list": 0
+   },
+   "border": {
+    "width": 2,
+    "role": "border",
+    "opacity": 1.0,
+    "focused_role": "accent",
+    "focused_width": 2
+   },
+   "fill": {
+    "material": null,
+    "tint_role": "background",
+    "tint_opacity": 1.0,
+    "opacity": 1.0,
+    "adjustable": false
+   },
+   "shadow": null,
+   "font": {
+    "family": "monospace",
+    "size": 12,
+    "weight": "regular"
+   },
+   "space": {
+    "gap": 5,
+    "padding": 10,
+    "tile": 48
+   },
    "indicator": "number-block",
-   "motion": {"in_ms": 120, "out_ms": 100, "list_in_ms": 100, "list_out_ms": 80, "row_ms": 0, "scale_from": 1.0, "lift": 1.0}
+   "motion": {
+    "in_ms": 120,
+    "out_ms": 100,
+    "list_in_ms": 100,
+    "list_out_ms": 80,
+    "row_ms": 0,
+    "scale_from": 1.0,
+    "lift": 1.0
+   }
   },
   "minimal": {
    "label": "Minimal",
-   "radius": {"panel": 6, "tile": 4, "row": 4},
-   "border": {"width": 1, "role": "border", "opacity": 0.6, "focused_role": "accent", "focused_width": 1},
-   "fill": {"role": "background", "opacity": 0.96, "blur": false},
-   "shadow": false,
-   "font": {"family": "system-sans", "size": 11, "weight": "regular"},
-   "space": {"gap": 4, "padding": 6, "tile": 40},
+   "radius": {
+    "bar": 6,
+    "tile": 4,
+    "row": 4,
+    "list": 6
+   },
+   "border": {
+    "width": 1,
+    "role": "border",
+    "opacity": 0.6,
+    "focused_role": "accent",
+    "focused_width": 1
+   },
+   "fill": {
+    "material": null,
+    "tint_role": "background",
+    "tint_opacity": 1.0,
+    "opacity": 0.96,
+    "adjustable": false
+   },
+   "shadow": null,
+   "font": {
+    "family": "system-sans",
+    "size": 11,
+    "weight": "regular"
+   },
+   "space": {
+    "gap": 4,
+    "padding": 6,
+    "tile": 40
+   },
    "indicator": "bar",
-   "motion": {"in_ms": 100, "out_ms": 80, "list_in_ms": 80, "list_out_ms": 60, "row_ms": 0, "scale_from": 1.0, "lift": 1.0}
+   "motion": {
+    "in_ms": 100,
+    "out_ms": 80,
+    "list_in_ms": 80,
+    "list_out_ms": 60,
+    "row_ms": 0,
+    "scale_from": 1.0,
+    "lift": 1.0
+   }
   }
  },
  "fonts": {
-  "system-sans": {"macos": ["SF Pro Text"], "windows": ["Segoe UI Variable Text", "Segoe UI"], "linux": ["Inter", "Noto Sans", "sans-serif"]},
-  "monospace": {"macos": ["JetBrainsMono Nerd Font", "SF Mono", "Menlo"], "windows": ["JetBrainsMono Nerd Font", "Cascadia Mono", "Consolas"], "linux": ["JetBrainsMono Nerd Font", "monospace"]}
+  "system-sans": {
+   "macos": [
+    "SF Pro Text"
+   ],
+   "windows": [
+    "Segoe UI Variable Text",
+    "Segoe UI"
+   ],
+   "linux": [
+    "Inter",
+    "Noto Sans",
+    "sans-serif"
+   ]
+  },
+  "monospace": {
+   "macos": [
+    "JetBrainsMono Nerd Font",
+    "SF Mono",
+    "Menlo"
+   ],
+   "windows": [
+    "JetBrainsMono Nerd Font",
+    "Cascadia Mono",
+    "Consolas"
+   ],
+   "linux": [
+    "JetBrainsMono Nerd Font",
+    "monospace"
+   ]
+  }
  },
  "settings": {
-  "appearance.theme": {"type": "enum", "values": ["baneyspaces", "omarchy", "minimal"], "default": "per platform, see default"},
-  "appearance.palette": {"type": "string", "values": "\"auto\" or a name in palettes.json", "default": "auto"},
-  "dock.enabled": {"type": "bool", "default": true}
+  "appearance.theme": {
+   "type": "enum",
+   "values": [
+    "baneyspaces",
+    "omarchy",
+    "minimal"
+   ],
+   "default": "per platform, see default"
+  },
+  "appearance.palette": {
+   "type": "string",
+   "values": "\"auto\" or a name in palettes.json",
+   "default": "auto"
+  },
+  "dock.enabled": {
+   "type": "bool",
+   "default": true
+  }
  }
 }

@@ -20,7 +20,7 @@ the change already shows them (budget: 200 ms). The CLI sets them too:
 
 A theme is shape, type and motion. A palette is color. Any theme takes any palette.
 
-- **BaneySpaces**: rounded, translucent and blurred, the system font, soft shadows, dots for
+- **BaneySpaces**: rounded, translucent and blurred, the system font, a soft shadow, dots for
   workspaces. It is the current macOS look.
 - **Omarchy**: blocky. Square corners everywhere, a solid 2 px border (the accent color when
   focused), an opaque fill, no blur and no shadow, a monospace font, workspaces as numbered
@@ -30,11 +30,22 @@ A theme is shape, type and motion. A palette is color. Any theme takes any palet
 
 Token meanings (`themes.json`):
 
-- `radius`: corner radius in points: panels, tiles and list rows.
-- `border`: `role` names a palette role, and `opacity` is applied to it. `focused_*` is for the
-  current workspace, the selected row and the hovered tile.
-- `fill`: the panel background role, its opacity, and whether the platform's blur is behind it.
-  Where blur isn't available, use the opacity alone.
+- `radius`: corner radius in points: the dock bar, a tile, a list row, and the "+N" list or
+  window strip panel.
+- `border`: `role` names a palette role. `opacity` applies to it, or `gradient` gives the
+  opacity at the top and at the bottom. `focused_*` is for the current workspace, the selected
+  row and the hovered tile.
+- `fill`: `material` is the platform's blur (`ultra-thin` is macOS's `.ultraThinMaterial`; use
+  the nearest on Windows (Acrylic) and Linux (compositor blur), or none). `tint_role` at
+  `tint_opacity` is laid over it, and `opacity` applies to the whole panel. `adjustable` means
+  Settings may change the opacity, as macOS does today. A `null` material means an opaque fill
+  in `tint_role`.
+- `shadow`: blur radius, y offset and opacity of black, or `null` for none.
+- Two roles aren't palette entries: `light` is plain white, and `workspace` is the workspace's
+  own tint color (each workspace has one).
+
+The BaneySpaces theme is exactly what macOS draws today. Its tokens are the shipped values, and
+macOS's conformance test holds them, so picking it changes nothing on screen.
 - `font.family`: a key into `fonts`. Use the first family that is installed.
 - `space`: gap between tiles, panel padding, and tile size.
 - `indicator`: how a workspace shows in the dock, the bar module and the overview: `dot`,
