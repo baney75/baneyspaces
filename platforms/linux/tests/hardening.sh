@@ -199,7 +199,8 @@ echo "== deny by default: an app that is not on the allowlist is never started f
 APP="$HERE/gtk_test_app.py"
 ln -sf "$APP" "$TMP/linked_app.py"
 addrs() { H clients | jq -r '.[].address' | sort; }
-procs_with_token() { grep -l BANEYSPACES_AGENT_TOKEN /proc/[0-9]*/environ 2>/dev/null | wc -l; }
+# only this session's processes: other nested runs on the same machine start and stop agent processes of their own
+procs_with_token() { grep -la "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" /proc/[0-9]*/environ 2>/dev/null | xargs -r grep -la BANEYSPACES_AGENT_TOKEN 2>/dev/null | wc -l; }
 BEFORE="$(addrs)"; TOK0="$(procs_with_token)"
 N0="$(baneyspaces agent open python3)"
 eq "with no copy of yours running, an unlisted app is needs_sandbox" "$(echo "$N0" | jq -r '.error.code + " " + .error.retry')" "needs_sandbox never"

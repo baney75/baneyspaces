@@ -421,8 +421,7 @@ printf 'behavior = false\n' > "$CFG"; sleep 1.3
 SC="$(baneyspaces set behavior.dock.size large)"
 eq "a value where a table belongs is a typed error, not a crash" "$(echo "$SC" | jq -r '.error.code')" "config_invalid"
 check "…and the daemon answers afterwards" sh -c "baneyspaces ping 2>/dev/null; baneyspaces state | jq -e .ok"
-cp "$TMP/config.good" "$CFG"; sleep 1.3
-printf '\n[animation.workspace]\nstyle = "fade"\n' >> "$CFG"
+printf '# by hand\n[animation.workspace]\nstyle = "fade"\n' > "$CFG"   # a whole file: an earlier set may have left this table in the good copy
 check "animation.workspace.style = fade, written by hand, reaches Hyprland within two seconds" wait_for 3 sh -c "[ \"\$(hyprctl -j animations | jq -r '[.[0][]|select(.name==\"workspaces\")|.enabled]|first')\" = true ]"
 /usr/bin/python3 -I "$HERE/cfg-drop.py" "$CFG" animation.workspace
 check "…and taking it out of the file puts it back" wait_for 3 sh -c "[ \"\$(hyprctl -j animations | jq -r '[.[0][]|select(.name==\"workspaces\")|.enabled]|first')\" = false ]"
@@ -451,6 +450,7 @@ Exec=/bin/true
 StartupWMClass=bs-single
 EOT
 sleep 3.2
+goto $M2 9   # the second display shows 9, so 2, 7 and 8 are free to go to on this one
 goto $M1 8; mkdir -p "$TMP/hold"
 nwin() { H clients | jq "[.[]|select(.class==\"$1\" and .workspace.name==\"$2\")]|length"; }
 run_app() { baneyspaces launcher search "$1" --mode apps >/dev/null; baneyspaces launcher run "app:$2" "${@:3}"; }

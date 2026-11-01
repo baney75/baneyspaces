@@ -2,39 +2,39 @@
   "frame_probe": {
     "dock": {
       "surface": "dock",
-      "frames": 364,
-      "intervals": 352,
+      "frames": 367,
+      "intervals": 355,
       "median_ms": 17,
-      "late_1_5x": 1,
+      "late_1_5x": 0,
       "late_2x": 0,
-      "late_per_200": 0.6
+      "late_per_200": 0
     },
     "overview": {
       "surface": "overview",
-      "frames": 138,
-      "intervals": 108,
+      "frames": 144,
+      "intervals": 110,
       "median_ms": 16,
-      "late_1_5x": 8,
-      "late_2x": 4,
-      "late_per_200": 14.8
+      "late_1_5x": 2,
+      "late_2x": 2,
+      "late_per_200": 3.6
     },
     "launcher": {
       "surface": "launcher",
-      "frames": 231,
-      "intervals": 209,
-      "median_ms": 17,
-      "late_1_5x": 2,
+      "frames": 203,
+      "intervals": 179,
+      "median_ms": 16,
+      "late_1_5x": 1,
       "late_2x": 0,
-      "late_per_200": 1.9
+      "late_per_200": 1.1
     },
     "switcher": {
       "surface": "switcher",
-      "frames": 216,
-      "intervals": 204,
+      "frames": 226,
+      "intervals": 214,
       "median_ms": 16,
-      "late_1_5x": 15,
+      "late_1_5x": 13,
       "late_2x": 12,
-      "late_per_200": 14.7
+      "late_per_200": 12.1
     }
   },
   "bindings": {
@@ -62,21 +62,21 @@
   },
   "switch_latency_ms": {
     "native": {
-      "p50": 0.31,
-      "p90": 0.39,
-      "max": 0.81,
+      "p50": 0.35,
+      "p90": 0.48,
+      "max": 0.67,
       "n": 40
     },
     "ours": {
-      "p50": 0.34,
+      "p50": 0.36,
       "p90": 0.42,
-      "max": 0.48,
+      "max": 0.6,
       "n": 40
     },
     "ours_daemon": {
-      "p50": 6.38,
-      "p90": 7.19,
-      "max": 7.66,
+      "p50": 6.6,
+      "p90": 7.12,
+      "max": 22.82,
       "n": 40
     },
     "samples": 40
@@ -96,8 +96,8 @@
     "misses": []
   },
   "launcher_timing": {
-    "open_to_ready_ms": 1,
-    "type_to_first_result_ms": 18,
+    "open_to_ready_ms": 7,
+    "type_to_first_result_ms": 19,
     "cli_search_ms": 1
   }
 }
