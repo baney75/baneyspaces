@@ -101,6 +101,24 @@ final class AgentCursor {
     func apply(_ new: CursorLook) {
         look = new
         let t = new.theme
+        // Switching to still must stop scale/ripple/squish/trail already in flight (and delayed starts).
+        if new.still {
+            let layers: [CALayer] = [root, body, badge, focus] + ripples + markShapes
+            for l in layers {
+                for key in l.animationKeys() ?? [] {
+                    let path = (l.animation(forKey: key) as? CAPropertyAnimation)?.keyPath ?? ""
+                    if path.hasPrefix("transform") || path == "strokeEnd" {
+                        l.removeAnimation(forKey: key)
+                    }
+                }
+            }
+            noActions {
+                body.transform = CATransform3DIdentity
+                badge.transform = CATransform3DIdentity
+                focus.transform = CATransform3DIdentity
+                for l in ripples + markShapes { l.transform = CATransform3DIdentity }
+            }
+        }
         if marks.count != max(1, t.markCount), let d = display {
             (ripples + marks).forEach { $0.removeFromSuperlayer() }
             build(count: t.markCount)

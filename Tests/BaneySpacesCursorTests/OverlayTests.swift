@@ -86,6 +86,16 @@ final class OverlayTests: XCTestCase {
         XCTAssertTrue(s.isGliding("a"), "one animation on the cursor layer, run by the compositor")
     }
 
+    func testSwitchingToStillCancelsScaleRippleAndSquish() {
+        let s = surface()
+        s.configure("a", look: CursorLook(name: "Claude", status: .working, identity: look.identity, theme: .standard, still: false))
+        s.appear("a", at: CGPoint(x: 100, y: 100))
+        s.act("a", effect: .click, point: CGPoint(x: 100, y: 100), frame: CGRect(x: 80, y: 90, width: 40, height: 20), delay: 0.05)
+        XCTAssertFalse(s.motionAnimationKeys("a").isEmpty, "a click under motion schedules scale/ripple/squish")
+        s.configure("a", look: CursorLook(name: "Claude", status: .working, identity: look.identity, theme: .standard, still: true))
+        XCTAssertEqual(s.motionAnimationKeys("a"), [], "applying a still look cancels in-flight motion animations")
+    }
+
     func testWithMotionOffNothingScalesGrowsOrSquishes() {
         func scheduled(still: Bool) -> [String] {
             let s = surface()
