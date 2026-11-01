@@ -86,6 +86,9 @@ public final class OverlaySurface: CursorSurface {
         return CGPoint(x: p.x + d.spec.globalFrame.minX, y: d.spec.globalFrame.maxY - p.y)
     }
 
+    /// For checks: the size and stroke animations a cursor has scheduled (none when motion is off).
+    public func motionAnimationKeys(_ agent: String) -> [String] { cursors[agent]?.motionAnimationKeys ?? [] }
+
     public func isGliding(_ agent: String) -> Bool { cursors[agent]?.root.animation(forKey: AgentCursor.glideKey) != nil }
 
     public func isShown(_ agent: String) -> Bool { cursors[agent]?.isShown ?? false }

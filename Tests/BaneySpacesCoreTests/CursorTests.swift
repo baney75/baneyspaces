@@ -334,11 +334,12 @@ final class FakeSurface: CursorSurface {
     private let lock = NSLock()
     private var log: [Call] = []
     var motions: [CursorMotion] = []
+    var looks: [CursorLook] = []
     /// What each call costs, to prove the action doesn't wait for it.
     var cost: TimeInterval = 0
     var calls: [Call] { lock.lock(); defer { lock.unlock() }; return log }
     private func note(_ c: Call) { if cost > 0 { Thread.sleep(forTimeInterval: cost) }; lock.lock(); log.append(c); lock.unlock() }
-    func configure(_ agent: String, look: CursorLook) { note(.configure(agent, look.name)) }
+    func configure(_ agent: String, look: CursorLook) { lock.lock(); looks.append(look); lock.unlock(); note(.configure(agent, look.name)) }
     func appear(_ agent: String, at point: CGPoint) { note(.appear(agent, point)) }
     func move(_ agent: String, motion: CursorMotion) { lock.lock(); motions.append(motion); lock.unlock(); note(.move(agent, motion.target)) }
     func jump(_ agent: String, to point: CGPoint) { note(.jump(agent, point)) }
@@ -425,6 +426,27 @@ final class CursorDirectorTests: XCTestCase {
         XCTAssertTrue(s.calls.contains(.jump("a", CGPoint(x: 1000, y: 400))))
         guard case .act(_, _, _, let delay)? = s.calls.last else { return XCTFail() }
         XCTAssertEqual(delay, 0)
+    }
+
+    func testReduceMotionOrPresetOffDrawsTheCursorStill() {
+        func drawn(_ change: (inout CursorEnvironment) -> Void) -> CursorLook? {
+            let (d, s) = make()
+            var env = CursorEnvironment(); env.current = 9; env.agentWorkspace = 9; env.displays = [screen]
+            change(&env)
+            d.setEnvironment(env)
+            d.handsWillAct(event(at: CGPoint(x: 100, y: 100))); drain()
+            return s.looks.last
+        }
+        let moving = drawn { _ in }
+        XCTAssertEqual(moving?.still, false)
+        XCTAssertLessThan(moving?.theme.appearScale ?? 1, 1, "the default theme pops in")
+        for look in [drawn { $0.reduceMotion = true }, drawn { $0.settings.preset = "off" }] {
+            XCTAssertEqual(look?.still, true)
+            XCTAssertEqual(look?.theme.appearScale, 1, "no pop")
+            XCTAssertEqual(look?.theme.squish, 1, "no squish")
+        }
+        let chose = drawn { $0.reduceMotion = true; $0.settings.respectReduceMotion = false }
+        XCTAssertEqual(chose?.still, false, "animation.respect_reduce_motion = false keeps the motion")
     }
 
     func testNothingIsDrawnWhenYouAreNotOnTheAgentWorkspace() {
