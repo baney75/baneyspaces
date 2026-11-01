@@ -29,7 +29,7 @@ extension HandsRouter {
         switch resolve(req.string("ref")) {
         case .failure(let e): return .failure(e)
         case .success(let (w, scope)):
-            return background(w, scope, name: "press", kind: .keys, ref: req.string("ref"), chords: chords, path: [], drag: false)
+            return background(w, scope, name: "press", kind: .keys, ref: req.string("ref"), chords: chords, path: [], drag: false, session: req.session ?? "")
         }
     }
 
@@ -55,7 +55,7 @@ extension HandsRouter {
         switch target(req) {
         case .failure(let e): return .failure(e)
         case .success(let (w, scope, _)):
-            return background(w, scope, name: name, kind: .pointer, ref: nil, chords: [], path: path, drag: drag)
+            return background(w, scope, name: name, kind: .pointer, ref: nil, chords: [], path: path, drag: drag, session: req.session ?? "")
         }
     }
 
@@ -75,7 +75,7 @@ extension HandsRouter {
     }
 
     private func background(_ w: HandsWindow, _ scope: ScopeDecision, name: String, kind: InputKind, ref: String?,
-                            chords: [KeyChord], path: [CGPoint], drag: Bool) -> HandsEnvelope {
+                            chords: [KeyChord], path: [CGPoint], drag: Bool, session: String) -> HandsEnvelope {
         // The mark covers the whole action: the queue wait, the readings, the post and the proof, and a short tail.
         let token = AgentActivity.shared.begin(pid: w.pid, window: w.id)
         defer { AgentActivity.shared.end(token) }
@@ -85,7 +85,7 @@ extension HandsRouter {
             return .failure(HandsError(.windowNotFound, "the window server does not list window \(w.id)", suggestion: "Run `baneyspaces agent windows` and try again.", retry: .safe))
         }
         let reply = HandsEngine.shared.transaction(window: w, check: scopeCheck) { [self] cancelled in
-            transact(w, scope, name: name, kind: kind, ref: ref, chords: chords, path: path, drag: drag, scopeCheck: scopeCheck, cancelled: cancelled)
+            transact(w, scope, name: name, kind: kind, ref: ref, chords: chords, path: path, drag: drag, session: session, scopeCheck: scopeCheck, cancelled: cancelled)
         }
         switch reply {
         case .failed(let e): return .failure(e)
@@ -94,7 +94,7 @@ extension HandsRouter {
     }
 
     /// Runs on the process queue. Everything it reads goes through the engine's inline calls.
-    private func transact(_ w: HandsWindow, _ scope: ScopeDecision, name: String, kind: InputKind, ref: String?, chords: [KeyChord], path: [CGPoint], drag: Bool,
+    private func transact(_ w: HandsWindow, _ scope: ScopeDecision, name: String, kind: InputKind, ref: String?, chords: [KeyChord], path: [CGPoint], drag: Bool, session: String,
                           scopeCheck: @escaping HandsEngine.Check, cancelled: () -> Bool) -> HandsEngine.Reply {
         // From planning to a second after the last post: every activation, and every session event, is seen.
         let activations = ActivationWatch()
@@ -167,7 +167,10 @@ extension HandsRouter {
 
         // The agent cursor (phase 1b) learns where the hands are working.
         if HandsEvents.hasListener {
-            HandsEvents.willAct(HandsActionEvent(kind: name, ref: ref ?? "", window: w.id, pid: w.pid, app: w.app, point: path.first.map { PointerPath.screenPoint(local: $0, frame: frame) }))
+            // The agent cursor shows where the hands are working: the target point when there is one, the window otherwise.
+            HandsEvents.willAct(HandsActionEvent(kind: name, ref: ref ?? "", window: w.id, pid: w.pid, app: w.app,
+                                                 point: path.first.map { PointerPath.screenPoint(local: $0, frame: frame) }, frame: path.isEmpty ? frame : nil,
+                                                 session: session, scope: scope.reason, workspace: w.workspace))
         }
         let pointerBefore = BackgroundPoster.pointerLocation()
         var posted = 0, released = 0
