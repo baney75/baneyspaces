@@ -120,18 +120,25 @@ public struct CrashLedgerFile {
         return decision
     }
 
-    /// A clean quit: this run is over, and it didn't crash. Other live runs stay recorded.
-    public func end(pid: Int32) {
+    /// A clean quit: this run is over, and it didn't crash. Other live runs stay recorded. Returns
+    /// whether the run was in the ledger.
+    @discardableResult
+    public func end(pid: Int32) -> Bool {
         var ledger = read()
         let before = ledger.running.count
         ledger.running.removeAll { $0.pid == pid }
-        if ledger.running.count != before { write(ledger) }
+        guard ledger.running.count != before else { return false }
+        write(ledger)
+        return true
     }
 
-    /// Start Anyway: the crashes so far are forgiven.
-    public func forgive() {
+    /// Start Anyway: the crashes so far are forgiven. Returns how many there were.
+    @discardableResult
+    public func forgive() -> Int {
         var ledger = read()
+        let n = ledger.crashes.count
         ledger.crashes = []
         write(ledger)
+        return n
     }
 }
