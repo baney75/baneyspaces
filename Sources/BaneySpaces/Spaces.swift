@@ -395,6 +395,18 @@ final class Spaces {
         return away
     }
 
+    /// Every window BaneySpaces places, with its workspace, for the agent hands' scope guard.
+    func handsWindows() -> [HandsWindow] {
+        model.home.compactMap { id, ws in
+            guard let w = windows[id] else { return nil }
+            let app = NSRunningApplication(processIdentifier: w.pid)
+            return HandsWindow(id: id, pid: w.pid, app: w.appName, bundle: app?.bundleIdentifier ?? "", title: ws == Self.agentWorkspace ? w.title : "", workspace: ws)
+        }
+    }
+
+    /// Saves state.json now (a lend changed).
+    func saveState() { persist() }
+
     /// Windows on the agent workspace, for `baneyspaces agent status`.
     func agentWindows() -> [(id: WindowID, app: String, title: String)] {
         guard let n = Self.agentWorkspace else { return [] }
@@ -640,6 +652,9 @@ final class Spaces {
         guard active, pid != getpid() else { return }
         defer { frontPid = pid }
         Windows.markResponsive(pid)
+        // An agent action on this app caused it (marked for a second around each action): it is
+        // not you picking the app, so it never takes you to another workspace.
+        if AgentActivity.shared.caused(pid: pid) { return Trace.log("followFocus stayed: an agent action activated pid \(pid)") }
         // Asked for by `openWindowHere`: its window is on the way, here.
         if let o = opening, o.pid == pid, Date() < o.until { return }
         activatedAt = Date()
@@ -836,6 +851,7 @@ final class Spaces {
     /// chose a window yourself (the Window menu, ⌘`). A closed window keeps you on this workspace,
     /// so typing never lands in a hidden window. A window you chose takes you to its workspace.
     private func focusMovedWithin(_ pid: pid_t) {
+        guard !AgentActivity.shared.caused(pid: pid) else { return Trace.log("focus stayed: an agent action moved focus in pid \(pid)") }
         guard active, !switching, Date() > settleUntil,
               NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
         refresh()
@@ -867,13 +883,13 @@ final class Spaces {
     /// app is hidden as before: parking needs it to answer, hiding doesn't.
     private func parkedPids() -> Set<pid_t> {
         let ids = ParkedApps.bundleIDs
-        // Apps with a window on the agent workspace stay drivable from behind, like the list's.
+        // Apps with a window on the agent workspace, and apps lent to an agent, stay drivable from behind, like the list's.
         let agents = AgentWorkspace.parkedApps(owners: windows.mapValues(\.pid), home: model.home, agent: Self.agentWorkspace)
-        guard !ids.isEmpty || !agents.isEmpty else { return [] }
+        guard !ids.isEmpty || !agents.isEmpty || !HandsLends.shared.current().entries.isEmpty else { return [] }
         let unsure = lastScan?.unsure ?? []
         return Set(windows.values.map(\.pid)).filter { pid in
             Windows.isResponsive(pid) && !unsure.contains(pid) && !SlowMovers.contains(pid)
-                && (agents.contains(pid) || NSRunningApplication(processIdentifier: pid)?.bundleIdentifier.map(ids.contains) == true)
+                && (agents.contains(pid) || HandsLends.shared.isLent(pid: pid) || NSRunningApplication(processIdentifier: pid)?.bundleIdentifier.map(ids.contains) == true)
         }
     }
 
@@ -1666,9 +1682,10 @@ final class Spaces {
             "current": model.current,
             // The workspace on each display, by display UUID (one entry with one display).
             "displays": model.shown,
-            // The agent workspace (0 when off). Cua's driver reads it and refuses foreground
-            // delivery to a window there, which would pull you onto it.
+            // The agent workspace (0 when off). The agent hands act only on it and on lent apps.
             "agentWorkspace": Self.agentWorkspace ?? 0,
+            // Apps lent to agents right now (`baneyspaces agent lend`), with when they go back.
+            "lent": HandsLends.shared.stateEntries(),
             "parked": saved.frames.keys.sorted(),
             "hiddenApps": saved.hiddenApps.sorted(),
             // Apps the last scan couldn't read, and windows from the saved layout still waiting

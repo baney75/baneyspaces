@@ -5,6 +5,10 @@ import BaneySpacesCore
 /// JSON line in and one out. Requests are handled on the main thread, where the engine lives.
 final class Server {
     var handle: (Wire.Request) -> Wire.Reply = { _ in Wire.Reply(ok: false, error: "not ready") }
+    /// Agent computer-use commands run on the connection's own thread, not the main one: a snapshot
+    /// of a slow app must never freeze the menu bar, the dock or a workspace switch. The hands
+    /// hop to the main thread only for the few reads that need it.
+    var handleHands: (Wire.Request) -> Wire.Reply = { _ in Wire.Reply(ok: false, error: "not ready") }
     private var fd: Int32 = -1
     private var source: DispatchSourceRead?
     private let io = DispatchQueue(label: "deck.socket", attributes: .concurrent)
@@ -55,7 +59,7 @@ final class Server {
         guard let line = Wire.readLine(client) else { return }
         let reply: Wire.Reply
         if let req = try? JSONDecoder().decode(Wire.Request.self, from: line) {
-            reply = DispatchQueue.main.sync { handle(req) }
+            reply = req.op == .hands ? handleHands(req) : DispatchQueue.main.sync { handle(req) }
         } else {
             reply = Wire.Reply(ok: false, error: "bad request")
         }

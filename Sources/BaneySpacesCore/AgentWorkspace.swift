@@ -1,6 +1,6 @@
 import Foundation
 
-/// The agent workspace: one workspace where coding agents and Cua automation drive real apps
+/// The agent workspace: one workspace where coding agents drive real apps through `baneyspaces agent`
 /// while you work somewhere else. Three rules keep it from ever taking over your screen:
 ///
 /// 1. Its apps are parked out of view instead of hidden, because macOS refuses background clicks

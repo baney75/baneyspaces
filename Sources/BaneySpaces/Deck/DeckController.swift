@@ -46,6 +46,8 @@ final class DeckController {
     private(set) var started = false
 
     var agentHost = AgentHost()
+    /// The agent hands: snapshot and act on the agent workspace (see Hands/).
+    let hands = HandsRouter()
 
     /// Set by the app delegate: the menu bar badge shows how many agents finished unseen.
     var onUnseenChange: (Int) -> Void = { _ in }
@@ -93,6 +95,7 @@ final class DeckController {
         engine.start()
         phones.start()
         server.handle = { [weak self] in self?.handle($0) ?? Wire.Reply(ok: false) }
+        server.handleHands = { [weak self] in self?.handleHands($0) ?? Wire.Reply(ok: false) }
         server.start()
         remote.handle = { [weak self] in self?.handle($0) ?? Wire.Reply(ok: false) }
         if Self.remoteEnabled { startRemote() }
@@ -322,18 +325,35 @@ final class DeckController {
 
     // MARK: socket
 
+    /// `baneyspaces agent snapshot|click|…`: off the main thread (see `Server.handleHands`).
+    func handleHands(_ r: Wire.Request) -> Wire.Reply {
+        guard started else {
+            let e = HandsEnvelope.failure(HandsError(.notRunning, "BaneySpaces hasn't finished starting (it needs Accessibility)",
+                                                     suggestion: "Run `baneyspaces doctor`; allow Accessibility if it asks.", retry: .safe))
+            return .init(ok: true, info: ["envelope": e.line])
+        }
+        return hands.handleWire(r)
+    }
+
     func handle(_ r: Wire.Request) -> Wire.Reply {
         guard started else { return .init(ok: false, error: "BaneySpaces hasn't finished starting (it needs Accessibility)") }
         switch r.op {
         case .ping:
             var info = engine.statusInfo
+            info["accessibility"] = AXIsProcessTrusted() ? "allowed" : "not allowed"
+            info["hands"] = HandsEngine.shared.permissionProblem() == nil ? "ready" : "needs Accessibility"
+            info["lent"] = HandsLends.shared.current().entries.map(\.app).joined(separator: ", ")
             info["version"] = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
             return .init(ok: true, info: info)
         case .list:
             return .init(ok: true, items: engine.items)
+        case .hands:
+            return hands.handleWire(r)
         case .event:
             guard let e = r.event else { return .init(ok: false, error: "no event") }
             engine.apply(e)
+            // An agent session that ended gives back every app lent to it.
+            if e.state == .end { HandsLends.shared.giveBackAll(session: e.session) }
             return .init(ok: true)
         case .notify:
             guard let e = r.event else { return .init(ok: false, error: "no event") }
@@ -408,14 +428,18 @@ final class DeckController {
             guard let name = args.first, let url = Self.appURL(name) else { return .init(ok: false, error: "no app called \(args.first ?? "")") }
             let appName = url.deletingPathExtension().lastPathComponent
             let bundle = Bundle(url: url)?.bundleIdentifier
-            let files = args.dropFirst().map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
+            // Files, or http(s) pages for a browser.
+            let files = args.dropFirst().map { a -> URL in
+                if let u = URL(string: a), let s = u.scheme?.lowercased(), s == "http" || s == "https" { return u }
+                return URL(fileURLWithPath: (a as NSString).expandingTildeInPath)
+            }
             let running = NSWorkspace.shared.runningApplications.first { $0.bundleIdentifier == bundle && bundle != nil }
             let cfg = NSWorkspace.OpenConfiguration()
             cfg.activates = false
             cfg.addsToRecentItems = false
             if let file = files.first {
                 // The file's window, recognized by its name, goes there; nothing else of the app.
-                let title = file.lastPathComponent
+                let title = file.isFileURL ? file.lastPathComponent : nil
                 if let running { h.claim(running.processIdentifier, n, false, title) }
                 NSWorkspace.shared.open(files, withApplicationAt: url, configuration: cfg) { app, _ in
                     guard let app, running == nil else { return }
@@ -457,7 +481,7 @@ final class DeckController {
             return .init(ok: true, info: ["workspace": "\(n)", "command": cmd])
         case "move":
             guard let n = h.workspace() else { return .init(ok: false, error: "the agent workspace is off: baneyspaces agent on") }
-            // A window number (what cua-driver and `agent status` show), or a row by ID or words.
+            // A window number (what `agent windows` and `agent status` show), or a row by ID or words.
             if args.count == 1, let id = UInt32(args[0]) {
                 h.move(id, n)
                 return .init(ok: true, info: ["workspace": "\(n)", "moved": "window \(id)"])

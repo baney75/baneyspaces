@@ -20,6 +20,11 @@ usage: \(me) <command>
   agent status|on [N]|off     the agent workspace: agents drive apps there while you work here
   agent open <app> [file…]    open an app (or files in it) there, without switching you
   agent run [--dir D] -- CMD  run a command (claude, grok…) in a Ghostty window there
+  agent windows|snapshot|find|get|click|type|set-value|press|scroll|select|toggle|shot|lend|return
+                              read and act on apps on the agent workspace (or lent ones) without touching
+                              your screen; each prints one JSON envelope (agent <command> with no
+                              arguments shows its usage). `agent open` prints one too.
+  mcp                         the same commands as a stdio MCP server (claude mcp add baneyspaces -- baneyspaces mcp)
   agent move <id | words>     send a row's window there
   phone ls|ui|shot|tap|swipe|type|key|shell|mirror   phones for agents (phone help)
   remote on|off|status|token  let your other machines (tailnet only) send agent work here
@@ -163,6 +168,12 @@ case "remote":
 
 case "phone", "phones":
     PhoneCommand.run(rest)
+
+case "mcp":
+    MCPCommand.run()
+
+case "agent" where HandsTools.tool(verb: rest.first ?? "") != nil:
+    HandsCLI.run(rest)
 
 case "agent":
     // The agent workspace: agents work there while you work here.

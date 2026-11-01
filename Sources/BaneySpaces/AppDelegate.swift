@@ -565,6 +565,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         h.move = { [weak self] id, n in self?.run { $0.move(id, to: n) } }
         h.windows = { [weak self] in self?.spaces.agentWindows() ?? [] }
         deck.agentHost = h
+        // The agent hands: what the scope guard needs from the workspaces, and what to do when a lend changes.
+        deck.hands.host = HandsHost(
+            agentWorkspace: { Spaces.agentWorkspace },
+            windows: { [weak self] in self?.spaces.handsWindows() ?? [] },
+            open: { [weak self] args in self?.deck.agent("open", args) ?? Wire.Reply(ok: false, error: "not ready") })
+        HandsLends.shared.onChange = { [weak self] in
+            DispatchQueue.main.async {
+                // A lent app is parked, not hidden, while it is lent: the workspace is applied again.
+                self?.spaces.saveState()
+                self?.run { $0.reapply() }
+            }
+        }
+        Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in HandsLends.shared.expire() }
         deck.onWorkingChange = { [weak self] in self?.dock.reload() }
         // A moment after launch: setting up an observer per app costs the main thread a few
         // hundred milliseconds, which would otherwise land on your first workspace switch.
