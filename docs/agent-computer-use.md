@@ -56,6 +56,26 @@ Output is one JSON envelope per command: `ok`, `data` or `error` with `code`, `r
 `after_snapshot`, `never`) and a `suggestion`. `remote` (tailnet, token) exposes the same tools to
 other machines, look-and-act on the agent workspace only.
 
+## The agent cursor
+
+Donovan asked for it on 2026-10-31: you should see an agent work. Each agent gets a small cursor
+of its own, drawn by BaneySpaces in a click-through overlay. It is never the real pointer, and it
+never moves yours.
+
+- Before an action it glides from its last spot to the target element's center (about 150 ms,
+  eased; instant when Reduce Motion is on), then shows what happened: a ripple for a click, a
+  caret pulse while typing, a short scroll trail.
+- It carries the agent's name and its status color from the Deck, so two agents on the same
+  workspace are told apart.
+- It shows on the agent workspace when you look at it, and over a lent app while the agent uses
+  it. Anywhere else it stays hidden, and the action still runs.
+- It never takes focus, clicks or keys. Screenshots and recordings of the agent workspace can
+  include it or leave it out (`agent shot --cursor`), so the evidence in a result is the app
+  itself.
+- `baneyspaces agent cursor on|off|theme <name>` and a Settings switch. It's on by default.
+
+The bench measures it too: drawing the cursor must add under 5 ms to the median action.
+
 ## Browsers
 
 All of them, without taking the screen:
@@ -73,6 +93,7 @@ All of them, without taking the screen:
 | Phase | Ships | Done when |
 | --- | --- | --- |
 | 1 | Engine linked in; `agent snapshot/find/get/click/type/set-value/press/scroll/select/toggle/shot/open/lend/return`; MCP server; focus-watcher tag so agent activations are never followed. | `scripts/agent-hands-probe.swift`: 200 actions in TextEdit, Finder and Notes on the agent workspace while the probe records the front app, the current workspace, the pointer and the key window every 50 ms; zero changes. Plus `swift test`. |
+| 1b | The agent cursor above. | Visible on the agent workspace during the probe, zero changes to the real pointer, under 5 ms added per action. |
 | 2 | Browsers and Electron as above. | The probe passes on Helium (agent profile), Safari, Firefox, Chrome and Obsidian, with a page form filled and read back in each. |
 | 3 | Window-local pointer and per-process keys (SkyLight) for apps without a usable tree; the refusal contract. | Canvas app drawn on from behind with zero changes on the probe; every refused route returns a suggestion. |
 | 4 | Head-to-head: the same 30 tasks through agent-desktop, Cua's driver (in a VM, not on Donovan's Mac) and BaneySpaces, scored on success, screen changes and time. Fleet routing (skills, ROUTING.md, the live-checker agent) switches to BaneySpaces. | BaneySpaces wins or ties every column; the numbers are committed under `evidence/`. |
