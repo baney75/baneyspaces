@@ -31,6 +31,22 @@ final class WorkspaceSwitcherOrderTests: XCTestCase {
         }
     }
 
+    func testDonovansTwoWorkspacesShowJustThoseTwo() {
+        // 11-01 screenshot: 1,4,3,2,5,6,8,7,9 was this MRU list with the empties still in it (#145).
+        let order = WorkspaceSwitcherOrder.make(current: 1, recent: [1, 4, 3, 2, 5, 6, 8, 7, 9], occupied: [1, 2], range: Array(1...9))
+        XCTAssertEqual(order, [1, 2])
+    }
+
+    func testOrderIsCurrentThenRecentOccupiedThenNumber() {
+        let order = WorkspaceSwitcherOrder.make(current: 2, recent: [2, 6, 4, 1], occupied: [1, 2, 3, 6, 8], range: Array(1...9))
+        XCTAssertEqual(order, [2, 6, 1, 3, 8])
+    }
+
+    func testOnlyTheCurrentWhenEverythingElseIsEmpty() {
+        XCTAssertEqual(WorkspaceSwitcherOrder.make(current: 4, recent: [4, 1, 2, 3], occupied: [], range: Array(1...9)), [4])
+        XCTAssertEqual(WorkspaceSwitcherOrder.make(current: 4, recent: [4, 1], occupied: [4], range: Array(1...9)), [4])
+    }
+
     func testCurrentMissingFromRangeIsOmitted() {
         let order = WorkspaceSwitcherOrder.make(current: 9, recent: [1], occupied: [1, 2], range: [1, 2])
         XCTAssertEqual(order, [1, 2])
@@ -203,8 +219,10 @@ final class SwitcherSelectionTests: XCTestCase {
 final class SwitcherWiringTests: XCTestCase {
     func testTheAppListsOnlyOccupiedWorkspaces() throws {
         let spaces = try Repo.code("Sources/BaneySpaces/Spaces.swift")
-        XCTAssertTrue(spaces.contains("occupied: Set(Workspaces.range.filter(isOccupied))"))
+        // The order and the caption count the same entries, so a listed tile can't read "empty".
+        XCTAssertTrue(spaces.contains("occupied: Set(Workspaces.range.filter { !entries(on: $0).isEmpty })"))
         let switcher = try Repo.code("Sources/BaneySpaces/WorkspaceSwitcher.swift")
+        XCTAssertTrue(switcher.contains("count: spaces.entries(on: n).count"))
         XCTAssertTrue(switcher.contains("isCurrent: n == current"))
         XCTAssertTrue(switcher.contains("SwitcherTileText.caption(count: tile.count, isCurrent: tile.isCurrent)"))
     }
