@@ -158,6 +158,15 @@ public struct WatchdogInstaller {
         _ = launchctl(["bootout", target])
     }
 
+    /// BaneySpaces isn't holding Mission Control off any more (quit, Accessibility lost): the heartbeat
+    /// goes, and the agent stays installed and loaded, finding nothing to do. Taking it down and
+    /// putting it back would show macOS's "Background Item Added" notice at every launch.
+    public func stopHolding() {
+        for name in [MissionControlWatchdog.heartbeat, MissionControlWatchdog.updating] {
+            try? FileManager.default.removeItem(at: file(name))
+        }
+    }
+
     /// Proof that BaneySpaces, this process, is alive, and that it is a build that holds Mission Control off.
     public func beatNow(pid: Int32) throws {
         // Atomic, so the agent reads the old heartbeat or the new one, never half of one.

@@ -313,7 +313,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let why = missionControlWanted ? SystemMissionControl.problem : nil
         trackpadSwipe.stop()
         hotCorners.stop()
-        SystemMissionControl.restore(keeping: why)
+        // The agent goes with the switch, and only then; Accessibility lost or a quit leaves it loaded.
+        SystemMissionControl.restore(keeping: why, removeAgent: !MissionControlKeys.enabled)
     }
 
     /// An app dragged out of the disk image never ran the installer's other steps: AeroSpace stepping

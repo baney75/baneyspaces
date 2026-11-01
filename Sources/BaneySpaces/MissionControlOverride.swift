@@ -106,10 +106,12 @@ enum SystemMissionControl {
     }
 
     /// Gives Mission Control back. `keeping` is a reason it wasn't taken, which Settings goes on showing.
-    static func restore(keeping why: String? = nil) {
+    /// The launch agent stays installed unless `removeAgent`, which is for the Settings switch being
+    /// turned off (the uninstaller removes it itself): on a quit it finds no heartbeat and does nothing.
+    static func restore(keeping why: String? = nil, removeAgent: Bool = false) {
         problem = why
         let changed = takeover.restore()
-        installer.remove()
+        if removeAgent { installer.remove() } else { installer.stopHolding() }
         if changed {
             Trace.log("mission control: back as it was")
             restartDock()

@@ -79,7 +79,10 @@ first. To get Mission Control back, turn off **Settings › Keys › Use BaneySp
 Mission Control**: every setting goes back exactly as it was. Quitting BaneySpaces and uninstalling
 do the same, and the Dock restarts each time. If BaneySpaces stops without quitting (a crash, or
 the app dragged to the Trash), a small launch agent puts Mission Control back once no BaneySpaces
-has run for a minute (30 seconds after an update's restart that never came back). BaneySpaces
+has run for a minute (30 seconds after an update's restart that never came back). The agent stays
+installed across quits, so macOS doesn't announce a new background item at every launch; it goes
+when you turn the Settings switch off or uninstall, and does nothing while BaneySpaces isn't
+holding Mission Control off. BaneySpaces
 switches Mission Control off only after that agent is written, loaded and checked, and after what
 was there is saved to disk; if either can't be done, Mission Control stays on and Settings says
 why. If the agent is switched off later (the Background Item notice), BaneySpaces gives Mission

@@ -369,4 +369,50 @@ final class MissionControlWatchdogTests: XCTestCase {
         XCTAssertFalse(fm.fileExists(atPath: i.agentPlist.path))
         XCTAssertFalse(fm.fileExists(atPath: i.folder.appendingPathComponent(MissionControlWatchdog.heartbeat).path))
     }
+
+    // MARK: The agent stays across quits (second-S4)
+
+    func testQuittingLeavesTheAgentLoadedAndSwitchingOffTakesItDown() throws {
+        var calls: [String] = []
+        var loaded = false
+        let i = installer { args in
+            calls.append(args.first ?? "")
+            if args.first == "bootstrap" { loaded = true }
+            if args.first == "bootout" { loaded = false }
+            return args.first == "print" ? loaded : true
+        }
+        XCTAssertNil(i.install(pid: 1))
+        calls = []
+        // Quit: Mission Control is restored elsewhere; here only the heartbeat goes.
+        i.stopHolding()
+        XCTAssertEqual(calls, [], "launchctl isn't asked to unload anything")
+        XCTAssertTrue(loaded)
+        XCTAssertTrue(fm.fileExists(atPath: i.agentPlist.path), "the plist stays, so macOS sees nothing new at the next launch")
+        XCTAssertFalse(fm.fileExists(atPath: i.folder.appendingPathComponent(MissionControlWatchdog.heartbeat).path))
+        // The next launch finds it armed and loads nothing.
+        XCTAssertNil(i.install(pid: 2))
+        XCTAssertFalse(calls.contains("bootstrap") || calls.contains("bootout"), "\(calls)")
+        // The Settings switch off.
+        i.remove()
+        XCTAssertFalse(loaded)
+        XCTAssertFalse(fm.fileExists(atPath: i.agentPlist.path))
+    }
+
+    /// The loaded agent with nothing to watch is harmless: no heartbeat, nothing to restore.
+    func testALoadedAgentAfterAQuitDoesNothing() throws {
+        let i = WatchdogInstaller(folder: folder, agentPlist: home.appendingPathComponent("Library/LaunchAgents/\(MissionControlWatchdog.plistName)"),
+                                  restoreSource: folder.appendingPathComponent(MissionControlWatchdog.restoreName), uid: 501, launchctl: { _ in true })
+        XCTAssertNil(i.install(pid: 1))
+        i.stopHolding()
+        XCTAssertEqual(try tick(), "", "no restore, no launchctl, nothing")
+    }
+
+    func testOnlyTheSwitchTurnedOffRemovesTheAgentFromTheApp() throws {
+        let app = try String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Sources/BaneySpaces/AppDelegate.swift"), encoding: .utf8)
+        XCTAssertTrue(app.contains("SystemMissionControl.restore(keeping: why, removeAgent: !MissionControlKeys.enabled)"))
+        let quit = try XCTUnwrap(app.range(of: "func applicationWillTerminate").map { String(app[$0.lowerBound...].prefix(1200)) })
+        XCTAssertTrue(quit.contains("SystemMissionControl.restore()"), "a quit restores at once")
+        XCTAssertFalse(quit.contains("removeAgent: true"))
+    }
 }
