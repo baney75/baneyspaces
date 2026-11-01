@@ -192,8 +192,10 @@ public enum DeviceKeys {
         guard bridge, let frontApp, let capture = table.app(id: frontApp)?.keys[platform]?.capture,
               capture == "tap" || capture == "hook" else { return nil }
         guard chord.key.count == 1, let n = Int(chord.key), (1...9).contains(n) else { return nil }
-        if chord.mods == [mod] { return "switch \(n)" }
-        if chord.mods == [mod, "shift"] { return "move \(n)" }
+        // `mod` is one modifier, or several joined by "+" (the workspace modifier can be ⌃⌥).
+        let want = Set(mod.split(separator: "+").map(String.init))
+        if chord.mods == want { return "switch \(n)" }
+        if chord.mods == want.union(["shift"]) { return "move \(n)" }
         return nil
     }
 
