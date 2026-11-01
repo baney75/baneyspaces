@@ -512,7 +512,7 @@ final class SandboxShutdownTests: XCTestCase {
         let resume = DispatchSemaphore(value: 0)
         r.tart.onClone = {
             entered.signal()
-            _ = resume.wait(timeout: .now() + 120)
+            _ = resume.wait(timeout: .now() + 300)
         }
         // First up builds a warm clone in the background after the working guest is up.
         _ = try r.manager.up(task: "t1")
@@ -520,6 +520,9 @@ final class SandboxShutdownTests: XCTestCase {
         r.manager.stopAll()
         let other = SandboxManager(tart: r.st, facts: r.facts, clock: r.clock, paths: SandboxPaths(root: r.dir), settings: { SandboxSettings(enabled: true) },
                                    memory: r.memory, hostMemoryGB: 32)
+        XCTAssertThrowsError(try other.startupCleanup(keepOwnership: true)) { XCTAssertEqual(($0 as? SandboxError)?.code, "not_owner") }
+        // Retry while the clone is still blocked: ownership must stay held (warmGroup still tracked).
+        r.manager.stopAll()
         XCTAssertThrowsError(try other.startupCleanup(keepOwnership: true)) { XCTAssertEqual(($0 as? SandboxError)?.code, "not_owner") }
         resume.signal()
         // Give the build thread a moment to leave; then stopAll can finish and unlock.

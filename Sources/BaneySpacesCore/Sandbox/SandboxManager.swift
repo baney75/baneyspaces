@@ -723,7 +723,7 @@ public final class SandboxManager {
         state.unlock()
         do {
             try tart.suspend(vm: name)
-            guard p.waitForExit(timeout: 60) else { return dropWarm() }
+            guard p.waitForExit(timeout: 60) else { dropWarm() }
             Self.preread(SandboxPaths.tartHome.appendingPathComponent("vms/\(name)/state.vzvmsave"))
             state.lock()
             if warmName == name { warmProc = nil; warmLocation = .disk }
@@ -736,19 +736,27 @@ public final class SandboxManager {
     /// Forgets the warm clone, stops whatever builds or runs it, waits for the build thread to end, and deletes
     /// the VM and its slot. A build that finds itself dropped deletes its own VM and writes nothing.
     /// True when any warm build thread has finished (or there was none). False if it is still running after the wait.
+    /// `warmGroup` stays set until the thread has left, so a later stopAll keeps waiting instead of unlocking early.
     @discardableResult
     private func dropWarm() -> Bool {
         state.lock()
         let name = warmName
         let p = warmProc
         let group = warmGroup
-        warmState = .none; warmName = nil; warmProc = nil; warmLocation = .disk; warmGroup = nil
+        warmState = .none; warmName = nil; warmProc = nil; warmLocation = .disk
+        // leave warmGroup until the wait succeeds
         state.unlock()
         p?.kill()
         var buildDone = true
-        if let group, group.wait(timeout: .now() + 60) == .timedOut {
-            fail("the warm build did not stop in 60 s")
-            buildDone = false
+        if let group {
+            if group.wait(timeout: .now() + 60) == .timedOut {
+                fail("the warm build did not stop in 60 s")
+                buildDone = false
+            } else {
+                state.lock()
+                if warmGroup === group { warmGroup = nil }
+                state.unlock()
+            }
         }
         guard let name else { return buildDone }
         if tart.deleteVerified(name, proc: p, force: true) {
