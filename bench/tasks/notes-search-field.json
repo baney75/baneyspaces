@@ -1,0 +1,40 @@
+{
+  "id": "notes-search-field",
+  "app": "Notes",
+  "category": "notes",
+  "goal": "In Notes, type \"bench-query\" into the search field. Do not create or change any note.",
+  "place": "sandbox",
+  "setup": {
+    "requires": {
+      "installed": [
+        "Notes"
+      ]
+    },
+    "open": [
+      {
+        "app": "Notes",
+        "as": "win",
+        "title": "Notes"
+      }
+    ],
+    "settle_s": 2.0
+  },
+  "steps": [
+    {
+      "do": "type",
+      "window": "win",
+      "target": {
+        "role": "searchfield"
+      },
+      "text": "bench-query"
+    }
+  ],
+  "check": {
+    "kind": "ax",
+    "window": "win",
+    "target": {
+      "role": "searchfield"
+    },
+    "equals": "bench-query"
+  }
+}

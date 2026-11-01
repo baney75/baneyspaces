@@ -1,0 +1,44 @@
+{
+  "id": "refuse-missing-window",
+  "app": "TextEdit",
+  "category": "refusal",
+  "goal": "Read the TextEdit window listed below.",
+  "place": "host",
+  "setup": {
+    "requires": {
+      "installed": [
+        "TextEdit"
+      ],
+      "exclusive": [
+        "TextEdit"
+      ]
+    },
+    "files": {
+      "gone.txt": "x"
+    },
+    "open": [
+      {
+        "app": "TextEdit",
+        "as": "doc",
+        "targets": [
+          "{tmp}/gone.txt"
+        ],
+        "title": "gone.txt"
+      }
+    ],
+    "close_before_run": [
+      "doc"
+    ]
+  },
+  "steps": [
+    {
+      "do": "snapshot",
+      "window": "doc",
+      "expect_refusal": true
+    }
+  ],
+  "check": {
+    "kind": "nothing"
+  },
+  "impossible": true
+}

@@ -1,0 +1,651 @@
+[
+ {
+  "name": "the first display shows workspace 1 and has focus",
+  "rules": [
+   "R-M1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "expect": {
+     "focused_monitor": "A",
+     "current": 1,
+     "monitors": {
+      "A": {
+       "slot": 0,
+       "current": 1
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "two displays show two different workspaces",
+  "rules": [
+   "R-M1",
+   "R-M2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "B",
+    "effects": [
+     {
+      "do": "show_workspace",
+      "monitor": "B",
+      "workspace": 2
+     }
+    ],
+    "expect": {
+     "monitors": {
+      "A": {
+       "current": 1
+      },
+      "B": {
+       "slot": 1,
+       "current": 2
+      }
+     },
+     "focused_monitor": "A"
+    }
+   }
+  ]
+ },
+ {
+  "name": "three displays show three workspaces",
+  "rules": [
+   "R-M1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "B"
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "C"
+   },
+   {
+    "expect": {
+     "monitors": {
+      "A": {
+       "current": 1
+      },
+      "B": {
+       "current": 2
+      },
+      "C": {
+       "current": 3
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "a display added twice is the same display",
+  "rules": [
+   "R-M1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "expect": {
+     "monitors": {
+      "A": {
+       "slot": 0
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "a workspace is never shown on two displays",
+  "rules": [
+   "R-M1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "B"
+   },
+   {
+    "do": "switch",
+    "n": 2,
+    "expect": {
+     "focused_monitor": "B",
+     "monitors": {
+      "A": {
+       "current": 1
+      },
+      "B": {
+       "current": 2
+      }
+     }
+    }
+   },
+   {
+    "do": "switch",
+    "n": 3,
+    "expect": {
+     "monitors": {
+      "A": {
+       "current": 1
+      },
+      "B": {
+       "current": 3
+      }
+     }
+    }
+   },
+   {
+    "do": "switch",
+    "n": 1,
+    "expect": {
+     "focused_monitor": "A",
+     "monitors": {
+      "A": {
+       "current": 1
+      },
+      "B": {
+       "current": 3
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "the model follows what a display shows",
+  "rules": [
+   "R-M1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "B"
+   },
+   {
+    "do": "observe_workspace",
+    "monitor": "A",
+    "n": 4,
+    "expect": {
+     "monitors": {
+      "A": {
+       "current": 4
+      },
+      "B": {
+       "current": 2
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "a new display skips a workspace with windows on it",
+  "rules": [
+   "R-M2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "open",
+    "window": "w2",
+    "pid": 2,
+    "app": "foot"
+   },
+   {
+    "do": "move",
+    "n": 2,
+    "window": "w2",
+    "follow": false
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "B",
+    "effects": [
+     {
+      "do": "show_workspace",
+      "monitor": "B",
+      "workspace": 3
+     }
+    ],
+    "expect": {
+     "monitors": {
+      "B": {
+       "current": 3
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "when every free workspace has windows a new display gets the first free one",
+  "rules": [
+   "R-M2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w2",
+    "pid": 2,
+    "app": "foot"
+   },
+   {
+    "do": "move",
+    "n": 2,
+    "window": "w2",
+    "follow": false
+   },
+   {
+    "do": "open",
+    "window": "w3",
+    "pid": 3,
+    "app": "foot"
+   },
+   {
+    "do": "move",
+    "n": 3,
+    "window": "w3",
+    "follow": false
+   },
+   {
+    "do": "open",
+    "window": "w4",
+    "pid": 4,
+    "app": "foot"
+   },
+   {
+    "do": "move",
+    "n": 4,
+    "window": "w4",
+    "follow": false
+   },
+   {
+    "do": "open",
+    "window": "w5",
+    "pid": 5,
+    "app": "foot"
+   },
+   {
+    "do": "move",
+    "n": 5,
+    "window": "w5",
+    "follow": false
+   },
+   {
+    "do": "open",
+    "window": "w6",
+    "pid": 6,
+    "app": "foot"
+   },
+   {
+    "do": "move",
+    "n": 6,
+    "window": "w6",
+    "follow": false
+   },
+   {
+    "do": "open",
+    "window": "w7",
+    "pid": 7,
+    "app": "foot"
+   },
+   {
+    "do": "move",
+    "n": 7,
+    "window": "w7",
+    "follow": false
+   },
+   {
+    "do": "open",
+    "window": "w8",
+    "pid": 8,
+    "app": "foot"
+   },
+   {
+    "do": "move",
+    "n": 8,
+    "window": "w8",
+    "follow": false
+   },
+   {
+    "do": "open",
+    "window": "w9",
+    "pid": 9,
+    "app": "foot"
+   },
+   {
+    "do": "move",
+    "n": 9,
+    "window": "w9",
+    "follow": false
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "B",
+    "expect": {
+     "monitors": {
+      "B": {
+       "current": 2
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "a display that comes back shows what it showed",
+  "rules": [
+   "R-M2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "B"
+   },
+   {
+    "do": "monitor_removed",
+    "monitor": "B"
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "B",
+    "expect": {
+     "monitors": {
+      "B": {
+       "current": 2
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "unless another display shows it now",
+  "rules": [
+   "R-M2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "B"
+   },
+   {
+    "do": "monitor_removed",
+    "monitor": "B"
+   },
+   {
+    "do": "switch",
+    "n": 2
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "B",
+    "effects": [
+     {
+      "do": "show_workspace",
+      "monitor": "B",
+      "workspace": 1
+     }
+    ],
+    "expect": {
+     "monitors": {
+      "A": {
+       "current": 2
+      },
+      "B": {
+       "current": 1
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "an unplugged display's workspace goes out of sight with its windows in it",
+  "rules": [
+   "R-M3"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "B"
+   },
+   {
+    "do": "observe_focus_monitor",
+    "monitor": "B"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "monitor_removed",
+    "monitor": "B",
+    "effects": [],
+    "expect": {
+     "focused_monitor": "A",
+     "workspaces": {
+      "2": [
+       "w1"
+      ]
+     },
+     "monitors": {
+      "A": {
+       "current": 1
+      }
+     },
+     "active": null
+    }
+   }
+  ]
+ },
+ {
+  "name": "you go to it and it comes up on the display you are on",
+  "rules": [
+   "R-M3"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "B"
+   },
+   {
+    "do": "observe_focus_monitor",
+    "monitor": "B"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "monitor_removed",
+    "monitor": "B"
+   },
+   {
+    "do": "switch",
+    "n": 2,
+    "effects": [
+     {
+      "do": "show_workspace",
+      "monitor": "A",
+      "workspace": 2
+     },
+     {
+      "do": "focus_window",
+      "window": "w1"
+     }
+    ],
+    "expect": {
+     "monitors": {
+      "A": {
+       "current": 2
+      }
+     },
+     "active": "w1"
+    }
+   }
+  ]
+ },
+ {
+  "name": "unplugging the display you are on moves you to the first one",
+  "rules": [
+   "R-M3"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "B"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "observe_focus_monitor",
+    "monitor": "B"
+   },
+   {
+    "do": "monitor_removed",
+    "monitor": "B",
+    "expect": {
+     "focused_monitor": "A",
+     "active": "w1"
+    }
+   }
+  ]
+ },
+ {
+  "name": "with no display left the windows wait, and come back with one",
+  "rules": [
+   "R-M3"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "monitor_removed",
+    "monitor": "A",
+    "expect": {
+     "workspaces": {
+      "1": [
+       "w1"
+      ]
+     },
+     "focused_monitor": null,
+     "active": null
+    }
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "A",
+    "expect": {
+     "focused_monitor": "A",
+     "active": "w1",
+     "monitors": {
+      "A": {
+       "current": 1
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "nothing opens or switches without a display",
+  "rules": [
+   "R-M3"
+  ],
+  "steps": [
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "error": "no_monitor"
+   },
+   {
+    "do": "switch",
+    "n": 2,
+    "error": "no_monitor"
+   }
+  ]
+ }
+]

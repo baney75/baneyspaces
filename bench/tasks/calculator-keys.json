@@ -1,0 +1,67 @@
+{
+  "id": "calculator-keys",
+  "app": "Calculator",
+  "category": "calculator",
+  "goal": "In Calculator work out 9 times 8 using the keyboard.",
+  "place": "host",
+  "setup": {
+    "requires": {
+      "installed": [
+        "Calculator"
+      ],
+      "not_running": [
+        "Calculator"
+      ]
+    },
+    "quit_after": [
+      "Calculator"
+    ],
+    "restore_defaults": [
+      "com.apple.calculator"
+    ],
+    "settle_s": 1.2,
+    "open": [
+      {
+        "app": "Calculator",
+        "as": "calc",
+        "title": "Calculator"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "press",
+      "window": "calc",
+      "key": "9"
+    },
+    {
+      "do": "press",
+      "window": "calc",
+      "key": "asterisk"
+    },
+    {
+      "do": "press",
+      "window": "calc",
+      "key": "8"
+    },
+    {
+      "do": "press",
+      "window": "calc",
+      "key": "Return"
+    }
+  ],
+  "check": {
+    "kind": "ax",
+    "window": "calc",
+    "target": {
+      "role": "statictext"
+    },
+    "equals": "72"
+  },
+  "expected_fail": {
+    "baneyspaces": {
+      "phase": 4,
+      "why": "phase 1 types through the accessibility tree only; keys refuse with not_supported until per-process keys ship"
+    }
+  }
+}

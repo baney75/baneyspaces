@@ -1,0 +1,57 @@
+{
+  "id": "finder-menu-new-folder",
+  "app": "Finder",
+  "category": "menu",
+  "goal": "Use Finder's File menu to create a new folder in the open window.",
+  "place": "host",
+  "setup": {
+    "requires": {
+      "installed": [
+        "Finder"
+      ],
+      "exclusive": [
+        "Finder"
+      ]
+    },
+    "files": {
+      "fm": {
+        "dir": true
+      }
+    },
+    "open": [
+      {
+        "app": "Finder",
+        "as": "win",
+        "targets": [
+          "{tmp}/fm"
+        ],
+        "title": "fm"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "menu",
+      "window": "win",
+      "path": [
+        "File",
+        "New Folder"
+      ]
+    },
+    {
+      "do": "wait",
+      "ms": 800
+    }
+  ],
+  "check": {
+    "kind": "file",
+    "path": "{tmp}/fm/untitled folder",
+    "is_dir": true
+  },
+  "expected_fail": {
+    "baneyspaces": {
+      "phase": "later",
+      "why": "phase 1 reads the window surface only; the menu bar surface is not in its verb list"
+    }
+  }
+}

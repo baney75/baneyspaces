@@ -1,0 +1,54 @@
+{
+  "id": "finder-new-folder-key",
+  "app": "Finder",
+  "category": "finder",
+  "goal": "In the open Finder window create a new folder with the keyboard shortcut.",
+  "place": "host",
+  "setup": {
+    "requires": {
+      "installed": [
+        "Finder"
+      ],
+      "exclusive": [
+        "Finder"
+      ]
+    },
+    "files": {
+      "fdir": {
+        "dir": true
+      }
+    },
+    "open": [
+      {
+        "app": "Finder",
+        "as": "win",
+        "targets": [
+          "{tmp}/fdir"
+        ],
+        "title": "fdir"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "press",
+      "window": "win",
+      "key": "cmd+shift+n"
+    },
+    {
+      "do": "wait",
+      "ms": 800
+    }
+  ],
+  "check": {
+    "kind": "file",
+    "path": "{tmp}/fdir/untitled folder",
+    "is_dir": true
+  },
+  "expected_fail": {
+    "baneyspaces": {
+      "phase": 4,
+      "why": "phase 1 types through the accessibility tree only; keys refuse with not_supported until per-process keys ship"
+    }
+  }
+}

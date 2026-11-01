@@ -1,7 +1,15 @@
 .build/
 build/
 .DS_Store
+
+# Rust (platforms/linux, crates/)
+/target/
+platforms/linux/third_party/
+platforms/linux/engine/
 # The hands engine: fetched, patched and built by scripts/build-engine.sh
 engine/.cache/
 engine/.src/
 engine/lib/
+*.pyc
+__pycache__/
+.tools/

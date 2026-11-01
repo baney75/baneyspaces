@@ -1,0 +1,53 @@
+{
+  "id": "textedit-scroll-long",
+  "app": "TextEdit",
+  "category": "scroll",
+  "goal": "Scroll the long TextEdit document well down from the top.",
+  "place": "host",
+  "setup": {
+    "requires": {
+      "installed": [
+        "TextEdit"
+      ],
+      "exclusive": [
+        "TextEdit"
+      ]
+    },
+    "files": {
+      "long.txt": {
+        "lines": 400
+      }
+    },
+    "open": [
+      {
+        "app": "TextEdit",
+        "as": "doc",
+        "targets": [
+          "{tmp}/long.txt"
+        ],
+        "title": "long.txt"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "scroll",
+      "window": "doc",
+      "target": {
+        "role": "textfield"
+      },
+      "direction": "down",
+      "amount": 30
+    }
+  ],
+  "check": {
+    "kind": "ax",
+    "window": "doc",
+    "target": {
+      "role": "scrollbar",
+      "not_state": "disabled"
+    },
+    "property": "value",
+    "gt": 0.2
+  }
+}

@@ -12,6 +12,13 @@
   switch (Settings › Dock, now also in the menu bar item's menu) takes the dock down completely: no
   panel, no edge watcher, no "+N" list and no bottom drag, while the top drag and everything else
   stay. Settings › Appearance loses the small dock strip; each theme's card is its preview.
+- **BaneySpaces for Linux, part 1 (Omarchy, Hyprland).** `spec/` now holds the workspace rules, the
+  key map, the JSON envelope, the MCP tools and 89 conformance cases every platform replays;
+  `crates/baneyspaces-core` implements them in Rust; `platforms/linux` is a daemon that drives
+  Hyprland's workspaces (one shared set of nine, each display shows one, instant) and an agent workspace (`special:agent`) that
+  agents' windows open on without ever taking your screen, plus agent hands over AT-SPI through the
+  pinned agent-desktop. Install files for Omarchy are included but applied nowhere yet. See
+  [platforms/linux/README.md](platforms/linux/README.md).
 - **BaneySpaces' overview replaces macOS's Mission Control.** The trackpad swipe up with three or four
   fingers (as your trackpad settings have it), a hot corner set to Mission Control, the Mission Control
   key and ⌃↑ all open the overview, and a swipe down closes it. macOS's own "Desktop" view is switched

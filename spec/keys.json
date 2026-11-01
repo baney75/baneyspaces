@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "note": "Key map per platform. {n} is the digit; {key} is the platform's key for that digit. One file, three platforms; tests on each platform read it.",
+  "actions": {
+    "switch": {
+      "args": "n",
+      "range": [
+        1,
+        9
+      ],
+      "description": "Go to workspace n on the display you are on."
+    },
+    "move": {
+      "args": "n",
+      "range": [
+        1,
+        9
+      ],
+      "description": "Send the front window to workspace n and follow it."
+    },
+    "move_stay": {
+      "args": "n",
+      "range": [
+        1,
+        9
+      ],
+      "description": "Send the front window to workspace n and stay where you are (macOS: no default key; Linux: Omarchy's move-silently keys)."
+    },
+    "overview": {
+      "description": "See all nine workspaces at once."
+    },
+    "agent_toggle": {
+      "description": "Show or hide the agent workspace."
+    }
+  },
+  "platforms": {
+    "macos": {
+      "switch": "cmd+{n}",
+      "move": "cmd+shift+{n}",
+      "move_stay": "",
+      "overview": "ctrl+up",
+      "agent_toggle": "cmd+9",
+      "alternates": "Setup can swap cmd for ctrl, alt or ctrl+alt.",
+      "agent_workspace": "workspace 9, when agent mode is on"
+    },
+    "linux": {
+      "switch": "SUPER + {key}",
+      "move": "SUPER + SHIFT + {key}",
+      "move_stay": "SUPER + SHIFT + ALT + {key}",
+      "overview": "SUPER + TAB",
+      "agent_toggle": "SUPER + GRAVE",
+      "key_note": "{key} is Hyprland's keycode for the digit row: code:10 for 1 through code:18 for 9, the same codes Omarchy uses.",
+      "agent_workspace": "Hyprland special workspace `special:agent`, not one of 1-9",
+      "replaces": [
+        "SUPER + code:10",
+        "SUPER + code:11",
+        "SUPER + code:12",
+        "SUPER + code:13",
+        "SUPER + code:14",
+        "SUPER + code:15",
+        "SUPER + code:16",
+        "SUPER + code:17",
+        "SUPER + code:18",
+        "SUPER + SHIFT + code:10",
+        "SUPER + SHIFT + code:11",
+        "SUPER + SHIFT + code:12",
+        "SUPER + SHIFT + code:13",
+        "SUPER + SHIFT + code:14",
+        "SUPER + SHIFT + code:15",
+        "SUPER + SHIFT + code:16",
+        "SUPER + SHIFT + code:17",
+        "SUPER + SHIFT + code:18",
+        "SUPER + SHIFT + ALT + code:10",
+        "SUPER + SHIFT + ALT + code:11",
+        "SUPER + SHIFT + ALT + code:12",
+        "SUPER + SHIFT + ALT + code:13",
+        "SUPER + SHIFT + ALT + code:14",
+        "SUPER + SHIFT + ALT + code:15",
+        "SUPER + SHIFT + ALT + code:16",
+        "SUPER + SHIFT + ALT + code:17",
+        "SUPER + SHIFT + ALT + code:18",
+        "SUPER + TAB"
+      ]
+    },
+    "windows": {
+      "switch": "alt+{n}",
+      "move": "alt+shift+{n}",
+      "move_stay": "",
+      "overview": "alt+tab+tab",
+      "agent_toggle": "alt+9",
+      "note": "Win+1-9 belongs to the taskbar. Changeable.",
+      "agent_workspace": "workspace 9, cloaked"
+    }
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "id": "calculator-add",
+  "app": "Calculator",
+  "category": "calculator",
+  "goal": "In Calculator work out 7 plus 5.",
+  "place": "host",
+  "setup": {
+    "requires": {
+      "installed": [
+        "Calculator"
+      ],
+      "not_running": [
+        "Calculator"
+      ]
+    },
+    "quit_after": [
+      "Calculator"
+    ],
+    "restore_defaults": [
+      "com.apple.calculator"
+    ],
+    "settle_s": 1.2,
+    "open": [
+      {
+        "app": "Calculator",
+        "as": "calc",
+        "title": "Calculator"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "click",
+      "window": "calc",
+      "target": {
+        "role": "button",
+        "text": "7",
+        "exact": true
+      }
+    },
+    {
+      "do": "click",
+      "window": "calc",
+      "target": {
+        "role": "button",
+        "text": "add",
+        "exact": true
+      }
+    },
+    {
+      "do": "click",
+      "window": "calc",
+      "target": {
+        "role": "button",
+        "text": "5",
+        "exact": true
+      }
+    },
+    {
+      "do": "click",
+      "window": "calc",
+      "target": {
+        "role": "button",
+        "text": "equals",
+        "exact": true
+      }
+    }
+  ],
+  "check": {
+    "kind": "ax",
+    "window": "calc",
+    "target": {
+      "role": "statictext"
+    },
+    "equals": "12"
+  }
+}

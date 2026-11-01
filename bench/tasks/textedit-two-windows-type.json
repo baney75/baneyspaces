@@ -1,0 +1,70 @@
+{
+  "id": "textedit-two-windows-type",
+  "app": "TextEdit",
+  "category": "two-window",
+  "goal": "Two TextEdit documents are open, left.txt and right.txt. Change only right.txt so it reads \"RIGHT edited\". Leave left.txt alone.",
+  "place": "host",
+  "setup": {
+    "requires": {
+      "installed": [
+        "TextEdit"
+      ],
+      "exclusive": [
+        "TextEdit"
+      ]
+    },
+    "files": {
+      "left.txt": "LEFT",
+      "right.txt": "RIGHT"
+    },
+    "open": [
+      {
+        "app": "TextEdit",
+        "as": "left",
+        "targets": [
+          "{tmp}/left.txt"
+        ],
+        "title": "left.txt"
+      },
+      {
+        "app": "TextEdit",
+        "as": "right",
+        "targets": [
+          "{tmp}/right.txt"
+        ],
+        "title": "right.txt"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "set-value",
+      "window": "right",
+      "target": {
+        "role": "textfield"
+      },
+      "value": "RIGHT edited"
+    }
+  ],
+  "check": {
+    "kind": "all",
+    "checks": [
+      {
+        "kind": "ax",
+        "window": "right",
+        "target": {
+          "role": "textfield"
+        },
+        "equals": "RIGHT edited"
+      },
+      {
+        "kind": "ax",
+        "window": "left",
+        "target": {
+          "role": "textfield"
+        },
+        "equals": "LEFT"
+      }
+    ]
+  }
+}
