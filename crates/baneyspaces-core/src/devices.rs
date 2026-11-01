@@ -225,6 +225,41 @@ pub fn classify(f: &Facts) -> Decision {
     Table::builtin().classify(f)
 }
 
+/// R-D8: whether `pid` is a registered agent root or descends from one. `roots` maps pid to start
+/// time; `start_of` and `parent_of` read the live process table. A root whose pid now has another
+/// start time (the pid was reused) is no root. The walk is bounded, so a parent loop ends.
+pub fn descends_from(roots: &BTreeMap<u32, u64>, pid: u32, start_of: impl Fn(u32) -> Option<u64>, parent_of: impl Fn(u32) -> Option<u32>) -> bool {
+    let mut at = pid;
+    for _ in 0..64 {
+        if let Some(&want) = roots.get(&at) {
+            if want == 0 || start_of(at) == Some(want) {
+                return true;
+            }
+        }
+        match parent_of(at) {
+            Some(p) if p > 1 && p != at => at = p,
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// Replays one `spec/conformance/devices/placement.json` case.
+pub fn run_placement_case(case: &Value) -> Result<(), String> {
+    let name = case["name"].as_str().unwrap_or("?");
+    let table = |k: &str| -> BTreeMap<u32, u64> {
+        case[k].as_object().into_iter().flatten().filter_map(|(p, v)| Some((p.parse().ok()?, v.as_u64()?))).collect()
+    };
+    let (roots, starts) = (table("roots"), table("starts"));
+    let parents: BTreeMap<u32, u32> = table("parents").into_iter().map(|(k, v)| (k, v as u32)).collect();
+    let pid = case["pid"].as_u64().unwrap_or(0) as u32;
+    let got = descends_from(&roots, pid, |p| starts.get(&p).copied(), |p| parents.get(&p).copied());
+    match case["expect"].as_bool() {
+        Some(want) if want == got => Ok(()),
+        want => Err(format!("{name}: expected {want:?}, got {got}")),
+    }
+}
+
 /// Replays one `spec/conformance/devices/classify.json` case.
 pub fn run_classify_case(case: &Value) -> Result<(), String> {
     let name = case["name"].as_str().unwrap_or("?");
@@ -344,6 +379,25 @@ mod tests {
         let d = classify(&facts("macos", "tart", "bsx-s-ba0365d2"));
         assert!(d.agent_home && d.role == Role::Main);
         assert!(!classify(&facts("macos", "tart", "my-own-vm")).agent_home);
+    }
+
+    #[test]
+    fn the_spec_cases_for_process_trees_pass() {
+        let text = std::fs::read_to_string(crate::conformance::spec_dir().join("conformance/devices/placement.json")).unwrap();
+        let cases: Vec<Value> = serde_json::from_str(&text).unwrap();
+        assert!(cases.len() >= 6);
+        let failures: Vec<_> = cases.iter().filter_map(|c| run_placement_case(c).err()).collect();
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn the_geometry_and_key_case_files_are_well_formed() {
+        for (file, min) in [("geometry.json", 8), ("keys.json", 12)] {
+            let text = std::fs::read_to_string(crate::conformance::spec_dir().join("conformance/devices").join(file)).unwrap();
+            let cases: Vec<Value> = serde_json::from_str(&text).unwrap();
+            assert!(cases.len() >= min, "{file}: {} cases", cases.len());
+            assert!(cases.iter().all(|c| c["name"].is_string() && c["rules"].is_array() && c.get("expect").is_some()), "{file}");
+        }
     }
 
     #[test]
