@@ -211,6 +211,13 @@ switcher, launcher or overview is turned off in config, its keys fall back to Om
 `omarchy-menu`, next workspace). Anything opened from a workspace lands there (`behavior.launcher.open = here`);
 `go` goes to the app instead, and Alt+Return in the launcher does the other of the two.
 
+Settings has a "Pending approval" section when `$XDG_RUNTIME_DIR/baneyspaces/config.json` lists `pending` entries (hooks and
+executable key bindings from the config core): the path, the value and who wrote it, with Approve and Remove. Approve is a pointer
+click and nothing else; it writes `$XDG_STATE_HOME/baneyspaces/approvals.json` (0600, temp file then rename, keyed by the entry's
+id, the SHA-256 of path, a NUL byte and value). Remove runs `baneyspaces config unset <path>`. The plugin has no IPC handler that
+approves; with `BANEYSPACES_TEST_OPS=1` (the nested test) a separate `baneyspaces.settings.test` target exists that calls the same
+function the button calls.
+
 The plugin sends the daemon a heartbeat each second. When it stops, `overview show`, `dock` and `settings` answer
 `shell_dead` instead of claiming a surface is shown, and the daemon runs `omarchy restart shell`
 (`BANEYSPACES_SHELL_RESTART` replaces the command; three restarts an hour at most).

@@ -54,6 +54,51 @@ Item {
   }
   function setKey(path, v) { bs.call("config_set", { key: path, value: v }) }
 
+  // --- Pending approval (platforms/linux/README.md, "Executable settings wait for a click") ---
+  // A hook, or a key binding that runs a command or changes the configuration, is inert until you approve it here. The list is the
+  // `pending` array of $XDG_RUNTIME_DIR/baneyspaces/config.json. Approve is the only write that approves, and only a pointer click
+  // reaches it: no key, no daemon operation and no IPC handler of this plugin approves (the test handler below exists only when
+  // BANEYSPACES_TEST_OPS=1). Remove is `baneyspaces config unset <path>`.
+  readonly property bool testOps: Quickshell.env("BANEYSPACES_TEST_OPS") === "1"
+  readonly property string pendingFile: Quickshell.env("XDG_RUNTIME_DIR") + "/baneyspaces/config.json"
+  property var pending: []
+  FileView {
+    id: cfgJson
+    path: root.pendingFile
+    printErrors: false
+    watchChanges: true
+    onFileChanged: reload()
+    onLoaded: root.pending = Logic.pendingOf(cfgJson.text())
+    onLoadFailed: root.pending = []
+  }
+  Timer { interval: 1000; repeat: true; running: (root.bs.st.settings || {}).open === true; onTriggered: cfgJson.reload() }
+
+  // approvals.json: 0600, written atomically (a temp file in the same directory, then rename), keyed by the id the daemon gave the entry
+  // (the lowercase-hex SHA-256 of the path, a NUL byte and the value).
+  readonly property string approveScript: [
+    "set -e; umask 077",
+    "d=\"${XDG_STATE_HOME:-$HOME/.local/state}/baneyspaces\"; mkdir -p \"$d\"; f=\"$d/approvals.json\"; t=\"$d/.approvals.$$.tmp\"",
+    "if [ -s \"$f\" ] && jq -e . \"$f\" >/dev/null 2>&1; then base=$(cat \"$f\"); else base='{\"format\":1,\"approved\":{}}'; fi",
+    "printf '%s' \"$base\" | jq --arg id \"$1\" --arg p \"$2\" --arg v \"$3\" --arg t \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \\",
+    "  '.approved = ((.approved // {}) | .[$id] = {path: $p, value: $v, time: $t} | to_entries | sort_by(.value.time) | .[-500:] | from_entries)' > \"$t\"",
+    "chmod 600 \"$t\"; mv \"$t\" \"$f\""
+  ].join("\n")
+  Process { id: approver; onExited: cfgJson.reload() }
+  Process { id: remover; onExited: cfgJson.reload() }
+  // The one function that approves. The click handlers and the test handler both call it; nothing else does.
+  function approve(entry) {
+    if (!entry || !entry.id || !entry.path) return false
+    approver.command = ["sh", "-c", root.approveScript, "approve", String(entry.id), String(entry.path), String(entry.value === undefined ? "" : entry.value)]
+    approver.running = true
+    return true
+  }
+  function removeEntry(entry) {
+    if (!entry || !entry.path) return false
+    remover.command = ["baneyspaces", "config", "unset", String(entry.path)]
+    remover.running = true
+    return true
+  }
+
   Variants {
     id: vs
     model: Quickshell.screens
@@ -113,6 +158,66 @@ Item {
                 Row {
                   width: parent.width
                   Text { text: "BaneySpaces"; color: win.th.text; font.family: win.th.fontFamily; font.pixelSize: win.th.fs(20); font.bold: true }
+                }
+                Column {
+                  id: pendingSec
+                  visible: root.pending.length > 0
+                  width: col.width
+                  spacing: 8
+                  Text { text: "PENDING APPROVAL"; color: win.th.urgent; font.family: win.th.fontFamily; font.pixelSize: win.th.fs(11); font.letterSpacing: 1 }
+                  Text {
+                    width: parent.width; wrapMode: Text.Wrap
+                    text: "These run commands or change your settings, and do nothing until you approve them here with a click."
+                    color: win.th.dim; font.family: win.th.fontFamily; font.pixelSize: win.th.fs(11)
+                  }
+                  Repeater {
+                    model: root.pending
+                    delegate: Item {
+                      id: pe
+                      required property var modelData
+                      width: pendingSec.width
+                      height: pcol.height + 10
+                      Column {
+                        id: pcol
+                        anchors { left: parent.left; right: btns.left; rightMargin: 12 }
+                        spacing: 2
+                        Text { width: parent.width; text: pe.modelData.path; elide: Text.ElideMiddle; color: win.th.text; font.family: win.th.fontFamily; font.pixelSize: win.th.fs(13); font.bold: true }
+                        Text { width: parent.width; text: String(pe.modelData.value); elide: Text.ElideRight; color: win.th.fg; font.family: win.th.fontFamily; font.pixelSize: win.th.fs(12) }
+                        Text { width: parent.width; text: (pe.modelData.kind || "") + "  ·  written by " + (pe.modelData.written_by_hint || "unknown"); elide: Text.ElideRight; color: win.th.dim; font.family: win.th.fontFamily; font.pixelSize: win.th.fs(11) }
+                      }
+                      Row {
+                        id: btns
+                        anchors { right: parent.right; verticalCenter: parent.verticalCenter }
+                        spacing: 8
+                        Repeater {
+                          model: [{ label: "Approve", ok: true }, { label: "Remove", ok: false }]
+                          delegate: Rectangle {
+                            id: pb
+                            required property var modelData
+                            width: pbl.implicitWidth + 20
+                            height: 26
+                            radius: win.th.tok.radius.row
+                            color: pbm.containsMouse ? (modelData.ok ? win.th.accent : win.th.raisedHot) : win.th.raised
+                            border.width: win.th.tok.border.width
+                            border.color: modelData.ok ? win.th.accent : win.th.tok.border.color
+                            Text { id: pbl; anchors.centerIn: parent; text: pb.modelData.label; color: (pbm.containsMouse && pb.modelData.ok) ? win.th.bg : win.th.text; font.family: win.th.fontFamily; font.pixelSize: win.th.fs(12) }
+                            // A pointer only: no key reaches this (no focus, no Keys handlers), and a click made up by a program is refused.
+                            MouseArea {
+                              id: pbm
+                              anchors.fill: parent
+                              hoverEnabled: true
+                              cursorShape: Qt.PointingHandCursor
+                              acceptedButtons: Qt.LeftButton
+                              onClicked: function (mouse) {
+                                if (mouse.source === Qt.MouseEventSynthesizedByApplication) return
+                                if (pb.modelData.ok) root.approve(pe.modelData); else root.removeEntry(pe.modelData)
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
                 }
                 Repeater {
                   model: root.sections
@@ -205,6 +310,18 @@ Item {
 
   IpcHandler {
     target: "baneyspaces.settings"
-    function state(): string { return JSON.stringify({ open: (root.bs.st.settings || {}).open === true }) }
+    function state(): string { return JSON.stringify({ open: (root.bs.st.settings || {}).open === true, pending: root.pending.length }) }
+    function pending(): string { return JSON.stringify(root.pending.map(function (p) { return { id: p.id, path: p.path, value: p.value, kind: p.kind, written_by_hint: p.written_by_hint || null } })) }
+  }
+
+  // Test only: stands in for the click, through the same approve() the click calls. The target does not exist unless the shell was started
+  // with BANEYSPACES_TEST_OPS=1 (the nested test does that; a seat does not).
+  IpcHandler {
+    target: "baneyspaces.settings.test"
+    enabled: root.testOps
+    function approve(id: string): string {
+      var hit = root.pending.filter(function (p) { return p.id === id })
+      return hit.length === 1 && root.approve(hit[0]) ? "ok" : "no such pending entry"
+    }
   }
 }

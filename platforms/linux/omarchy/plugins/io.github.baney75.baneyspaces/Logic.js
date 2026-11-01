@@ -119,6 +119,20 @@ function sectionRows(results) {
   return rows
 }
 
+// The pending list of config.json: executable settings that wait for a click (id, path, value, kind, written_by_hint).
+function pendingOf(text) {
+  try {
+    var d = JSON.parse(text)
+    var list = Array.isArray(d.pending) ? d.pending : []
+    var out = []
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i]
+      if (p && typeof p.id === "string" && /^[0-9a-f]{64}$/.test(p.id) && typeof p.path === "string") out.push(p)
+    }
+    return out
+  } catch (e) { return [] }
+}
+
 var MODES = ["all", "apps", "files", "install", "remove", "update", "system", "workspaces"]
 var MODE_LABELS = { all: "All", apps: "Apps", files: "Files", install: "Install", remove: "Remove", update: "Update", system: "System", workspaces: "Workspaces" }
 
@@ -265,5 +279,5 @@ if (typeof module !== "undefined") {
   module.exports = { parseColors: parseColors, hex: hex, mix: mix, alpha: alpha, luminance: luminance, readable: readable,
     workspaceColors: workspaceColors, tileSpecFor: tileSpecFor, pickRect: pickRect, listPlacement: listPlacement,
     stepIndex: stepIndex, nextWindow: nextWindow, sectionRows: sectionRows, nextMode: nextMode, badgeGlyph: badgeGlyph,
-    moreLabel: moreLabel, glyphFor: glyphFor, GLYPHS: GLYPHS, ROLE_KEYS: ROLE_KEYS, paletteFromColors: paletteFromColors, tintsOf: tintsOf, roleColor: roleColor, resolveTheme: resolveTheme, motionFor: motionFor, deepMerge: deepMerge, withOpacity: withOpacity, rowTitle: rowTitle, gridRect: gridRect, gridMove: gridMove, MODES: MODES }
+    moreLabel: moreLabel, pendingOf: pendingOf, glyphFor: glyphFor, GLYPHS: GLYPHS, ROLE_KEYS: ROLE_KEYS, paletteFromColors: paletteFromColors, tintsOf: tintsOf, roleColor: roleColor, resolveTheme: resolveTheme, motionFor: motionFor, deepMerge: deepMerge, withOpacity: withOpacity, rowTitle: rowTitle, gridRect: gridRect, gridMove: gridMove, MODES: MODES }
 }

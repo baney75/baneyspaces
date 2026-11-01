@@ -13,6 +13,7 @@ THEME_SRC="${OMARCHY_THEME_DIR:-$(readlink -f "$(getent passwd "$(id -un)" | cut
 mkdir -p "$TMP/theme"; [ -f "$THEME_SRC/colors.toml" ] && cp "$THEME_SRC/colors.toml" "$TMP/theme/colors.toml"
 export BANEYSPACES_THEME_DIR="$TMP/theme"
 export QT_QPA_PLATFORM=wayland QT_QUICK_BACKEND="${QT_QUICK_BACKEND:-software}" QS_NO_RELOAD_POPUP=1
+export BANEYSPACES_TEST_OPS=1   # the shell then has the test-only Settings handler (stands in for the click); no seat sets this
 guard_nested   # a GUI process starts below: only ever inside the nested session
 quickshell -p "$QSD/shell.qml" >"$TMP/quickshell.log" 2>&1 & QSPID=$!; PIDS+=($QSPID)
 for _ in $(seq 1 100); do qs ipc -p "$QSD/shell.qml" call baneyspaces ping 2>/dev/null | grep -q ok && break; sleep 0.2; done
@@ -529,7 +530,7 @@ echo "== the daemon notices a dead shell, says so, and brings it back"
 cat >"$TMP/restart-shell.sh" <<RS
 #!/bin/sh
 case "\$XDG_RUNTIME_DIR" in /tmp/bs-nested.*) ;; *) echo "refusing: not the nested session" >&2; exit 1;; esac
-export QT_QPA_PLATFORM=wayland QT_QUICK_BACKEND="${QT_QUICK_BACKEND:-software}" QS_NO_RELOAD_POPUP=1 BANEYSPACES_THEME_DIR="$TMP/theme"
+export QT_QPA_PLATFORM=wayland QT_QUICK_BACKEND="${QT_QUICK_BACKEND:-software}" QS_NO_RELOAD_POPUP=1 BANEYSPACES_TEST_OPS=1 BANEYSPACES_THEME_DIR="$TMP/theme"
 quickshell -p "$QSD/shell.qml" >>"$TMP/quickshell.log" 2>&1 &
 echo \$! >"$TMP/qs.pid"
 RS
@@ -542,6 +543,32 @@ check "the new shell is a different, living process" kill -0 $QSPID
 check "…and the daemon is again willing to show the overview" wait_for 10 sh -c "baneyspaces overview show | jq -e '.ok'"
 baneyspaces overview hide >/dev/null; sleep 0.3
 eq "the daemon's log says it restarted the shell" "$(grep -c 'restarting it' "$TMP/daemon.log" | sed 's/^[1-9].*/restarted/')" "restarted"
+
+echo "== Settings: executable config waits for a click (pending approval)"
+SQ() { QI baneyspaces.settings "$@"; }
+sha() { printf '%s\0%s' "$1" "$2" | sha256sum | cut -d' ' -f1; }
+ID1="$(sha hooks.on_switch 'echo hi')"; ID2="$(sha 'keys.bindings."mod+h"' 'exec foot')"
+mkdir -p "$XDG_RUNTIME_DIR/baneyspaces"
+jq -n --arg a "$ID1" --arg b "$ID2" '{pending:[{id:$a,path:"hooks.on_switch",value:"echo hi",kind:"hook",written_by_hint:"agent:x"},{id:$b,path:"keys.bindings.\"mod+h\"",value:"exec foot",kind:"exec binding",written_by_hint:null}]}' >"$XDG_RUNTIME_DIR/baneyspaces/config.json.new" && mv "$XDG_RUNTIME_DIR/baneyspaces/config.json.new" "$XDG_RUNTIME_DIR/baneyspaces/config.json"
+check "Settings lists both pending entries from config.json" wait_for 6 sh -c "qs ipc -p '$QSD/shell.qml' call baneyspaces.settings pending | jq -e 'length==2 and .[0].written_by_hint==\"agent:x\" and .[0].path==\"hooks.on_switch\"'"
+baneyspaces settings show >/dev/null 2>&1; sleep 0.8; grim -g "$((960-300)),100 600 700" "$TMP/shots/settings-pending.png" 2>/dev/null; baneyspaces settings hide >/dev/null 2>&1
+rm -f "$XDG_STATE_HOME/baneyspaces/approvals.json"
+check "nothing is approved before a click" test ! -e "$XDG_STATE_HOME/baneyspaces/approvals.json"
+check "the ordinary IPC and the daemon have no way to approve" sh -c "! qs ipc -p '$QSD/shell.qml' call baneyspaces.settings approve $ID1 2>&1 | grep -q '^ok' && ! baneyspaces config approve 2>&1 | jq -e '.ok == true' >/dev/null 2>&1"
+eq "the test handler (the click's own function) refuses an id that is not pending" "$(QI baneyspaces.settings.test approve deadbeef)" "no such pending entry"
+eq "…and approves a pending one" "$(QI baneyspaces.settings.test approve "$ID1")" "ok"
+check "approvals.json appears" wait_for 6 test -s "$XDG_STATE_HOME/baneyspaces/approvals.json"
+AJ="$XDG_STATE_HOME/baneyspaces/approvals.json"
+eq "…mode 0600" "$(stat -c %a "$AJ")" "600"
+eq "…keyed by the sha256 of path, a NUL byte and value, with both written down" "$(jq -c --arg id "$ID1" '.approved[$id]|[.path,.value]' "$AJ")" '["hooks.on_switch","echo hi"]'
+eq "…and nothing else approved" "$(jq -c '.approved|keys|length' "$AJ")" "1"
+eq "…format 1, a time" "$(jq -c '[.format, (.approved|to_entries[0].value.time|test("^[0-9]{4}-"))]' "$AJ")" "[1,true]"
+check "no temp file is left beside it" sh -c "[ -z \"\$(ls -A '$XDG_STATE_HOME/baneyspaces' | grep '^\.approvals\.')\" ]"
+eq "a second approval is added, the first kept" "$(QI baneyspaces.settings.test approve "$ID2" >/dev/null; sleep 1; jq -c '.approved|keys|length' "$AJ")" "2"
+rm -f "$XDG_RUNTIME_DIR/baneyspaces/config.json"
+check "an emptied list is an empty section" wait_for 6 sh -c "qs ipc -p '$QSD/shell.qml' call baneyspaces.settings pending | jq -e 'length==0'"
+rm -f "$AJ"
+echo "  (the click itself is untested live: the nested session has no pointer device; the test handler calls the same approve() the button calls)"
 
 echo "== the shell stayed healthy"
 check "quickshell is still running" kill -0 $QSPID

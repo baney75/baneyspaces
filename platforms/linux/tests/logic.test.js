@@ -280,3 +280,25 @@ test("every icon the launcher uses for a row that is not an app has a glyph (no 
   for (const n of names) assert.ok(L.glyphFor(n) !== "", `${n} has no glyph`);
   assert.strictEqual(L.glyphFor("firefox"), "", "an app's own icon is not a glyph");
 });
+
+test("the pending list is read from config.json, keeping only well-formed entries", () => {
+  const id = "a".repeat(64);
+  const text = JSON.stringify({ pending: [{ id, path: "hooks.on_switch", value: "echo hi", kind: "hook", written_by_hint: "agent:x" }, { id: "short", path: "x" }, { path: "no id" }, null] });
+  assert.deepStrictEqual(L.pendingOf(text).map((p) => p.id), [id]);
+  assert.deepStrictEqual(L.pendingOf("not json"), []);
+  assert.deepStrictEqual(L.pendingOf("{}"), []);
+});
+
+test("nothing but a pointer click approves: no key handler or IPC function in the Settings surface calls approve()", () => {
+  const q = fs.readFileSync(path.join(__dirname, "../omarchy/plugins/io.github.baney75.baneyspaces/SettingsPanel.qml"), "utf8");
+  const calls = [...q.matchAll(/root\.approve\(/g)].length;
+  // called from the click handler and from the gated test handler, nowhere else
+  assert.strictEqual(calls, 2, "root.approve( appears in the MouseArea and the gated test handler only");
+  assert.ok(/pb\.modelData\.ok\) root\.approve\(pe\.modelData\)/.test(q), "the click handler approves");
+  assert.ok(/target: "baneyspaces\.settings\.test"\s*\n\s*enabled: root\.testOps/.test(q), "the handler that approves is gated by BANEYSPACES_TEST_OPS");
+  const ipc = q.slice(q.indexOf('target: "baneyspaces.settings"'), q.indexOf('// Test only'));
+  assert.ok(!/approve/.test(ipc), "the ordinary Settings IPC handler cannot approve");
+  // the approve buttons sit inside a MouseArea; no Keys handler in the file approves
+  for (const m of q.matchAll(/Keys\.on\w+Pressed:[^\n]*/g)) assert.ok(!/approve/.test(m[0]), m[0]);
+  assert.ok(/Qt\.MouseEventSynthesizedByApplication/.test(q), "a click a program made up is refused");
+});
