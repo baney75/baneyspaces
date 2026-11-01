@@ -66,6 +66,11 @@ cut at 200 KB) or the unified log, which survives the file's cut:
 The crash itself is in `~/Library/Logs/DiagnosticReports/BaneySpaces-*.ips`. These lines hold counts, pids,
 the build and `~` paths, never window titles or the user name; keep it that way.
 
+
+## Stable releases
+
+Do not mark a GitHub release as Latest / stable until `scripts/soak-check.sh` prints `SOAK PASSED` on rectory1 (or another Mac with the build installed and running) and Sol APPROVE includes the soak receipt path. `--ci` mode is for the script self-check only; it is not a live soak. Never unpublish or retag an already-published stable (including 0.3.0). Updater defaults to the stable channel (`UpdateChannel.stable`).
+
 ## Linux (`platforms/linux`, `crates/`, `spec/`)
 
 A change there is done when `cargo test`, `platforms/linux/tests/omarchy-scripts.sh` and

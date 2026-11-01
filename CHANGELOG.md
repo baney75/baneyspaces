@@ -1,3 +1,7 @@
+## Unreleased
+
+- Soak gate: `scripts/soak-check.sh` before promoting a build to stable / GitHub Latest (does not unpublish 0.3.0).
+
 # Changelog
 
 ## Unreleased
