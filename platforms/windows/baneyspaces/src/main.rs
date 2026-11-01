@@ -11,6 +11,7 @@ mod hidden;
 mod ipc;
 mod keys;
 mod paths;
+mod settings;
 
 #[cfg(windows)]
 mod agent;
@@ -35,6 +36,7 @@ const HELP: &str = "baneyspaces (Windows)
   focus-monitor <name>           go to a monitor (\\\\.\\DISPLAY1 ...)
   ls                             windows by workspace, and the agent workspace
   state                          the whole model as JSON
+  get [key] | set <key> <value>  the shared settings: appearance.theme, appearance.palette, dock.enabled
   overview                       show or hide the overview (recorded; drawn in part 2)
   agent-workspace show|hide|toggle   show the agent workspace (you only; agents never do)
   agent status|windows           what is on the agent workspace
@@ -120,6 +122,11 @@ fn request(mut a: Vec<String>) -> Result<Value, Envelope> {
             req("focus_monitor", json!({ "monitor": a[0] }))
         }
         "ls" | "state" | "overview" => req(&cmd, json!({})),
+        "get" => req("get", json!({ "key": a.first() })),
+        "set" => {
+            need(&a, 2, "set <key> <value>   (appearance.theme, appearance.palette, dock.enabled)")?;
+            req("set", json!({ "key": a[0], "value": a[1..].join(" ") }))
+        }
         "agent-workspace" => {
             need(&a, 1, "agent-workspace show|hide|toggle")?;
             match a[0].as_str() {
@@ -421,6 +428,13 @@ mod tests {
         for bad in [v(&[]), v(&["frobnicate"]), v(&["switch"]), v(&["agent"]), v(&["agent", "open"])] {
             assert_eq!(request(bad).unwrap_err().error.unwrap().code, "invalid_args");
         }
+    }
+
+    #[test]
+    fn settings_requests() {
+        assert_eq!(request(v(&["get"])).unwrap(), json!({"op":"get","args":{"key":null}}));
+        assert_eq!(request(v(&["set", "dock.enabled", "false"])).unwrap()["args"], json!({"key":"dock.enabled","value":"false"}));
+        assert_eq!(request(v(&["set", "dock.enabled"])).unwrap_err().error.unwrap().code, "invalid_args");
     }
 
     #[test]

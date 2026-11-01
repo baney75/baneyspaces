@@ -16,6 +16,7 @@ use crate::hook::{self, Msg};
 use crate::ipc;
 use crate::keys;
 use crate::paths::Paths;
+use crate::settings;
 use crate::winapi::{self, hwnd as to_hwnd, id_of, window_name};
 use baneyspaces_core::agent::{check_scope, ActionRecord, WindowFacts};
 use baneyspaces_core::envelope::{Envelope, Retry};
@@ -64,6 +65,7 @@ pub struct Core {
     pub trace: bool,
     pub our_pid: u32,
     pub problems: Vec<String>,
+    pub settings: serde_json::Map<String, Value>,
     pub tx: Sender<Msg>,
 }
 
@@ -287,6 +289,7 @@ impl Core {
         v["hidden"] = self.hidden.to_json();
         let procs: Vec<Value> = self.model.agent_pids().into_iter().map(|(p, s)| json!({ "pid": p, "start": s })).collect();
         v["agents"] = json!(procs);
+        v["settings"] = Value::Object(self.settings.clone());
         v["overview"] = json!({ "shown": self.overview_shown });
         v["daemon"] = json!({ "pid": self.our_pid, "started": self.started, "events": self.events_seen, "problems": self.problems });
         self.paths.write_atomic("state.json", &serde_json::to_string_pretty(&v).unwrap_or_default());
@@ -441,8 +444,23 @@ fn model_err(e: ModelError) -> Envelope {
     Envelope::from_model(&e)
 }
 
+/// Operations only you may ask for. An agent's process (one BaneySpaces started, or anything it
+/// started) is refused: agents never change your workspaces, your settings or the daemon.
+const USER_OPS: &[&str] = &["switch", "move", "focus_monitor", "overview", "agent_show", "agent_hide", "agent_toggle", "agent_move", "agent_bring", "set", "quit"];
+
+/// Is the process on the other end of the pipe an agent's? By pid, against the model and the jobs.
+fn peer_is_agent(c: &Core, pid: u32) -> bool {
+    pid != 0 && (c.model.agent_proc(pid).is_some() || c.jobs.iter().any(|(_, j)| agent::in_job(j, pid)))
+}
+
 pub fn handle(shared: &Shared, req: &Value) -> Envelope {
     let op = req["op"].as_str().unwrap_or("");
+    if USER_OPS.contains(&op) {
+        let peer = req["_peer_pid"].as_u64().unwrap_or(0) as u32;
+        if peer_is_agent(&lock(shared), peer) {
+            return Envelope::err("not_in_scope", format!("{op} is for you, not an agent: it was refused"), Retry::Never, "Agents work inside the agent workspace; only the person using this PC changes workspaces and settings.");
+        }
+    }
     let args = req.get("args").cloned().unwrap_or_else(|| json!({}));
     let agent = req["agent"].as_str().unwrap_or("agent").to_string();
     match op {
@@ -485,6 +503,32 @@ pub fn handle(shared: &Shared, req: &Value) -> Envelope {
             match c.apply(Event::FocusMonitor { monitor: arg_str(&args, "monitor").unwrap_or("").into() }) {
                 Ok(fx) => Envelope::ok(json!({ "effects": effects_json(&fx) })),
                 Err(e) => model_err(e),
+            }
+        }
+        "get" => {
+            let c = lock(shared);
+            match arg_str(&args, "key") {
+                None => Envelope::ok(Value::Object(c.settings.clone())),
+                Some(k) => match c.settings.get(k) {
+                    Some(v) => Envelope::ok(json!({ k: v })),
+                    None => Envelope::err("invalid_args", format!("unknown setting {k:?}"), Retry::Never, format!("The settings are {}.", settings::KEYS.join(", "))),
+                },
+            }
+        }
+        "set" => {
+            let (Some(k), Some(v)) = (arg_str(&args, "key"), arg_str(&args, "value")) else {
+                return Envelope::err("invalid_args", "usage: set <key> <value>", Retry::Never, "Example: baneyspaces set dock.enabled false");
+            };
+            match settings::validate(k, v) {
+                Err(m) => Envelope::err("invalid_args", m, Retry::Never, format!("The settings are {}.", settings::KEYS.join(", "))),
+                Ok(val) => {
+                    let mut c = lock(shared);
+                    c.settings.insert(k.to_string(), val.clone());
+                    let text = serde_json::to_string_pretty(&Value::Object(c.settings.clone())).unwrap_or_default();
+                    c.paths.write_atomic("settings.json", &text);
+                    c.persist();
+                    Envelope::ok(json!({ k: val, "note": "stored; the themed UI and the dock arrive in Windows part 2" }))
+                }
             }
         }
         "state" => {
@@ -972,8 +1016,17 @@ fn serve_conn(shared: Shared, f: std::fs::File) {
             return;
         }
     }
+    let peer = {
+        let mut pid = 0u32;
+        unsafe { windows_sys::Win32::System::Pipes::GetNamedPipeClientProcessId(std::os::windows::io::AsRawHandle::as_raw_handle(&f) as _, &mut pid) };
+        pid
+    };
     let env = match serde_json::from_str::<Value>(&line) {
-        Ok(req) => handle(&shared, &req),
+        Ok(mut req) => {
+            // The peer is what the pipe says, never what the request claims.
+            req["_peer_pid"] = json!(peer);
+            handle(&shared, &req)
+        }
         Err(e) => Envelope::err("invalid_args", format!("bad request: {e}"), Retry::Never, ""),
     };
     let mut f = f;
@@ -1039,6 +1092,7 @@ pub fn run(trace: bool, log: Option<PathBuf>) -> i32 {
         trace,
         our_pid: std::process::id(),
         problems: vec![],
+        settings: settings::parse(&paths.read("settings.json").unwrap_or_default()),
         tx: tx.clone(),
     };
     let shared: Shared = Arc::new(Mutex::new(core));
