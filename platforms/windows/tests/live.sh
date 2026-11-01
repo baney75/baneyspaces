@@ -104,5 +104,23 @@ U=$(vmi '$env:AGENT_DESKTOP_HOME="$env:LOCALAPPDATA\BaneySpaces\engine-state"; $
 echo "$U" >> "$LOG"; grep -q 'agent' <<<"$U" && bad "your Notepad has the agent's text: $U" || ok "your Notepad windows hold none of the agent's text"
 cli agent log --since 120 | grep -q '"verb":"type"' && ok "the action log recorded the type (no content)" || bad "no log record"
 
+say "== 7. deny by default, settings, and agent peers"
+O=$(cli agent open explorer); grep -q '"code":"needs_sandbox"' <<<"$O" && ok "agent open explorer is refused (needs_sandbox) before it starts" || bad "explorer not refused: ${O:0:200}"
+cli get | grep -q '"dock.enabled":true' && ok "settings default: dock true, theme baneyspaces, palette auto" || bad "settings defaults"
+cli set dock.enabled false | grep -q '"ok":true' && cli get dock.enabled | grep -q 'false' && ok "set/get round-trips dock.enabled" || bad "set dock.enabled"
+cli set appearance.theme neon | grep -q invalid_args && ok "a bad theme is invalid_args" || bad "bad theme accepted"
+cli set dock.enabled true >/dev/null
+# An agent's own child process asking for a user op is refused. Only a test daemon (BANEYSPACES_TEST_OPS)
+# may start a program that is not on the list: here cmd.exe, which runs baneyspaces from inside the agent's job.
+cli stop >/dev/null; sleep 2
+vmx 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\daemon-task.ps1 start-test' >> "$LOG"
+BSX='C:\bs\baneyspaces\target\release\baneyspaces.exe'
+vmx 'Remove-Item C:\bs\peer.txt -ErrorAction SilentlyContinue' >/dev/null
+cli agent open cmd.exe /c "$BSX set dock.enabled false > C:\bs\peer.txt 2>&1 & $BSX switch 2 >> C:\bs\peer.txt 2>&1" >/dev/null; sleep 2
+PEER=$(vmx 'Get-Content C:\bs\peer.txt'); echo "$PEER" >> "$LOG"
+[[ "$(grep -c not_in_scope <<<"$PEER")" == 2 ]] && ok "set and switch from an agent's own process are refused (not_in_scope)" || bad "agent peer not refused: $PEER"
+cli get dock.enabled | grep -q true && ok "the agent's refused set changed nothing" || bad "dock.enabled changed"
+cli stop >/dev/null; sleep 2; daemon_start
+
 say; say "RESULT: $([[ $fail == 0 ]] && echo PASS || echo FAIL)  passed=$pass failed=$fail   (log: $LOG, shots: $OUT)"
 [[ $fail == 0 ]]

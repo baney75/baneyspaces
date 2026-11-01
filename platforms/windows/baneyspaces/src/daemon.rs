@@ -8,6 +8,7 @@
 //! missed event costs one poll interval, not a lost window.
 
 use crate::agent;
+use crate::apps;
 use crate::cloak::{self, Cloaker};
 use crate::cmdline;
 use crate::engine::{self, snapshot_of};
@@ -335,10 +336,10 @@ impl Core {
             // Already open: exactly where it is. Agent windows (parked from a previous run) stay parked.
             let on_agent = self.model.agent_proc(info.pid).is_some() || self.hidden.get(hwnd).is_some_and(|h| h.how == How::Ghost);
             let workspace = if on_agent { None } else { monitor.as_deref().and_then(|m| self.model.current(m)).filter(|n| *n != 0).or(Some(1)) };
-            let _ = self.apply(Event::ObserveWindow { window: id, pid: info.pid, app: info.app, workspace });
+            let _ = self.apply(Event::ObserveWindow { window: id, pid: info.pid, start: info.start, app: info.app, workspace });
             return;
         }
-        let _ = self.apply(Event::Open { window: id.clone(), pid: info.pid, app: info.app, monitor, workspace: None });
+        let _ = self.apply(Event::Open { window: id.clone(), pid: info.pid, start: info.start, app: info.app, monitor, workspace: None });
         if self.model.agent_proc(info.pid).is_some() && !matches!(self.model.home(&id), Some(Home::Agent)) {
             let _ = self.apply(Event::AgentSend { window: id });
         }
@@ -658,9 +659,10 @@ fn path_dirs() -> Vec<PathBuf> {
 
 /// Starts `exe args` as a new process in its own job on the agent workspace, then waits for a window of its own.
 fn launch_on_agent(shared: &Shared, agent: &str, label: &str, exe: PathBuf, args: Vec<String>, cwd: Option<String>, console: bool) -> Envelope {
-    let spawned = {
+    let (spawned, known): (agent::Spawned, BTreeSet<String>) = {
         // The lock is held across the spawn: the process is registered before its first window can be seen.
         let mut c = lock(shared);
+        let known: BTreeSet<String> = c.model.window_ids().into_iter().map(String::from).collect();
         let Some(job) = agent::new_job() else {
             return Envelope::err("internal", "cannot create a job object", Retry::Safe, "");
         };
@@ -668,7 +670,7 @@ fn launch_on_agent(shared: &Shared, agent: &str, label: &str, exe: PathBuf, args
             Ok(s) => {
                 c.jobs.push((agent.to_string(), job));
                 let _ = c.apply(Event::AgentRegister { pid: s.pid, start: s.start });
-                s
+                (s, known)
             }
             Err(e) => {
                 let env = Envelope::err("internal", e, Retry::Safe, "Check the path and try again.");
@@ -682,7 +684,7 @@ fn launch_on_agent(shared: &Shared, agent: &str, label: &str, exe: PathBuf, args
         std::thread::sleep(Duration::from_millis(40));
         let mut c = lock(shared);
         c.resync_windows(false);
-        let found = c.model.agent_windows().into_iter().find(|w| c.model.pid_of(w).is_some_and(|p| p == spawned.pid || c.model.agent_proc(p).is_some())).map(String::from);
+        let found = c.model.agent_windows().into_iter().find(|w| !known.contains(*w) && c.model.pid_of(w).is_some_and(|p| p == spawned.pid || c.jobs.last().is_some_and(|(_, j)| agent::in_job(j, p)))).map(String::from);
         if let Some(w) = found {
             let i = c.info.get(&w).cloned();
             let env = Envelope::ok(json!({ "window": w, "pid": c.model.pid_of(&w), "app": label, "title": i.as_ref().map(|i| i.title.clone()), "workspace": "agent", "start": spawned.start }));
@@ -705,6 +707,17 @@ fn agent_open(shared: &Shared, agent: &str, args: &Value) -> Envelope {
     let Some(app) = arg_str(args, "app") else {
         return Envelope::err("invalid_args", "an app is required", Retry::Never, "Example: baneyspaces agent open notepad");
     };
+    if !apps::may_start(app) {
+        let env = Envelope::err(
+            "needs_sandbox",
+            format!("{app} is not on the list of apps BaneySpaces can start as a separate process for an agent"),
+            Retry::Never,
+            "Deny by default: an app that is not known to run as its own process could hand your launches to the agent's copy, or take the agent's request into yours. Use the app's files or command line instead; a sandbox for apps like this comes later.",
+        )
+        .with_data(json!({ "allowed": apps::allowed() }));
+        record(&lock(shared), agent, "open", None, None, None, "preflight", &env);
+        return env;
+    }
     let Some(exe) = cmdline::find_program(app, &path_dirs(), |p| p.is_file()) else {
         return Envelope::err("not_found", format!("no program {app:?} on PATH"), Retry::Never, "Give an executable name or a full path.");
     };
@@ -712,17 +725,18 @@ fn agent_open(shared: &Shared, agent: &str, args: &Value) -> Envelope {
     launch_on_agent(shared, agent, app, exe, extra, None, false)
 }
 
-fn agent_run(shared: &Shared, agent: &str, args: &Value) -> Envelope {
-    let cmd: Vec<String> = args.get("command").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(String::from).collect();
-    if cmd.is_empty() {
-        return Envelope::err("invalid_args", "a command is required after --", Retry::Never, "Example: baneyspaces agent run --dir C:\\work -- claude");
-    }
-    let Some(exe) = cmdline::find_program("cmd.exe", &path_dirs(), |p| p.is_file()) else {
-        return Envelope::err("not_found", "cmd.exe not found", Retry::Never, "");
-    };
-    let mut a = vec!["/k".to_string()];
-    a.push(cmd.iter().map(|x| cmdline::quote_arg(x)).collect::<Vec<_>>().join(" "));
-    launch_on_agent(shared, agent, "cmd", exe, a, arg_str(args, "dir").map(String::from), true)
+fn agent_run(shared: &Shared, agent: &str, _args: &Value) -> Envelope {
+    // A console window on Windows is owned by Windows Terminal or conhost, a process BaneySpaces did not
+    // start, so the window cannot be tied to the agent's process. Refused rather than guessed at.
+    let env = Envelope::err(
+        "needs_sandbox",
+        "agent run is not available on Windows in part 1: a console window belongs to Windows Terminal, not to the process BaneySpaces would start",
+        Retry::Never,
+        "Use `agent open` for an app on the list, or run the command yourself. Terminals arrive with the sandbox in a later part.",
+    )
+    .with_data(json!({ "allowed": apps::allowed() }));
+    record(&lock(shared), agent, "run", None, None, None, "preflight", &env);
+    env
 }
 
 // ---- hands --------------------------------------------------------------------------------

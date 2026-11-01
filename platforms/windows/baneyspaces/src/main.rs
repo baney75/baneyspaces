@@ -5,6 +5,7 @@
 //! Everything that touches Windows is behind `cfg(windows)`; the rest (request parsing, the key
 //! map, the persisted hidden list, the engine's envelope mapping) builds and is tested anywhere.
 
+mod apps;
 mod cmdline;
 mod engine;
 mod hidden;
@@ -54,7 +55,7 @@ const HELP: &str = "baneyspaces (Windows)
   keys                           the key map for this platform
   daemon [--trace] [--log FILE]  run the daemon in this console
   daemon --background            run it with no console window (the Startup shortcut runs this)
-  daemon stop                    ask the running daemon to restore every window and exit
+  stop                           ask the running daemon to put every window back and exit (also: daemon stop)
   mcp                            MCP server on stdio (agent tools only)
   doctor                         what works and what does not
 
@@ -122,6 +123,7 @@ fn request(mut a: Vec<String>) -> Result<Value, Envelope> {
             req("focus_monitor", json!({ "monitor": a[0] }))
         }
         "ls" | "state" | "overview" => req(&cmd, json!({})),
+        "stop" => req("quit", json!({})),
         "get" => req("get", json!({ "key": a.first() })),
         "set" => {
             need(&a, 2, "set <key> <value>   (appearance.theme, appearance.palette, dock.enabled)")?;

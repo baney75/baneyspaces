@@ -21,7 +21,8 @@ pub fn call(paths: &Paths, req: &Value) -> Envelope {
     }
     let mut out = String::new();
     if BufReader::new(f).read_line(&mut out).is_err() || out.trim().is_empty() {
-        return down();
+        // The request went out and no answer came back: it may have been carried out.
+        return Envelope::err("timeout", "the request was sent and the daemon did not answer", Retry::Never, "Check `baneyspaces state` before trying again: it may have been carried out.");
     }
     serde_json::from_str(&out).unwrap_or_else(|_| Envelope::err("internal", "unreadable reply from the daemon", Retry::Never, ""))
 }
