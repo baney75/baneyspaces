@@ -1,0 +1,15 @@
+# The iOS Simulator UI tool BaneySpaces' device hands call: AXe (cameroncooke/AXe, MIT).
+# Decision (the lead, 2026-11-01): built from this commit's source, never the release binary (the
+# vet verdict "ask" was about unattested binaries). scripts/build-axe.sh fetches the tarball,
+# refuses anything whose sha256 or embedded commit id differs from what is written here, and
+# builds it in BaneySpaces' own tools folder. To move the pin: change these lines, run the script.
+AXE_REPO=cameroncooke/AXe
+AXE_TAG=v1.8.0
+AXE_COMMIT=30f4bfa9bc81817906a60fadedbc913d7314b7e1
+# sha256 of https://codeload.github.com/cameroncooke/AXe/tar.gz/$AXE_COMMIT, recorded 2026-11-01 (two fetches, same bytes)
+AXE_SHA256=ba1c4a40cdbe6ca4aaf67ebd21081f2fc15e60eead896667f099744f7c632789
+# AXe builds the IDB frameworks from a fork it pins itself (scripts/build.sh, DEFAULT_IDB_GIT_REF). The
+# same commit is pinned here and the script refuses a different one (git's object ids check the clone).
+# The sha256 of https://codeload.github.com/cameroncooke/idb/tar.gz/$AXE_IDB_COMMIT (MIT) is recorded for audit.
+AXE_IDB_COMMIT=604c51013438f0c3603b720a05a44b7c5b8f286d
+AXE_IDB_SHA256=9a78f89aefc59acd2002ca49ccc343581db663c868bbaf87a654822ae3591e1f

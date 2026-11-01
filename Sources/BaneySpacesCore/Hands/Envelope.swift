@@ -43,13 +43,19 @@ public enum HandsErrorCode: String, Codable, CaseIterable, Sendable {
     case notRunning = "not_running"
     /// The engine failed in a way none of the above covers.
     case engineError = "engine_error"
+    /// No such simulator or emulator (never booted, shut down, or the id is wrong).
+    case deviceNotFound = "device_not_found"
+    /// The device is listed but not answering (offline, still booting, unauthorized).
+    case deviceOffline = "device_offline"
+    /// A tool the device hands need (adb, AXe, the emulator) isn't installed. Nothing is installed for you.
+    case toolMissing = "tool_missing"
 
     /// What to do next when the caller has no better idea.
     public var defaultRetry: HandsRetry {
         switch self {
         case .staleRef, .unknownRef, .ambiguousTarget, .ambiguousWindow: return .afterSnapshot
-        case .timeout, .notRunning, .appNotFound, .windowNotFound, .badArguments, .permissionDenied, .ambiguous, .inUse: return .safe
-        case .outsideAgentWorkspace, .agentWorkspaceOff, .notSupported, .actionFailed, .engineError, .needsLend, .needsSandbox: return .never
+        case .timeout, .notRunning, .appNotFound, .windowNotFound, .badArguments, .permissionDenied, .ambiguous, .inUse, .deviceNotFound, .deviceOffline: return .safe
+        case .outsideAgentWorkspace, .agentWorkspaceOff, .notSupported, .actionFailed, .engineError, .needsLend, .needsSandbox, .toolMissing: return .never
         }
     }
 }

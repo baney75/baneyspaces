@@ -1,0 +1,55 @@
+[
+  {
+    "AXFrame": "{{0, 0}, {402, 874}}",
+    "AXUniqueId": null,
+    "frame": {"x": 0, "y": 0, "width": 402, "height": 874},
+    "role": "AXApplication",
+    "AXLabel": "Settings",
+    "type": "Application",
+    "enabled": true,
+    "children": [
+      {
+        "AXFrame": "{{16, 120}, {370, 44}}",
+        "AXUniqueId": "searchField",
+        "frame": {"x": 16, "y": 120, "width": 370, "height": 44},
+        "role": "AXTextField",
+        "AXLabel": "Search",
+        "AXValue": "",
+        "type": "TextField",
+        "enabled": true,
+        "children": []
+      },
+      {
+        "AXFrame": "{{16, 200}, {370, 52}}",
+        "AXUniqueId": "General",
+        "frame": {"x": 16, "y": 200, "width": 370, "height": 52},
+        "role": "AXButton",
+        "AXLabel": "General",
+        "type": "Button",
+        "enabled": true,
+        "children": []
+      },
+      {
+        "AXFrame": "{{16, 260}, {370, 52}}",
+        "AXUniqueId": "Airplane Mode",
+        "frame": {"x": 16, "y": 260, "width": 370, "height": 52},
+        "role": "AXSwitch",
+        "AXLabel": "Airplane Mode",
+        "AXValue": "0",
+        "type": "Switch",
+        "enabled": true,
+        "children": []
+      },
+      {
+        "AXFrame": "{{16, 320}, {370, 52}}",
+        "AXUniqueId": null,
+        "frame": {"x": 16, "y": 320, "width": 370, "height": 52},
+        "role": "AXStaticText",
+        "AXLabel": "Wi-Fi",
+        "type": "StaticText",
+        "enabled": true,
+        "children": []
+      }
+    ]
+  }
+]
