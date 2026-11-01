@@ -129,11 +129,14 @@ enum BackgroundPoster {
         }
 
         // A move first: a window that never saw the pointer has stale tracking and would take the press for a miss.
-        let steps: [(CGEventType, CGPoint, Int64, Int64, TimeInterval)] =
-            [(.mouseMoved, first, 0, 3, 0.02), (.leftMouseDown, first, 1, drag ? 0 : 3, drag ? 0.03 : 0.06)]
-            + path.dropFirst().map { (CGEventType.leftMouseDragged, $0, 1, Int64(0), 0.012) }
-            + [(.leftMouseUp, path.last ?? first, 1, drag ? 0 : 3, 0.0)]
-        for (type, point, state, subtype, pause) in steps {
+        struct Step { var type: CGEventType; var point: CGPoint; var state: Int64; var subtype: Int64; var pause: TimeInterval }
+        let gestureSubtype: Int64 = drag ? 0 : 3
+        var steps: [Step] = [Step(type: .mouseMoved, point: first, state: 0, subtype: 3, pause: 0.02),
+                             Step(type: .leftMouseDown, point: first, state: 1, subtype: gestureSubtype, pause: drag ? 0.03 : 0.06)]
+        for p in path.dropFirst() { steps.append(Step(type: .leftMouseDragged, point: p, state: 1, subtype: 0, pause: 0.012)) }
+        steps.append(Step(type: .leftMouseUp, point: path.last ?? first, state: 1, subtype: gestureSubtype, pause: 0))
+        for step in steps {
+            let (type, point, state, subtype, pause) = (step.type, step.point, step.state, step.subtype, step.pause)
             if let stop = between() {
                 report.stopped = stop
                 // A press left down is released where the gesture stands, to the same process only.
