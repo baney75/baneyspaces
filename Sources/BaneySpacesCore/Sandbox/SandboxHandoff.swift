@@ -38,7 +38,8 @@ public struct SandboxPaths: Equatable, Sendable {
 /// **A slot is never deleted before its files are safe.** It is removed only when every entry was copied (or
 /// deliberately skipped) and the registry entry is cleared; on any failure, or while its VM may still run, the
 /// slot and its registry entry stay and the release is retried (`tick`, next launch). Nothing here overwrites
-/// a name that exists in the task folder.
+/// a name that exists in the task folder. A failed release takes back every file and folder it made, so a retry
+/// writes the same names again instead of a second copy beside the first.
 public enum SandboxHandoff {
     /// A task name is a plain file name: letters, digits, dot, dash, underscore, starting with a letter or digit.
     public static func valid(_ task: String) -> Bool {
@@ -146,10 +147,11 @@ public enum SandboxHandoff {
         }
         var ctx = Walk(limitBytes: limitBytes)
         copyTree(from: slot.path, to: folder.path, relative: "", depth: 0, ctx: &ctx)
-        if !ctx.skipped.isEmpty { writeSkippedNote(ctx.skipped, in: folder) }
         guard ctx.failure == nil else {
-            return ReleaseResult(complete: false, copied: ctx.copied, skipped: ctx.skipped, failure: ctx.failure)
+            undo(ctx.created)
+            return ReleaseResult(complete: false, copied: 0, skipped: ctx.skipped, failure: ctx.failure)
         }
+        if !ctx.skipped.isEmpty { writeSkippedNote(ctx.skipped, in: folder) }
         reg[slot.lastPathComponent] = nil
         try? writeRegistry(reg, paths)
         try? FileManager.default.removeItem(at: slot) // a leftover here is only the guest's junk; the files are safe
@@ -169,6 +171,18 @@ public enum SandboxHandoff {
         var copied = 0
         var skipped: [String] = []
         var failure: String?
+        /// Every file and folder this attempt made in the task folder, in the order made.
+        var created: [String] = []
+    }
+
+    /// Takes back what a failed attempt made, newest first, so each folder is empty when its turn comes. Only
+    /// `unlink` and `rmdir`: nothing is removed recursively, and nothing this attempt didn't make.
+    private static func undo(_ created: [String]) {
+        for path in created.reversed() {
+            var st = stat()
+            guard lstat(path, &st) == 0 else { continue }
+            if st.st_mode & S_IFMT == S_IFDIR { rmdir(path) } else { unlink(path) }
+        }
     }
 
     private static func note(_ ctx: inout Walk, skipping path: String, because kind: String) {
@@ -208,6 +222,7 @@ public enum SandboxHandoff {
             case S_IFDIR:
                 let target = uniquePath(in: dst, name: name)
                 guard mkdir(target, 0o700) == 0 else { ctx.failure = "could not make a folder for \(rel)"; return }
+                ctx.created.append(target)
                 copyTree(from: src + "/" + name, to: target, relative: rel, depth: depth + 1, ctx: &ctx)
             case S_IFLNK: note(&ctx, skipping: rel, because: "symbolic link")
             case S_IFIFO: note(&ctx, skipping: rel, because: "FIFO")
@@ -229,16 +244,17 @@ public enum SandboxHandoff {
         let target = uniquePath(in: dstDir, name: name)
         let out = open(target, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard out >= 0 else { ctx.failure = "could not create \(relative) in the task folder"; return }
+        ctx.created.append(target)
         defer { close(out) }
         var buf = [UInt8](repeating: 0, count: 1 << 20)
         while true {
             let n = read(fd, &buf, buf.count)
             if n == 0 { break }
-            if n < 0 { ctx.failure = "could not read \(relative)"; unlink(target); return }
+            if n < 0 { ctx.failure = "could not read \(relative)"; return }
             var off = 0
             while off < n {
                 let w = buf.withUnsafeBytes { write(out, $0.baseAddress! + off, n - off) }
-                if w <= 0 { ctx.failure = "could not write \(relative) (disk full?)"; unlink(target); return }
+                if w <= 0 { ctx.failure = "could not write \(relative) (disk full?)"; return }
                 off += w
             }
         }
@@ -284,19 +300,27 @@ public enum SandboxHandoff {
     // MARK: size (the slot's quota)
 
     /// Bytes of regular files in `slot` (their apparent size, so a sparse file counts as large), walked with `lstat`
-    /// and never through a link. Stops counting at `stopAfter` and after 100,000 entries.
-    public static func size(of slot: URL, stopAfter: Int64 = Int64.max) -> Int64 {
+    /// and never through a link. Stops counting once past `stopAfter`. Nil when the folder couldn't be measured
+    /// (nested deeper than `maxDepth`, more than 100,000 entries, a folder that won't open, an entry that can't be
+    /// looked at): a guest can build any of those, so callers treat nil as over the quota.
+    public static func size(of slot: URL, stopAfter: Int64 = Int64.max) -> Int64? {
         var total: Int64 = 0
         var seen = 0
+        var incomplete = false
         func walk(_ path: String, _ depth: Int) {
-            guard depth <= maxDepth, total <= stopAfter, seen < 100_000, let dir = opendir(path) else { return }
+            guard !incomplete, total <= stopAfter else { return }
+            guard depth <= maxDepth, let dir = opendir(path) else { incomplete = true; return }
             defer { closedir(dir) }
             while let e = readdir(dir) {
                 let name = withUnsafePointer(to: &e.pointee.d_name) { $0.withMemoryRebound(to: CChar.self, capacity: Int(NAME_MAX) + 1) { String(cString: $0) } }
                 if name == "." || name == ".." { continue }
                 seen += 1
+                if seen > 100_000 { incomplete = true; return }
                 var st = stat()
-                guard lstat(path + "/" + name, &st) == 0 else { continue }
+                guard lstat(path + "/" + name, &st) == 0 else {
+                    if errno == ENOENT { continue } // deleted since it was listed: it costs nothing now
+                    incomplete = true; return
+                }
                 switch st.st_mode & S_IFMT {
                 case S_IFREG: total += Int64(st.st_size)
                 case S_IFDIR: walk(path + "/" + name, depth + 1)
@@ -305,7 +329,7 @@ public enum SandboxHandoff {
             }
         }
         walk(slot.path, 0)
-        return total
+        return incomplete ? nil : total
     }
 
     // MARK: registry

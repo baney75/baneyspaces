@@ -487,6 +487,57 @@ final class SandboxShutdownTests: XCTestCase {
         XCTAssertTrue(r.tart.ours().isEmpty)
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: rest.path), ["a.txt"])
         XCTAssertEqual(r.manager.snapshot().phase, .stopped)
+        let other = SandboxManager(tart: r.st, facts: r.facts, clock: r.clock, paths: SandboxPaths(root: r.dir), settings: { SandboxSettings(enabled: true) },
+                                   memory: r.memory, hostMemoryGB: 32)
+        XCTAssertNoThrow(try other.startupCleanup(keepOwnership: true), "stopAll gave the lock back: the probe can own the sandbox")
+        other.shutdown(deadline: 2)
+    }
+
+    func testStopAllKeepsTheLockWhileAGuestMayStillRun() throws {
+        let r = Rig.make(); defer { r.manager.shutdown(); try? FileManager.default.removeItem(at: r.dir) }
+        r.tart.spawnImmortal = true
+        _ = try r.manager.up(task: "t1")
+        r.tart.failDeleteOnce = 1000                  // `tart delete` does nothing: the VM is still there
+        r.manager.stopAll()
+        let other = SandboxManager(tart: r.st, facts: r.facts, clock: r.clock, paths: SandboxPaths(root: r.dir), settings: { SandboxSettings(enabled: true) },
+                                   memory: r.memory, hostMemoryGB: 32)
+        XCTAssertThrowsError(try other.startupCleanup(keepOwnership: true)) { XCTAssertEqual(($0 as? SandboxError)?.code, "not_owner") }
+        r.tart.failDeleteOnce = 0; r.tart.spawned.forEach { $0.proc.immortal = false; $0.proc.stop() }
+        other.shutdown(deadline: 2)
+    }
+
+    func testStopAllKeepsTheLockWhileAWarmBuildIsStillCloning() throws {
+        let r = Rig.make(); defer { r.manager.shutdown(); try? FileManager.default.removeItem(at: r.dir) }
+        let entered = DispatchSemaphore(value: 0)
+        let resume = DispatchSemaphore(value: 0)
+        r.tart.onClone = {
+            entered.signal()
+            _ = resume.wait(timeout: .now() + 300)
+        }
+        // First up builds a warm clone in the background after the working guest is up.
+        _ = try r.manager.up(task: "t1")
+        XCTAssertEqual(entered.wait(timeout: .now() + 5), .success, "warm build should reach clone")
+        r.manager.stopAll()
+        let other = SandboxManager(tart: r.st, facts: r.facts, clock: r.clock, paths: SandboxPaths(root: r.dir), settings: { SandboxSettings(enabled: true) },
+                                   memory: r.memory, hostMemoryGB: 32)
+        XCTAssertThrowsError(try other.startupCleanup(keepOwnership: true)) { XCTAssertEqual(($0 as? SandboxError)?.code, "not_owner") }
+        // Retry while the clone is still blocked: ownership must stay held (warmGroup still tracked).
+        r.manager.stopAll()
+        XCTAssertThrowsError(try other.startupCleanup(keepOwnership: true)) { XCTAssertEqual(($0 as? SandboxError)?.code, "not_owner") }
+        resume.signal()
+        // Give the build thread a moment to leave; then stopAll can finish and unlock.
+        var unlocked = false
+        for _ in 0..<50 {
+            r.clock.sleep(0.02)
+            r.manager.stopAll()
+            do {
+                try other.startupCleanup(keepOwnership: true)
+                unlocked = true
+                break
+            } catch { }
+        }
+        XCTAssertTrue(unlocked, "stopAll unlocks once the delayed warm build thread has finished")
+        other.shutdown(deadline: 2)
     }
 }
 
