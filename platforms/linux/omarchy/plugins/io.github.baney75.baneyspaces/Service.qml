@@ -56,7 +56,8 @@ Item {
   }
   function iconSource(name) {
     if (name && name.indexOf("/") === 0) return "file://" + name
-    return Quickshell.iconPath(name || "application-x-executable", "application-x-executable")
+    // check = true: an icon the theme does not have is "" (the caller draws a letter or a glyph), never the checker pattern
+    return Quickshell.iconPath(name || "application-x-executable", true)
   }
 
   Daemon { id: daemon }

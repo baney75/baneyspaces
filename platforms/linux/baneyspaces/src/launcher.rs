@@ -20,6 +20,10 @@ pub struct App {
     pub icon: String,
     pub terminal: bool,
     pub wm_class: String,
+    /// The Exec of the entry's `new-window` action, if it has one (a running app is asked for another window with it).
+    pub new_window: Option<String>,
+    /// `SingleMainWindow=true`: the app has one window; opening it somewhere else means moving it.
+    pub single: bool,
 }
 
 /// Splits an Exec line into words, dropping the field codes (%f, %U, ...).
@@ -70,11 +74,23 @@ pub fn exec_argv(exec: &str) -> Vec<String> {
 pub fn parse_desktop(id: &str, text: &str) -> Option<App> {
     let mut in_entry = false;
     let mut m: HashMap<&str, &str> = HashMap::new();
+    // `[Desktop Action new-window]` (or new_window, NewWindow, open-new-window): its Exec makes another window.
+    let mut actions: HashMap<String, String> = HashMap::new();
+    let mut action_name: Option<String> = None;
     for line in text.lines() {
         let line = line.trim();
         if line.starts_with('[') {
             in_entry = line == "[Desktop Entry]";
+            action_name = line
+                .strip_prefix("[Desktop Action ")
+                .and_then(|r| r.strip_suffix(']'))
+                .map(|n| n.to_lowercase().replace(['_', ' '], "-"))
+                .filter(|n| n.contains("new-window") || n.contains("newwindow"))
+                .map(|_| "new-window".to_string());
             continue;
+        }
+        if let (Some(a), Some(exec)) = (&action_name, line.strip_prefix("Exec=")) {
+            actions.entry(a.clone()).or_insert_with(|| exec.trim().to_string());
         }
         if !in_entry || line.starts_with('#') {
             continue;
@@ -107,6 +123,8 @@ pub fn parse_desktop(id: &str, text: &str) -> Option<App> {
         icon: m.get("Icon").unwrap_or(&"").to_string(),
         terminal: flag("Terminal"),
         wm_class: m.get("StartupWMClass").unwrap_or(&"").to_string(),
+        new_window: actions.get("new-window").cloned(),
+        single: flag("SingleMainWindow"),
     })
 }
 
@@ -699,6 +717,8 @@ pub struct Query {
     pub text: String,
     pub bang: Option<(String, String)>,
     pub ask: Option<String>,
+    /// A lone `?`: the help view.
+    pub help: bool,
 }
 
 /// `!yt cats` and `cats !yt` both give ("yt", "cats").
@@ -723,12 +743,34 @@ pub fn parse_bang(q: &str) -> Option<(String, String)> {
 pub fn parse_query(q: &str, mode: Mode) -> Query {
     let q = q.trim();
     if mode == Mode::All {
+        if q == "?" {
+            return Query { mode, text: String::new(), bang: None, ask: None, help: true };
+        }
+        // `!apps`, `!files`, `!install`, `!remove`, `!update`, `!system`, `!ws`, `!windows`: the menus without the chips row.
+        if let Some(rest) = q.strip_prefix('!') {
+            let (word, tail) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+            let m = match word.to_lowercase().as_str() {
+                "apps" => Some(Mode::Apps),
+                "files" => Some(Mode::Files),
+                "install" => Some(Mode::Install),
+                "remove" => Some(Mode::Remove),
+                "update" => Some(Mode::Update),
+                "system" => Some(Mode::System),
+                "ws" | "workspaces" => Some(Mode::Workspaces),
+                "windows" => Some(Mode::Windows),
+                _ => None,
+            };
+            if let Some(m) = m {
+                return Query { mode: m, text: tail.trim().to_string(), bang: None, ask: None, help: false };
+            }
+        }
         if let Some(rest) = q.strip_prefix('?') {
             return Query {
                 mode,
                 text: String::new(),
                 bang: None,
                 ask: Some(rest.trim().to_string()),
+                help: false,
             };
         }
         if let Some(b) = parse_bang(q) {
@@ -737,6 +779,7 @@ pub fn parse_query(q: &str, mode: Mode) -> Query {
                 text: String::new(),
                 bang: Some(b),
                 ask: None,
+                help: false,
             };
         }
         for (prefix, m) in [
@@ -750,6 +793,7 @@ pub fn parse_query(q: &str, mode: Mode) -> Query {
                     text: rest.trim().to_string(),
                     bang: None,
                     ask: None,
+                    help: false,
                 };
             }
         }
@@ -759,6 +803,7 @@ pub fn parse_query(q: &str, mode: Mode) -> Query {
         text: q.to_string(),
         bang: None,
         ask: None,
+        help: false,
     }
 }
 
@@ -860,6 +905,8 @@ pub fn omarchy_menus() -> Vec<(String, String)> {
 pub enum Action {
     Launch(String),
     Focus(String),
+    /// An app row: open the app where you are (`launcher.open = here`) or where it already is (`go`). `windows`: its windows now.
+    OpenApp { app: String, windows: Vec<String> },
     Switch(u8),
     Run {
         argv: Vec<String>,
@@ -980,6 +1027,12 @@ pub struct Plan {
     pub packages: Option<String>,
     pub explicit: bool,
 }
+
+/// The icon names the launcher itself uses for rows that are not an app: the shell draws each as a glyph in the theme's
+/// foreground (Logic.js `glyphFor`), never as a theme icon that may not exist.
+pub const BUILTIN_ICONS: &[&str] = &[
+    "view-grid", "web-browser", "image-x-generic", "dialog-question", "preferences-system", "accessories-calculator", "folder", "text-x-generic", "package-x-generic", "system-software-update", "help-browser",
+];
 
 pub fn plan(q: &Query, cfg: &Value) -> Plan {
     let mut p = Plan::default();
@@ -1123,6 +1176,21 @@ pub fn search(ctx: &Ctx, q: &Query) -> Vec<Hit> {
         });
         return hits;
     }
+    if q.help {
+        let rows = [
+            ("Type to search", "apps, windows, workspaces, files and Omarchy's menus at once; an app that is open goes to its window or opens here (behavior.launcher.open)"),
+            ("⇥ Tab", "steps through the menus: Apps, Files, Install, Remove, Update, System, Workspaces (Backspace on an empty box comes back)"),
+            ("!apps !files !install !remove !update !system !ws", "the same menus by typing; `!yt cats` is a bang (type ! alone to see them)"),
+            ("? and a question", "asks your agent in a new chat"),
+            ("install firefox, remove firefox", "searches the package database; a second Return confirms"),
+            ("12*(3+4)", "is calculated; Return copies the answer"),
+            ("Alt+Return", "opens an app where it already is (or here, if you set `go`)"),
+        ];
+        for (i, (t, sub)) in rows.iter().enumerate() {
+            hits.push(Hit { id: format!("help:{i}"), section: "Help", title: (*t).into(), subtitle: (*sub).into(), icon: "help-browser".into(), score: 100 - i as u32, badge: None, action: Action::Nothing });
+        }
+        return hits;
+    }
     if let Some(question) = &q.ask {
         let trig = ctx.cfg["launcher"]["agent"].as_str().unwrap_or("claude");
         let bang = find_bang(trig)
@@ -1200,9 +1268,10 @@ pub fn search(ctx: &Ctx, q: &Query) -> Vec<Hit> {
                 icon: app.icon.clone(),
                 score,
                 badge: wins.iter().find_map(|w| w.badge.clone()),
-                action: match wins.first() {
-                    Some(w) => Action::Focus(w.addr.clone()),
-                    None => Action::Launch(app.id.clone()),
+                action: if wins.is_empty() {
+                    Action::Launch(app.id.clone())
+                } else {
+                    Action::OpenApp { app: app.id.clone(), windows: wins.iter().map(|w| w.addr.clone()).collect() }
                 },
             });
         }
@@ -1480,10 +1549,11 @@ pub fn search(ctx: &Ctx, q: &Query) -> Vec<Hit> {
                 icon: a.icon.clone(),
                 score: *n,
                 badge: None,
-                action: running(a)
-                    .first()
-                    .map(|w| Action::Focus(w.addr.clone()))
-                    .unwrap_or(Action::Launch(a.id.clone())),
+                action: if running(a).is_empty() {
+                    Action::Launch(a.id.clone())
+                } else {
+                    Action::OpenApp { app: a.id.clone(), windows: running(a).iter().map(|w| w.addr.clone()).collect() }
+                },
             })
             .collect();
         recent.sort_by(|a, b| b.score.cmp(&a.score).then(a.title.cmp(&b.title)));
@@ -1515,6 +1585,7 @@ pub fn search(ctx: &Ctx, q: &Query) -> Vec<Hit> {
             (format!("ask:{}", agent.trigger), agent, "Ask"),
         ] {
             let ask = title == "Ask";
+            let is_images = id == "web:i";
             hits.push(Hit {
                 id,
                 section: if ask { "Ask" } else { "Web" },
@@ -1530,6 +1601,8 @@ pub fn search(ctx: &Ctx, q: &Query) -> Vec<Hit> {
                 },
                 icon: if ask {
                     "dialog-question".into()
+                } else if is_images {
+                    "image-x-generic".into()
                 } else {
                     "web-browser".into()
                 },
@@ -1558,6 +1631,8 @@ mod tests {
             icon: id.into(),
             terminal: false,
             wm_class: String::new(),
+            new_window: None,
+            single: false,
         }
     }
     fn apps() -> Vec<App> {
@@ -1645,6 +1720,18 @@ mod tests {
     }
 
     #[test]
+    fn a_new_window_action_and_a_single_window_app_are_read() {
+        let t = "[Desktop Entry]\nName=Browser\nExec=browser %u\n\n[Desktop Action new-window]\nName=New Window\nExec=browser --new-window\n\n[Desktop Action private]\nName=P\nExec=browser --private\n";
+        let a = parse_desktop("browser", t).unwrap();
+        assert_eq!(a.new_window.as_deref(), Some("browser --new-window"));
+        assert!(!a.single);
+        let b = parse_desktop("x", "[Desktop Entry]\nName=X\nExec=x\nSingleMainWindow=true\n[Desktop Action NewWindow]\nExec=x --nw\n").unwrap();
+        assert!(b.single);
+        assert_eq!(b.new_window.as_deref(), Some("x --nw"), "NewWindow spells the same action");
+        assert!(parse_desktop("y", "[Desktop Entry]\nName=Y\nExec=y\n").unwrap().new_window.is_none());
+    }
+
+    #[test]
     fn scanning_lets_your_entry_override_the_systems() {
         let d = std::env::temp_dir().join(format!("bs-apps-{}", std::process::id()));
         let (user, sys) = (d.join("user"), d.join("sys"));
@@ -1714,7 +1801,7 @@ mod tests {
         assert_eq!(h[0].title, "Firefox");
         assert_eq!(h[0].action, Action::Launch("firefox".into()));
         let h = run("fire", Mode::All, &[win("0x1", "firefox", "Docs", 3)]);
-        assert_eq!(h[0].action, Action::Focus("0x1".into()));
+        assert_eq!(h[0].action, Action::OpenApp { app: "firefox".into(), windows: vec!["0x1".into()] });
         assert!(h[0].subtitle.contains("workspace 3"), "{}", h[0].subtitle);
     }
 
@@ -1937,6 +2024,29 @@ mod tests {
         }
         assert!(apps.iter().any(|a| a.id == "kept"));
         let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn a_lone_question_mark_is_the_help_and_menu_bangs_pick_a_menu() {
+        let h = run("?", Mode::All, &[]);
+        assert!(h.len() >= 6 && h.iter().all(|x| x.section == "Help" && x.action == Action::Nothing));
+        assert_eq!(parse_query("!files tax 2025", Mode::All).mode, Mode::Files);
+        assert_eq!(parse_query("!files tax 2025", Mode::All).text, "tax 2025");
+        assert_eq!(parse_query("!install firefox", Mode::All).mode, Mode::Install);
+        assert_eq!(parse_query("!ws 3", Mode::All).mode, Mode::Workspaces);
+        assert_eq!(parse_query("!yt cats", Mode::All).bang, Some(("yt".into(), "cats".into())), "a bang that is not a menu is still a bang");
+        assert!(run("?why", Mode::All, &[]).iter().any(|x| x.id.starts_with("ask:")));
+    }
+
+    #[test]
+    fn every_row_that_is_not_an_app_has_an_icon_the_shell_draws_as_a_glyph() {
+        let wins = [win("0x1", "foot", "term", 1)];
+        for (q, mode) in [("", Mode::All), ("fire", Mode::All), ("3", Mode::All), ("12*3", Mode::All), ("?", Mode::All), ("?x", Mode::All), ("zzq", Mode::All), ("", Mode::System), ("", Mode::Workspaces), ("", Mode::Update), ("", Mode::Windows)] {
+            for h in run(q, mode, &wins) {
+                let app_icon = apps().iter().any(|a| a.icon == h.icon);
+                assert!(app_icon || BUILTIN_ICONS.contains(&h.icon.as_str()), "{:?} ({q:?}) has icon {:?}", h.title, h.icon);
+            }
+        }
     }
 
     #[test]

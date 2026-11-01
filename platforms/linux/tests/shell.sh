@@ -236,10 +236,10 @@ eq "a theme.override token reaches the surfaces (panels drew opacity 0.5 under t
 /usr/bin/python3 -I "$HERE/cfg-drop.py" "$CFG" theme.override; sleep 1.6
 eq "taking the override out of the file puts the theme's own value back" "$(baneyspaces config | jq -c '.data.settings.appearance.override')" "{}"
 baneyspaces config set behavior.launcher.enabled false >/dev/null
-eq "a switched-off launcher says so" "$(baneyspaces launcher show | jq -r .error.code)" "not_supported"
+eq "a switched-off launcher falls back to Omarchy's menu" "$(baneyspaces launcher show | jq -r .data.fallback)" "omarchy-menu toggle"
 baneyspaces config set behavior.launcher.enabled true >/dev/null
 baneyspaces config set behavior.switcher.enabled false >/dev/null
-eq "a switched-off switcher says so" "$(baneyspaces switcher next | jq -r .error.code)" "not_supported"
+eq "a switched-off switcher falls back to Omarchy's cycle" "$(baneyspaces switcher next | jq -r .data.fallback)" "omarchy: cycle_next"
 baneyspaces config set behavior.switcher.enabled true >/dev/null
 
 echo "== dock off (dock.enabled = false): no dock surface, no edge reveal, everything else keeps working"
@@ -422,6 +422,59 @@ printf '\n[animation.workspace]\nstyle = "fade"\n' >> "$CFG"
 check "animation.workspace.style = fade, written by hand, reaches Hyprland within two seconds" wait_for 3 sh -c "[ \"\$(hyprctl -j animations | jq -r '[.[0][]|select(.name==\"workspaces\")|.enabled]|first')\" = true ]"
 /usr/bin/python3 -I "$HERE/cfg-drop.py" "$CFG" animation.workspace
 check "…and taking it out of the file puts it back" wait_for 3 sh -c "[ \"\$(hyprctl -j animations | jq -r '[.[0][]|select(.name==\"workspaces\")|.enabled]|first')\" = false ]"
+
+echo "== anything opened from a workspace lands on that workspace"
+APPS="$HOME/.local/share/applications"; mkdir -p "$APPS"
+cat > "$APPS/bs-newapp.desktop" <<EOT
+[Desktop Entry]
+Name=BS Fresh Test App
+Exec=foot -a bs-fresh -T freshwin sleep 600
+StartupWMClass=bs-fresh
+EOT
+cat > "$APPS/bs-multi.desktop" <<EOT
+[Desktop Entry]
+Name=BS Multi Test App
+Exec=foot -a bs-multi -T multiwin sleep 600
+StartupWMClass=bs-multi
+[Desktop Action new-window]
+Name=New Window
+Exec=foot -a bs-multi -T multinew sleep 600
+EOT
+cat > "$APPS/bs-single.desktop" <<EOT
+[Desktop Entry]
+Name=BS Single Test App
+Exec=/bin/true
+StartupWMClass=bs-single
+EOT
+sleep 3.2
+goto $M1 8; mkdir -p "$TMP/hold"
+nwin() { H clients | jq "[.[]|select(.class==\"$1\" and .workspace.name==\"$2\")]|length"; }
+run_app() { baneyspaces launcher search "$1" --mode apps >/dev/null; baneyspaces launcher run "app:$2" "${@:3}"; }
+run_app "BS Fresh" bs-newapp >/dev/null; sleep 1.2
+eq "an app that is not running starts on the workspace you are on" "$(nwin bs-fresh 8)" "1"
+goto $M1 2; mkwin bs-multi multiwin; mkwin bs-single singlewin; SING="$(addr_of singlewin)"
+goto $M1 8
+run_app "BS Multi" bs-multi >/dev/null; sleep 1.2
+eq "a running app that can make another window gets a new one here (its new-window action)" "$(nwin bs-multi 8)" "1"
+eq "…and the one it had stays where it was" "$(nwin bs-multi 2)" "1"
+eq "you stay on the workspace you opened it from" "$(mon_ws $M1)" "8"
+run_app "BS Single" bs-single >/dev/null; sleep 2.0
+eq "an app with a single window has that window moved here" "$(client_ws $SING)" "8"
+eq "…and you stay on the target" "$(mon_ws $M1)" "8"
+run_app "BS Multi" bs-multi >/dev/null; sleep 0.8
+eq "an app that already has a window here just brings it forward (no second one)" "$(nwin bs-multi 8)" "1"
+goto $M1 2; mkwin bs-single singlewin2; SING2="$(addr_of singlewin2)"; goto $M1 7
+run_app "BS Single" bs-single --alt >/dev/null; sleep 1.0
+eq "the modifier goes to where the app already is" "$(mon_ws $M1)" "2"
+goto $M1 7; baneyspaces set behavior.launcher.open go >/dev/null; sleep 0.4
+run_app "BS Single" bs-single >/dev/null; sleep 1.0
+eq "with behavior.launcher.open = go the plain key goes there" "$(mon_ws $M1)" "2"
+goto $M1 7; run_app "BS Single" bs-single --alt >/dev/null; sleep 2.0
+eq "…and the modifier then opens here" "$(nwin bs-single 7)" "1"
+baneyspaces set behavior.launcher.open here >/dev/null
+check "a dry run says what would happen (a new window here)" test "$(baneyspaces launcher search 'BS Multi' --mode apps >/dev/null; baneyspaces launcher run app:bs-multi --dry-run | jq -r '.data.would_run|join(" ")')" = "foot -a bs-multi -T multinew sleep 600"
+rm -f "$APPS"/bs-*.desktop
+goto $M1 1
 
 echo "== launcher results belong to the search that made them"
 S1="$(baneyspaces launcher search foot --mode apps | jq -r '.data.seq')"; S2="$(baneyspaces launcher search chrom --mode apps | jq -r '.data.seq')"

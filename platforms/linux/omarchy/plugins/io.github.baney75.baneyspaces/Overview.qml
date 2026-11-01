@@ -175,13 +175,18 @@ Item {
                         asynchronous: true
                         visible: status === Image.Ready
                       }
-                      ScreencopyView {
-                        id: shot
+                      // The capture of a window exists only while the overview is on screen. A capture kept alive for a window
+                      // that is closed afterwards is used after the compositor destroyed it, and the Wayland connection dies
+                      // ("invalid object"): so the view is made when the overview shows and gone when it hides.
+                      Loader {
                         anchors.fill: parent
-                        captureSource: root.toplevelFor(modelData.window)
-                        live: false
-                        paintCursor: false
-                        visible: hasContent
+                        active: win.wanted && root.ocfg.thumbnails !== false && root.toplevelFor(wcard.modelData.window) !== null
+                        sourceComponent: ScreencopyView {
+                          captureSource: root.toplevelFor(wcard.modelData.window)
+                          live: false
+                          paintCursor: false
+                          visible: hasContent
+                        }
                       }
                       Rectangle {
                         anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom

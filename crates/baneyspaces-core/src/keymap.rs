@@ -113,8 +113,8 @@ pub fn render_hypr_lua(binary: &str) -> String {
     for u in linux_unbinds() {
         s.push_str(&format!("hl.unbind(\"{u}\")\n"));
     }
-    s.push_str("\n-- The shell plugin animates its own panels; the compositor must not add a second animation.\n");
-    s.push_str("hl.layer_rule({ match = { namespace = \"^baneyspaces-.*\" }, no_anim = true, animation = \"none\" })\n");
+    s.push_str("\n-- The shell plugin animates its own panels; the compositor must not add a second animation. Panels with a translucent fill (the baneyspaces theme) are blurred behind.\n");
+    s.push_str("hl.layer_rule({ match = { namespace = \"^baneyspaces-.*\" }, no_anim = true, animation = \"none\", blur = true, ignore_alpha = 0.2 })\n");
     s.push_str("\n-- A workspace switch is instant, as in Omarchy's own looknfeel (its `workspaces` animation is off). The daemon keeps the\n");
     s.push_str("-- `workspaces` leaf off unless `animation.workspace.style` in config.toml asks for fade or slide; it touches no other\n");
     s.push_str("-- animation of Omarchy's.\n\n");

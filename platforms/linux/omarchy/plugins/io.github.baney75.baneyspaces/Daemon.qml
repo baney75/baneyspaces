@@ -53,6 +53,15 @@ Item {
     }
   }
 
+  // Tells the daemon this plugin is alive. The daemon reports "shown" only while it hears this, and restarts the shell when it stops.
+  Timer {
+    interval: 1000
+    repeat: true
+    running: root.connected
+    triggeredOnStart: true
+    onTriggered: root.call("heartbeat", {})
+  }
+
   // The daemon may start after the shell, or restart: keep trying.
   Timer {
     interval: 1000

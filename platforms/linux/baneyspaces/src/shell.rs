@@ -9,7 +9,7 @@ use crate::launcher::{self, Action, Ctx, LWin, Mode};
 use crate::scheme::{decode, lua_str, sh_quote, AGENT_SPECIAL};
 use crate::ui::{self, Badges, Change, DockEdge, Rect, Screen, State, Switcher};
 use baneyspaces_core::envelope::{Envelope, Retry};
-use baneyspaces_core::model::{Cause, Event};
+use baneyspaces_core::model::{Cause, Event, Home};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::mpsc::Sender;
@@ -38,6 +38,9 @@ pub struct ShellState {
     pub tap_published: bool,
     pub search_seq: u64,
     pub last_seq: u64,
+    /// The plugin's last heartbeat (daemon clock, ms), and whether it ever sent one.
+    pub heartbeat_at: Option<u64>,
+    pub restarts: Vec<u64>,
     pub applied_style: String,
     pub settings_open: bool,
     pub apps: Vec<launcher::App>,
@@ -76,6 +79,8 @@ impl ShellState {
             tap_published: false,
             search_seq: 0,
             last_seq: 0,
+            heartbeat_at: None,
+            restarts: vec![],
             applied_style: String::new(),
             settings_open: false,
             apps: vec![],
@@ -102,6 +107,11 @@ fn which(app: &str) -> Option<std::path::PathBuf> {
         })
 }
 
+/// Nothing draws the UI: say so rather than report a surface as shown.
+fn shell_dead() -> Envelope {
+    Envelope::err("shell_dead", "the BaneySpaces shell plugin is not running (no heartbeat)", Retry::Safe, "The daemon restarts it when it stops answering; or `omarchy restart shell`.")
+}
+
 fn fail(code: &str, msg: impl Into<String>, sug: &str) -> Envelope {
     Envelope::err(code, msg, Retry::Never, sug)
 }
@@ -119,6 +129,11 @@ impl Core {
         let (m, cv) = &*self.shell.dirty;
         *m.lock().unwrap_or_else(|p| p.into_inner()) = true;
         cv.notify_one();
+    }
+
+    /// Has the plugin said it is alive in the last 2.5 s? (It says so every second.)
+    pub fn shell_alive(&self) -> bool {
+        self.shell.heartbeat_at.is_some_and(|t| self.now_ms().saturating_sub(t) <= 2500)
     }
 
     pub fn now_ms(&self) -> u64 {
@@ -232,7 +247,7 @@ impl Core {
         let stale = self
             .shell
             .apps_at
-            .is_none_or(|t| t.elapsed() > Duration::from_secs(30));
+            .is_none_or(|t| t.elapsed() > Duration::from_secs(3));
         if stale {
             self.shell.apps = launcher::scan_apps(&launcher::data_dirs());
             self.shell.apps_at = Some(Instant::now());
@@ -345,6 +360,20 @@ pub fn spawn_pointer_loop(shared: Shared) {
                         c.shell.overview_peek = false;
                         changed = true;
                     }
+                    // The shell plugin stopped answering after it had been alive: start it again (not more than 3 times an hour).
+                    if c.shell.heartbeat_at.is_some_and(|t| now.saturating_sub(t) > 4000) {
+                        c.shell.restarts.retain(|t| now.saturating_sub(*t) < 3_600_000);
+                        let recent = c.shell.restarts.last().is_some_and(|t| now.saturating_sub(*t) < 30_000);
+                        if !recent && c.shell.restarts.len() < 3 {
+                            c.shell.restarts.push(now);
+                            let cmd = std::env::var("BANEYSPACES_SHELL_RESTART").unwrap_or_else(|_| "omarchy restart shell".into());
+                            if c.trace {
+                                eprintln!("[baneyspaces] the shell plugin is not answering; restarting it: {cmd}");
+                            }
+                            use std::os::unix::process::CommandExt;
+                            let _ = std::process::Command::new("sh").arg("-c").arg(&cmd).process_group(0).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
+                        }
+                    }
                     if c.shell.pending_commit.is_some_and(|t| now.saturating_sub(t) > 2000) {
                         c.shell.pending_commit = None;
                     }
@@ -413,6 +442,11 @@ fn agent_may_set(_key: &str) -> bool {
 /// Handles the shell operations; `None` for any other operation.
 pub fn handle(shared: &Shared, op: &str, args: &Value, agent: &str, peer: Option<u32>) -> Option<Envelope> {
     Some(match op {
+        "heartbeat" => {
+            let mut c = lock(shared);
+            c.shell.heartbeat_at = Some(c.now_ms());
+            Envelope::ok(json!({ "alive": true }))
+        }
         "ui" => Envelope::ok(lock(shared).ui_state()),
         "config" => {
             let c = lock(shared);
@@ -468,6 +502,9 @@ pub fn handle(shared: &Shared, op: &str, args: &Value, agent: &str, peer: Option
         "overview" => overview_op(shared, args),
         "settings" => {
             let mut c = lock(shared);
+            if matches!(action_of(args), "show" | "toggle") && !c.shell_alive() {
+                return Some(shell_dead());
+            }
             let a = action_of(args).to_string();
             let mut f = c.shell.settings_open;
             toggle(&mut f, &a);
@@ -477,7 +514,7 @@ pub fn handle(shared: &Shared, op: &str, args: &Value, agent: &str, peer: Option
         }
         "launcher" => {
             let mut c = lock(shared);
-            if !c.shell.cfg.get_bool("launcher.enabled") && action_of(args) != "hide" {
+            if (!c.shell.cfg.get_bool("launcher.enabled") || !c.shell_alive()) && action_of(args) != "hide" {
                 // Switched off: Super+Space is Omarchy's again (its menu), not a dead key.
                 let ran = c.spawn_user(&["omarchy-menu".to_string(), "toggle".to_string()], false);
                 return Some(match ran {
@@ -591,6 +628,9 @@ fn focus_window(c: &mut Core, w: &str) -> Envelope {
 fn dock_op(shared: &Shared, args: &Value) -> Envelope {
     let mut c = lock(shared);
     // dock.enabled = false: there is no dock to show or hold (everything else keeps working).
+    if matches!(action_of(args), "show" | "toggle") && !c.shell_alive() {
+        return shell_dead();
+    }
     if !c.shell.cfg.get_bool("dock.enabled") && matches!(action_of(args), "show" | "toggle" | "hold") {
         return fail("not_supported", "the dock is switched off (dock.enabled = false)", "baneyspaces set dock.enabled true");
     }
@@ -646,8 +686,8 @@ fn switcher_op(shared: &Shared, args: &Value) -> Envelope {
     let mut c = lock(shared);
     let a = action_of(args).to_string();
     let now = c.now_ms();
-    if !c.shell.cfg.get_bool("switcher.enabled") && a != "cancel" {
-        // Switched off: Alt+Tab is Omarchy's again (focus the next window and bring it on top), not a dead key.
+    if (!c.shell.cfg.get_bool("switcher.enabled") || !c.shell_alive()) && a != "cancel" {
+        // Switched off, or the shell plugin is not running: Alt+Tab is Omarchy's again (focus the next window and bring it on top), not a dead key.
         let r = match a.as_str() {
             "next" | "toggle" => c.hypr.dispatch("hl.dsp.window.cycle_next()").and_then(|_| c.hypr.dispatch("hl.dsp.window.bring_to_top()")),
             "prev" => c.hypr.dispatch("hl.dsp.window.cycle_next({ next = false })").and_then(|_| c.hypr.dispatch("hl.dsp.window.bring_to_top()")),
@@ -1108,6 +1148,12 @@ fn launcher_run(shared: &Shared, args: &Value, agent: &str) -> Envelope {
             json!({ "needs_confirm": true, "message": format!("{} {name}?", if verb == "add" { "Install" } else { "Remove" }), "command": format!("omarchy pkg {verb} {name}") }),
         );
     }
+    if let Action::OpenApp { app, windows } = action.clone() {
+        let alt = args["alt"].as_bool().unwrap_or(false);
+        c.shell.launcher_open = false;
+        c.mark_dirty();
+        return open_app(shared, &mut c, &app, &windows, alt, dry);
+    }
     let apps = c.apps();
     let (argv, terminal, note): (Option<Vec<String>>, bool, &str) = match &action {
         Action::Launch(app_id) => match apps.iter().find(|a| &a.id == app_id) {
@@ -1192,14 +1238,15 @@ fn overview_op(shared: &Shared, args: &Value) -> Envelope {
     let mut c = lock(shared);
     let a = action_of(args).to_string();
     let now = c.now_ms();
-    if !c.shell.cfg.get_bool("overview.enabled") && !matches!(a.as_str(), "hide" | "go") {
+    if (!c.shell.cfg.get_bool("overview.enabled") || !c.shell_alive()) && !matches!(a.as_str(), "hide" | "go") {
         // Switched off: Super+Tab and Super+Shift+Tab are Omarchy's again (next and previous workspace), not dead keys.
         return match a.as_str() {
             "next" | "prev" => match c.hypr.dispatch(&format!("hl.dsp.focus({{ workspace = \"e{}1\" }})", if a == "next" { "+" } else { "-" })) {
                 Ok(()) => Envelope::ok(json!({ "shown": false, "fallback": "omarchy: next workspace" })),
                 Err(e) => Envelope::err("internal", e.to_string(), Retry::Safe, "Is Hyprland running?"),
             },
-            _ => fail("not_supported", "the overview is switched off in config.toml", "baneyspaces set behavior.overview.enabled true"),
+            _ if !c.shell.cfg.get_bool("overview.enabled") => fail("not_supported", "the overview is switched off in config.toml", "baneyspaces set behavior.overview.enabled true"),
+            _ => shell_dead(),
         };
     }
     let here = c.model.view()["current"].as_u64().map(|n| (n as usize).saturating_sub(1)).unwrap_or(0).min(8);
@@ -1276,4 +1323,68 @@ fn overview_op(shared: &Shared, args: &Value) -> Envelope {
     c.persist();
     c.mark_dirty();
     Envelope::ok(json!({ "shown": c.overview_shown, "cursor": c.shell.overview_cursor, "peek": c.shell.overview_peek }))
+}
+
+/// Opening a running app from the launcher. Anything opened from a workspace lands on that workspace
+/// (`behavior.launcher.open = here`, the default): a window of the app already here is just brought forward; an app that
+/// can make another window is asked for one, and it opens here; an app with a single window has it moved here and you
+/// stay. `go`, or the Alt modifier on a `here` setting (and the other way round), goes to where the app already is.
+fn open_app(shared: &Shared, c: &mut Core, app_id: &str, windows: &[String], alt: bool, dry: bool) -> Envelope {
+    let go = (c.shell.cfg.get_str("launcher.open") == "go") != alt;
+    let target = c.model.view()["current"].as_u64().unwrap_or(0) as u8;
+    let here: Vec<String> = windows.iter().filter(|w| matches!(c.model.home(w), Some(Home::Workspace { n }) if *n == target)).cloned().collect();
+    *c.shell.history.entry(format!("app:{app_id}")).or_default() += 1;
+    c.save_history();
+    if go || !here.is_empty() || target == 0 {
+        let w = here.first().or(windows.first()).cloned().unwrap_or_default();
+        if dry {
+            return Envelope::ok(json!({ "dry_run": true, "would_focus": w, "go": go }));
+        }
+        later(shared, move |c| {
+            let _ = focus_window(c, &w);
+            c.mark_dirty();
+        });
+        return Envelope::ok(json!({ "did": "focus", "go": go, "after_ms": SETTLE_MS }));
+    }
+    let Some(app) = c.apps().into_iter().find(|a| a.id == app_id) else {
+        return fail("not_found", format!("no app {app_id}"), "Search again.");
+    };
+    let Some(first) = windows.first().cloned() else {
+        return fail("not_found", "the app has no window", "Search again.");
+    };
+    if app.single {
+        if dry {
+            return Envelope::ok(json!({ "dry_run": true, "would_move": first, "to": target }));
+        }
+        return match c.apply(Event::Move { n: target, window: Some(first.clone()), follow: false }) {
+            Ok(_) => Envelope::ok(json!({ "did": "moved here", "window": first, "workspace": target })),
+            Err(e) => e.envelope(),
+        };
+    }
+    let argv = launcher::exec_argv(app.new_window.as_deref().unwrap_or(&app.exec));
+    if dry {
+        return Envelope::ok(json!({ "dry_run": true, "would_run": argv, "terminal": app.terminal, "to": target }));
+    }
+    let before: std::collections::HashSet<String> = c.clients().into_iter().map(|x| x.addr).collect();
+    if let Err(e) = c.spawn_user(&argv, app.terminal) {
+        return Envelope::err("internal", e, Retry::Safe, "Is Hyprland running?");
+    }
+    // A new window of the app lands where you are (R-P1). An app that hands the request to the window it has opens none:
+    // then that window comes here and you stay.
+    let shared = shared.clone();
+    std::thread::spawn(move || {
+        for _ in 0..12 {
+            std::thread::sleep(Duration::from_millis(150));
+            let c = lock(&shared);
+            if c.clients().iter().any(|x| !before.contains(&x.addr) && launcher::app_owns_class(&app, &x.class)) {
+                return;
+            }
+        }
+        let mut c = lock(&shared);
+        if c.model.is_tracked(&first) && !c.model.is_agent_window(&first) {
+            let _ = c.apply(Event::Move { n: target, window: Some(first), follow: false });
+            c.mark_dirty();
+        }
+    });
+    Envelope::ok(json!({ "did": "new window here", "workspace": target, "command": argv.join(" ") }))
 }

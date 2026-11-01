@@ -1411,6 +1411,7 @@ fn serve_conn(shared: Shared, s: UnixStream) {
                     continue;
                 }
                 let _ = s.set_read_timeout(None);
+                c.shell.heartbeat_at = Some(c.now_ms());
                 c.shell.subs.push(tx.clone());
                 let first = json!({ "event": "ui", "data": c.ui_state() }).to_string();
                 drop(c);

@@ -32,7 +32,7 @@ const HELP: &str = "baneyspaces (Linux, Hyprland)
   launcher [show|hide|toggle]    the launcher (Super+Space)
   launcher search <text> [--mode M]  search apps, windows, files, packages; M: all apps windows
                                  workspaces files install remove update system
-  launcher run <id> [--confirm] [--dry-run] [--seq N]  run a result of the last search (N: refuse if a newer search replaced it)
+  launcher run <id> [--confirm] [--dry-run] [--seq N] [--alt]  run a result of the last search (N: refuse if a newer search replaced it)
   settings [show|hide|toggle]    the settings panel
   config                         the settings and what they take
   set <key> <value>              change one setting (same as config set), e.g. dock.enabled false (writes ~/.config/baneyspaces/config.toml)
@@ -261,8 +261,9 @@ fn launcher_request(mut a: Vec<String>) -> Result<Value, Envelope> {
             let confirm = take_switch(&mut a, "--confirm");
             let dry = take_switch(&mut a, "--dry-run");
             let seq = take(&mut a, "--seq").and_then(|v| v.parse::<u64>().ok());
+            let alt = take_switch(&mut a, "--alt");
             need(&a, 1, "launcher run <id> [--confirm] [--dry-run] [--seq N]")?;
-            req("launcher_run", json!({ "id": a[0], "confirm": confirm, "dry_run": dry, "seq": seq }))
+            req("launcher_run", json!({ "id": a[0], "confirm": confirm, "dry_run": dry, "seq": seq, "alt": alt }))
         }
         _ => Err(fail("invalid_args", "usage: launcher [show|hide|toggle] | search <text> | run <id>", "")),
     }

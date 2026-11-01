@@ -270,3 +270,13 @@ test("a theme override changes tokens for this machine only", () => {
   assert.strictEqual(spec.themes.baneyspaces.radius.tile, 16, "the spec's own tokens are untouched");
   assert.strictEqual(L.resolveTheme(spec, { theme: "omarchy", palette: "nord", override: { fill: { opacity: 0.5 } } }).fill.opacity, 0.5, "any token can be set, as the spec says");
 });
+
+test("every icon the launcher uses for a row that is not an app has a glyph (no missing-image checker)", () => {
+  const rs = fs.readFileSync(path.join(__dirname, "../baneyspaces/src/launcher.rs"), "utf8");
+  const m = rs.match(/BUILTIN_ICONS: &\[&str\] = &\[([\s\S]*?)\];/);
+  assert.ok(m, "BUILTIN_ICONS in launcher.rs");
+  const names = [...m[1].matchAll(/"([a-z-]+)"/g)].map((x) => x[1]);
+  assert.ok(names.length >= 10);
+  for (const n of names) assert.ok(L.glyphFor(n) !== "", `${n} has no glyph`);
+  assert.strictEqual(L.glyphFor("firefox"), "", "an app's own icon is not a glyph");
+});

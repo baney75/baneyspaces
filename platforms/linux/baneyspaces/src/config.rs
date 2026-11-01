@@ -54,6 +54,7 @@ pub const KEYS: &[Key] = &[
     k("behavior.launcher.files", "launcher.files", Kind::Bool, "true", false, "Search files and folders in your home folder."),
     k("behavior.launcher.install", "launcher.install", Kind::Bool, "true", false, "Offer to install and remove apps (omarchy pkg)."),
     k("behavior.launcher.search_engine", "launcher.search_engine", Kind::Str, "ddg", false, "Bang trigger of the engine a plain search goes to."),
+    k("behavior.launcher.open", "launcher.open", Kind::Enum(&["here", "go"]), "here", false, "An app opened from a workspace opens there (here), or you go to where it already is (go). Alt+Return does the other."),
     k("behavior.launcher.agent", "launcher.agent", Kind::Str, "claude", false, "Bang trigger of the agent a leading ? asks."),
     k("behavior.overview.enabled", "overview.enabled", Kind::Bool, "true", false, "Super+Tab shows all nine workspaces."),
     k("behavior.overview.previews", "overview.previews", Kind::Enum(&["live", "icons"]), "live", true, "Window previews (a capture where the compositor gives one) or icons."),

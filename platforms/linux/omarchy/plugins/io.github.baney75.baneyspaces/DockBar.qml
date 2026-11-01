@@ -264,7 +264,9 @@ PanelWindow {
               font.family: th.fontFamily
               font.pixelSize: spec.icon * 0.7
             }
-            MouseArea { anchors.fill: parent; onClicked: bs.call("switch", { n: win.dock.new_target }) }
+            // Opening the new workspace: you are on it, and what you open next lands on it
+            MouseArea { anchors.fill: parent; onClicked: { bs.call("switch", { n: win.dock.new_target }); openLauncher.restart() } }
+            Timer { id: openLauncher; interval: 160; onTriggered: bs.call("launcher", { action: "show" }) }
           }
 
           Rectangle { width: 1; height: spec.height * 0.6; anchors.verticalCenter: parent.verticalCenter; color: th.tok.roles.border }

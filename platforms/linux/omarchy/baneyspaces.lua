@@ -35,8 +35,8 @@ hl.unbind("ALT + SHIFT + TAB")
 hl.unbind("SUPER + SPACE")
 hl.unbind("SUPER + SHIFT + TAB")
 
--- The shell plugin animates its own panels; the compositor must not add a second animation.
-hl.layer_rule({ match = { namespace = "^baneyspaces-.*" }, no_anim = true, animation = "none" })
+-- The shell plugin animates its own panels; the compositor must not add a second animation. Panels with a translucent fill (the baneyspaces theme) are blurred behind.
+hl.layer_rule({ match = { namespace = "^baneyspaces-.*" }, no_anim = true, animation = "none", blur = true, ignore_alpha = 0.2 })
 
 -- A workspace switch is instant, as in Omarchy's own looknfeel (its `workspaces` animation is off). The daemon keeps the
 -- `workspaces` leaf off unless `animation.workspace.style` in config.toml asks for fade or slide; it touches no other

@@ -69,6 +69,15 @@ function tileSpecFor(tok, size) {
   return s
 }
 
+// The rows that are not an app draw a glyph (Nerd Font) in the theme's foreground: a theme icon may not exist, and a missing one
+// shows as a magenta checker. Every name in launcher.rs's BUILTIN_ICONS is here (a test holds that).
+var GLYPHS = {
+  "view-grid": "\uf009", "web-browser": "\uf0ac", "image-x-generic": "\uf03e", "dialog-question": "\uf059",
+  "preferences-system": "\uf013", "accessories-calculator": "\uf1ec", "folder": "\uf07b", "text-x-generic": "\uf15b",
+  "package-x-generic": "\uf1b2", "system-software-update": "\uf021", "help-browser": "\uf128"
+}
+function glyphFor(name) { return GLYPHS[name] || "" }
+
 // Which of the rectangles [{x,y,w,h,...}] holds the point, or -1.
 function pickRect(rects, x, y) {
   for (var i = 0; i < rects.length; i++) {
@@ -256,5 +265,5 @@ if (typeof module !== "undefined") {
   module.exports = { parseColors: parseColors, hex: hex, mix: mix, alpha: alpha, luminance: luminance, readable: readable,
     workspaceColors: workspaceColors, tileSpecFor: tileSpecFor, pickRect: pickRect, listPlacement: listPlacement,
     stepIndex: stepIndex, nextWindow: nextWindow, sectionRows: sectionRows, nextMode: nextMode, badgeGlyph: badgeGlyph,
-    moreLabel: moreLabel, ROLE_KEYS: ROLE_KEYS, paletteFromColors: paletteFromColors, tintsOf: tintsOf, roleColor: roleColor, resolveTheme: resolveTheme, motionFor: motionFor, deepMerge: deepMerge, withOpacity: withOpacity, rowTitle: rowTitle, gridRect: gridRect, gridMove: gridMove, MODES: MODES }
+    moreLabel: moreLabel, glyphFor: glyphFor, GLYPHS: GLYPHS, ROLE_KEYS: ROLE_KEYS, paletteFromColors: paletteFromColors, tintsOf: tintsOf, roleColor: roleColor, resolveTheme: resolveTheme, motionFor: motionFor, deepMerge: deepMerge, withOpacity: withOpacity, rowTitle: rowTitle, gridRect: gridRect, gridMove: gridMove, MODES: MODES }
 }

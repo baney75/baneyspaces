@@ -57,6 +57,17 @@ Item {
     for (var i = 0; i < fams.length; i++) if (have.indexOf(fams[i]) >= 0) return fams[i]
     return fams[fams.length - 1]
   }
+  // The font that has the glyphs of the rows that are not an app (Nerd Font), else the theme's own.
+  readonly property string glyphFont: {
+    var have = Qt.fontFamilies(), want = ["JetBrainsMono Nerd Font", "JetBrainsMono NF", "Symbols Nerd Font", "Symbols Nerd Font Mono"]
+    for (var i = 0; i < want.length; i++) if (have.indexOf(want[i]) >= 0) return want[i]
+    return fontFamily
+  }
+  // How a chosen row and the filter chips look (what makes the three themes read differently, beyond their borders):
+  // omarchy: the row takes the selection fill and its label the accent; the chips are plain text with the active one underlined.
+  // baneyspaces: a tinted rounded row with an accent border; pill chips. minimal: a thin accent bar on the row; no chips row.
+  readonly property string selectStyle: tok.theme === "omarchy" ? "text" : (tok.theme === "minimal" ? "line" : "pill")
+  readonly property string chipStyle: tok.theme === "omarchy" ? "text" : (tok.theme === "minimal" ? "none" : "pill")
   readonly property int fontSize: tok.font.size
   // Sizes in the design are for a 12 pt base; the theme's `font.size` scales them all (spec/themes.md).
   function fs(px) { return Math.max(8, Math.round(px * tok.font.size / 12)) }

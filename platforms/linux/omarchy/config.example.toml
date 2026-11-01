@@ -23,6 +23,7 @@
 # install = true            # (Linux) install and remove apps with omarchy pkg
 # search_engine = "ddg"     # (Linux) a bang trigger
 # agent = "claude"          # (Linux) what a leading ? asks
+# open = "here"             # (Linux) an app opens on the workspace you are on (here), or you go to it (go); Alt+Return does the other
 
 [behavior.overview]
 # enabled = true            # (Linux) Super+Tab

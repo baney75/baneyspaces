@@ -43,15 +43,17 @@ Item {
       scrollRequest(rowIndexOf(sel))
     })
   }
+  property var listRef: null
+  function listItem(i) { return listRef ? listRef.itemAtIndex(i) : null }
   function rowIndexOf(flat) {
     var rows = Logic.sectionRows(results)
     for (var i = 0; i < rows.length; i++) if (rows[i].index === flat) return i
     return 0
   }
-  function run(i, confirmed) {
+  function run(i, confirmed, alt) {
     var r = results[i]
     if (!r) return
-    bs.call("launcher_run", { id: r.id, seq: resultSeq, confirm: confirmed === true }, function (rep) {
+    bs.call("launcher_run", { id: r.id, seq: resultSeq, confirm: confirmed === true, alt: alt === true }, function (rep) {
       if (!rep.ok) { note = rep.error ? rep.error.message : "failed"; return }
       if (rep.data.needs_confirm) confirm = { id: r.id, message: rep.data.message, command: rep.data.command }
       else { confirm = null; bs.call("launcher", { action: "hide" }) }
@@ -141,7 +143,7 @@ Item {
                 Keys.onPressed: function (e) {
                   var n = root.results.length
                   if (e.key === Qt.Key_Escape) { if (root.confirm) root.confirm = null; else root.bs.call("launcher", { action: "hide" }) }
-                  else if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter) { if (root.confirm) root.run(root.results.findIndex(function (r) { return r.id === root.confirm.id }), true); else root.run(root.sel) }
+                  else if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter) { if (root.confirm) root.run(root.results.findIndex(function (r) { return r.id === root.confirm.id }), true); else root.run(root.sel, false, (e.modifiers & Qt.AltModifier) !== 0) }
                   else if (e.key === Qt.Key_Down || (e.key === Qt.Key_N && (e.modifiers & Qt.ControlModifier))) { root.sel = Logic.stepIndex(root.sel, n, 1); list.positionViewAtIndex(root.rowIndexOf(root.sel), ListView.Contain) }
                   else if (e.key === Qt.Key_Up || (e.key === Qt.Key_P && (e.modifiers & Qt.ControlModifier))) { root.sel = Logic.stepIndex(root.sel, n, -1); list.positionViewAtIndex(root.rowIndexOf(root.sel), ListView.Contain) }
                   else if (e.key === Qt.Key_Tab) root.setMode(Logic.nextMode(root.mode, 1, root.modeEnabled))
@@ -153,21 +155,38 @@ Item {
               }
             }
 
-            // Tab goes into a menu; Backspace on an empty search comes back.
+            // Tab goes into a menu; Backspace on an empty search comes back. Pills in the baneyspaces theme, plain text with the
+            // active one underlined in omarchy, and no row at all in minimal (the menus are `!apps`, `!files` ... and Tab).
             Flow {
               id: chips
+              visible: win.th.chipStyle !== "none"
+              height: visible ? implicitHeight : 0
               width: parent.width
-              spacing: 6
+              spacing: win.th.chipStyle === "pill" ? 6 : 14
               Repeater {
                 model: Logic.MODES.filter(function (m) { return root.modeEnabled[m] !== false })
-                delegate: Rectangle {
+                delegate: Item {
                   required property string modelData
                   readonly property bool on: modelData === root.mode
-                  width: label.implicitWidth + 18
+                  readonly property bool pill: win.th.chipStyle === "pill"
+                  width: label.implicitWidth + (pill ? 18 : 0)
                   height: 24
-                  radius: Math.min(win.th.tok.radius.row * 2, height / 2)
-                  color: on ? win.th.accent : (ma.containsMouse ? win.th.raisedHot : win.th.raised)
-                  Text { id: label; anchors.centerIn: parent; text: Logic.MODE_LABELS[modelData]; color: parent.on ? win.th.bg : win.th.text; font.family: win.th.fontFamily; font.pixelSize: win.th.fs(12) }
+                  Rectangle {
+                    visible: parent.pill
+                    anchors.fill: parent
+                    radius: Math.min(win.th.tok.radius.row * 2, height / 2)
+                    color: parent.on ? win.th.accent : (ma.containsMouse ? win.th.raisedHot : win.th.raised)
+                  }
+                  Text {
+                    id: label
+                    anchors.centerIn: parent
+                    text: Logic.MODE_LABELS[modelData]
+                    color: parent.pill ? (parent.on ? win.th.bg : win.th.text) : (parent.on ? win.th.accent : (ma.containsMouse ? win.th.text : win.th.dim))
+                    font.family: win.th.fontFamily
+                    font.pixelSize: win.th.fs(12)
+                    font.bold: !parent.pill && parent.on
+                  }
+                  Rectangle { visible: !parent.pill && parent.on; anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom; width: label.implicitWidth; height: win.th.tok.border.width; color: win.th.accent }
                   MouseArea { id: ma; anchors.fill: parent; hoverEnabled: true; onClicked: root.setMode(modelData) }
                 }
               }
@@ -175,6 +194,7 @@ Item {
 
             ListView {
               id: list
+              Component.onCompleted: root.listRef = list
               Connections { target: root; function onScrollRequest(row) { list.positionViewAtIndex(row, ListView.Contain) } }
               width: parent.width
               height: root.results.length === 0 ? 0 : Math.min(root.rowsHeight, scrim.height * 0.5)
@@ -185,6 +205,9 @@ Item {
               delegate: Item {
                 id: row
                 required property var modelData
+                readonly property string glyph: modelData.icon ? Logic.glyphFor(modelData.icon) : ""
+                // what this row draws for its icon, for the test that no row shows a missing image
+                readonly property string iconState: modelData.header !== undefined ? "header" : (glyph !== "" ? "glyph" : (ic.status === Image.Ready ? "image" : "letter"))
                 width: list.width
                 height: modelData.header !== undefined ? 26 : 46
                 Text {
@@ -204,20 +227,35 @@ Item {
                   anchors.fill: parent
                   anchors.margins: 1
                   readonly property bool on: row.modelData.index === root.sel
-                  focused: on
-                  framed: on
-                  fillColor: on ? Logic.alpha(win.th.accent, 0.26) : (rowArea.containsMouse ? win.th.raised : "transparent")
+                  // omarchy: the selection fill and the label in the accent, no border and no filled block; baneyspaces: a tinted
+                  // rounded row with an accent border; minimal: a thin accent bar at the left and no fill.
+                  readonly property string style: win.th.selectStyle
+                  focused: on && style === "pill"
+                  framed: on && style === "pill"
+                  fillColor: on ? (style === "pill" ? Logic.alpha(win.th.accent, 0.26) : (style === "text" ? win.th.raisedHot : "transparent")) : (rowArea.containsMouse ? win.th.raised : "transparent")
+                  Rectangle { visible: parent.on && parent.style === "line"; x: 0; y: 4; width: win.th.tok.border.width + 1; height: parent.height - 8; color: win.th.accent }
+                  Text {
+                    id: glyph
+                    visible: row.glyph !== ""
+                    x: 10; anchors.verticalCenter: parent.verticalCenter
+                    width: 28
+                    horizontalAlignment: Text.AlignHCenter
+                    text: row.glyph
+                    color: parent.on ? win.th.accent : win.th.fg
+                    font.family: win.th.glyphFont
+                    font.pixelSize: win.th.fs(20)
+                  }
                   Image {
                     id: ic
                     x: 10; anchors.verticalCenter: parent.verticalCenter
                     width: 28; height: 28
-                    visible: status === Image.Ready
-                    source: row.modelData.icon ? root.bs.iconSource(row.modelData.icon) : ""
+                    visible: row.glyph === "" && status === Image.Ready
+                    source: row.glyph === "" && row.modelData.icon ? root.bs.iconSource(row.modelData.icon) : ""
                     sourceSize.width: 56; sourceSize.height: 56
                     asynchronous: true
                   }
                   Rectangle {
-                    visible: ic.status !== Image.Ready && row.modelData.header === undefined
+                    visible: row.glyph === "" && ic.status !== Image.Ready && row.modelData.header === undefined
                     x: 10; anchors.verticalCenter: parent.verticalCenter
                     width: 28; height: 28; radius: Math.min(win.th.tok.radius.row, 8)
                     color: Logic.alpha(win.th.accent, 0.3)
@@ -227,7 +265,7 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                     x: 48
                     width: parent.width - 48 - 40
-                    Text { width: parent.width; text: row.modelData.title || ""; elide: Text.ElideRight; color: win.th.text; font.family: win.th.fontFamily; font.pixelSize: win.th.fs(14) }
+                    Text { width: parent.width; text: row.modelData.title || ""; elide: Text.ElideRight; color: (row.modelData.index === root.sel && win.th.selectStyle === "text") ? win.th.accent : win.th.text; font.family: win.th.fontFamily; font.pixelSize: win.th.fs(14) }
                     Text { width: parent.width; text: row.modelData.subtitle || ""; elide: Text.ElideRight; color: win.th.dim; font.family: win.th.fontFamily; font.pixelSize: win.th.fs(11); visible: text !== "" }
                   }
                   Rectangle {
@@ -267,7 +305,7 @@ Item {
             Text {
               id: footer
               width: parent.width
-              text: root.note !== "" ? root.note : "↵ open    ⇥ menus    ? ask your agent    !yt cats  bangs    install <app>"
+              text: root.note !== "" ? root.note : "↵ open   ·   ⇥ actions   ·   ? help"
               color: root.note !== "" ? win.th.urgent : win.th.dim
               font.family: win.th.fontFamily
               font.pixelSize: win.th.fs(11)
@@ -285,6 +323,12 @@ Item {
     target: "baneyspaces.launcher"
     function state(): string { return JSON.stringify({ mode: root.mode, count: root.results.length, sel: root.sel, titles: root.results.slice(0, 12).map(function (r) { return r.title }), confirm: root.confirm }) }
     function type(text: string): string { root.tType = Date.now(); root.tTyped = 0; root.query = text; root.search(); return "ok" }
+    // the icon of every row now drawn: glyph, image or letter (never a missing image)
+    function icons(): string {
+      var out = []
+      for (var i = 0; i < 40; i++) { var it = root.listItem(i); if (it === null) break; if (it.iconState !== undefined && it.iconState !== "header") out.push({ title: it.modelData.title, state: it.iconState }) }
+      return JSON.stringify(out)
+    }
     function timing(): string { return JSON.stringify({ open_to_ready_ms: root.tReady - root.tOpen, type_to_first_result_ms: root.tTyped > 0 ? root.tTyped - root.tType : -1 }) }
     function mode(m: string): string { root.setMode(m); return "ok" }
     function select(i: int): string { root.sel = i; return "ok" }
