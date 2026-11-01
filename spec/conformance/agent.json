@@ -1,0 +1,1198 @@
+[
+ {
+  "name": "agent windows land on the agent workspace, silently",
+  "rules": [
+   "R-A1",
+   "R-A3"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "agent_register",
+    "pid": 500
+   },
+   {
+    "do": "open",
+    "window": "a1",
+    "pid": 500,
+    "app": "zenity",
+    "effects": [
+     {
+      "do": "move_window",
+      "window": "a1",
+      "to": "agent"
+     }
+    ]
+   },
+   {
+    "expect": {
+     "agent": {
+      "windows": [
+       "a1"
+      ],
+      "shown": false,
+      "pids": [
+       500
+      ]
+     },
+     "active": "w1",
+     "workspaces": {
+      "1": [
+       "w1"
+      ]
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "a second window of an agent process joins the first",
+  "rules": [
+   "R-A3"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "agent_register",
+    "pid": 500
+   },
+   {
+    "do": "open",
+    "window": "a1",
+    "pid": 500,
+    "app": "foot"
+   },
+   {
+    "do": "open",
+    "window": "a2",
+    "pid": 500,
+    "app": "foot"
+   },
+   {
+    "expect": {
+     "agent": {
+      "windows": [
+       "a1",
+       "a2"
+      ]
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "a user process never lands on the agent workspace",
+  "rules": [
+   "R-A3"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "agent_register",
+    "pid": 500
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 600,
+    "app": "foot"
+   },
+   {
+    "expect": {
+     "agent": {
+      "windows": []
+     },
+     "workspaces": {
+      "1": [
+       "w1"
+      ]
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "registering a process moves its windows off your workspaces",
+  "rules": [
+   "R-A3"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 500,
+    "app": "foot"
+   },
+   {
+    "do": "open",
+    "window": "w2",
+    "pid": 600,
+    "app": "foot"
+   },
+   {
+    "do": "agent_register",
+    "pid": 500,
+    "effects": [
+     {
+      "do": "move_window",
+      "window": "w1",
+      "to": "agent"
+     }
+    ],
+    "expect": {
+     "agent": {
+      "windows": [
+       "w1"
+      ]
+     },
+     "workspaces": {
+      "1": [
+       "w2"
+      ]
+     },
+     "active": "w2"
+    }
+   }
+  ]
+ },
+ {
+  "name": "an agent process that exits is forgotten",
+  "rules": [
+   "R-A3"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "agent_register",
+    "pid": 500
+   },
+   {
+    "do": "agent_exit",
+    "pid": 500
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 500,
+    "app": "foot"
+   },
+   {
+    "expect": {
+     "agent": {
+      "pids": [],
+      "windows": []
+     },
+     "workspaces": {
+      "1": [
+       "w1"
+      ]
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "an agent window activating does not take focus or your workspace",
+  "rules": [
+   "R-G1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "agent_register",
+    "pid": 500
+   },
+   {
+    "do": "open",
+    "window": "a1",
+    "pid": 500,
+    "app": "foot"
+   },
+   {
+    "do": "activate",
+    "window": "a1",
+    "cause": "agent",
+    "effects": [
+     {
+      "do": "refuse_follow",
+      "window": "a1",
+      "reason": "agent_window"
+     },
+     {
+      "do": "focus_window",
+      "window": "w1"
+     }
+    ],
+    "expect": {
+     "active": "w1",
+     "guard": {
+      "refused": 1
+     },
+     "monitors": {
+      "A": {
+       "current": 1
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "the guard holds even when the activation says user",
+  "rules": [
+   "R-G1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "agent_register",
+    "pid": 500
+   },
+   {
+    "do": "open",
+    "window": "a1",
+    "pid": 500,
+    "app": "foot"
+   },
+   {
+    "do": "activate",
+    "window": "a1",
+    "cause": "user",
+    "effects": [
+     {
+      "do": "refuse_follow",
+      "window": "a1",
+      "reason": "agent_window"
+     },
+     {
+      "do": "focus_window",
+      "window": "w1"
+     }
+    ],
+    "expect": {
+     "active": "w1"
+    }
+   }
+  ]
+ },
+ {
+  "name": "with nothing in front the guard restores nothing",
+  "rules": [
+   "R-G1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "agent_register",
+    "pid": 500
+   },
+   {
+    "do": "open",
+    "window": "a1",
+    "pid": 500,
+    "app": "foot"
+   },
+   {
+    "do": "activate",
+    "window": "a1",
+    "cause": "agent",
+    "effects": [
+     {
+      "do": "refuse_follow",
+      "window": "a1",
+      "reason": "agent_window"
+     }
+    ],
+    "expect": {
+     "active": null
+    }
+   }
+  ]
+ },
+ {
+  "name": "a parked window of yours is guarded the same way",
+  "rules": [
+   "R-G1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "open",
+    "window": "w2",
+    "pid": 2,
+    "app": "foot"
+   },
+   {
+    "do": "agent_send",
+    "window": "w2"
+   },
+   {
+    "do": "activate",
+    "window": "w2",
+    "cause": "user",
+    "expect": {
+     "active": "w1",
+     "guard": {
+      "refused": 1
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "the agent workspace showing on its own is hidden again",
+  "rules": [
+   "R-G3"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "observe_special",
+    "shown": true,
+    "effects": [
+     {
+      "do": "hide_agent"
+     }
+    ],
+    "expect": {
+     "agent": {
+      "shown": false
+     },
+     "guard": {
+      "refused": 1
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "you show the agent workspace, then focus there is yours",
+  "rules": [
+   "R-A4"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "agent_register",
+    "pid": 500
+   },
+   {
+    "do": "open",
+    "window": "a1",
+    "pid": 500,
+    "app": "foot"
+   },
+   {
+    "do": "agent_show",
+    "effects": [
+     {
+      "do": "show_agent"
+     }
+    ],
+    "expect": {
+     "agent": {
+      "shown": true
+     },
+     "active": "a1"
+    }
+   },
+   {
+    "do": "observe_special",
+    "shown": true,
+    "effects": []
+   },
+   {
+    "do": "activate",
+    "window": "a1",
+    "cause": "user",
+    "effects": [],
+    "expect": {
+     "active": "a1",
+     "guard": {
+      "refused": 0
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "hiding the agent workspace puts back the window you had",
+  "rules": [
+   "R-A5"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "open",
+    "window": "w2",
+    "pid": 2,
+    "app": "foot"
+   },
+   {
+    "do": "agent_register",
+    "pid": 500
+   },
+   {
+    "do": "open",
+    "window": "a1",
+    "pid": 500,
+    "app": "foot"
+   },
+   {
+    "do": "agent_show"
+   },
+   {
+    "do": "agent_hide",
+    "effects": [
+     {
+      "do": "hide_agent"
+     },
+     {
+      "do": "focus_window",
+      "window": "w2"
+     }
+    ],
+    "expect": {
+     "agent": {
+      "shown": false
+     },
+     "active": "w2"
+    }
+   }
+  ]
+ },
+ {
+  "name": "toggle shows then hides",
+  "rules": [
+   "R-A4",
+   "R-A5"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "agent_toggle",
+    "effects": [
+     {
+      "do": "show_agent"
+     }
+    ],
+    "expect": {
+     "agent": {
+      "shown": true
+     }
+    }
+   },
+   {
+    "do": "agent_toggle",
+    "effects": [
+     {
+      "do": "hide_agent"
+     },
+     {
+      "do": "focus_window",
+      "window": "w1"
+     }
+    ],
+    "expect": {
+     "agent": {
+      "shown": false
+     },
+     "active": "w1"
+    }
+   }
+  ]
+ },
+ {
+  "name": "a switch while the agent workspace is up closes it first",
+  "rules": [
+   "R-A4"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "agent_show"
+   },
+   {
+    "do": "switch",
+    "n": 3,
+    "effects": [
+     {
+      "do": "hide_agent"
+     },
+     {
+      "do": "show_workspace",
+      "monitor": "A",
+      "workspace": 3
+     }
+    ],
+    "expect": {
+     "agent": {
+      "shown": false
+     },
+     "monitors": {
+      "A": {
+       "current": 3
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "switching to the workspace under the agent workspace uncovers it",
+  "rules": [
+   "R-A4"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "agent_show"
+   },
+   {
+    "do": "switch",
+    "n": 1,
+    "effects": [
+     {
+      "do": "hide_agent"
+     },
+     {
+      "do": "focus_window",
+      "window": "w1"
+     }
+    ],
+    "expect": {
+     "agent": {
+      "shown": false
+     },
+     "active": "w1"
+    }
+   }
+  ]
+ },
+ {
+  "name": "agent windows are never moved to your workspaces",
+  "rules": [
+   "R-A2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "agent_register",
+    "pid": 500
+   },
+   {
+    "do": "open",
+    "window": "a1",
+    "pid": 500,
+    "app": "foot"
+   },
+   {
+    "do": "move",
+    "n": 2,
+    "window": "a1",
+    "error": "agent_window"
+   }
+  ]
+ },
+ {
+  "name": "a window you parked comes back with agent bring",
+  "rules": [
+   "R-A2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "switch",
+    "n": 2
+   },
+   {
+    "do": "agent_send",
+    "window": "w1",
+    "effects": [
+     {
+      "do": "move_window",
+      "window": "w1",
+      "to": "agent"
+     }
+    ]
+   },
+   {
+    "do": "agent_bring",
+    "window": "w1",
+    "effects": [
+     {
+      "do": "move_window",
+      "window": "w1",
+      "to": "2"
+     }
+    ],
+    "expect": {
+     "workspaces": {
+      "2": [
+       "w1"
+      ]
+     },
+     "agent": {
+      "windows": []
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "a window an agent process opened cannot be brought back",
+  "rules": [
+   "R-A2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "agent_register",
+    "pid": 500
+   },
+   {
+    "do": "open",
+    "window": "a1",
+    "pid": 500,
+    "app": "foot"
+   },
+   {
+    "do": "agent_bring",
+    "window": "a1",
+    "error": "agent_window"
+   }
+  ]
+ },
+ {
+  "name": "sending the front window to the agent workspace falls back here",
+  "rules": [
+   "R-A2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "open",
+    "window": "w2",
+    "pid": 2,
+    "app": "foot"
+   },
+   {
+    "do": "agent_send",
+    "window": "w2",
+    "expect": {
+     "active": "w1",
+     "agent": {
+      "windows": [
+       "w2"
+      ]
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "closing agent windows leaves your front window alone",
+  "rules": [
+   "R-A1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "agent_register",
+    "pid": 500
+   },
+   {
+    "do": "open",
+    "window": "a1",
+    "pid": 500,
+    "app": "foot"
+   },
+   {
+    "do": "close",
+    "window": "a1",
+    "expect": {
+     "active": "w1",
+     "agent": {
+      "windows": []
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "agent work in any order never changes your workspaces or front window",
+  "rules": [
+   "R-A1",
+   "R-G1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "B"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "agent_register",
+    "pid": 500
+   },
+   {
+    "do": "open",
+    "window": "a1",
+    "pid": 500,
+    "app": "foot"
+   },
+   {
+    "do": "open",
+    "window": "a2",
+    "pid": 500,
+    "app": "foot"
+   },
+   {
+    "do": "activate",
+    "window": "a1",
+    "cause": "agent"
+   },
+   {
+    "do": "observe_special",
+    "shown": true
+   },
+   {
+    "do": "activate",
+    "window": "a2",
+    "cause": "app"
+   },
+   {
+    "do": "close",
+    "window": "a1"
+   },
+   {
+    "do": "open",
+    "window": "a3",
+    "pid": 500,
+    "app": "foot"
+   },
+   {
+    "expect": {
+     "active": "w1",
+     "focused_monitor": "A",
+     "monitors": {
+      "A": {
+       "current": 1
+      },
+      "B": {
+       "current": 2
+      }
+     },
+     "workspaces": {
+      "1": [
+       "w1"
+      ]
+     },
+     "agent": {
+      "windows": [
+       "a2",
+       "a3"
+      ],
+      "shown": false
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "a reused pid does not make your window an agent window",
+  "rules": [
+   "R-A3"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "agent_register",
+    "pid": 500,
+    "start": 77
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 500,
+    "app": "foot",
+    "start": 99,
+    "effects": []
+   },
+   {
+    "expect": {
+     "agent": {
+      "windows": [],
+      "pids": [
+       500
+      ]
+     },
+     "workspaces": {
+      "1": [
+       "w1"
+      ]
+     },
+     "active": "w1",
+     "windows": {
+      "w1": {
+       "agent_owned": false
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "the same pid with the same start time is the agent process",
+  "rules": [
+   "R-A3"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "agent_register",
+    "pid": 500,
+    "start": 77
+   },
+   {
+    "do": "open",
+    "window": "a1",
+    "pid": 500,
+    "app": "foot",
+    "start": 77,
+    "effects": [
+     {
+      "do": "move_window",
+      "window": "a1",
+      "to": "agent"
+     }
+    ]
+   },
+   {
+    "expect": {
+     "agent": {
+      "windows": [
+       "a1"
+      ]
+     },
+     "windows": {
+      "a1": {
+       "agent_owned": true
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "a window whose start time is unknown is judged by pid alone",
+  "rules": [
+   "R-A3"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "agent_register",
+    "pid": 500,
+    "start": 77
+   },
+   {
+    "do": "open",
+    "window": "a1",
+    "pid": 500,
+    "app": "foot",
+    "effects": [
+     {
+      "do": "move_window",
+      "window": "a1",
+      "to": "agent"
+     }
+    ]
+   },
+   {
+    "expect": {
+     "agent": {
+      "windows": [
+       "a1"
+      ]
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "a reused pid's window on your workspace is not guarded as an agent window",
+  "rules": [
+   "R-G1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "agent_register",
+    "pid": 500,
+    "start": 77
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 500,
+    "app": "foot",
+    "start": 99
+   },
+   {
+    "do": "open",
+    "window": "w2",
+    "pid": 600,
+    "app": "foot"
+   },
+   {
+    "do": "activate",
+    "window": "w1",
+    "cause": "user",
+    "effects": [],
+    "expect": {
+     "active": "w1",
+     "guard": {
+      "refused": 0
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "registering a process leaves a reused pid's window alone",
+  "rules": [
+   "R-A3"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 500,
+    "app": "foot",
+    "start": 99
+   },
+   {
+    "do": "agent_register",
+    "pid": 500,
+    "start": 77,
+    "effects": [],
+    "expect": {
+     "agent": {
+      "windows": []
+     },
+     "workspaces": {
+      "1": [
+       "w1"
+      ]
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "a bring of a window whose pid was reused is allowed",
+  "rules": [
+   "R-A2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "agent_register",
+    "pid": 500,
+    "start": 77
+   },
+   {
+    "do": "observe_window",
+    "window": "w1",
+    "pid": 500,
+    "start": 99
+   },
+   {
+    "do": "agent_bring",
+    "window": "w1",
+    "effects": [
+     {
+      "do": "move_window",
+      "window": "w1",
+      "to": "1"
+     }
+    ],
+    "expect": {
+     "workspaces": {
+      "1": [
+       "w1"
+      ]
+     }
+    }
+   }
+  ]
+ }
+]

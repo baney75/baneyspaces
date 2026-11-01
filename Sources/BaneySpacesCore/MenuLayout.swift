@@ -66,6 +66,8 @@ public struct UpdateNotice: Equatable, Sendable {
 public enum MenuEntry: Equatable, Sendable {
     case workspace(MenuLayout.Row)
     case showAll, find, settings, quit
+    /// "Turn Off Workspace Dock" / "Turn On Workspace Dock": the dock switch (`dock.enabled`).
+    case dock(on: Bool)
     /// "N agents finished while you were away", a submenu listing them.
     case finished(count: Int)
     case update(UpdateNotice)
@@ -73,9 +75,10 @@ public enum MenuEntry: Equatable, Sendable {
 }
 
 extension MenuLayout {
-    public static func entries(rows: [Row], finished: Int, update: UpdateNotice?) -> [MenuEntry] {
+    public static func entries(rows: [Row], finished: Int, update: UpdateNotice?, dockOn: Bool? = nil) -> [MenuEntry] {
         var out = rows.map(MenuEntry.workspace)
         out += [.separator, .showAll, .find]
+        if let dockOn { out.append(.dock(on: dockOn)) }
         var pending: [MenuEntry] = []
         if finished > 0 { pending.append(.finished(count: finished)) }
         if let update { pending.append(.update(update)) }

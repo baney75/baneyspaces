@@ -43,6 +43,23 @@ public struct RGB: Codable, Equatable, Hashable, Sendable {
     /// WCAG contrast of white text on this color, from 1 (none) to 21.
     public var contrastWithWhite: Double { 1.05 / (luminance + 0.05) }
 
+    /// WCAG contrast ratio between two colors, from 1 (none) to 21.
+    public func contrast(with other: RGB) -> Double {
+        let hi = max(luminance, other.luminance), lo = min(luminance, other.luminance)
+        return (hi + 0.05) / (lo + 0.05)
+    }
+
+    /// This color laid over `base` at `alpha`.
+    public func over(_ base: RGB, alpha: Double) -> RGB {
+        RGB(r: r * alpha + base.r * (1 - alpha), g: g * alpha + base.g * (1 - alpha), b: b * alpha + base.b * (1 - alpha))
+    }
+
+    /// Black or white, whichever reads better on this color: never below 4.5:1.
+    public var bestText: RGB {
+        let white = RGB(r: 1, g: 1, b: 1), black = RGB(r: 0, g: 0, b: 0)
+        return contrast(with: white) >= contrast(with: black) ? white : black
+    }
+
     public var hsb: HSB {
         let mx = max(r, g, b), mn = min(r, g, b), d = mx - mn
         var h = 0.0
@@ -153,7 +170,13 @@ public struct AppearanceSettings: Codable, Equatable {
     /// How solid the panels' dark fill is. 0.88 is what they have always used.
     public var panelOpacity: Double = AppearanceSettings.defaultPanelOpacity
     public var dockSize: DockSize = .medium
+    /// The shape, type and motion of every surface (`appearance.theme`).
+    public var theme: ThemeID = .macDefault
+    /// The color palette (`appearance.palette`): "auto", or a name in palettes.json. Not the
+    /// workspace colors above, which are `palette`.
+    public var colorPalette: String = AppearanceSettings.autoPalette
 
+    public static let autoPalette = "auto"
     public static let defaultPanelOpacity = 0.88
     public static let panelOpacityRange: ClosedRange<Double> = 0.6...1.0
     /// How much of the accent a Tinted panel washes over its glass.
@@ -162,7 +185,7 @@ public struct AppearanceSettings: Codable, Equatable {
 
     public init() {}
 
-    private enum CodingKeys: String, CodingKey { case accent, palette, overrides, panelStyle, panelOpacity, dockSize }
+    private enum CodingKeys: String, CodingKey { case accent, palette, overrides, panelStyle, panelOpacity, dockSize, theme, colorPalette }
 
     /// Each field on its own: one missing or unreadable (a newer build's value, an older build's
     /// blob) takes its default and leaves the rest as saved.
@@ -175,6 +198,8 @@ public struct AppearanceSettings: Codable, Equatable {
         panelStyle = (try? c.decodeIfPresent(PanelStyle.self, forKey: .panelStyle)) ?? panelStyle
         panelOpacity = (try? c.decodeIfPresent(Double.self, forKey: .panelOpacity)) ?? panelOpacity
         dockSize = (try? c.decodeIfPresent(DockSize.self, forKey: .dockSize)) ?? dockSize
+        theme = (try? c.decodeIfPresent(ThemeID.self, forKey: .theme)) ?? theme
+        colorPalette = (try? c.decodeIfPresent(String.self, forKey: .colorPalette)) ?? colorPalette
     }
 
     // MARK: Saving
@@ -190,6 +215,8 @@ public struct AppearanceSettings: Codable, Equatable {
         guard let data, var s = try? JSONDecoder().decode(AppearanceSettings.self, from: data) else { return AppearanceSettings() }
         s.panelOpacity = min(panelOpacityRange.upperBound, max(panelOpacityRange.lowerBound, s.panelOpacity))
         s.overrides = s.overrides.filter { (1...9).contains($0.key) }
+        // A palette this build doesn't have (a newer build's) is Auto.
+        if s.colorPalette != autoPalette, PaletteCatalog.shared.named(s.colorPalette) == nil { s.colorPalette = autoPalette }
         return s
     }
 
@@ -232,6 +259,11 @@ public struct AppearanceSettings: Codable, Equatable {
     }
 
     public mutating func resetOverrides() { overrides = [:] }
+
+    /// The theme and palette every surface draws from.
+    public func look(systemAccent: RGB) -> Look {
+        Look(theme: theme, palette: colorPalette, accent: accentRGB(system: systemAccent))
+    }
 
     // MARK: Palettes
 

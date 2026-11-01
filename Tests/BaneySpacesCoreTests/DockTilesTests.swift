@@ -119,7 +119,7 @@ final class DockLabelTests: XCTestCase {
         let block = #"""
             WidthCap(max: Self.labelMaxWidth) {
                 Text(text)
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(Chrome.font(12, .semibold))
                     .lineLimit(1).truncationMode(.tail)
             }
 """#

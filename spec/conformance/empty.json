@@ -1,0 +1,187 @@
+[
+ {
+  "name": "an empty workspace is empty: nothing is in front",
+  "rules": [
+   "R-E1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "switch",
+    "n": 2,
+    "effects": [
+     {
+      "do": "show_workspace",
+      "monitor": "A",
+      "workspace": 2
+     }
+    ],
+    "expect": {
+     "active": null,
+     "workspaces": {
+      "2": []
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "closing the last window leaves nothing in front, not a window from elsewhere",
+  "rules": [
+   "R-E1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "switch",
+    "n": 2
+   },
+   {
+    "do": "open",
+    "window": "w2",
+    "pid": 2,
+    "app": "foot"
+   },
+   {
+    "do": "close",
+    "window": "w2",
+    "expect": {
+     "active": null,
+     "monitors": {
+      "A": {
+       "current": 2
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "closing the front window falls to this workspace",
+  "rules": [
+   "R-E1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "open",
+    "window": "w2",
+    "pid": 2,
+    "app": "foot"
+   },
+   {
+    "do": "close",
+    "window": "w2",
+    "expect": {
+     "active": "w1"
+    }
+   }
+  ]
+ },
+ {
+  "name": "a window closed twice is fine",
+  "rules": [
+   "R-E1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "close",
+    "window": "w1"
+   },
+   {
+    "do": "close",
+    "window": "w1",
+    "effects": []
+   }
+  ]
+ },
+ {
+  "name": "switching away and back to an empty workspace stays empty",
+  "rules": [
+   "R-E1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "switch",
+    "n": 3
+   },
+   {
+    "do": "switch",
+    "n": 1
+   },
+   {
+    "do": "switch",
+    "n": 3,
+    "expect": {
+     "active": null
+    }
+   }
+  ]
+ },
+ {
+  "name": "activating nothing clears the front window",
+  "rules": [
+   "R-E1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "activate",
+    "cause": "user",
+    "expect": {
+     "active": null
+    }
+   }
+  ]
+ }
+]
