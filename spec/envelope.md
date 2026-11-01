@@ -33,6 +33,7 @@ Every `baneyspaces` command and every MCP tool result is one JSON object.
 | `needs_lend` | The process was not started by BaneySpaces for an agent; only the user can lend it. |
 | `in_use` | A lent app the user is using right now. |
 | `not_supported` | Not on this platform or phase (keys and pointer on Linux part 1). |
+| `unverified` | macOS phase 4 only: keys or pointer events were posted to the one process and nothing read back from the window shows they landed. `retry` is `never`. Other platforms answer `not_supported` for keys and pointer. |
 | `daemon_down` | `baneyspaces daemon` is not running. |
 | `stale_ref` | The ref, window or process changed since the snapshot. |
 | `single_instance` | The app forwarded to a running instance; it can't be driven as an agent process. `error.data.windows_that_appeared` lists windows that opened meanwhile (left where they are). |

@@ -57,14 +57,16 @@
     ]
   },
   {
-    "name": "windows defaults use alt",
+    "name": "windows defaults use the win key",
     "platform": "windows",
     "steps": [
       {
         "do": "check",
         "effective": {
-          "keys.mod": "alt",
-          "keys.bindings.mod+1": "switch 1"
+          "keys.mod": "win",
+          "keys.bindings.mod+1": "switch 1",
+          "keys.bindings.mod+shift+1": "move 1",
+          "keys.bindings.mod+grave": "agent-workspace toggle"
         }
       }
     ]

@@ -45,3 +45,41 @@ jobs:
           else
             gh release create nightly --title "$TITLE" --notes-file notes.md --prerelease --latest=false --verify-tag
           fi
+  windows:
+    # Windows part 1: the same checks as the PR job, and baneyspaces.exe (with the pinned hands
+    # engine beside it) as the nightly artifact. Skipped until main has the Windows platform.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Is there a Windows platform on main yet?
+        id: has
+        shell: pwsh
+        run: |
+          if (Test-Path platforms/windows/baneyspaces/Cargo.toml) { "present=true" >> $env:GITHUB_OUTPUT }
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.has.outputs.present == 'true'
+      - name: Test
+        if: steps.has.outputs.present == 'true'
+        run: cargo test -p baneyspaces-core -p baneyspaces-windows --locked
+      - name: Release build
+        if: steps.has.outputs.present == 'true'
+        run: cargo build --release --locked -p baneyspaces-windows
+      - name: Build the hands engine
+        if: steps.has.outputs.present == 'true'
+        shell: pwsh
+        run: platforms/windows/scripts/build-engine.ps1
+      - name: Collect
+        if: steps.has.outputs.present == 'true'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out/engine | Out-Null
+          Copy-Item target/release/baneyspaces.exe out/
+          Copy-Item platforms/windows/engine/* out/engine/
+      - uses: actions/upload-artifact@v4
+        if: steps.has.outputs.present == 'true'
+        with:
+          name: baneyspaces-windows-nightly
+          path: out/
+          retention-days: 14

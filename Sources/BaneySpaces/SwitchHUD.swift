@@ -33,7 +33,7 @@ final class SwitchHUD {
         p.orderFrontRegardless()
         let work = DispatchWorkItem { [weak p] in
             NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.18
+                ctx.duration = Chrome.duration(0.18, .panelOut)
                 p?.animator().alphaValue = 0
             }
         }
@@ -80,9 +80,9 @@ struct HUDView: View {
                 }
             }
             HStack(spacing: 6) {
-                Text("Workspace \(model.current)").font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
+                Text("Workspace \(model.current)").font(Chrome.font(13, .semibold)).foregroundStyle(Chrome.wash())
                 if model.icons.isEmpty {
-                    Text("Empty").font(.system(size: 12, weight: .medium)).foregroundStyle(.white.opacity(0.45))
+                    Text("Empty").font(Chrome.font(12, .medium)).foregroundStyle(Chrome.wash(0.45))
                 } else {
                     HStack(spacing: -3) {
                         ForEach(Array(model.icons.enumerated()), id: \.offset) { _, icon in
@@ -94,9 +94,9 @@ struct HUDView: View {
             .frame(height: 18)
         }
         .padding(.horizontal, 18).padding(.vertical, 16)
-        .background(Chrome.panelBackground(cornerRadius: 22))
+        .background(Chrome.panelBackground(.hudPanel))
         .padding(28)
-        .environment(\.colorScheme, .dark)
+        .environment(\.colorScheme, Chrome.scheme)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Workspace \(model.current)")
     }
@@ -104,13 +104,13 @@ struct HUDView: View {
     private func cell(_ n: Int) -> some View {
         let on = n == model.current
         let used = model.occupied.contains(n)
-        return RoundedRectangle(cornerRadius: 7, style: .continuous)
-            .fill(on ? Chrome.workspace(n) : Color.white.opacity(used ? 0.2 : 0.07))
-            .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .strokeBorder(on ? Color.white.opacity(0.35) : Color.white.opacity(used ? 0.12 : 0.05), lineWidth: 1))
-            .overlay(Text("\(n)").font(.system(size: on ? 17 : 11, weight: .bold, design: .rounded))
-                .foregroundStyle(.white.opacity(on ? 1 : used ? 0.6 : 0.25)))
+        return Chrome.shape(.hudCell)
+            .fill(on ? Chrome.workspace(n) : Chrome.cell(used ? 0.2 : 0.07))
+            .overlay(Chrome.shape(.hudCell)
+                .strokeBorder(on ? Chrome.focusEdge(Chrome.wash(0.35)) : Chrome.edge(used ? 0.12 : 0.05), lineWidth: Chrome.width(.hudCell)))
+            .overlay(Text("\(n)").font(Chrome.font(on ? 17 : 11, .bold, rounded: true))
+                .foregroundStyle(on ? Chrome.onTint(n) : Chrome.wash(used ? 0.6 : 0.25)))
             .frame(width: 40, height: 30)
-            .shadow(color: on ? Chrome.workspace(n).opacity(0.6) : .clear, radius: 8)
+            .shadow(color: Chrome.shadow(on ? 0.6 : 0, color: Chrome.workspace(n)), radius: 8)
     }
 }

@@ -32,6 +32,15 @@ public enum Wire {
             /// HandsRequest as JSON, the reply's `info["envelope"]` the JSON envelope. Local only:
             /// `Remote.allows` refuses it, so no other machine can act on this one.
             case hands
+            /// Read or change a setting (`SettingKey`): `target` is its name, `text` the new value
+            /// (none reads it). Agents may change how this Mac looks (Donovan, 2026-11-01), so a remote
+            /// token may too; every change is logged with its caller (`caller`). Workspace and window
+            /// ops stay user-only (`Remote.allows`).
+            case setting
+            /// The sandbox VM: `text` is up, down, reset, status, view, guest or images; `args` the rest.
+            /// Local callers only (Remote.allows never lets it through), and slow: the app answers it
+            /// off the main thread.
+            case sandbox
         }
         public var op: Op
         public var target: String?
@@ -40,9 +49,14 @@ public enum Wire {
         public var args: [String]?
         /// Required from remote machines; ignored on the local socket.
         public var token: String?
+        /// Who is asking, for the log: an agent's name or the app that ran the command. Informational only.
+        /// A request from another machine is logged under its token's fingerprint as well.
+        public var caller: String?
 
-        public init(op: Op, target: String? = nil, text: String? = nil, event: AgentEvent? = nil, args: [String]? = nil, token: String? = nil) {
+        public init(op: Op, target: String? = nil, text: String? = nil, event: AgentEvent? = nil, args: [String]? = nil,
+                    token: String? = nil, caller: String? = nil) {
             self.op = op; self.target = target; self.text = text; self.event = event; self.args = args; self.token = token
+            self.caller = caller
         }
     }
 

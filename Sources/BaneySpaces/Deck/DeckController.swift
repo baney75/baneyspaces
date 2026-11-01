@@ -89,9 +89,15 @@ final class DeckController {
     var agentHost = AgentHost()
     /// The agent hands: snapshot and act on the agent workspace (see Hands/).
     let hands = HandsRouter()
+    /// Answers `baneyspaces sandbox …` (the app delegate sets it); called off the main thread.
+    var sandboxHandler: ((Wire.Request) -> Wire.Reply)?
 
     /// Set by the app delegate: the menu bar badge shows how many agents finished unseen.
     var onUnseenChange: (Int) -> Void = { _ in }
+    /// `baneyspaces get` and `set` (the theme, the palette, the dock switch): the app reads and applies them.
+    /// Until the app wires them (it does at launch, before the socket listens) a write is refused, never dropped.
+    var readSetting: (SettingKey) -> String? = { _ in nil }
+    var writeSetting: (SettingKey, String) -> Bool = { _, _ in false }
     /// Which rows are working, asking or stopped changed, so the Workspace Dock's badges can follow.
     var onWorkingChange: () -> Void = {}
     private var lastWorking: [String: String] = [:]
@@ -109,6 +115,15 @@ final class DeckController {
         }
         let rank = { (a: DockAgent) in unseen.firstIndex(of: a.id) ?? unseen.count }
         return agents.sorted { rank($0) < rank($1) }
+    }
+
+    /// The name and status the agent cursor wears for a hands session (its terminal): the Deck's row for that tty.
+    /// A session the Deck doesn't know (an MCP caller) is "Agent", working.
+    func cursorAgent(_ session: String) -> (name: String, status: DockAgent.State) {
+        guard started, !session.isEmpty, let item = engine.items.first(where: { $0.tty == session }) else { return ("Agent", .working) }
+        let name = item.agent.isEmpty ? item.appName : item.agent.prefix(1).uppercased() + item.agent.dropFirst()
+        let state = DockAgent.State.of(activity: item.activity, unseen: engine.attention.unseen.contains(item.id), notice: item.notice)
+        return (name, state ?? .working)
     }
 
     /// Goes to an agent's own row: its tab or split selected, and a finished one marked seen.
@@ -137,6 +152,7 @@ final class DeckController {
         phones.start()
         server.handle = { [weak self] in self?.handle($0) ?? Wire.Reply(ok: false) }
         server.handleHands = { [weak self] in self?.handleHands($0) ?? Wire.Reply(ok: false) }
+        server.handleSandbox = { [weak self] in self?.sandboxHandler?($0) ?? Wire.Reply(ok: false, error: "the sandbox isn't ready") }
         server.start()
         remote.handle = { [weak self] in self?.handle($0) ?? Wire.Reply(ok: false) }
         if Self.remoteEnabled { startRemote() }
@@ -377,6 +393,8 @@ final class DeckController {
     }
 
     func handle(_ r: Wire.Request) -> Wire.Reply {
+        // Looks and the dock switch need no Accessibility, so they answer before the Deck has started.
+        if r.op == .setting { return setting(r) }
         guard started else { return .init(ok: false, error: "BaneySpaces hasn't finished starting (it needs Accessibility)") }
         switch r.op {
         case .ping:
@@ -391,6 +409,8 @@ final class DeckController {
         case .hands:
             // Engine calls wait on semaphores: never on the main thread. The socket sends them to handleHands.
             return .init(ok: false, error: "agent commands don't run here")
+        case .setting:
+            return setting(r)
         case .event:
             guard let e = r.event else { return .init(ok: false, error: "no event") }
             engine.apply(e)
@@ -416,6 +436,10 @@ final class DeckController {
             guard engine.send(item, r.text ?? "") else { return .init(ok: false, error: "\(item.label) isn't a Ghostty terminal") }
             return .init(ok: true, info: ["id": item.id, "label": item.label])
         case .agent: return agent(r.text ?? "status", r.args ?? [])
+        case .sandbox:
+            // Answered by the server off the main thread (`handleSandbox`); a sandbox request that
+            // reaches here came through a path that doesn't know how.
+            return .init(ok: false, error: "sandbox requests are not answered on the main thread")
         case .remote:
             switch r.text ?? "status" {
             case "on":
@@ -433,6 +457,25 @@ final class DeckController {
             if let a = remote.address { info["listening"] = "\(a):\(Remote.port)" }
             else if Self.remoteEnabled { info["listening"] = "waiting for Tailscale" }
             return .init(ok: true, info: info)
+        }
+    }
+
+    private var notReady: Wire.Reply { .init(ok: false, error: "BaneySpaces isn't ready for settings yet; try again in a moment") }
+
+    private func setting(_ r: Wire.Request) -> Wire.Reply {
+        switch SettingKey.ask(target: r.target, text: r.text) {
+        case .refused(let why): return .init(ok: false, error: why)
+        case .list:
+            let all = SettingKey.allCases.compactMap { k in readSetting(k).map { (k.rawValue, $0) } }
+            return all.count == SettingKey.allCases.count ? .init(ok: true, info: Dictionary(uniqueKeysWithValues: all)) : notReady
+        case .get(let key):
+            guard let v = readSetting(key) else { return notReady }
+            return .init(ok: true, info: [key.rawValue: v])
+        case .set(let key, let value):
+            guard writeSetting(key, value), let v = readSetting(key) else { return notReady }
+            // Agents may change how this Mac looks, so each change says who made it.
+            Trace.log("setting \(key.rawValue)=\(v) by \(r.caller ?? "unnamed caller")")
+            return .init(ok: true, info: [key.rawValue: v])
         }
     }
 
@@ -477,7 +520,8 @@ final class DeckController {
             // The gate every caller of this op goes through, the socket included: only apps verified to start a
             // separate instance, only files from the handoff folder, no URLs.
             let files: [URL]
-            switch AgentOpenGate.check(app: appName, bundle: bundle, targets: Array(args.dropFirst()), handoff: HandsRouter.handoffFolder) {
+            switch AgentOpenGate.check(app: appName, bundle: bundle, targets: Array(args.dropFirst()), handoff: HandsRouter.handoffFolder, appURL: url,
+                                     probeFolder: ProbeAppTrust.folder, probeTrusted: bundle == AgentAppPolicy.canvasProbeBundle && ProbeAppTrust.trusted(url)) {
             case .failure(let e): return .init(ok: false, error: e.message, info: ["code": e.code.rawValue, "suggestion": e.suggestion])
             case .success(let paths): files = paths.map { URL(fileURLWithPath: $0) }
             }
@@ -536,6 +580,9 @@ final class DeckController {
                 NSWorkspace.shared.open(files, withApplicationAt: url, configuration: cfg) { app, _ in finished(app) }
             }
             return .init(ok: true, info: ["workspace": "\(n)", "app": appName, "note": "starting a separate copy; its window opens there in a moment"])
+        case "cursor":
+            // `agent cursor on|theme <name>|status`: the agent cursor's look (only Settings turns it off).
+            return CursorController.shared.command(args)
         case "lend-ask":
             // Not a grant: it shows Donovan a sheet in BaneySpaces and only a real click on it lends (see LendConsent).
             let target = args.first ?? ""
@@ -565,7 +612,7 @@ final class DeckController {
             h.move(id, n)
             return .init(ok: true, info: ["workspace": "\(n)", "moved": "window \(id)"])
         default:
-            return .init(ok: false, error: "usage: baneyspaces agent status|on [N]|off|open <app> [file…]|lend <app>|run [--dir D] -- <cmd>|move <row>")
+            return .init(ok: false, error: "usage: baneyspaces agent status|on [N]|off|open <app> [file…]|lend <app>|run [--dir D] -- <cmd>|move <row>|cursor on|theme <name>")
         }
     }
 

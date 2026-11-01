@@ -13,32 +13,28 @@ enum Render {
         if Bundle.main.bundleURL.pathExtension != "app", let icon = NSImage(contentsOfFile: "docs/icon.png") {
             NSApp.applicationIconImage = icon
         }
-        let sample: [Int: [(String, String, String)]] = [
-            1: [("Safari", "/Applications/Safari.app", "Swift documentation"),
-                ("Notes", "/System/Applications/Notes.app", "Launch checklist"),
-                ("Terminal", "/System/Applications/Utilities/Terminal.app", "~/Projects/baneyspaces")],
-            2: [("Mail", "/System/Applications/Mail.app", "Inbox"),
-                ("Calendar", "/System/Applications/Calendar.app", "October 2026")],
-            3: [("Music", "/System/Applications/Music.app", "Deep Focus")],
-            4: [("Messages", "/System/Applications/Messages.app", "Messages")],
-            5: [("Photos", "/System/Applications/Photos.app", "Library"),
-                ("Preview", "/System/Applications/Preview.app", "Field notes.pdf")],
-            7: [("Maps", "/System/Applications/Maps.app", "Erie, Pennsylvania")],
-            9: [("System Settings", "/System/Applications/System Settings.app", "Keyboard")],
-        ]
+        // BANEYSPACES_RENDER_SAMPLE=reported draws seven windows on workspace 1 and none elsewhere.
+        let sample = ProductRenderPlan.windows(ProductRenderPlan.sample(named: ProcessInfo.processInfo.environment["BANEYSPACES_RENDER_SAMPLE"]))
         // Product shots always show the default look, whatever this Mac has picked.
         Appearance.shared.useDefaultLookWithoutSaving()
+        // BANEYSPACES_RENDER_THEME=omarchy|minimal draws the same shots in that theme (a check, saved nowhere).
+        if let t = ProcessInfo.processInfo.environment["BANEYSPACES_RENDER_THEME"], let id = ThemeID(rawValue: t) {
+            Appearance.shared.settings.theme = id
+        }
+        // BANEYSPACES_RENDER_PALETTE=<name> likewise picks a palette.
+        if let p = ProcessInfo.processInfo.environment["BANEYSPACES_RENDER_PALETTE"], PaletteCatalog.shared.named(p) != nil {
+            Appearance.shared.settings.colorPalette = p
+        }
         let model = ViewerModel()
         model.current = 1
         var id: WindowID = 100
-        for (n, windows) in sample {
-            model.tiles[n] = windows.map { app, path, title in
+        model.tiles = ProductRenderPlan.tiles(from: sample.mapValues { windows in
+            windows.map { w in
                 id += 1
-                model.icons[id] = NSWorkspace.shared.icon(forFile: path)
-                return Spaces.Entry(id: id, pid: 0, app: app, title: title)
+                model.icons[id] = NSWorkspace.shared.icon(forFile: w.path)
+                return Spaces.Entry(id: id, pid: 0, app: w.app, title: w.title)
             }
-        }
-        for n in 1...9 where model.tiles[n] == nil { model.tiles[n] = [] }
+        })
         let size = CGSize(width: 1512, height: 945)
         // Tile frames as the live layout places them, so the drag image can light its target.
         // Drawn by AppKit in an offscreen window (never shown), so colors match the live app.
@@ -62,23 +58,26 @@ enum Render {
         }
         guard save(ViewerView(model: model, stillBackdrop: true), "overview.png", size) else { return 1 }
 
-        // The same overview mid-drag: Mail's window on its way to workspace 6.
-        let mail = model.tiles[2]![0]
-        // Mirrors ViewerView's layout: 48pt padding, 20pt gaps, a 40pt footer.
-        let pad: CGFloat = 48, gap: CGFloat = 20, footer: CGFloat = 40
-        let gridWidth: CGFloat = min(size.width, 1600) - 2 * pad
-        let tileW: CGFloat = (gridWidth - 2 * gap) / 3
-        let tileH: CGFloat = (size.height - 2 * pad - footer - 2 * gap) / 3
-        let targetX: CGFloat = pad + 2 * (tileW + gap)
-        let targetY: CGFloat = pad + tileH + gap
-        let target = CGRect(x: targetX, y: targetY, width: tileW, height: tileH)
-        model.tileFrames = [6: target]
-        model.drag = ViewerModel.Drag(entry: mail, from: 2, location: CGPoint(x: target.midX - 40, y: target.midY + 10))
-        guard save(ViewerView(model: model, stillBackdrop: true), "overview-drag.png", size) else { return 1 }
-        // A window carried up by its title bar opens the same view; the footer says what letting go does.
-        model.carrying = true
-        guard save(ViewerView(model: model, stillBackdrop: true), "overview-carry.png", size) else { return 1 }
-        model.carrying = false
+        // The same overview mid-drag: Mail's window on its way to workspace 6. A sample with no
+        // window to drag skips the drag and carry shots and draws the rest.
+        if let source = ProductRenderPlan.dragSource(in: model.tiles) {
+            // Mirrors ViewerView's layout: 48pt padding, 20pt gaps, a 40pt footer.
+            let pad: CGFloat = 48, gap: CGFloat = 20, footer: CGFloat = 40
+            let gridWidth: CGFloat = min(size.width, 1600) - 2 * pad
+            let tileW: CGFloat = (gridWidth - 2 * gap) / 3
+            let tileH: CGFloat = (size.height - 2 * pad - footer - 2 * gap) / 3
+            let targetX: CGFloat = pad + 2 * (tileW + gap)
+            let targetY: CGFloat = pad + tileH + gap
+            let target = CGRect(x: targetX, y: targetY, width: tileW, height: tileH)
+            model.tileFrames = [6: target]
+            model.drag = ViewerModel.Drag(entry: source.entry, from: source.workspace, location: CGPoint(x: target.midX - 40, y: target.midY + 10))
+            guard save(ViewerView(model: model, stillBackdrop: true), "overview-drag.png", size) else { return 1 }
+            // A window carried up by its title bar opens the same view; the footer says what letting go does.
+            model.carrying = true
+            guard save(ViewerView(model: model, stillBackdrop: true), "overview-carry.png", size) else { return 1 }
+            model.carrying = false
+            model.drag = nil
+        }
 
         let setup = SetupModel()
         setup.trusted = true

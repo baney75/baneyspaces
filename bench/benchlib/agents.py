@@ -69,7 +69,8 @@ def build_prompt(task, windows, titles, tool):
 # app there. The bench opens what the task needs before the agent starts. A test compares this list with the tools
 # BaneySpaces ships, so a new tool must be decided on here.
 MCP_ALLOWED_TOOLS = ("windows", "snapshot", "find", "get", "click", "type", "set_value", "press", "scroll", "select", "toggle")
-MCP_DENIED_TOOLS = ("open", "lend", "return", "shot")
+# click-at and drag (phase 4) are denied until the bench has a canvas task; press stays allowed (it is scoped the same way).
+MCP_DENIED_TOOLS = ("open", "lend", "return", "shot", "click_at", "drag")
 
 
 def claude_command(tool, prompt, claude_bin, mcp_config_path=None, guard_path=None):

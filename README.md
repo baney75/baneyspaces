@@ -26,6 +26,12 @@
 curl -fsSL https://raw.githubusercontent.com/baney75/baneyspaces/main/install.sh | bash
 ```
 
+## Demo
+
+A short walk through the live page at [dbaney.com/baneyspaces](https://dbaney.com/baneyspaces/):
+
+[demo clip](docs/demo/baneyspaces-demo.mp4)
+
 ---
 
 macOS already has desktops. Switching between them takes a swipe and an animation, and a
@@ -160,8 +166,34 @@ Dock comes back; by hand, `defaults delete com.apple.dock autohide-delay; killal
 an accent (nine colors, **System** to follow macOS, or any color of your own), a palette for the
 nine workspace colors (**Rainbow**, **Accent**, **Calm** or **Mono**) and your own color for any one
 workspace, a panel style (**Glass**, **Tinted** or **Solid**) with an opacity slider, and a **Small**,
-**Medium** or **Large** Workspace Dock. A strip at the top of the tab previews it. White numbers stay
-readable: a workspace color that's too bright is dimmed. The defaults are the look BaneySpaces always had.
+**Medium** or **Large** Workspace Dock. White numbers stay readable: a workspace color that's too
+bright is dimmed. The defaults are the look BaneySpaces always had.
+
+**Themes and palettes.** A theme is shape, type and motion; a palette is color; any theme takes any
+palette, on every platform (`spec/themes.md`). **BaneySpaces** is the look above. **Omarchy** is
+blocky like Omarchy's own Waybar and Hyprland: square corners, a solid 2 px border (your accent on
+what's current), an opaque fill, no blur or shadow, a monospace font, numbered blocks for
+workspaces, and fades only. **Minimal** is flat and small, with thin borders and a bar under each
+workspace number. The palette is **Auto** (the panels' own dark look with your accent) or one of
+Omarchy's 22. The dock, the "+N" list and window strip, ⌘Tab, the launcher, the overview, the menu bar
+number and Settings all follow the theme, live. From a terminal:
+
+```
+baneyspaces set appearance.theme omarchy      # or baneyspaces, minimal
+baneyspaces set appearance.palette gruvbox    # or auto
+baneyspaces set dock.enabled false            # or true
+baneyspaces get                               # all three
+```
+
+Agents may change these too, from this Mac or, with the remote token, from another one
+(`BANEYSPACES_AGENT=<name>` names the caller). Each change is logged in `trace.log` with who made it.
+Workspace and window commands stay yours.
+
+**Turning the dock off** (**Settings › Dock**, the menu bar item, or `dock.enabled`) leaves no dock window
+at all: nothing comes up at the edge, the "+N" list never opens, and a window dragged to the bottom
+edge is left alone. Dragging to the top, the workspace keys, ⌘Tab, the launcher, the overview, the
+agent workspace and the menu bar number all keep working. Turn it back on and the dock returns the
+next time the pointer rests on its edge.
 
 ## ⌘Tab across workspaces
 
@@ -550,3 +582,5 @@ MIT. See [LICENSE](LICENSE).
 <!-- sponsors:start -->
 No sponsors yet. [Sponsor on GitHub](https://github.com/sponsors/baney75) and your name appears here automatically.
 <!-- sponsors:end -->
+
+

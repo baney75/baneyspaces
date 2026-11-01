@@ -12,8 +12,22 @@ public enum AgentAppPolicy {
     public static let documentRequired: Set<String> = ["com.apple.TextEdit", "com.apple.Preview"]
     // Finder is not on the list: it runs once per user and shows his folders, and agents use files directly.
 
+    /// BaneySpaces' own test app for the pointer probe: a window that draws where the mouse is dragged and reads no
+    /// files. It ships inside BaneySpaces.app (Resources/probe), signed with the app's own identity, and starts only
+    /// from there and only when its signature checks out (`ProbeAppTrust` in the app). A user-writable folder, or a
+    /// copy that claims the bundle id, is refused like any unlisted app.
+    public static let canvasProbeBundle = "com.baney.baneyspaces.canvasprobe"
+
     public static func allowed(bundle: String) -> Bool { separateInstance.contains(bundle) }
-    public static func needsSeparateInstance(bundle: String) -> Bool { separateInstance.contains(bundle) }
+    public static func needsSeparateInstance(bundle: String) -> Bool { separateInstance.contains(bundle) || bundle == canvasProbeBundle }
+
+    /// The probe app is allowed when the bundle id is its own, the app sits inside the app bundle's probe folder, and
+    /// its signature was checked (`trusted`).
+    public static func isProbeApp(bundle: String, at appURL: URL?, in probeFolder: URL?, trusted: Bool) -> Bool {
+        guard trusted, bundle == canvasProbeBundle, let appURL, let probeFolder else { return false }
+        let app = appURL.standardizedFileURL.resolvingSymlinksInPath().path
+        return app.hasPrefix(probeFolder.standardizedFileURL.resolvingSymlinksInPath().path + "/")
+    }
 
     static let kinds: [(prefixes: [String], why: String)] = [
         (["com.google.Chrome", "org.mozilla.firefox", "company.thebrowser.Browser", "com.brave.Browser", "com.microsoft.edgemac", "com.apple.Safari", "net.imput.helium", "org.chromium.Chromium", "com.operasoftware.Opera", "com.vivaldi.Vivaldi"],
@@ -27,8 +41,8 @@ public enum AgentAppPolicy {
     ]
 
     /// nil when the app may start; else `needs_sandbox`, saying why.
-    public static func refusal(app: String, bundle: String) -> HandsError? {
-        if allowed(bundle: bundle) { return nil }
+    public static func refusal(app: String, bundle: String, appURL: URL? = nil, probeFolder: URL? = nil, probeTrusted: Bool = false) -> HandsError? {
+        if allowed(bundle: bundle) || isProbeApp(bundle: bundle, at: appURL, in: probeFolder, trusted: probeTrusted) { return nil }
         let why = kinds.first { k in k.prefixes.contains { bundle == $0 || bundle.hasPrefix($0.hasSuffix(".") ? $0 : $0 + ".") } }?.why
             ?? "no one has checked that it starts a separate instance that restores nothing of Donovan's"
         return HandsError(.needsSandbox, "\(app): \(why)",
@@ -40,8 +54,8 @@ public enum AgentAppPolicy {
 /// `agent open`'s one gate, used by the router and by the deck's raw `open` (which other callers on the socket reach).
 public enum AgentOpenGate {
     /// The files to hand over (resolved), or why not.
-    public static func check(app: String, bundle: String, targets: [String], handoff: URL) -> Result<[String], HandsError> {
-        if let e = AgentAppPolicy.refusal(app: app, bundle: bundle) { return .failure(e) }
+    public static func check(app: String, bundle: String, targets: [String], handoff: URL, appURL: URL? = nil, probeFolder: URL? = nil, probeTrusted: Bool = false) -> Result<[String], HandsError> {
+        if let e = AgentAppPolicy.refusal(app: app, bundle: bundle, appURL: appURL, probeFolder: probeFolder, probeTrusted: probeTrusted) { return .failure(e) }
         var files: [String] = []
         for t in targets {
             if t.contains("://") {
@@ -180,6 +194,13 @@ public enum SocketPolicy {
     public static let humanOnly: Set<String> = ["lend", "return", "grant"]
 
     public static func refusal(for r: Wire.Request) -> String? {
+        // The cursor is how Donovan sees agent activity: an agent may pick its look, but only he switches it off (Settings).
+        if r.op == .agent, r.text?.lowercased() == "cursor", r.args?.first?.lowercased() == "off" {
+            return "turning the agent cursor off is Donovan's to do, in BaneySpaces Settings; agents may change its theme: `baneyspaces agent cursor theme <name>`"
+        }
+        if r.op == .sandbox, r.text?.lowercased() == "images" {
+            return "deleting the sandbox's images (24 GB to download again) is Donovan's to do: Settings > Agents > Delete Images"
+        }
         guard r.op == .agent, let text = r.text?.lowercased(), humanOnly.contains(text) else { return nil }
         return "\(text) is Donovan's to do: `baneyspaces agent lend <app>` asks him in a sheet in BaneySpaces; nothing sent on this socket lends an app"
     }

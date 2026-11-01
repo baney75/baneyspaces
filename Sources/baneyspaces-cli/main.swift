@@ -20,15 +20,21 @@ usage: \(me) <command>
   agent status|on [N]|off     the agent workspace: agents drive apps there while you work here
   agent open <app> [file…]    open an app (or files in it) there, without switching you
   agent run [--dir D] -- CMD  run a command (claude, grok…) in a Ghostty window there
-  agent windows|snapshot|find|get|click|type|set-value|press|scroll|select|toggle|shot|open
+  agent windows|snapshot|find|get|click|type|set-value|press|click-at|drag|scroll|select|toggle|shot|open
                               read and act on apps on the agent workspace (or lent ones) without touching
                               your screen; each prints one JSON envelope (agent <command> with no
                               arguments shows its usage). `agent open` prints one too.
+  agent cursor on|theme <name>|status   each agent's cursor on the agent workspace (default, minimal, classic, omarchy); only Settings turns it off
+  agent shot --window ID --cursor   draw the agent's cursor into the capture (off by default)
   agent lend <app|pid> [--for 30m]   asks you, in a sheet in BaneySpaces, whether agents may use an app you have open
                               (only a real click on Lend lends it; running this lends nothing by itself)
   mcp                         the same commands as a stdio MCP server (claude mcp add baneyspaces -- baneyspaces mcp)
   agent move <id | words>     send a window there (only windows of apps started for an agent)
+  sandbox up|down|reset|status|view|guest   a throwaway macOS VM for agent work (sandbox help)
   phone ls|ui|shot|tap|swipe|type|key|shell|mirror   phones for agents (phone help)
+  set <setting> <value>       appearance.theme omarchy|baneyspaces|minimal, appearance.palette auto|<name>,
+                              dock.enabled true|false; applies at once, no restart
+  get [setting]               read one setting, or all three
   remote on|off|status|token  let your other machines (tailnet only) send agent work here
   --on HOST <command>         run ls or agent status|open|run on another machine
   hook claude|grok            for agent hooks: reads the hook JSON on stdin
@@ -158,6 +164,18 @@ case "state":
     guard let d = FileManager.default.contents(atPath: Wire.statePath) else { fail("no state yet: is BaneySpaces running?") }
     out(String(data: d, encoding: .utf8) ?? "")
 
+case "set", "get":
+    if cmd == "set" && rest.count != 2 {
+        fail("usage: \(me) set <setting> <value>\n  " + SettingKey.allCases.map(\.usage).joined(separator: "\n  "), code: 2)
+    }
+    if cmd == "get" && rest.count > 1 { fail("usage: \(me) get [setting]", code: 2) }
+    // Who is asking, for trace.log: an agent says its name in $BANEYSPACES_AGENT, otherwise the app that ran this.
+    let caller = ProcessInfo.processInfo.environment["BANEYSPACES_AGENT"].flatMap { $0.isEmpty ? nil : $0 }
+        ?? (launchingApp.isEmpty ? "cli" : launchingApp)
+    let reply = call(Wire.Request(op: .setting, target: rest.first, text: cmd == "set" ? rest[1] : nil, caller: caller))
+    let info = reply.info ?? [:]
+    if rest.count == 1 && cmd == "get" { out(info[SettingKey(name: rest[0])?.rawValue ?? ""] ?? "") }
+    else { for k in info.keys.sorted() { out("\(k) \(info[k] ?? "")") } }
 case "remote":
     // Local only: whether other machines on your tailnet can send work here.
     guard remoteHost == nil else { fail("remote is set on each machine itself", code: 2) }
@@ -167,6 +185,9 @@ case "remote":
     let info = r.info ?? [:]
     if sub == "token" { out(info["token"] ?? ""); break }
     out("remote: \(info["remote"] ?? "?")" + (info["listening"].map { " (\($0))" } ?? ""))
+
+case "sandbox":
+    SandboxCommand.run(rest)
 
 case "phone", "phones":
     PhoneCommand.run(rest)

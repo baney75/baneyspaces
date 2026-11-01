@@ -1411,13 +1411,13 @@ enum Toast {
 
     static func show(_ text: String, symbol: String) {
         let view = HStack(spacing: 10) {
-            Image(systemName: symbol).font(.system(size: 16, weight: .semibold)).foregroundStyle(Chrome.accent)
-            Text(text).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
+            Image(systemName: symbol).font(Chrome.font(16, .semibold)).foregroundStyle(Chrome.accent)
+            Text(text).font(Chrome.font(13, .semibold)).foregroundStyle(Chrome.wash())
         }
         .padding(.horizontal, 16).padding(.vertical, 11)
-        .background(Chrome.panelBackground(cornerRadius: 16))
+        .background(Chrome.panelBackground(.launcherMini))
         .padding(24)
-        .environment(\.colorScheme, .dark)
+        .environment(\.colorScheme, Chrome.scheme)
         let host = NSHostingView(rootView: view)
         let size = host.fittingSize
         let p = panel ?? {
@@ -1439,7 +1439,7 @@ enum Toast {
         p.orderFrontRegardless()
         work?.cancel()
         let w = DispatchWorkItem {
-            NSAnimationContext.runAnimationGroup({ $0.duration = 0.25; p.animator().alphaValue = 0 }, completionHandler: { p.orderOut(nil) })
+            NSAnimationContext.runAnimationGroup({ $0.duration = Chrome.duration(0.25, .panelOut); p.animator().alphaValue = 0 }, completionHandler: { p.orderOut(nil) })
         }
         work = w
         DispatchQueue.main.asyncAfter(deadline: .now() + 3.5, execute: w)
@@ -1456,27 +1456,28 @@ struct LauncherView: View {
     var body: some View {
         VStack(spacing: 0) {
             searchBar
-            Rectangle().fill(Color.white.opacity(0.08)).frame(height: 1)
+            Rectangle().fill(Chrome.edge(0.08)).frame(height: Chrome.width(.launcherPanel))
             results
-            Rectangle().fill(Color.white.opacity(0.08)).frame(height: 1)
+            Rectangle().fill(Chrome.edge(0.08)).frame(height: Chrome.width(.launcherPanel))
             footer
         }
-        .background(Chrome.panelBackground(cornerRadius: 22))
-        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .background(Chrome.panelBackground(.launcherPanel))
+        .clipShape(Chrome.shape(.launcherPanel))
+        .environment(\.colorScheme, Chrome.scheme)
         .padding(1)
     }
 
     private var searchBar: some View {
         HStack(spacing: 10) {
-            Image(systemName: model.scope.symbol).font(.system(size: 18, weight: .medium)).foregroundStyle(.white.opacity(0.6))
+            Image(systemName: model.scope.symbol).font(Chrome.font(18, .medium)).foregroundStyle(Chrome.wash(0.6))
                 .frame(width: 24)
             if model.scope != .root {
                 HStack(spacing: 4) {
                     Text(model.scope.title)
-                    Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).opacity(0.7)
+                    Image(systemName: "xmark").font(Chrome.font(9, .bold)).opacity(0.7)
                 }
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.white)
+                .font(Chrome.font(13, .semibold))
+                .foregroundStyle(Chrome.onAccent)
                 .padding(.horizontal, 9).padding(.vertical, 4)
                 .background(Capsule().fill(Chrome.accent.opacity(0.85)))
                 .onTapGesture { model.back() }
@@ -1498,8 +1499,8 @@ struct LauncherView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             if i == 0 || model.items[i - 1].section != item.section {
                                 Text(item.section.uppercased())
-                                    .font(.system(size: 10, weight: .bold)).tracking(0.8)
-                                    .foregroundStyle(.white.opacity(0.4))
+                                    .font(Chrome.font(10, .bold)).tracking(0.8)
+                                    .foregroundStyle(Chrome.wash(0.4))
                                     .padding(.leading, 12).padding(.top, i == 0 ? 4 : 10).padding(.bottom, 2)
                             }
                             row(item, selected: i == model.selected)
@@ -1507,7 +1508,7 @@ struct LauncherView: View {
                         .id(item.id)
                     }
                     if model.items.isEmpty {
-                        Text("Nothing matches “\(model.query)”").foregroundStyle(.white.opacity(0.5))
+                        Text("Nothing matches “\(model.query)”").foregroundStyle(Chrome.wash(0.5))
                             .frame(maxWidth: .infinity).padding(.top, 40)
                     }
                 }
@@ -1524,10 +1525,10 @@ struct LauncherView: View {
         HStack(spacing: 12) {
             iconView(item.icon).frame(width: 30, height: 30)
             VStack(alignment: .leading, spacing: 1) {
-                Text(item.title).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                Text(item.title).font(Chrome.font(14, .semibold)).foregroundStyle(Chrome.wash()).lineLimit(1)
                 if !item.subtitle.isEmpty {
-                    Text(item.subtitle).font(.system(size: 11.5))
-                        .foregroundStyle(item.state == .failed ? Color.orange : .white.opacity(0.5)).lineLimit(1)
+                    Text(item.subtitle).font(Chrome.font(11.5))
+                        .foregroundStyle(item.state == .failed ? Color.orange : Chrome.wash(0.5)).lineLimit(1)
                 }
             }
             Spacer(minLength: 8)
@@ -1537,9 +1538,9 @@ struct LauncherView: View {
         }
         .padding(.horizontal, 10)
         .frame(height: 46)
-        .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(selected ? Color.white.opacity(0.13) : .clear))
+        .background(Chrome.shape(.launcherRow).fill(selected ? Chrome.cell(0.13) : .clear))
         .overlay(alignment: .leading) {
-            if selected { Capsule().fill(Chrome.accent).frame(width: 3, height: 22).offset(x: 1) }
+            if selected { Chrome.pill().fill(Chrome.accent).frame(width: 3, height: 22).offset(x: 1) }
         }
         .contentShape(Rectangle())
         .onTapGesture { model.run(item) }
@@ -1549,10 +1550,10 @@ struct LauncherView: View {
 
     private func badge(_ text: String, strong: Bool) -> some View {
         Text(text)
-            .font(.system(size: 11, weight: .semibold, design: text.count <= 5 ? .rounded : .default))
-            .foregroundStyle(.white.opacity(strong ? 0.95 : 0.6))
+            .font(Chrome.font(11, .semibold, rounded: text.count <= 5))
+            .foregroundStyle(text == "Install" && strong ? Chrome.onAccent : Chrome.wash(strong ? 0.95 : 0.6))
             .padding(.horizontal, 8).padding(.vertical, 3)
-            .background(Capsule().fill(text == "Install" && strong ? Chrome.accent : Color.white.opacity(0.1)))
+            .background(Chrome.pill().fill(text == "Install" && strong ? Chrome.accent : Chrome.wash(0.1)))
     }
 
     @ViewBuilder private func iconView(_ icon: LauncherItem.Icon) -> some View {
@@ -1560,11 +1561,11 @@ struct LauncherView: View {
         case .file(let path): Image(nsImage: model.icon(for: path)).resizable().interpolation(.high)
         case .image(let img): Image(nsImage: img).resizable()
         case .symbol(let name):
-            RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.white.opacity(0.09))
-                .overlay(Image(systemName: name).font(.system(size: 14, weight: .medium)).foregroundStyle(.white.opacity(0.85)))
+            Chrome.shape(.launcherThumb).fill(Chrome.wash(0.09))
+                .overlay(Image(systemName: name).font(Chrome.font(14, .medium)).foregroundStyle(Chrome.wash(0.85)))
         case .remote(let url):
-            AsyncImage(url: url) { $0.resizable() } placeholder: { RoundedRectangle(cornerRadius: 7).fill(Color.white.opacity(0.08)) }
-                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            AsyncImage(url: url) { $0.resizable() } placeholder: { Chrome.shape(.launcherImage, continuous: false).fill(Chrome.wash(0.08)) }
+                .clipShape(Chrome.shape(.launcherImage))
         }
     }
 
@@ -1583,12 +1584,12 @@ struct LauncherView: View {
 
     private func hint(_ key: String, _ what: String) -> some View {
         HStack(spacing: 5) {
-            Text(key).font(.system(size: 10.5, weight: .semibold, design: .rounded))
+            Text(key).font(Chrome.font(10.5, .semibold, rounded: true))
                 .padding(.horizontal, 5).padding(.vertical, 1.5)
-                .background(RoundedRectangle(cornerRadius: 4).fill(Color.white.opacity(0.1)))
-            Text(what).font(.system(size: 11))
+                .background(Chrome.shape(.launcherKey, continuous: false).fill(Chrome.wash(0.1)))
+            Text(what).font(Chrome.font(11))
         }
-        .foregroundStyle(.white.opacity(0.5))
+        .foregroundStyle(Chrome.wash(0.5))
     }
 }
 
@@ -1602,8 +1603,8 @@ private struct SearchField: NSViewRepresentable {
         f.isBordered = false
         f.drawsBackground = false
         f.focusRingType = .none
-        f.font = .systemFont(ofSize: 21, weight: .regular)
-        f.textColor = .white
+        f.font = Chrome.nsFont(21)
+        f.textColor = Chrome.nsWash()
         f.delegate = context.coordinator
         f.cell?.lineBreakMode = .byTruncatingTail
         model.field = f
@@ -1612,8 +1613,10 @@ private struct SearchField: NSViewRepresentable {
 
     func updateNSView(_ f: NSTextField, context: Context) {
         f.placeholderAttributedString = NSAttributedString(string: placeholder, attributes: [
-            .foregroundColor: NSColor.white.withAlphaComponent(0.35), .font: NSFont.systemFont(ofSize: 21),
+            .foregroundColor: Chrome.nsWash(0.35), .font: Chrome.nsFont(21),
         ])
+        f.font = Chrome.nsFont(21)
+        f.textColor = Chrome.nsWash()
         if f.stringValue != model.query { f.stringValue = model.query }
     }
 

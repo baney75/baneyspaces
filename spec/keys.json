@@ -83,13 +83,13 @@
       ]
     },
     "windows": {
-      "switch": "alt+{n}",
-      "move": "alt+shift+{n}",
+      "switch": "win+{n}",
+      "move": "win+shift+{n}",
       "move_stay": "",
       "overview": "alt+tab+tab",
-      "agent_toggle": "alt+9",
-      "note": "Win+1-9 belongs to the taskbar. Changeable.",
-      "agent_workspace": "workspace 9, cloaked"
+      "agent_toggle": "win+grave",
+      "note": "Explorer owns Win+1-9 (taskbar), so RegisterHotKey fails: the daemon swallows these chords in a WH_KEYBOARD_LL hook. Changeable. Overview has no key in part 1.",
+      "agent_workspace": "cloaked, never shown unless you ask"
     }
   },
   "chords": {
@@ -218,7 +218,7 @@
           "ctrl",
           "alt"
         ],
-        "default": "alt"
+        "default": "win"
       }
     },
     "recovery": {
