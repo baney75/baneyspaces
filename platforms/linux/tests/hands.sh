@@ -94,7 +94,7 @@ MCP_OUT="$(printf '%s\n' \
   | baneyspaces mcp)"
 eq "MCP: 3 replies for 5 messages with ids (the notification gets none)" "$(echo "$MCP_OUT" | wc -l)" "5"
 eq "MCP: initialize answers" "$(echo "$MCP_OUT" | sed -n 1p | jq -r .result.serverInfo.name)" "baneyspaces"
-eq "MCP: tools/list has 13 agent tools" "$(echo "$MCP_OUT" | sed -n 2p | jq '.result.tools|length')" "13"
+eq "MCP: tools/list has 13 agent tools and 15 config and theme tools" "$(echo "$MCP_OUT" | sed -n 2p | jq '[.result.tools[].name|split("_")[0]]|group_by(.)|map("\(.[0])=\(length)")|join(",")')" '"agent=13,config=10,theme=5"'
 eq "MCP: no tool switches or moves your workspaces" "$(echo "$MCP_OUT" | sed -n 2p | jq '[.result.tools[].name|select(test("switch|move"))]|length')" "0"
 eq "MCP: a snapshot of an agent window works" "$(echo "$MCP_OUT" | sed -n 3p | jq -r '.result.structuredContent.ok')" "true"
 eq "MCP: a snapshot of your window is refused" "$(echo "$MCP_OUT" | sed -n 4p | jq -r '.result.structuredContent.error.code, .result.isError' | tr '\n' ' ')" "not_in_scope true "

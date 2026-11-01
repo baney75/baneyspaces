@@ -171,9 +171,9 @@ if [ -n "${NESTED_ONLY:-}" ]; then bash "$NESTED_ONLY"; exit $?; fi
 echo "== key bindings (Omarchy defaults replaced)"
 BINDS="$(H binds)"
 [ -n "${DEBUG:-}" ] && echo "$BINDS" | jq -c '[.[]|select((.description//"")|startswith("BaneySpaces"))]|first'
-eq "29 BaneySpaces bindings" "$(echo "$BINDS" | jq '[.[]|select((.description//"")|startswith("BaneySpaces"))]|length')" "29"
+eq "29 BaneySpaces bindings and the recovery chord" "$(echo "$BINDS" | jq '[.[]|select((.description//"")|startswith("BaneySpaces"))]|length')" "30"
 eq "no Omarchy workspace binding is left for 1-9" "$(echo "$BINDS" | jq '[.[]|select((.description//"")|startswith("Omarchy: workspace") or startswith("Omarchy: move"))]|length')" "0"
-eq "the overview key is BaneySpaces'" "$(echo "$BINDS" | jq -r '[.[]|select(.key=="TAB" and .modmask==64)|.description]|first')" "BaneySpaces: overview"
+eq "the overview key is BaneySpaces'" "$(echo "$BINDS" | jq -r '[.[]|select((.key|ascii_upcase)=="TAB" and .modmask==64)|.description]|first')" "BaneySpaces: overview"
 # Run the command a key is bound to, as the key would.
 press() { # press "<description>": runs the command the include binds to that key's description
   local cmd; cmd="$(grep -F "description = \"$1\"" "$REPO/platforms/linux/omarchy/baneyspaces.lua" | sed -n 's/.*exec_cmd("\([^"]*\)").*/\1/p')"
@@ -324,6 +324,7 @@ if [ -x "$BANEYSPACES_ENGINE" ] && [ -f "$HERE/hands.sh" ]; then
   . "$HERE/hands.sh"
 fi
 . "$HERE/hardening.sh"
+. "$HERE/config.sh"
 
 echo "== monitors come and go"
 baneyspaces focus-monitor $M2 >/dev/null; baneyspaces switch 6 >/dev/null; sleep 0.2

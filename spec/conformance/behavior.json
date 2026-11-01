@@ -29,6 +29,11 @@
             "do": "refuse_follow",
             "window": "w1",
             "reason": "follow_focus_off"
+          },
+          {
+            "do": "show_workspace",
+            "monitor": "A",
+            "workspace": 2
           }
         ],
         "expect": {

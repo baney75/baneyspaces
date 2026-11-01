@@ -940,6 +940,16 @@ impl Model {
                 window: w,
                 reason: "follow_focus_off".into(),
             });
+            // The compositor may already have gone to the window's workspace: put the display back.
+            if let Some(mon) = self.focused_monitor.clone() {
+                let cur = self.monitors.get(&mon).map_or(0, |m| m.current);
+                if cur != 0 {
+                    effects.push(Effect::ShowWorkspace {
+                        monitor: mon,
+                        workspace: cur,
+                    });
+                }
+            }
             restore(self, &mut effects);
             return effects;
         }
