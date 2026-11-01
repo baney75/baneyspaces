@@ -20,7 +20,7 @@ REPO="$(cd "$HERE/../../.." && pwd)"
 
 if [ "${1:-}" != "--inner" ]; then
   # ---- outer: build, snapshot the real session, run the inner script in a private D-Bus session ----
-  (cd "$REPO" && cargo build -q -p baneyspaces-linux) || { echo "FAIL: cargo build"; exit 1; }
+  (cd "$REPO" && cargo build -q -p baneyspaces-linux $([ -n "${BS_RELEASE:-}" ] && echo --release)) || { echo "FAIL: cargo build"; exit 1; }
   [ -x "$REPO/platforms/linux/engine/agent-desktop" ] || "$REPO/platforms/linux/scripts/build-engine.sh" --profile ci >/dev/null || { echo "FAIL: engine build"; exit 1; }
   HOST="$("$HERE/build-host.sh")" || { echo "FAIL: host compositor build"; exit 1; }
   real() { hyprctl -j "$1" 2>/dev/null | jq -S -c "$2" 2>/dev/null || echo "none"; }
@@ -29,7 +29,7 @@ if [ "${1:-}" != "--inner" ]; then
   REAL_BEFORE="$(snap)"
   echo "real session before: $REAL_BEFORE"
   # The inner run gets a clean environment: nothing that names the real Hyprland or Wayland display.
-  env -i HOME="$HOME" PATH="$PATH" USER="${USER:-}" TERM="${TERM:-dumb}" LANG="${LANG:-C.UTF-8}" KEEP="${KEEP:-}" DEBUG="${DEBUG:-}" NESTED_ONLY="${NESTED_ONLY:-}" NESTED_TMP="$NESTED_TMP" HOST="$HOST" \
+  env -i HOME="$HOME" PATH="$PATH" USER="${USER:-}" TERM="${TERM:-dumb}" LANG="${LANG:-C.UTF-8}" KEEP="${KEEP:-}" DEBUG="${DEBUG:-}" NESTED_ONLY="${NESTED_ONLY:-}" NESTED_TMP="$NESTED_TMP" BS_DEV="${BS_DEV:-}" BS_RELEASE="${BS_RELEASE:-}" LAT_SAMPLES="${LAT_SAMPLES:-}" LIVE_HYPR_SIG="${HYPRLAND_INSTANCE_SIGNATURE:-}" LIVE_WAYLAND="${WAYLAND_DISPLAY:-}" LIVE_RUNTIME="${XDG_RUNTIME_DIR:-}" SAVE_SHOTS="${SAVE_SHOTS:-}" QT_QUICK_BACKEND="${QT_QUICK_BACKEND:-}" HOST="$HOST" \
     dbus-run-session -- bash "$HERE/nested.sh" --inner
   RC=$?
   # Nothing started inside the temp dir may outlive the run: not the nested Hyprland, not an agent's
@@ -62,7 +62,7 @@ fi
 TMP="${NESTED_TMP:-$(mktemp -d /tmp/bs-nested.XXXXXX)}"; chmod 700 "$TMP"
 mkdir -p "$TMP/run" "$TMP/home" "$TMP/state" "$TMP/config"; chmod 700 "$TMP/run"
 export XDG_RUNTIME_DIR="$TMP/run" HOME="$TMP/home" XDG_STATE_HOME="$TMP/state" XDG_CONFIG_HOME="$TMP/config"
-BIN="$REPO/target/debug"
+BIN="$REPO/target/debug"; [ -n "${BS_RELEASE:-}" ] && BIN="$REPO/target/release"
 export PATH="$BIN:$PATH" BANEYSPACES_ENGINE="$REPO/platforms/linux/engine/agent-desktop" BANEYSPACES_TEST_OPS=1
 unset HYPRLAND_INSTANCE_SIGNATURE WAYLAND_DISPLAY DISPLAY
 
@@ -81,6 +81,15 @@ check() { # check "description" <command...>: passes when the command succeeds
 }
 eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected '$3', got '$2'"; fi; }
 
+# ---- guard: nothing below may start a GUI process against the session you are logged in to ----
+guard_nested() {
+  case "${XDG_RUNTIME_DIR:-}" in /tmp/bs-nested.*) ;; *) echo "FAIL: refusing to start a GUI process: XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-unset} is not the test's own" >&2; exit 1;; esac
+  [ -n "${LIVE_RUNTIME:-}" ] && [ "$XDG_RUNTIME_DIR" = "$LIVE_RUNTIME" ] && { echo "FAIL: refusing: the test runtime dir is the live session's" >&2; exit 1; }
+  [ -n "${LIVE_HYPR_SIG:-}" ] && [ "${HYPRLAND_INSTANCE_SIGNATURE:-}" = "$LIVE_HYPR_SIG" ] && { echo "FAIL: refusing: HYPRLAND_INSTANCE_SIGNATURE is the live session's" >&2; exit 1; }
+  [ -n "${LIVE_WAYLAND:-}" ] && [ "${WAYLAND_DISPLAY:-}" = "$LIVE_WAYLAND" ] && [ "$XDG_RUNTIME_DIR" = "${LIVE_RUNTIME:-}" ] && { echo "FAIL: refusing: WAYLAND_DISPLAY is the live session's" >&2; exit 1; }
+  [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && [ ! -S "$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket.sock" ] && { echo "FAIL: refusing: no nested Hyprland socket under the test's runtime dir" >&2; exit 1; }
+  return 0
+}
 PIDS=()
 cleanup() {
   # Children first: the host compositor's child is the nested Hyprland, and it must not outlive the test.
@@ -127,6 +136,7 @@ for d in /dev/dri/renderD*; do # an integrated GPU's render node: never the disc
   drv="$(basename "$(readlink "/sys/class/drm/$(basename "$d")/device/driver")")"
   case "$drv" in nvidia) ;; *) export WLR_RENDER_DRM_DEVICE="$d"; break;; esac
 done
+guard_nested
 "$HOST" -- Hyprland --config "$TMP/hypr.lua" >"$TMP/hyprland.out" 2>&1 & PIDS+=($!)
 for _ in $(seq 1 100); do
   SIG="$(ls "$TMP/run/hypr" 2>/dev/null | head -1)"
@@ -138,6 +148,10 @@ case "$XDG_RUNTIME_DIR" in /tmp/bs-nested.*) ;; *) echo "FAIL: refusing to run o
 sleep 0.5
 hyprctl output create headless >/dev/null; hyprctl output create headless >/dev/null
 sleep 0.5
+# For a person poking at the session (BS_DEV=1 ... nested.sh): `. $TMP/env.sh` in another shell.
+{ echo "export XDG_RUNTIME_DIR='$XDG_RUNTIME_DIR' HOME='$HOME' XDG_STATE_HOME='$XDG_STATE_HOME' XDG_CONFIG_HOME='$XDG_CONFIG_HOME'"
+  echo "export DBUS_SESSION_BUS_ADDRESS='$DBUS_SESSION_BUS_ADDRESS'"
+  echo "export HYPRLAND_INSTANCE_SIGNATURE='$SIG' WAYLAND_DISPLAY=wayland-1 PATH='$PATH' TMP='$TMP' REPO='$REPO'"; } >"$TMP/env.sh"
 
 H() { hyprctl -j "$@"; }
 mon_ws() { H monitors | jq -r ".[]|select(.name==\"$1\")|.activeWorkspace.id"; }
@@ -158,25 +172,39 @@ eq "two monitors" "$(H monitors | jq length)" "2"
 eq "monitors are 1920 wide (a real mode)" "$(H monitors | jq -r '.[0].width')" "1920"
 
 # --- the daemon
+# what the daemon runs to bring the shell plugin back when its heartbeat stops (shell.sh writes the script)
+export BANEYSPACES_SHELL_RESTART="$TMP/restart-shell.sh"
 baneyspaces daemon --trace >"$TMP/daemon.log" 2>&1 & DPID=$!; PIDS+=($DPID)
 for _ in $(seq 1 100); do baneyspaces state 2>/dev/null | jq -e .ok >/dev/null 2>&1 && break; sleep 0.1; done
 check "daemon answers" sh -c 'baneyspaces state | jq -e .ok'
 eq "daemon knows both monitors" "$(baneyspaces state | jq -r '.data.monitors|keys|join(",")')" "$M1,$M2"
 eq "first monitor is slot 0, second slot 1" "$(baneyspaces state | jq -r ".data.monitors[\"$M1\"].slot,.data.monitors[\"$M2\"].slot" | tr '\n' ,)" "0,1,"
-eq "workspace animations are off" "$(H animations | jq -r '[.[0][]|select(.name=="workspaces")|.enabled]|first')" "false"
+eq "workspace switches are instant by default (Omarchy's looknfeel turns the animation off too)" "$(H animations | jq -r '[.[0][]|select(.name=="workspaces")|.enabled]|first')" "false"
 eq "apps cannot take focus by asking" "$(hyprctl getoption misc:focus_on_activate | head -1)" "bool: false"
 
 # Debugging aid: run one script inside the nested session instead of the tests.
 if [ -n "${NESTED_ONLY:-}" ]; then bash "$NESTED_ONLY"; exit $?; fi
+if [ -n "${BS_DEV:-}" ]; then # development: boot, start the shell plugin, wait
+  . "$HERE/shell.sh"
+  echo "dev session up: . $TMP/env.sh   (touch $TMP/release to end it)"
+  until [ -e "$TMP/release" ]; do sleep 1; done
+  exit 0
+fi
+
 echo "== key bindings (Omarchy defaults replaced)"
 BINDS="$(H binds)"
 [ -n "${DEBUG:-}" ] && echo "$BINDS" | jq -c '[.[]|select((.description//"")|startswith("BaneySpaces"))]|first'
-eq "29 BaneySpaces bindings" "$(echo "$BINDS" | jq '[.[]|select((.description//"")|startswith("BaneySpaces"))]|length')" "29"
+eq "41 BaneySpaces bindings" "$(echo "$BINDS" | jq '[.[]|select((.description//"")|startswith("BaneySpaces"))]|length')" "41"
 eq "no Omarchy workspace binding is left for 1-9" "$(echo "$BINDS" | jq '[.[]|select((.description//"")|startswith("Omarchy: workspace") or startswith("Omarchy: move"))]|length')" "0"
-eq "the overview key is BaneySpaces'" "$(echo "$BINDS" | jq -r '[.[]|select(.key=="TAB" and .modmask==64)|.description]|first')" "BaneySpaces: overview"
+eq "the overview key is BaneySpaces'" "$(echo "$BINDS" | jq -r '[.[]|select(.key=="TAB" and .modmask==64)|.description]|first')" "BaneySpaces: overview (next workspace)"
 # Run the command a key is bound to, as the key would.
-press() { # press "<description>": runs the command the include binds to that key's description
-  local cmd; cmd="$(grep -F "description = \"$1\"" "$REPO/platforms/linux/omarchy/baneyspaces.lua" | sed -n 's/.*exec_cmd("\([^"]*\)").*/\1/p')"
+press() { # press "<description>": runs what the include binds to that key's description
+  local line; line="$(grep -F "description = \"$1\"" "$REPO/platforms/linux/omarchy/baneyspaces.lua")"
+  local n; n="$(echo "$line" | sed -n 's/.*baneyspaces_switch(\([0-9]*\)).*/\1/p')"
+  if [ -n "$n" ]; then hyprctl eval "baneyspaces_switch($n)" >/dev/null; return; fi   # a function bind: run its body
+  local pr; pr="$(echo "$line" | sed -n 's/.*function() \(baneyspaces_press("[a-z]*", "[a-z ]*")\) end.*/\1/p')"
+  if [ -n "$pr" ]; then hyprctl eval "$pr" >/dev/null; return; fi
+  local cmd; cmd="$(echo "$line" | sed -n 's/.*exec_raw("\([^"]*\)").*/\1/p')"
   [ -n "$cmd" ] && sh -c "$cmd" >/dev/null 2>&1
 }
 press "BaneySpaces: workspace 3"; sleep 0.2
@@ -324,6 +352,13 @@ if [ -x "$BANEYSPACES_ENGINE" ] && [ -f "$HERE/hands.sh" ]; then
   . "$HERE/hands.sh"
 fi
 . "$HERE/hardening.sh"
+
+if [ -f "$HERE/shell.sh" ]; then
+  . "$HERE/shell.sh"
+fi
+if [ -f "$HERE/parity.sh" ]; then
+  . "$HERE/parity.sh"
+fi
 
 echo "== monitors come and go"
 baneyspaces focus-monitor $M2 >/dev/null; baneyspaces switch 6 >/dev/null; sleep 0.2

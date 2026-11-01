@@ -69,6 +69,10 @@ pub enum HyprEvent {
         monitor: String,
     },
     ConfigReloaded,
+    /// A window's title changed (Claude Code's spinner lives in it).
+    WindowTitle {
+        addr: String,
+    },
     Other,
 }
 
@@ -121,6 +125,7 @@ pub fn parse_event(line: &str) -> HyprEvent {
             monitor: get(0).to_string(),
         },
         "configreloaded" => HyprEvent::ConfigReloaded,
+        "windowtitlev2" => HyprEvent::WindowTitle { addr: addr(get(0)) },
         _ => HyprEvent::Other,
     }
 }
@@ -176,6 +181,11 @@ impl Hypr {
     /// Lua run in the compositor (`hl.workspace_rule`, `hl.animation`, `hl.config`).
     pub fn eval(&self, lua: &str) -> Result<(), HyprError> {
         self.ok(&format!("/eval {lua}"))
+    }
+
+    /// Reads the config again (what `hyprctl reload` does): puts back anything the daemon changed at runtime.
+    pub fn reload(&self) -> Result<(), HyprError> {
+        self.ok("/reload")
     }
 
     fn ok(&self, cmd: &str) -> Result<(), HyprError> {
@@ -269,6 +279,12 @@ mod tests {
             }
         );
         assert_eq!(parse_event("configreloaded>>"), HyprEvent::ConfigReloaded);
+        assert_eq!(
+            parse_event("windowtitlev2>>80c9c8e0,⠂ Fix the dock"),
+            HyprEvent::WindowTitle {
+                addr: "0x80c9c8e0".into()
+            }
+        );
         assert_eq!(parse_event("garbage"), HyprEvent::Other);
         assert_eq!(parse_event("urgent>>abc"), HyprEvent::Other);
     }

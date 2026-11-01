@@ -31,6 +31,12 @@
     },
     "agent_toggle": {
       "description": "Show or hide the agent workspace."
+    },
+    "switcher": {
+      "description": "Step through the windows of every workspace, most recently used first; letting go of the modifier goes to the one picked (Shift steps back)."
+    },
+    "launcher": {
+      "description": "Open the launcher: apps, windows, files, install, web search."
     }
   },
   "platforms": {
@@ -41,7 +47,9 @@
       "overview": "ctrl+up",
       "agent_toggle": "cmd+9",
       "alternates": "Setup can swap cmd for ctrl, alt or ctrl+alt.",
-      "agent_workspace": "workspace 9, when agent mode is on"
+      "agent_workspace": "workspace 9, when agent mode is on",
+      "switcher": "cmd+tab (setup: Apps on every workspace)",
+      "launcher": "ctrl+cmd+k"
     },
     "linux": {
       "switch": "SUPER + {key}",
@@ -79,8 +87,16 @@
         "SUPER + SHIFT + ALT + code:16",
         "SUPER + SHIFT + ALT + code:17",
         "SUPER + SHIFT + ALT + code:18",
-        "SUPER + TAB"
-      ]
+        "SUPER + TAB",
+        "ALT + TAB",
+        "ALT + SHIFT + TAB",
+        "SUPER + SPACE",
+        "SUPER + SHIFT + TAB"
+      ],
+      "switcher": "ALT + TAB",
+      "launcher": "SUPER + SPACE",
+      "switcher_note": "Alt+Shift+Tab steps back. Omarchy's Alt+Tab (cycle in place) and Super+Space (the Omarchy menu) are replaced; the menu stays on Super+Alt+Space and in the launcher's System list.",
+      "overview_note": "Super+Tab and Super+Shift+Tab were Omarchy's next and previous workspace. They still are: the overview opens on the next (previous) one, Tab steps, letting go of Super goes there. Super+Ctrl+Tab (the former workspace) is Omarchy's own and untouched."
     },
     "windows": {
       "switch": "alt+{n}",
@@ -89,7 +105,9 @@
       "overview": "alt+tab+tab",
       "agent_toggle": "alt+9",
       "note": "Win+1-9 belongs to the taskbar. Changeable.",
-      "agent_workspace": "workspace 9, cloaked"
+      "agent_workspace": "workspace 9, cloaked",
+      "switcher": "alt+tab",
+      "launcher": "alt+space"
     }
   }
 }

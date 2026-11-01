@@ -1,14 +1,16 @@
 # BaneySpaces for Linux (Omarchy, Hyprland)
 
-Part 1: the workspace model, the Hyprland daemon, the agent workspace and the agent hands. No dock,
-launcher or overview yet (part 2, as Omarchy shell plugins). Hyprland stays the compositor;
-BaneySpaces owns what you interact with.
+Part 1: the workspace model, the Hyprland daemon, the agent workspace and the agent hands.
+Part 2: what you see and touch, as an Omarchy shell plugin: the Workspace Dock, Alt+Tab across
+workspaces, the launcher, the all-workspaces overview and settings (see "The Omarchy shell plugin" below).
+Hyprland stays the compositor; BaneySpaces owns what you interact with.
 
 ```
 spec/                          the contract every platform implements (rules, keys, envelope, MCP, conformance cases)
 crates/baneyspaces-core/       the model, the scope guard, the envelope, MCP, the conformance runner (Rust, no I/O)
 platforms/linux/baneyspaces/   the `baneyspaces` binary: CLI, `daemon`, `mcp`
-platforms/linux/omarchy/       the Hyprland include, the daemon's autostart, install.sh / uninstall.sh
+platforms/linux/omarchy/       the Hyprland include, the daemon's autostart, install.sh / uninstall.sh, shell-install.sh
+platforms/linux/omarchy/plugins/   the Omarchy shell plugin (QML): dock, switcher, launcher, overview, settings
 platforms/linux/scripts/       build-engine.sh: the pinned agent-desktop, built with --locked
 platforms/linux/tests/         nested.sh (the integration test), omarchy-scripts.sh, the GTK test app
 ```
@@ -33,8 +35,7 @@ back on what it was showing. A display showing an empty, non-persistent workspac
 is given one of the nine; one showing something you keep (workspace 10 with the work dashboard) is
 left alone, and a switch to 1-9 there simply takes over that display.
 
-Switches are instant: the daemon turns the `workspaces` and `specialWorkspace` animations off
-(`hl.animation`) at start and after every config reload, and the include does the same in config.
+Switches are instant, as in Omarchy's own looknfeel (its `workspaces` animation is off): `animation.workspace.style` is `off` by default and `fade` or `slide` turn Hyprland's animation on. The daemon touches no other Omarchy animation (the scratchpad's slide, windows, layers, border). See PARITY.md.
 
 ## The agent workspace
 
@@ -169,6 +170,62 @@ the engine's own evidence: `verified` is true only when the engine read the outc
 element. `press`, `key` and `pointer` are `not_supported` (phase 3-4). `shot` is refused locally with `not_supported`: a capture can show your whole screen, and no
 per-window capture path exists on Hyprland yet.
 
+## The Omarchy shell plugin
+
+`platforms/linux/omarchy/plugins/io.github.baney75.baneyspaces/` is one plugin (a keep-loaded `service`) with five
+surfaces. It holds no workspace rules: it draws the snapshot the daemon pushes over its socket and sends every
+action back (`baneyspaces ui`, `subscribe`, `focus`, `move-windows`, `launcher search|run`, `config set`).
+The rules it draws are in `spec/ui.md` and live, unit tested, in `baneyspaces/src/ui.rs` and `launcher.rs`.
+
+| Surface | Keys | What it does |
+| --- | --- | --- |
+| Workspace Dock | the pointer on the bottom edge | A tile per workspace in use plus the one you are on, app icons, "+N" list, agent status badges, a dashed tile for a new workspace. Click a tile or an icon to go; drag an icon or a list row onto a tile to move those windows (you stay). Hides until the pointer rests on the edge; the daemon watches the pointer (a Wayland client cannot) and keeps it up while it is on the bar plus 12 pt. |
+| Switcher | Alt+Tab, Alt+Shift+Tab | Every window on every workspace, most recently used first, marked with its workspace; letting go of Alt goes to it. Replaces Omarchy's cycle-in-place Alt+Tab. |
+| Launcher | Super+Space | Apps (an open one takes you to its workspace), windows, workspaces, files, install and remove (`omarchy pkg`, asks first), System, bangs (`!yt cats`), `?question` asks your agent. Replaces the Omarchy menu on Super+Space; the menu is still on Super+Alt+Space and in the launcher's System list. |
+| Overview | Super+Tab | All nine workspaces in a 3 x 3 grid with window previews (screencopy; icon and title where the compositor gives none). Click to go, drag a window to move it. |
+| Settings | the launcher's System list, `baneyspaces settings` | The switches in `~/.config/baneyspaces/config.toml` (`baneyspaces config` lists them). |
+
+Themes (`spec/themes.md`): `theme.name` is `omarchy` (the default here: square corners, a 2 px border, opaque,
+monospace, number blocks, fades only), `baneyspaces` (the Mac's rounded translucent look) or `minimal`;
+`theme.palette` is `auto` (the live Omarchy theme's `colors.toml`, read again every 2 s, so your own theme under
+`~/.config/omarchy/themes` and a theme switch show at once) or one of the 22 bundled palettes. Every surface (dock,
++N list, switcher, launcher, overview, settings) takes its radius, border, fill, font, spacing, indicator and motion
+from the theme and its colors from the palette; `nested.sh` renders each in all three themes and every palette and fails
+on a token mismatch, and a unit test fails if any QML file hard-codes a color, radius or duration. In the baneyspaces
+theme the motion is the Mac's (8 pt slide and 180/140 ms fade for the dock, lists from 96% in 140/100 ms); all of it is
+instant when reduced (`animation.respect_reduce_motion`, on by default, follows the desktop's setting).
+
+The dock switch: `baneyspaces set behavior.dock.enabled false` (or Settings). No dock window exists then and the pointer
+reveals nothing; the switcher, launcher, overview, workspace keys and agent workspace keep working. `true` brings it
+back at the next edge reveal, no restart.
+
+Parity with Omarchy's own navigation is in [PARITY.md](PARITY.md), generated from the real bindings and measured in the
+nested session: every Omarchy binding BaneySpaces does not replace is untouched (a `hyprctl binds -j` diff), the ones it
+replaces (the number keys, Super+Tab, Alt+Tab, Super+Space) are listed with what they do instead. Omarchy's workspace
+switch is instant (its looknfeel turns that animation off); BaneySpaces keeps it that way unless
+`animation.workspace.style` is `fade` or `slide`, and touches no other animation.
+
+Alt+Tab and Super+Tab are taps first: the compositor binds the release of Alt and Super (`release` binds, with a
+held-state helper in the include), so a tap switches at once with no overlay, and a hold past 150 ms shows it. If the
+switcher, launcher or overview is turned off in config, its keys fall back to Omarchy's own (`cycle_next`,
+`omarchy-menu`, next workspace). Anything opened from a workspace lands there (`behavior.launcher.open = here`);
+`go` goes to the app instead, and Alt+Return in the launcher does the other of the two.
+
+Settings has a "Pending approval" section when `$XDG_RUNTIME_DIR/baneyspaces/config.json` lists `pending` entries (hooks and
+executable key bindings from the config core): the path, the value and who wrote it, with Approve and Remove. Approve is a pointer
+click and nothing else; it writes `$XDG_STATE_HOME/baneyspaces/approvals.json` (0600, temp file then rename, keyed by the entry's
+id, the SHA-256 of path, a NUL byte and value). Remove runs `baneyspaces config unset <path>`. The plugin has no IPC handler that
+approves; with `BANEYSPACES_TEST_OPS=1` (the nested test) a separate `baneyspaces.settings.test` target exists that calls the same
+function the button calls.
+
+The plugin sends the daemon a heartbeat each second. When it stops, `overview show`, `dock` and `settings` answer
+`shell_dead` instead of claiming a surface is shown, and the daemon runs `omarchy restart shell`
+(`BANEYSPACES_SHELL_RESTART` replaces the command; three restarts an hour at most).
+
+Agent status: `baneyspaces agent-status set working|asking|error|finished|idle --pid $PPID` (a Claude Code hook;
+`baneyspaces hooks print` prints the entries for `~/.claude/settings.json`, it never edits that file). Without hooks, a
+terminal title with Claude's spinner reads as working.
+
 ## Install on an Omarchy seat (part 2 does this on Chapel1 and Parish1)
 
 ```sh
@@ -179,12 +236,19 @@ hyprctl reload && hyprctl configerrors
 platforms/linux/omarchy/uninstall.sh             # puts hyprland.lua back byte for byte
 ```
 
-Part 1 does not apply it to any seat.
+`install.sh` also runs `shell-install.sh`: it copies the plugin to `~/.config/omarchy/plugins/`, adds its id to
+`plugins` in `~/.config/omarchy/shell.json` (backed up first; the shell hot-reloads it, nothing is restarted) and writes
+a commented `~/.config/baneyspaces/config.toml` if there is none. `--no-shell` skips it; `shell-install.sh
+--via-omarchy` uses `omarchy plugin enable` instead of editing the file. `uninstall.sh` puts shell.json back byte for
+byte (or removes just the entry if you changed it since).
+
+Parts 1 and 2 do not apply it to any seat.
 
 ## Tests
 
 ```sh
-cargo test                                  # core, the 89 conformance cases, the daemon's pure parts
+cargo test                                  # core, the 89 conformance cases, the daemon's pure parts (dock zone, switcher, badges, launcher, config)
+node --test platforms/linux/tests/logic.test.js   # the plugin's pure helpers (Logic.js)
 platforms/linux/tests/omarchy-scripts.sh    # install/uninstall against a throwaway HOME
 platforms/linux/tests/nested.sh             # the integration test; prints PASS or FAIL with counts
 ```
@@ -196,7 +260,15 @@ opens apps on `special:agent`, runs the hands on a GTK4 app there, and after eve
 that your front window, both monitors' workspaces, the pointer and the agent workspace's visibility
 did not change.
 
-Known limits: a key press itself is not simulated (the test runs the command each binding is bound
+The shell section of `nested.sh` starts a Quickshell instance with its own config dir inside that session, loads the
+plugin, and drives it through the daemon, the plugin's IPC handlers and a warped (nested) pointer: the dock coming up
+at the edge and going down 300 ms after the pointer leaves the keep zone, tiles, the "+N" list, drag-to-tile, the
+dashed tile, the switcher, the launcher, the overview, settings, config edits, theme switches. `SAVE_SHOTS=1` saves its
+screenshots to `platforms/linux/tests/shots/`. `BS_DEV=1 KEEP=1 nested.sh` boots, runs it and waits, for poking
+(`. $TMP/env.sh`).
+
+Known limits: real clicks, drags and the Alt key are not injected (the plugin's own IPC handlers run the same code
+paths, which is why a real-pointer pass is still "untested live"); a key press itself is not simulated (the test runs the command each binding is bound
 to, and checks the binding table); the pointer check excludes the step where the test forces
 Hyprland to focus an agent window, because Hyprland warps the pointer to a window it is told to
 focus; `shot` is refused locally.

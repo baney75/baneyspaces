@@ -14,3 +14,4 @@ baneyspaces-core = { path = "../../../crates/baneyspaces-core" }
 serde.workspace = true
 serde_json.workspace = true
 libc = "0.2"
+toml_edit = "0.25.17"

@@ -3,12 +3,16 @@
 
 mod apps;
 mod bus;
+mod config;
 mod daemon;
 mod hands;
 mod hypr;
+mod launcher;
 mod paths;
 mod proc;
 mod scheme;
+mod shell;
+mod ui;
 
 use baneyspaces_core::envelope::{Envelope, Retry};
 use baneyspaces_core::{keymap, mcp};
@@ -22,7 +26,21 @@ const HELP: &str = "baneyspaces (Linux, Hyprland)
   focus-monitor <name>           go to a monitor
   ls                             windows by workspace, and the agent workspace
   state                          the whole model as JSON
-  overview                       show or hide the overview (drawn by the shell plugin, part 2)
+  overview [show|hide|toggle|next|prev|go]   all nine workspaces at once (drawn by the Omarchy shell plugin)
+  dock show|hide|toggle          bring the Workspace Dock up or down (the pointer does it too)
+  switcher next|prev|commit|cancel   the Alt+Tab window switcher across workspaces
+  launcher [show|hide|toggle]    the launcher (Super+Space)
+  launcher search <text> [--mode M]  search apps, windows, files, packages; M: all apps windows
+                                 workspaces files install remove update system
+  launcher run <id> [--confirm] [--dry-run] [--seq N] [--alt]  run a result of the last search (N: refuse if a newer search replaced it)
+  settings [show|hide|toggle]    the settings panel
+  config                         the settings and what they take
+  set <key> <value>              change one setting (same as config set), e.g. dock.enabled false (writes ~/.config/baneyspaces/config.toml)
+  focus <window>                 go to a window, wherever it is
+  move-windows <n|new> <window>...   send windows to a workspace and stay (new: the first empty one)
+  agent-status set <state> [--window W | --pid P]   working asking error finished idle
+  agent-status list              the badges on the dock
+  ui                             the snapshot the shell plugins draw
   agent-workspace show|hide|toggle   show the agent workspace (you only; agents never do)
   agent status|windows           what is on the agent workspace
   agent open <app> [file...]     start an allowlisted app (by name) on the agent workspace, with files
@@ -177,7 +195,40 @@ fn request(mut a: Vec<String>) -> Result<Value, Envelope> {
             need(&a, 1, "focus-monitor <name>")?;
             req("focus_monitor", json!({ "monitor": a[0] }))
         }
-        "ls" | "state" | "overview" | "stop" => req(&cmd, json!({})),
+        "ls" | "state" | "ui" | "stop" => req(&cmd, json!({})),
+        "overview" | "settings" | "launcher" if a.first().is_none_or(|x| ["show", "hide", "toggle", "next", "prev", "go"].contains(&x.as_str())) => {
+            req(&cmd, json!({ "action": a.first().cloned().unwrap_or_else(|| "toggle".into()) }))
+        }
+        "launcher" => launcher_request(a),
+        "dock" => {
+            need(&a, 1, "dock show|hide|toggle")?;
+            req("dock", json!({ "action": a[0] }))
+        }
+        "switcher" => {
+            need(&a, 1, "switcher next|prev|commit|cancel")?;
+            req("switcher", json!({ "action": a[0] }))
+        }
+        "focus" => {
+            need(&a, 1, "focus <window>")?;
+            req("focus", json!({ "window": a[0] }))
+        }
+        "move-windows" => {
+            need(&a, 2, "move-windows <n|new> <window>...")?;
+            req("move_windows", json!({ "n": a[0], "windows": a[1..] }))
+        }
+        "set" => {
+            need(&a, 2, "set <key> <value>")?;
+            req("config_set", json!({ "key": a[0], "value": a[1..].join(" ") }))
+        }
+        "config" => match a.first().map(String::as_str) {
+            None | Some("get") => req("config", json!({})),
+            Some("set") => {
+                need(&a, 3, "config set <key> <value>")?;
+                req("config_set", json!({ "key": a[1], "value": a[2..].join(" ") }))
+            }
+            Some(_) => Err(fail("invalid_args", "usage: config [set <key> <value>]", "")),
+        },
+        "agent-status" => agent_status_request(a),
         "agent-workspace" => {
             need(&a, 1, "agent-workspace show|hide|toggle")?;
             match a[0].as_str() {
@@ -196,6 +247,56 @@ fn request(mut a: Vec<String>) -> Result<Value, Envelope> {
             "Run `baneyspaces help`.",
         )),
     }
+}
+
+fn launcher_request(mut a: Vec<String>) -> Result<Value, Envelope> {
+    let req = |op: &str, args: Value| Ok(json!({ "op": op, "args": args }));
+    let sub = a.remove(0);
+    match sub.as_str() {
+        "search" => {
+            let mode = take(&mut a, "--mode").unwrap_or_else(|| "all".into());
+            req("launcher_search", json!({ "query": a.join(" "), "mode": mode }))
+        }
+        "run" => {
+            let confirm = take_switch(&mut a, "--confirm");
+            let dry = take_switch(&mut a, "--dry-run");
+            let seq = take(&mut a, "--seq").and_then(|v| v.parse::<u64>().ok());
+            let alt = take_switch(&mut a, "--alt");
+            need(&a, 1, "launcher run <id> [--confirm] [--dry-run] [--seq N]")?;
+            req("launcher_run", json!({ "id": a[0], "confirm": confirm, "dry_run": dry, "seq": seq, "alt": alt }))
+        }
+        _ => Err(fail("invalid_args", "usage: launcher [show|hide|toggle] | search <text> | run <id>", "")),
+    }
+}
+
+fn agent_status_request(mut a: Vec<String>) -> Result<Value, Envelope> {
+    let req = |op: &str, args: Value| Ok(json!({ "op": op, "args": args }));
+    need(&a, 1, "agent-status set <state> [--window W | --pid P] | list")?;
+    match a.remove(0).as_str() {
+        "list" => req("badge", json!({ "action": "list" })),
+        "set" => {
+            let window = take(&mut a, "--window");
+            let pid = take(&mut a, "--pid").and_then(|p| p.parse::<u64>().ok());
+            need(&a, 1, "agent-status set <state> [--window W | --pid P]")?;
+            req("badge", json!({ "action": "set", "state": a[0], "window": window, "pid": pid }))
+        }
+        _ => Err(fail("invalid_args", "usage: agent-status set <state> [--window W | --pid P] | list", "")),
+    }
+}
+
+/// The hook entries that make Claude Code report its state. Printed, never installed: this is
+/// part of your own ~/.claude/settings.json.
+fn hooks_text() -> String {
+    let h = |state: &str| json!([{ "hooks": [{ "type": "command", "command": format!("baneyspaces agent-status set {state} --pid $PPID >/dev/null 2>&1 || true") }] }]);
+    serde_json::to_string_pretty(&json!({
+        "hooks": {
+            "UserPromptSubmit": h("working"),
+            "PreToolUse": h("working"),
+            "Notification": h("asking"),
+            "Stop": h("finished"),
+        }
+    }))
+    .unwrap_or_default()
 }
 
 const HANDS: &[&str] = &[
@@ -406,6 +507,10 @@ fn main() {
             }
         }
         "doctor" => print(&doctor(&paths), text),
+        "hooks" if args.get(1).map(String::as_str) == Some("print") => {
+            println!("{}", hooks_text());
+            0
+        }
         "mcp" => {
             let stdin = std::io::stdin();
             let mut out = std::io::stdout();

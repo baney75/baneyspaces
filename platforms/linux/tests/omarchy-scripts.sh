@@ -5,7 +5,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; OM="$HERE/../omarchy"
 T="$(mktemp -d /tmp/bs-omarchy.XXXXXX)"; trap 'rm -rf "$T"' EXIT
 # Nothing here may reach a real daemon: its socket lives under XDG_RUNTIME_DIR and the script finds
 # the binary on PATH, so both point into the temp dir.
-export HOME="$T/home" XDG_RUNTIME_DIR="$T/run" PATH="$T/bin:/usr/bin:/bin"; unset XDG_STATE_HOME XDG_DATA_HOME; mkdir -p "$T/run" "$T/bin"; mkdir -p "$HOME/.config/hypr" "$T/src/target/debug" "$T/src/platforms/linux/engine"
+export HOME="$T/home" XDG_RUNTIME_DIR="$T/run" PATH="$T/bin:/usr/bin:/bin"; unset XDG_STATE_HOME XDG_DATA_HOME XDG_CONFIG_HOME; mkdir -p "$T/run" "$T/bin"; mkdir -p "$HOME/.config/hypr" "$T/src/target/debug" "$T/src/platforms/linux/engine"
 printf '#!/bin/sh\necho "$@" >> "$HOME/stub.calls"\n' > "$T/src/target/debug/baneyspaces"; chmod +x "$T/src/target/debug/baneyspaces"
 printf '#!/bin/sh\n' > "$T/src/platforms/linux/engine/agent-desktop"; chmod +x "$T/src/platforms/linux/engine/agent-desktop"
 cat > "$HOME/.config/hypr/hyprland.lua" <<'LUA'
@@ -14,6 +14,8 @@ require("default.hypr.omarchy")
 require("hypr.bindings")
 -- my own line
 LUA
+mkdir -p "$HOME/.config/omarchy"; printf '{\n  "version": 1,\n  "plugins": [\n    { "id": "x.keep" }\n  ]\n}\n' > "$HOME/.config/omarchy/shell.json"
+cp "$HOME/.config/omarchy/shell.json" "$T/shell.orig.json"; SJ="$HOME/.config/omarchy/shell.json"; PID="io.github.baney75.baneyspaces"
 cp "$HOME/.config/hypr/hyprland.lua" "$T/orig.lua"; ORIG="$(cat "$HOME/.config/hypr/hyprland.lua")"; N=0; F=0
 ok() { N=$((N+1)); echo "  ok   $1"; }; no() { N=$((N+1)); F=$((F+1)); echo "  FAIL $1"; }
 chk() { local d="$1"; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else no "$d"; fi; }
@@ -28,7 +30,9 @@ chk "and copies no include" test ! -e "$HOME/.config/hypr/baneyspaces"
 "$OM/install.sh" --dry-run --src "$T/src" >"$T/dry.out" 2>&1
 chk "dry-run exits 0 and says it is a dry run" grep -q '^\[dry-run\]' "$T/dry.out"
 chk "dry-run changes nothing" test "$(cat "$M")" = "$ORIG"
-chk "dry-run creates no files" test ! -e "$HOME/.config/hypr/baneyspaces" -a ! -e "$HOME/.local"
+chk "dry-run creates no files" test ! -e "$HOME/.config/hypr/baneyspaces" -a ! -e "$HOME/.local" -a ! -e "$HOME/.config/omarchy/plugins" -a ! -e "$HOME/.config/baneyspaces"
+chk "dry-run says what it would do to the shell" grep -q "add {\"id\": \"$PID\"}" "$T/dry.out"
+chk "dry-run leaves shell.json alone" cmp -s "$SJ" "$T/shell.orig.json"
 "$OM/uninstall.sh" --dry-run >"$T/udry.out" 2>&1; chk "uninstall dry-run changes nothing" test "$(cat "$M")" = "$ORIG"
 chk "uninstall dry-run says it would stop the daemon" grep -q 'dry-run.*stop the baneyspaces daemon' "$T/udry.out"
 
@@ -37,21 +41,32 @@ chk "the block is appended" grep -qF -- '>>> baneyspaces' "$M"
 chk "your own lines are intact" grep -q 'my own line' "$M"
 chk "the include is copied" test -f "$HOME/.config/hypr/baneyspaces/baneyspaces.lua"
 chk "the autostart is copied and runs the daemon by absolute path" grep -qF "exec_cmd(\"$HOME/.local/bin/baneyspaces daemon\")" "$HOME/.config/hypr/baneyspaces/baneyspaces-autostart.lua"
-chk "every bound key runs the binary by absolute path" test "$(grep -cF "exec_cmd(\"$HOME/.local/bin/baneyspaces " "$HOME/.config/hypr/baneyspaces/baneyspaces.lua")" = 29
-chk "no bare baneyspaces command is left in the include" test "$(grep -c 'exec_cmd("baneyspaces ' "$HOME/.config/hypr/baneyspaces/baneyspaces.lua")" = 0
+chk "every bound key runs the binary by absolute path (20 commands and the helpers)" test "$(grep -cF "exec_raw(\"$HOME/.local/bin/baneyspaces " "$HOME/.config/hypr/baneyspaces/baneyspaces.lua")" = 23
+chk "no bare baneyspaces command is left in the include" test "$(grep -cE 'exec_(cmd|raw)\("baneyspaces ' "$HOME/.config/hypr/baneyspaces/baneyspaces.lua")" = 0
 chk "--no-binary works once the binary is installed" "$OM/install.sh" --no-binary --src "$T/src"
 chk "the binary is installed" test -x "$HOME/.local/bin/baneyspaces"
 chk "the engine is installed" test -x "$HOME/.local/share/baneyspaces/engine/agent-desktop"
 chk "a backup of hyprland.lua was taken" sh -c "cmp -s '$M' /dev/null || ls '$HOME'/.local/state/baneyspaces/backup/*/hyprland.lua"
 chk "the backup is the original" sh -c "cmp -s '$T/orig.lua' '$HOME'/.local/state/baneyspaces/backup/*/hyprland.lua"
 chk "the script never touched bindings.lua" test ! -e "$HOME/.config/hypr/bindings.lua"
+chk "the shell plugin is copied" test -f "$HOME/.config/omarchy/plugins/$PID/Service.qml" -a -f "$HOME/.config/omarchy/plugins/$PID/manifest.json"
+chk "the plugin is enabled in shell.json" jq -e --arg id "$PID" '.plugins|map(.id)|index($id) != null' "$SJ"
+chk "the plugin you had is still there" jq -e '.plugins|map(.id)|index("x.keep") != null' "$SJ"
+chk "shell.json was backed up first" sh -c "cmp -s '$T/shell.orig.json' '$HOME'/.local/state/baneyspaces/backup/*/shell.json"
+chk "an example config.toml was written, all commented out" sh -c "grep -q '^# size = ' '$HOME/.config/baneyspaces/config.toml' && ! grep -q '^[a-z]* = ' '$HOME/.config/baneyspaces/config.toml'"
+echo "# mine" >> "$HOME/.config/baneyspaces/config.toml"
 "$OM/install.sh" --src "$T/src" >/dev/null 2>&1
+chk "a second install adds the plugin once" test "$(jq --arg id "$PID" '[.plugins[]|select(.id==$id)]|length' "$SJ")" = 1
+chk "and keeps your config.toml" grep -q '^# mine' "$HOME/.config/baneyspaces/config.toml"
 chk "a second install adds no second block" test "$(grep -cF -- '>>> baneyspaces' "$M")" = 1
 
 "$OM/uninstall.sh" >/dev/null 2>&1
 chk 'uninstall stops the daemon (it ran baneyspaces stop)' grep -qx 'stop' "$HOME/stub.calls"
 chk "uninstall restores hyprland.lua byte for byte" cmp -s "$T/orig.lua" "$M"
 chk "uninstall removes the include" test ! -e "$HOME/.config/hypr/baneyspaces"
+chk "uninstall restores shell.json byte for byte" cmp -s "$SJ" "$T/shell.orig.json"
+chk "uninstall removes the shell plugin" test ! -e "$HOME/.config/omarchy/plugins/$PID"
+chk "uninstall keeps config.toml" test -f "$HOME/.config/baneyspaces/config.toml"
 chk "uninstall keeps the state (backups, log) by default" test -d "$HOME/.local/state/baneyspaces"
 # A hyprland.lua that does not end in a newline comes back exactly as it was.
 printf 'require("hypr.bindings")\n-- my own line, no newline at the end' > "$M"; cp "$M" "$T/orig2.lua"
@@ -63,4 +78,17 @@ printf 'a\n\n' > "$M"; cp "$M" "$T/orig3.lua"; "$OM/install.sh" --src "$T/src" >
 chk "and a file that ends in a blank line" cmp -s "$T/orig3.lua" "$M"
 "$OM/uninstall.sh" --purge >/dev/null 2>&1
 chk "--purge removes the binary and the state" sh -c "[ ! -e '$HOME/.local/bin/baneyspaces' ] && [ ! -e '$HOME/.local/state/baneyspaces' ]"
+# shell.json you changed after installing keeps your changes: only our entry goes.
+"$OM/install.sh" --src "$T/src" >/dev/null 2>&1; jq '.idle = {"lock": 600}' "$SJ" > "$T/sj.tmp" && cat "$T/sj.tmp" > "$SJ"
+"$OM/uninstall.sh" >/dev/null 2>&1
+chk "an edited shell.json keeps the edit and loses our entry" sh -c "jq -e '.idle.lock == 600 and (.plugins|map(.id)==[\"x.keep\"])' '$SJ'"
+# No shell.json at all: start from Omarchy's defaults, not from an empty file.
+rm -f "$SJ"; "$OM/install.sh" --src "$T/src" >/dev/null 2>&1
+chk "with no shell.json the defaults are kept" sh -c "[ ! -d /usr/share/omarchy/config/omarchy ] || jq -e '.bar.layout != null and (.plugins|map(.id)|index(\"$PID\") != null)' '$SJ'"
+"$OM/uninstall.sh" >/dev/null 2>&1
+chk "uninstalling removes a shell.json the install made, so Omarchy's defaults apply again" test ! -e "$SJ"
+# ... but one you changed afterwards stays, with only our entry gone
+rm -f "$SJ"; "$OM/install.sh" --src "$T/src" >/dev/null 2>&1; jq '.idle = {"lock": 900}' "$SJ" > "$T/sj.tmp" && cat "$T/sj.tmp" > "$SJ"
+"$OM/uninstall.sh" >/dev/null 2>&1
+chk "a shell.json you changed after the install stays, without our entry" sh -c "jq -e '.idle.lock == 900 and ((.plugins // [])|map(.id)|index(\"$PID\") == null)' '$SJ'"
 echo "passed $((N-F)), failed $F"; [ "$F" = 0 ] && echo "PASS: omarchy-scripts.sh ($N checks)" || { echo "FAIL: omarchy-scripts.sh"; exit 1; }

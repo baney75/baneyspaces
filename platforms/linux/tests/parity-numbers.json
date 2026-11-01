@@ -1,0 +1,98 @@
+{
+  "frame_probe": {
+    "dock": {
+      "surface": "dock",
+      "frames": 366,
+      "intervals": 354,
+      "median_ms": 17,
+      "late_1_5x": 0,
+      "late_2x": 0,
+      "late_per_200": 0
+    },
+    "overview": {
+      "surface": "overview",
+      "frames": 201,
+      "intervals": 177,
+      "median_ms": 16,
+      "late_1_5x": 0,
+      "late_2x": 0,
+      "late_per_200": 0
+    },
+    "launcher": {
+      "surface": "launcher",
+      "frames": 204,
+      "intervals": 180,
+      "median_ms": 16,
+      "late_1_5x": 1,
+      "late_2x": 0,
+      "late_per_200": 1.1
+    },
+    "switcher": {
+      "surface": "switcher",
+      "frames": 196,
+      "intervals": 172,
+      "median_ms": 16,
+      "late_1_5x": 0,
+      "late_2x": 0,
+      "late_per_200": 0
+    }
+  },
+  "bindings": {
+    "before": 228,
+    "after": 227,
+    "untouched": 194,
+    "replaced": 34,
+    "added": 33
+  },
+  "animation": {
+    "workspaces": "instant by default (Omarchy turns it off too)",
+    "omarchy_animations": "untouched: windows, layers, fade, border and the scratchpad slide are identical before and after",
+    "switch_states": [
+      [
+        1,
+        3
+      ],
+      [
+        3,
+        1
+      ]
+    ],
+    "special_agent_states": "no third workspace, agent never returns",
+    "method": "hyprctl j/monitors polled every 2 ms for 1.4 s per command"
+  },
+  "switch_latency_ms": {
+    "native": {
+      "p50": 0.38,
+      "p90": 0.43,
+      "max": 0.82,
+      "n": 40
+    },
+    "ours": {
+      "p50": 0.37,
+      "p90": 0.44,
+      "max": 0.7,
+      "n": 40
+    },
+    "ours_daemon": {
+      "p50": 6.94,
+      "p90": 7.67,
+      "max": 8.27,
+      "n": 40
+    },
+    "samples": 40
+  },
+  "launcher_quality": {
+    "queries": 31,
+    "omarchy": {
+      "p1": 0.903,
+      "p3": 1,
+      "mrr": 0.946
+    },
+    "baneyspaces": {
+      "p1": 0.903,
+      "p3": 1,
+      "mrr": 0.946
+    },
+    "misses": []
+  }
+}

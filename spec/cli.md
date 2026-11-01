@@ -10,7 +10,13 @@ window id, or a pid.
 | `move <n> [--stay]` | yes | yes | yes |
 | `ls` | yes (Deck rows) | yes (windows by workspace) | yes |
 | `state` | yes (`state.json`) | yes (`state.json`) | yes |
-| `overview` | yes | records the request; the shell plugin shows it (part 2) | yes |
+| `overview [show\|hide\|toggle]` | yes | yes (the shell plugin draws it) | yes |
+| `dock show\|hide\|toggle` | the dock | yes | no |
+| `switcher next\|prev\|commit\|cancel` | the ⌘Tab bar | yes (Alt+Tab) | no |
+| `launcher [show\|hide\|toggle]`, `launcher search`, `launcher run` | yes | yes | no |
+| `focus <window>`, `move-windows <n\|new> <window>...` | no | yes | no |
+| `config`, `config set <key> <value>`, `settings` | Settings | yes (`config.toml`) | no |
+| `agent-status set <state> [--window W\|--pid P]`, `list`, `hooks print` | hooks | yes | no |
 | `agent on|off` | yes | not needed (the agent workspace always exists) | yes |
 | `agent-workspace show|hide|toggle` | the key | yes | yes |
 | `agent status` | yes | yes | yes |

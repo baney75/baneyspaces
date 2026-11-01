@@ -53,6 +53,7 @@ if [ -f "$MAIN" ] && grep -qF -- "$BEGIN" "$MAIN"; then
 else
   say "no baneyspaces block in $MAIN"
 fi
+"$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/shell-uninstall.sh" $([ "$DRY" = 1 ] && echo --dry-run)
 say "remove $DEST"
 do_ "rm -rf '$DEST'"
 if [ "$PURGE" = 1 ]; then
