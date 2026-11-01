@@ -328,6 +328,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                                           object: nil, queue: .main) { [weak self] note in
             guard let self, let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
             self.switcher.noteActivated(app.processIdentifier)
+            // An activation an agent's launch or action caused isn't Donovan using the app.
+            UserActivity.shared.activated(app.processIdentifier, byAgent: AgentActivity.shared.causedByAnyAction(pid: app.processIdentifier, bundle: app.bundleIdentifier))
             guard self.started else { return }
             self.spaces.appActivated(app)
             self.deck.appChanged()
@@ -564,7 +566,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         h.unclaim = { [weak self] pid in self?.spaces.cancelClaim(of: pid) }
         h.move = { [weak self] id, n in self?.run { $0.move(id, to: n) } }
         h.windows = { [weak self] in self?.spaces.agentWindows() ?? [] }
+        h.pidOf = { [weak self] id in self?.spaces.handsLive(id)?.pid }
+        h.occupied = { [weak self] n in self?.spaces.isOccupied(n) ?? false }
         deck.agentHost = h
+        // The agent hands: what the scope guard needs from the workspaces, and what to do when a lend changes.
+        // The engine's state folder is set here, once, on the main thread, before any engine queue exists.
+        HandsEngine.prepareEnvironment()
+        deck.hands.host = HandsHost(
+            agentWorkspace: { Spaces.agentWorkspace },
+            windows: { [weak self] in self?.spaces.handsWindows(fresh: false) ?? [] },
+            freshWindows: { [weak self] in self?.spaces.handsWindows(fresh: true) ?? [] },
+            live: { [weak self] in self?.spaces.handsLive($0) },
+            titles: { [weak self] in self?.spaces.handsTitles($0) ?? [:] },
+            inspect: { [weak self] in self?.spaces.handsInspect($0) ?? (nil, false) },
+            agentOwned: { AgentOwned.shared.pids },
+            askToLend: { app, minutes, takeBack in LendConsent.ask(app: app, minutes: minutes, takeBack: takeBack) },
+            open: { [weak self] args in self?.deck.agent("open", args) ?? Wire.Reply(ok: false, error: "not ready") })
+        HandsLends.shared.onChange = { [weak self] in
+            DispatchQueue.main.async {
+                // A lent app is parked, not hidden, while it is lent: the workspace is applied again.
+                self?.spaces.saveState()
+                self?.run { $0.reapply() }
+            }
+        }
+        Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in HandsLends.shared.expire() }
         deck.onWorkingChange = { [weak self] in self?.dock.reload() }
         // A moment after launch: setting up an observer per app costs the main thread a few
         // hundred milliseconds, which would otherwise land on your first workspace switch.

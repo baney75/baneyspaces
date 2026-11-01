@@ -1,3 +1,7 @@
 .build/
 build/
 .DS_Store
+# The hands engine: fetched, patched and built by scripts/build-engine.sh
+engine/.cache/
+engine/.src/
+engine/lib/

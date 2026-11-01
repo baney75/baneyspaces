@@ -28,6 +28,10 @@ public enum Wire {
             case agent
             /// Remote machines (local callers only): `text` is on, off or status.
             case remote
+            /// An agent computer-use command (`baneyspaces agent snapshot|click|…`): `text` is a
+            /// HandsRequest as JSON, the reply's `info["envelope"]` the JSON envelope. Local only:
+            /// `Remote.allows` refuses it, so no other machine can act on this one.
+            case hands
         }
         public var op: Op
         public var target: String?
