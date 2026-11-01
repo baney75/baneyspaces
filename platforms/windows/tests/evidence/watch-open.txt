@@ -1,2 +1,2 @@
-polls=156520 over 14 s
-NEW w-591880 first_seen_at=2777ms visible_polls=0 :: w-591880 class=Notepad title='Untitled - Notepad' cloaked=0 alpha=0 parked=False rect=26,26 SEEN=False
+polls=136248 over 14 s
+NEW w-985194 first_seen_at=3280ms visible_polls=0 :: w-985194 class=BaneySpacesTestApp title='BaneySpaces test app' cloaked=0 alpha=0 parked=False rect=140,140 SEEN=False

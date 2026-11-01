@@ -63,9 +63,9 @@ the chords in the Windows column of `spec/keys.json`: **Win+1-9** switch, **Win+
 async key state can lag when two keys arrive in the same millisecond), swallows the digit's key-up too,
 and presses an unassigned key (0xE8) so releasing Win does not open the Start menu.
 
-Limit: Windows keeps a normal-level hook from seeing keys typed into an **elevated** window (UIPI), so
-the chords do nothing while Task Manager or an elevated terminal is in front. Running the daemon
-elevated, or signing it for UI access, lifts that; neither is part 1.
+Limit (by design): Windows keeps a normal-level hook from seeing keys typed into an **elevated** window
+(UIPI), so **the Win chords do nothing while an elevated window has focus** (Task Manager, an elevated
+terminal). The daemon is not elevated and does not ask for UI access.
 
 ## Focus
 
@@ -87,15 +87,18 @@ no `SendInput`, never moves the cursor and never draws the cursor overlay. The e
 sets it to value + text, and the engine reads that back (`verified` is true only then). `shot` passes
 through to the engine. `press`, `key` and `pointer` are `not_supported` (phase 3-4).
 
-- **Deny by default** (`apps.rs`): only a listed app may be started for an agent; anything else is
-  `needs_sandbox`, before launch. The list is `notepad`.
-- **Notepad forwards.** With a Notepad of yours running at the same level, a second `notepad` opens
-  its window in *your* process (seen live). So the launch is refused first with `single_instance`
-  (`error.data.started: false`) while a copy runs at your level or lower. An elevated copy does not
-  count: Windows will not redirect a normal process's launch into it. If an app forwards anyway the
-  error lists `windows_that_appeared`.
-- **Notepad restores your unsaved tabs** in a new process. An agent's Notepad can therefore show text
-  you left unsaved. This is not fixed in part 1; see the PR's open items.
+- **In production, `agent open` on Windows refuses every app with `needs_sandbox`, before launch.** No
+  Windows app is safe to hand an agent yet. Notepad restores your unsaved tabs into a new process, so an
+  agent's Notepad could show text you never saved, and it also forwards a second launch into a copy you
+  already run (seen live). Explorer, the Store apps and browsers forward too. Until there is a
+  Windows sandbox, an agent can drive nothing on Windows except through a test daemon (below).
+  **Follow-up: a Windows sandbox phase**, where the agent's apps run apart from your session
+  (Windows Sandbox or a Hyper-V VM). Single-instance forwarding is handled there as well; the
+  `single_instance` error, with `windows_that_appeared`, stays as the backstop if an app forwards anyway.
+- **Tests only: `bs-testapp`** (`platforms/windows/testapp`) is a window with a text box: its own exe,
+  its own process every time, nothing remembered, no forwarding. A daemon started with
+  `BANEYSPACES_TEST_OPS` set may start it (and, for the live test's agent-peer check, any program);
+  a normal daemon never does. `live.sh` starts a test daemon for the agent flow.
 - `agent run` is `needs_sandbox`: a console window belongs to Windows Terminal, not to the process we
   would start, so it cannot be tied to the agent.
 - An agent's own process (a pid in a job, or registered) is refused every user operation
@@ -125,7 +128,7 @@ the Build Tools and MinGit in it (about 10 minutes, redo after `reset`); the tre
 Windows crate also cross-checks on Linux with `cargo xwin check --target x86_64-pc-windows-msvc`.
 `tests/live.sh` is the live test: it opens Notepad, Explorer and Calculator at normal level, moves
 and switches with the CLI and with real Win+n keys (`virsh send-key`), kills the daemon with
-`taskkill /F` and starts it again, and runs the agent flow, reading back the windows (EnumWindows,
+`taskkill /F` and starts it again, and runs the agent flow with `bs-testapp` (after checking that production refuses every launch), reading back the windows (EnumWindows,
 visibility, DWM cloak state, layered alpha) after every step. `tests/evidence/` has its log and screenshots.
 
 Not done in part 1: multi-monitor placement (windows are not moved between displays; the model is, and
