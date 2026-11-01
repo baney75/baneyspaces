@@ -715,9 +715,11 @@ final class FinalRoundSourceTests: XCTestCase {
         XCTAssertTrue(on.range(of: "h.occupied(n)")!.lowerBound < on.range(of: "h.setWorkspace(n)")!.lowerBound)
     }
 
-    func testThePressToolDoesNotPromiseWhatItCannotDo() {
+    func testThePressToolSaysWhatItProvesAndWhenItRefuses() {
         let press = HandsTools.tool(verb: "press")
-        XCTAssertTrue(press?.summary.contains("not_supported") ?? false)
+        XCTAssertTrue(press?.summary.contains("unverified") ?? false, "the tool says what no proof returns")
+        XCTAssertTrue(press?.summary.contains("never to the session") ?? false)
+        XCTAssertFalse(press?.summary.contains("Always answers not_supported") ?? true, "phase 4 ships keys")
     }
 }
 
@@ -821,7 +823,9 @@ final class HandsSourceTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(files.count, 4)
         for f in files {
             let text = try Self.code(f)
-            for b in banned { XCTAssertFalse(text.contains(b), "\(f) must not use \(b)") }
+            // The one file that makes events says so, and BackgroundPosterSourceTests holds it to a stricter list of its own.
+            let exempt: Set<String> = f.hasSuffix("/BackgroundPoster.swift") ? ["CGEventPost", "CGEvent("] : []
+            for b in banned where !exempt.contains(b) { XCTAssertFalse(text.contains(b), "\(f) must not use \(b)") }
         }
     }
 
@@ -860,10 +864,11 @@ final class HandsSourceTests: XCTestCase {
         let engine = try Self.code("Sources/BaneySpaces/Hands/HandsEngine.swift")
         let kinds = try XCTUnwrap(Self.block(after: "enum Kind: Int32", in: engine))
         XCTAssertFalse(kinds.lowercased().contains("press") || kinds.contains("14") || kinds.lowercased().contains("key"), "no key kind in the engine's kinds")
-        let router = try Self.code("Sources/BaneySpaces/Hands/HandsRouter.swift")
-        let press = try XCTUnwrap(Self.block(after: "private func press(", in: router))
-        XCTAssertFalse(press.contains("HandsEngine"), "press answers not_supported without an engine call")
-        XCTAssertTrue(press.contains(".notSupported"))
+        // Keys never reach the engine: they are posted to one process by BackgroundPoster, with a permit the planner made.
+        let router = try Self.code("Sources/BaneySpaces/Hands/HandsRouter+Background.swift")
+        let press = try XCTUnwrap(Self.block(after: "func press(", in: router))
+        XCTAssertFalse(press.contains("HandsEngine.shared.act("), "press is not an engine action")
+        XCTAssertTrue(router.contains("BackgroundPlanner.plan("))
     }
 
     func testEveryActionHoldsTheFocusGuardForItsWholeRun() throws {

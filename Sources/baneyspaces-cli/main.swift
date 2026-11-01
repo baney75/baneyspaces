@@ -20,7 +20,7 @@ usage: \(me) <command>
   agent status|on [N]|off     the agent workspace: agents drive apps there while you work here
   agent open <app> [file…]    open an app (or files in it) there, without switching you
   agent run [--dir D] -- CMD  run a command (claude, grok…) in a Ghostty window there
-  agent windows|snapshot|find|get|click|type|set-value|press|scroll|select|toggle|shot|open
+  agent windows|snapshot|find|get|click|type|set-value|press|click-at|drag|scroll|select|toggle|shot|open
                               read and act on apps on the agent workspace (or lent ones) without touching
                               your screen; each prints one JSON envelope (agent <command> with no
                               arguments shows its usage). `agent open` prints one too.

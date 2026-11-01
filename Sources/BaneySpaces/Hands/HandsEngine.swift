@@ -9,8 +9,8 @@ import Foundation
 /// Rules this file keeps (HandsSourceTests reads this source and fails if one breaks):
 ///  - Every action goes through `ad_execute_by_ref_timeout` with the strict Headless policy, a constant
 ///    no caller can change: `act` takes no policy. The engine gives one action, PressKey, a focus
-///    permission of its own under Headless (its base policy), so `Kind` has no key case and the
-///    router answers `press` with not_supported before any engine call.
+///    permission of its own under Headless (its base policy), so `Kind` has no key case. Keys and
+///    the pointer never go through the engine: `BackgroundPoster` posts them to one process, with a permit.
 ///  - Nothing here calls an engine function that focuses, raises, launches, closes or moves a
 ///    window, posts a mouse event, or sends a key to no particular app.
 ///  - No activate, SetFrontProcess or global CGEventPost, in this file or its neighbors.
@@ -244,6 +244,13 @@ final class HandsEngine {
             case .failure(let e): return .failed(e)
             }
         }
+    }
+
+    /// Runs input that is not an engine call (BackgroundPoster) the way an action runs: on the window's process
+    /// queue, one at a time with that process's engine calls, holding the focus guard, with the scope check
+    /// right before it executes. It posts through `BackgroundPermit`s only; this file never makes an event.
+    func perform(window w: HandsWindow, check: @escaping Check, _ work: @escaping (_ cancelled: () -> Bool) -> Reply) -> Reply {
+        run(window: w, budget: Budget.act, mutating: true, check: check, work)
     }
 
     /// Whether the engine can read windows at all (Accessibility granted).

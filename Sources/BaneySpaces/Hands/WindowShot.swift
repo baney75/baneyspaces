@@ -42,6 +42,54 @@ enum WindowShot {
         return captureWithKit(id, name, check)
     }
 
+    /// A window's pixels in memory, for comparing before and after (never written to disk, never returned to the caller).
+    struct Pixels {
+        var rgba: [UInt8]
+        var width: Int
+        var height: Int
+        /// Pixels per point.
+        var scale: CGFloat
+    }
+
+    private final class PixelBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: Pixels?
+        private var cancelled = false
+        func set(_ p: Pixels?) { lock.lock(); if !cancelled { value = p }; lock.unlock() }
+        func cancel() { lock.lock(); cancelled = true; lock.unlock() }
+        func get() -> Pixels? { lock.lock(); defer { lock.unlock() }; return value }
+    }
+
+    /// nil when Screen Recording isn't allowed, the window isn't there, or the capture takes too long.
+    static func pixels(window id: UInt32, check: @escaping () -> HandsError?) -> Pixels? {
+        guard CGPreflightScreenCaptureAccess(), #available(macOS 14, *) else { return nil }
+        let box = PixelBox()
+        let done = DispatchSemaphore(value: 0)
+        Task.detached {
+            defer { done.signal() }
+            do {
+                let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+                guard let w = content.windows.first(where: { $0.windowID == id }), check() == nil else { return }
+                let cfg = SCStreamConfiguration()
+                cfg.width = Int(w.frame.width * 2)
+                cfg.height = Int(w.frame.height * 2)
+                cfg.showsCursor = false
+                let image = try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(desktopIndependentWindow: w), configuration: cfg)
+                let width = image.width, height = image.height
+                var bytes = [UInt8](repeating: 0, count: width * height * 4)
+                let ok = bytes.withUnsafeMutableBytes { buf -> Bool in
+                    guard let ctx = CGContext(data: buf.baseAddress, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                                              space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+                    ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+                    return true
+                }
+                if ok { box.set(Pixels(rgba: bytes, width: width, height: height, scale: CGFloat(width) / max(w.frame.width, 1))) }
+            } catch {}
+        }
+        if done.wait(timeout: .now() + budget) == .timedOut { box.cancel() }
+        return box.get()
+    }
+
     @available(macOS 14, *)
     private static func captureWithKit(_ id: UInt32, _ name: String?, _ check: @escaping () -> HandsError?) -> Swift.Result<Result, HandsError> {
         let outcome = Outcome()
