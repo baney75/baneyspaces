@@ -27,3 +27,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Bundle the app
         run: BANEYSPACES_ADHOC=1 BANEYSPACES_ARM64_ONLY=1 scripts/bundle.sh
+      - name: The licence of ported code and the probe app are in the bundle
+        run: |
+          test -s build/BaneySpaces.app/Contents/Resources/licenses/cua-driver-MIT.txt
+          test -s build/BaneySpaces.app/Contents/Resources/probe/CanvasProbe.cdhash
+          codesign --verify --deep --strict build/BaneySpaces.app/Contents/Resources/probe/CanvasProbe.app

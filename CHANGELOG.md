@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Agent hands, phase 4: keys and a pointer for windows that are not in front.** `agent press` now sends keys (several,
+  separated by spaces) to the one process, and `agent click-at` and `agent drag` post window-local mouse events to it,
+  without activating, raising, switching a Space, moving the real pointer, or posting to the session. Only to a process
+  BaneySpaces started (checked when the call executes) or a window Donovan lent; each is proved by reading the same window
+  back, and an unproved one is `unverified` (retry never). SkyLight's per-process post is found by name at run time with
+  the public call as the fallback. Prepared and unit-tested; `scripts/agent-keys-probe.swift` runs on `main` after merge
+  when Donovan has been idle 10 minutes. Logic ported from cua-driver (MIT), see NOTICE.
 - **Themes, 22 palettes and a dock switch.** Settings › Appearance has a theme (**BaneySpaces**, the
   look it has always had; **Omarchy**, square corners, 2 px borders, monospace and numbered blocks;
   **Minimal**) and a palette (**Auto** or one of Omarchy's 22), shared with the other platforms from

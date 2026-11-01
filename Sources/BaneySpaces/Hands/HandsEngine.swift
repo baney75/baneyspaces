@@ -9,8 +9,8 @@ import Foundation
 /// Rules this file keeps (HandsSourceTests reads this source and fails if one breaks):
 ///  - Every action goes through `ad_execute_by_ref_timeout` with the strict Headless policy, a constant
 ///    no caller can change: `act` takes no policy. The engine gives one action, PressKey, a focus
-///    permission of its own under Headless (its base policy), so `Kind` has no key case and the
-///    router answers `press` with not_supported before any engine call.
+///    permission of its own under Headless (its base policy), so `Kind` has no key case. Keys and
+///    the pointer never go through the engine: `BackgroundPoster` posts them to one process, with a permit.
 ///  - Nothing here calls an engine function that focuses, raises, launches, closes or moves a
 ///    window, posts a mouse event, or sends a key to no particular app.
 ///  - No activate, SetFrontProcess or global CGEventPost, in this file or its neighbors.
@@ -41,7 +41,7 @@ final class HandsEngine {
     /// Seconds each kind of call may take before the caller gets `timeout`.
     /// How long an action waits for its target to become actionable before it gives up.
     static let actionableWait: TimeInterval = 5
-    enum Budget { static let snapshot: TimeInterval = 25, get: TimeInterval = 10, act: TimeInterval = 20, bounds: TimeInterval = 0.05 }
+    enum Budget { static let snapshot: TimeInterval = 25, get: TimeInterval = 10, act: TimeInterval = 20, transaction: TimeInterval = 60, bounds: TimeInterval = 0.05 }
 
     /// BaneySpaces' own folder for agents (handoff files, shots), readable by this user only.
     static var home: URL { Wire.supportDir.appendingPathComponent("hands", isDirectory: true) }
@@ -68,6 +68,10 @@ final class HandsEngine {
         var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
     }
 
+    private static let queueKey = DispatchSpecificKey<Int32>()
+    /// Whether the caller is running on this process's queue (inside `transaction`).
+    func isOnQueue(of pid: Int32) -> Bool { DispatchQueue.getSpecific(key: Self.queueKey) == pid }
+
     /// A read lane per process for the cursor's bounds reads, beside the process queue, so an action never waits behind one.
     /// The pinned engine documents this: "Adapters are safe to call from multiple host threads. Native element handles are
     /// thread-affine ... Desktop mutations are serialized by the adapter's cross-process interaction lease"
@@ -88,6 +92,7 @@ final class HandsEngine {
         initLock.lock(); defer { initLock.unlock() }
         if let q = queues[pid] { return q }
         let q = DispatchQueue(label: "baneyspaces.hands.engine.\(pid)")
+        q.setSpecific(key: Self.queueKey, value: pid)
         queues[pid] = q
         return q
     }
@@ -198,30 +203,47 @@ final class HandsEngine {
     /// One window's tree with refs. `windowID` is the engine's id for it ("w-4211"). `evidence` reads use
     /// their own store, so they never push the agent's refs out.
     func snapshot(window w: HandsWindow, interactive: Bool, compact: Bool, depth: UInt8, evidence: Bool = false, check: @escaping Check) -> Reply {
-        let windowID = w.id
-        return run(window: w, budget: Budget.snapshot, mutating: false, check: check) { [self] _ in
-            if let e = ready() { return .failed(e) }
-            guard let adapter = evidence ? evidenceAdapter : adapter else { return .failed(HandsError(.engineError, "the engine isn't ready", suggestion: "Check `baneyspaces doctor`.", retry: .never)) }
-            var out: UnsafeMutablePointer<CChar>?
-            let id = "w-\(windowID)"
-            // The exact window id alone names the window. The app's name is not passed: two copies of an app share
-            // it, and the engine would match by name first.
-            let code = id.withCString { w in
-                ad_snapshot_window(adapter, nil, w, Self.surfaceWindow, depth, interactive, compact, &out)
-            }
-            return finish(code, out)
+        run(window: w, budget: Budget.snapshot, mutating: false, check: check) { [self] _ in
+            doSnapshot(windowID: w.id, interactive: interactive, compact: compact, depth: depth, evidence: evidence)
         }
+    }
+
+    /// The same read, directly, for a caller already on the process's queue (`transaction`). Never queues, so it cannot wait on itself.
+    func snapshotInline(window w: HandsWindow, interactive: Bool, compact: Bool, depth: UInt8, evidence: Bool = false) -> Reply {
+        precondition(isOnQueue(of: w.pid), "snapshotInline runs inside a transaction")
+        return doSnapshot(windowID: w.id, interactive: interactive, compact: compact, depth: depth, evidence: evidence)
+    }
+
+    private func doSnapshot(windowID: UInt32, interactive: Bool, compact: Bool, depth: UInt8, evidence: Bool) -> Reply {
+        if let e = ready() { return .failed(e) }
+        guard let adapter = evidence ? evidenceAdapter : adapter else { return .failed(HandsError(.engineError, "the engine isn't ready", suggestion: "Check `baneyspaces doctor`.", retry: .never)) }
+        var out: UnsafeMutablePointer<CChar>?
+        let id = "w-\(windowID)"
+        // The exact window id alone names the window. The app's name is not passed: two copies of an app share
+        // it, and the engine would match by name first.
+        let code = id.withCString { w in
+            ad_snapshot_window(adapter, nil, w, Self.surfaceWindow, depth, interactive, compact, &out)
+        }
+        return finish(code, out)
     }
 
     /// One property of a ref, read from the live element.
     func get(window w: HandsWindow, ref: String, property: String, check: @escaping Check) -> Reply {
-        run(window: w, budget: Budget.get, mutating: false, check: check) { [self] cancelled in
-            if let e = ready() { return .failed(e) }
-            guard let adapter else { return .failed(HandsError(.engineError, "the engine isn't ready", suggestion: "Check `baneyspaces doctor`.", retry: .never)) }
-            var out: UnsafeMutablePointer<CChar>?
-            let code = ref.withCString { r in property.withCString { p in ad_get_ref(adapter, r, p, &out) } }
-            return finish(code, out)
-        }
+        run(window: w, budget: Budget.get, mutating: false, check: check) { [self] _ in doGet(ref: ref, property: property) }
+    }
+
+    /// The same read, directly, for a caller already on the process's queue (`transaction`).
+    func getInline(window w: HandsWindow, ref: String, property: String) -> Reply {
+        precondition(isOnQueue(of: w.pid), "getInline runs inside a transaction")
+        return doGet(ref: ref, property: property)
+    }
+
+    private func doGet(ref: String, property: String) -> Reply {
+        if let e = ready() { return .failed(e) }
+        guard let adapter else { return .failed(HandsError(.engineError, "the engine isn't ready", suggestion: "Check `baneyspaces doctor`.", retry: .never)) }
+        var out: UnsafeMutablePointer<CChar>?
+        let code = ref.withCString { r in property.withCString { p in ad_get_ref(adapter, r, p, &out) } }
+        return finish(code, out)
     }
 
     /// The target's bounds for the agent cursor, read on the process's read lane and handed to `completion`; nobody
@@ -278,6 +300,15 @@ final class HandsEngine {
             case .failure(let e): return .failed(e)
             }
         }
+    }
+
+    /// Runs a whole input transaction (readings before, the post, the proof) on the window's process queue, so no other
+    /// action on that process can run in between and change what the proof reads. It is the same queue the engine's
+    /// calls use, which is why the transaction reads through `getInline` and `snapshotInline`. The focus guard is
+    /// held, and the scope check runs right before it starts. The events themselves are BackgroundPoster's; this
+    /// file never makes one.
+    func transaction(window w: HandsWindow, check: @escaping Check, _ work: @escaping (_ cancelled: () -> Bool) -> Reply) -> Reply {
+        run(window: w, budget: Budget.transaction, mutating: true, check: check, work)
     }
 
     /// Whether the engine can read windows at all (Accessibility granted).

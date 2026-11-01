@@ -65,6 +65,8 @@ final class HandsRouter {
         case "type": return act(req, .typeText, "type", text: req.string("text"))
         case "set-value": return act(req, .setValue, "set-value", text: req.string("value"))
         case "press": return press(req)
+        case "click-at": return clickAt(req)
+        case "drag": return drag(req)
         case "scroll": return scroll(req)
         case "select": return act(req, .select, "select", text: req.string("option"))
         case "toggle": return act(req, .toggle, "toggle")
@@ -76,13 +78,13 @@ final class HandsRouter {
 
     // MARK: scope
 
-    private func onMain<T>(_ f: () -> T) -> T { Thread.isMainThread ? f() : DispatchQueue.main.sync(execute: f) }
+    func onMain<T>(_ f: () -> T) -> T { Thread.isMainThread ? f() : DispatchQueue.main.sync(execute: f) }
 
-    private func listWindows(fresh: Bool = false) -> (windows: [HandsWindow], agent: Int?) {
+    func listWindows(fresh: Bool = false) -> (windows: [HandsWindow], agent: Int?) {
         onMain { (fresh ? host.freshWindows() : host.windows(), host.agentWorkspace()) }
     }
 
-    private func decide(_ w: HandsWindow, _ agent: Int?) -> ScopeDecision {
+    func decide(_ w: HandsWindow, _ agent: Int?) -> ScopeDecision {
         lock.lock(); let bad = refused.contains(w.id); lock.unlock()
         if bad { return .denied(HandsError(.needsSandbox, "window \(w.id) showed a document of Donovan's", suggestion: "Open your own file from the handoff folder.", retry: .never)) }
         return ScopeGuard.check(w, agentWorkspace: agent, lends: lends.current(), now: Date(), inUse: UserActivity.shared.inUse(w.pid))
@@ -91,7 +93,7 @@ final class HandsRouter {
     /// The scope check an engine call runs on its queue at the moment it executes, plus, for a call on a ref,
     /// the check that the ref still means what the snapshot said (the engine's saved refs are a file the
     /// agent could edit).
-    private func check(_ w: HandsWindow, ref: String? = nil) -> HandsEngine.Check {
+    func check(_ w: HandsWindow, ref: String? = nil) -> HandsEngine.Check {
         { [self] in gate(w) ?? ref.flatMap { refProblem($0) } }
     }
 
@@ -110,7 +112,7 @@ final class HandsRouter {
 
     /// The check right before an engine call: the window is still the same process's, and still in scope.
     /// A move to one of Donovan's workspaces or a revoked lend between resolving and dispatching stops the call.
-    private func gate(_ w: HandsWindow) -> HandsError? {
+    func gate(_ w: HandsWindow) -> HandsError? {
         let (now, agent) = onMain { (host.live(w.id), host.agentWorkspace()) }
         guard let now else { return HandsError(.windowNotFound, "window \(w.id) is gone", suggestion: "Run `baneyspaces agent windows` and take a new snapshot.", retry: .afterSnapshot) }
         guard now.pid == w.pid else { return HandsError(.staleRef, "window \(w.id) belongs to a different process now", suggestion: "Take a new snapshot.", retry: .afterSnapshot) }
@@ -137,7 +139,7 @@ final class HandsRouter {
                  "workspace": w.workspace.map(JSONValue.int) ?? .null, "scope": .string(scope.reason)])
     }
 
-    private func targetJSON(_ w: HandsWindow, _ scope: ScopeDecision) -> JSONValue {
+    func targetJSON(_ w: HandsWindow, _ scope: ScopeDecision) -> JSONValue {
         .object(["pid": .int(Int(w.pid)), "window": .int(Int(w.id)), "app": .string(w.app), "scope": .string(scope.reason)])
     }
 
@@ -162,7 +164,7 @@ final class HandsRouter {
     }
 
     /// The window a snapshot or find names, and that the scope guard allows.
-    private func target(_ req: HandsRequest) -> Result<(HandsWindow, ScopeDecision, String?), HandsError> {
+    func target(_ req: HandsRequest) -> Result<(HandsWindow, ScopeDecision, String?), HandsError> {
         var (all, agent) = listWindows()
         if let id = req.int("window") {
             if !all.contains(where: { Int($0.id) == id }) { (all, agent) = listWindows(fresh: true) }
@@ -212,7 +214,7 @@ final class HandsRouter {
     }
 
     /// `register: false` for the snapshots taken as evidence: the agent never sees their refs, so they must not push its refs out.
-    private func read(_ w: HandsWindow, interactive: Bool, compact: Bool, depth: UInt8 = 10, register: Bool = true) -> Result<JSONValue, HandsError> {
+    func read(_ w: HandsWindow, interactive: Bool, compact: Bool, depth: UInt8 = 10, register: Bool = true) -> Result<JSONValue, HandsError> {
         switch HandsEngine.shared.snapshot(window: w, interactive: interactive, compact: compact, depth: depth, evidence: !register, check: check(w)) {
         case .failed(let e): return .failure(e)
         case .ok(let data):
@@ -272,7 +274,7 @@ final class HandsRouter {
 
     /// A ref is good for the snapshot that printed it: that snapshot's window, in that process. Any other
     /// window, a window that changed process, or one that left the agent's scope fails here.
-    private func resolve(_ ref: String?) -> Result<(HandsWindow, ScopeDecision), HandsError> {
+    func resolve(_ ref: String?) -> Result<(HandsWindow, ScopeDecision), HandsError> {
         guard let ref, ref.hasPrefix("@s"), let colon = ref.firstIndex(of: ":") else {
             return .failure(HandsError(.badArguments, "\(ref ?? "") isn't a ref", suggestion: "Refs look like @s8f3k2p9:e5 and come from `baneyspaces agent snapshot`.", retry: .safe))
         }
@@ -310,17 +312,6 @@ final class HandsRouter {
 
     // MARK: acting
 
-    /// Keys need the app in front, and BaneySpaces never raises one for an agent. Until keys can be sent to
-    /// one background process (a later phase) this answers without an engine call.
-    private func press(_ req: HandsRequest) -> HandsEnvelope {
-        switch resolve(req.string("ref")) {
-        case .failure(let e): return .failure(e)
-        case .success(let (w, _)):
-            return .failure(HandsError(.notSupported, "keys reach only the app in front, and \(w.app) is not",
-                                       suggestion: "BaneySpaces never raises an app for an agent. Use `type` or `set-value` on a text element, or `click` the control. Keys to a background app arrive in a later phase (docs/agent-computer-use.md).", retry: .never))
-        }
-    }
-
     private func scroll(_ req: HandsRequest) -> HandsEnvelope {
         let dirs = ["up": 0, "down": 1, "left": 2, "right": 3]
         guard let d = dirs[(req.string("direction") ?? "").lowercased()] else {
@@ -329,7 +320,7 @@ final class HandsRouter {
         return act(req, .scroll, "scroll", direction: Int32(d), amount: UInt32(clamping: req.int("amount") ?? 3))
     }
 
-    private func valueOf(_ w: HandsWindow, _ ref: String) -> String? {
+    func valueOf(_ w: HandsWindow, _ ref: String) -> String? {
         if case .ok(let v) = HandsEngine.shared.get(window: w, ref: ref, property: "value", check: check(w, ref: ref)) { return v["value"]?.string ?? "" }
         return nil
     }
@@ -433,7 +424,8 @@ final class HandsRouter {
         let display = url.deletingPathExtension().lastPathComponent
         try? FileManager.default.createDirectory(at: Self.handoffFolder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let files: [String]
-        switch AgentOpenGate.check(app: display, bundle: bundle, targets: req.args["targets"]?.array?.compactMap(\.string) ?? [], handoff: Self.handoffFolder) {
+        switch AgentOpenGate.check(app: display, bundle: bundle, targets: req.args["targets"]?.array?.compactMap(\.string) ?? [], handoff: Self.handoffFolder, appURL: url,
+                                     probeFolder: ProbeAppTrust.folder, probeTrusted: bundle == AgentAppPolicy.canvasProbeBundle && ProbeAppTrust.trusted(url)) {
         case .failure(let e): return .failure(e)
         case .success(let f): files = f
         }

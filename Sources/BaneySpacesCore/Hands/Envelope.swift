@@ -33,6 +33,9 @@ public enum HandsErrorCode: String, Codable, CaseIterable, Sendable {
     case notSupported = "not_supported"
     /// The engine acted, but what it read back contradicts the request.
     case actionFailed = "action_failed"
+    /// Keys or pointer events were posted to the process and nothing read back from the window shows they landed.
+    /// Never repeated: they may have landed.
+    case unverified = "unverified"
     /// The app didn't answer in time.
     case timeout = "timeout"
     /// BaneySpaces isn't allowed to read or act (Accessibility, Screen Recording).
@@ -49,7 +52,7 @@ public enum HandsErrorCode: String, Codable, CaseIterable, Sendable {
         switch self {
         case .staleRef, .unknownRef, .ambiguousTarget, .ambiguousWindow: return .afterSnapshot
         case .timeout, .notRunning, .appNotFound, .windowNotFound, .badArguments, .permissionDenied, .ambiguous, .inUse: return .safe
-        case .outsideAgentWorkspace, .agentWorkspaceOff, .notSupported, .actionFailed, .engineError, .needsLend, .needsSandbox: return .never
+        case .outsideAgentWorkspace, .agentWorkspaceOff, .notSupported, .actionFailed, .unverified, .engineError, .needsLend, .needsSandbox: return .never
         }
     }
 }
