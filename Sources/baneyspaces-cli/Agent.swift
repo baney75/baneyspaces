@@ -23,7 +23,7 @@ enum HandsCLI {
         }
         guard let reply = Wire.call(Wire.Request(op: .hands, text: text), timeout: timeout) else {
             // The socket is there but the answer didn't come in time: the action may have landed.
-            if FileManager.default.fileExists(atPath: Wire.socketPath) {
+            if Wire.socketCandidates().contains(where: { FileManager.default.fileExists(atPath: $0) }) {
                 let acts = HandsTools.tool(verb: request.verb)?.acts ?? false
                 return .failure(HandsError(.timeout, "BaneySpaces didn't answer in time", suggestion: acts
                     ? "The action may have landed: read the element back with `baneyspaces agent get` before trying again."

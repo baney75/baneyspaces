@@ -526,9 +526,10 @@ struct Config {
     var extra: [AppSpec] = []
     var excluded: Set<String> = []
 
-    static var url: URL { FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/baneyspaces/session.json") }
+    static var url: URL { ConfigMigration.url() }
 
     static func load() -> Config {
+        ConfigMigration.migrate()
         guard let d = FileManager.default.contents(atPath: url.path),
               let obj = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else { return Config() }
         var c = Config()

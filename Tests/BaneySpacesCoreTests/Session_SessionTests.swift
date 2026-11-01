@@ -242,6 +242,38 @@ final class WireTests: XCTestCase {
     }
 }
 
+final class SessionCompatTests: XCTestCase {
+    private func tempHome() throws -> URL {
+        let h = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("compat-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: h.appendingPathComponent(".config/baneyspaces"), withIntermediateDirectories: true)
+        return h
+    }
+
+    func testOldConfigIsCopiedWhenNewIsAbsent() throws {
+        let h = try tempHome(); defer { try? FileManager.default.removeItem(at: h) }
+        let old = h.appendingPathComponent(".config/baneyspaces/" + ConfigMigration.legacyName)
+        try Data(#"{"exclude":["com.apple.Safari"]}"#.utf8).write(to: old)
+        XCTAssertTrue(ConfigMigration.migrate(home: h))
+        XCTAssertEqual(try Data(contentsOf: ConfigMigration.url(home: h)), try Data(contentsOf: old))
+    }
+
+    func testNewConfigWinsAndNothingOldIsNoOp() throws {
+        let h = try tempHome(); defer { try? FileManager.default.removeItem(at: h) }
+        XCTAssertFalse(ConfigMigration.migrate(home: h))
+        try Data("new".utf8).write(to: ConfigMigration.url(home: h))
+        try Data("old".utf8).write(to: h.appendingPathComponent(".config/baneyspaces/" + ConfigMigration.legacyName))
+        XCTAssertFalse(ConfigMigration.migrate(home: h))
+        XCTAssertEqual(try String(contentsOf: ConfigMigration.url(home: h)), "new")
+    }
+
+    func testSocketCandidatesPreferTheNewNameThenTheOld() {
+        let dir = URL(fileURLWithPath: "/tmp/x")
+        XCTAssertEqual(Wire.socketCandidates(dir: dir), ["/tmp/x/baneyspaces.sock", "/tmp/x/deck.sock"])
+        XCTAssertEqual(Wire.socketCandidates().first, Wire.socketPath)
+        XCTAssertEqual(Wire.socketCandidates().last, Wire.legacySocketPath)
+    }
+}
+
 final class ItemCodingTests: XCTestCase {
     func testReplyWithItemsRoundTrips() throws {
         var i = Item(id: "ghostty:a", bundleID: "b", appName: "Ghostty", role: .terminal, kind: .terminal, windowNumber: 4, group: "g", title: "◐ x")
