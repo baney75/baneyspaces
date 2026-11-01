@@ -13,3 +13,5 @@ engine/lib/
 *.pyc
 __pycache__/
 .tools/
+platforms/windows/third_party/
+platforms/windows/engine/
