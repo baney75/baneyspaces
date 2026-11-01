@@ -14,6 +14,14 @@ public enum DockAppOrder {
             }
         }.map(\.element)
     }
+
+    /// Under the pointer icons hold still: `proposed` replaces `previous` only when nobody hovers
+    /// the tile, or when the set of apps changed (an app opened or quit). `replayOwed` says the
+    /// held order differs from `proposed`, so a reload is due once the pointer leaves.
+    public static func held(proposed: [String], previous: [String]?, hovering: Bool) -> (order: [String], replayOwed: Bool) {
+        guard hovering, let previous, Set(previous) == Set(proposed), previous.count == proposed.count else { return (proposed, false) }
+        return (previous, previous != proposed)
+    }
 }
 
 /// When each app last came forward on each workspace. An app split across workspaces has a time

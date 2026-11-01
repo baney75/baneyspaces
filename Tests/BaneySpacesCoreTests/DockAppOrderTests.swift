@@ -63,6 +63,26 @@ final class DockAppOrderTests: XCTestCase {
         XCTAssertEqual(tiles.map { $0.apps.map(\.key) }, [["ghostty", "helium"], ["helium", "ghostty"]])
     }
 
+    func testWhileHoveringTheHeldOrderStaysAndAReplayIsOwed() {
+        let held = DockAppOrder.held(proposed: ["b", "a", "c"], previous: ["a", "b", "c"], hovering: true)
+        XCTAssertEqual(held.order, ["a", "b", "c"])
+        XCTAssertTrue(held.replayOwed)
+        XCTAssertFalse(DockAppOrder.held(proposed: ["a", "b"], previous: ["a", "b"], hovering: true).replayOwed)
+    }
+
+    func testWhenHoveringEndsTheProposedOrderIsUsed() {
+        let shown = DockAppOrder.held(proposed: ["b", "a", "c"], previous: ["a", "b", "c"], hovering: false)
+        XCTAssertEqual(shown.order, ["b", "a", "c"])
+        XCTAssertFalse(shown.replayOwed)
+    }
+
+    func testAChangedSetOfAppsIsNeverHeld() {
+        let shown = DockAppOrder.held(proposed: ["b", "a", "d"], previous: ["a", "b", "c"], hovering: true)
+        XCTAssertEqual(shown.order, ["b", "a", "d"])
+        XCTAssertFalse(shown.replayOwed)
+        XCTAssertEqual(DockAppOrder.held(proposed: ["a"], previous: nil, hovering: true).order, ["a"])
+    }
+
     func testAnAppThatQuitLosesItsPlace() {
         var used = AppActivations()
         used.note("4242", on: 1, at: 9)
@@ -84,5 +104,8 @@ final class DockAppOrderWiringTests: XCTestCase {
         XCTAssertTrue(spaces.contains("activations.note("), "focus must stamp the app")
         let delegate = try Repo.code("Sources/BaneySpaces/AppDelegate.swift")
         XCTAssertTrue(delegate.contains("self.dock.reload()"), "an activation must reorder a dock in view")
+        XCTAssertTrue(dock.contains("DockAppOrder.held("), "the dock must take its hold-still decision from the Core helper")
+        XCTAssertTrue(dock.contains("onReplayOrder()"), "the pointer leaving a held tile must replay the order")
+        XCTAssertTrue(dock.contains("model.onReplayOrder = { [weak self] in self?.reload() }"), "the replay must reload the dock")
     }
 }
