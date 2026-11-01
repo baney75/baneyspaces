@@ -2,12 +2,14 @@ import AppKit
 import BaneySpacesCore
 import SwiftUI
 
-/// A brief, quiet confirmation on every keyboard switch: the 3×3 grid with the new workspace
-/// lit, the way the volume overlay confirms a key. It never takes focus or clicks.
+/// A brief, quiet confirmation of a keyboard switch: the 3×3 grid with the new workspace
+/// lit, the way the volume overlay confirms a key. It never takes focus or clicks. Off unless
+/// `showSwitchHUD` is set (`SwitchHUDPolicy`).
 final class SwitchHUD {
+    static var stored: Bool? { UserDefaults.standard.object(forKey: SwitchHUDPolicy.defaultsKey) as? Bool }
     static var enabled: Bool {
-        get { UserDefaults.standard.object(forKey: "showSwitchHUD") as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: "showSwitchHUD") }
+        get { SwitchHUDPolicy.enabled(stored: stored) }
+        set { UserDefaults.standard.set(newValue, forKey: SwitchHUDPolicy.defaultsKey) }
     }
 
     private var panel: NSPanel?

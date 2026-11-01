@@ -547,7 +547,8 @@ final class Spaces {
     }
 
     /// `takeFocus: false` rearranges windows without touching focus, for moves made from the
-    /// viewer while it holds the keyboard. `announce` flashes the workspace HUD.
+    /// viewer while it holds the keyboard. `announce` flashes the workspace HUD, only when
+    /// `showSwitchHUD` is on (off by default, `SwitchHUDPolicy`).
     func switchTo(_ n: Int, takeFocus moveFocus: Bool = true, announce: Bool = true) {
         guard active, Workspaces.range.contains(n) else { return }
         if switching {
@@ -558,7 +559,7 @@ final class Spaces {
         }
         // The HUD is drawn after the switch is under way, never in front of it, from the windows
         // the switch's own scan found.
-        if announce, moveFocus {
+        if SwitchHUDPolicy.shows(announce: announce, takeFocus: moveFocus, stored: SwitchHUD.stored) {
             DispatchQueue.main.async { [self] in
                 var seen = Set<pid_t>()
                 let icons = model.windows(on: n).compactMap { windows[$0]?.pid }.filter { seen.insert($0).inserted }
@@ -1207,12 +1208,14 @@ final class Spaces {
 
     /// The ⌘Tab switcher's list: the current workspace (even when empty), then others with
     /// windows, most recent first, then any remaining ones with windows in number order.
+    /// Occupied counts the same entries the tile's caption counts, so no listed tile but the
+    /// current one says "empty".
     func switcherOrder() -> [Int] {
         refresh()
         return WorkspaceSwitcherOrder.make(
             current: model.current,
             recent: recent,
-            occupied: Set(Workspaces.range.filter(isOccupied)),
+            occupied: Set(Workspaces.range.filter { !entries(on: $0).isEmpty }),
             range: Array(Workspaces.range)
         )
     }
