@@ -6,7 +6,7 @@ sees twice costs more than a slow release.
 
 ## Done
 
-A change is done when all of these pass on the installed build (`make install`):
+A change is done when steps 1–3 pass on its branch and step 4 passes on `main` right after merge (only `main` is installed on Donovan's Mac). If step 4 fails after merge, revert the merge first, then fix:
 
 1. `swift test`
 2. `scripts/bench.sh` (median no-op switch under 40 ms; p90 of your real switches in `timing.log` under 250 ms).
@@ -23,9 +23,13 @@ A change is done when all of these pass on the installed build (`make install`):
    when Donovan has been idle 10 minutes; it needs `dockURLCommands` on and a tile with more than four apps).
    For anything that decides what each display shows (`Workspaces.shown`, `displays`, `carry`,
    `noteMovedAcrossDisplays`): `swift scripts/displays-probe.swift` with two displays (Sidecar counts).
-4. The gesture Donovan reported, done live through cua-driver on his Mac (the real keys, the
-   real hold, the real click), with the result read back from the screen, `trace.log` or
-   `state.json`.
+4. The gesture Donovan reported, done live on his Mac (the real keys, the real hold, the real
+   click), with the result read back from the screen, `trace.log` or `state.json`. Pointer and key
+   probes run only when he has been idle 10 minutes (`ioreg -c IOHIDSystem` HIDIdleTime); otherwise
+   the PR lists the exact steps for him to try and says "untested live". Agent tools
+   (`baneyspaces agent`) act only on the agent workspace or the sandbox, so they can't stand in for
+   a gesture on his own workspaces. Only `main` is installed on his Mac: branches build and test,
+   and never run `make install` there.
 
 Unit tests and CI only prove the plan logic. They have never caught a visible bug here. If step 4
 can't run, say "untested live" in the report and don't call the bug fixed.
