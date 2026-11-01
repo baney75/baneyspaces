@@ -14,7 +14,7 @@ use std::sync::OnceLock;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL, VK_MENU, VK_SHIFT};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 /// What the hooks tell the worker.
@@ -32,6 +32,17 @@ static TABLE: OnceLock<Vec<Binding>> = OnceLock::new();
 #[allow(clippy::declare_interior_mutable_const)]
 const OFF: AtomicBool = AtomicBool::new(false);
 static SWALLOWED: [AtomicBool; 256] = [OFF; 256];
+/// Which modifier keys are down, kept from the hook's own events. `GetAsyncKeyState` can lag the
+/// event being processed when two keys arrive in the same millisecond (a chord sent by a VM or a
+/// remote session), so the hook counts the modifiers itself.
+#[allow(clippy::declare_interior_mutable_const)]
+static MOD_DOWN: [AtomicBool; 256] = [OFF; 256];
+const MOD_KEYS: [u32; 11] = [0x5B, 0x5C, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x10, 0x11, 0x12];
+
+fn mod_held(keys: &[u32]) -> bool {
+    keys.iter().any(|k| MOD_DOWN[*k as usize].load(Ordering::Relaxed))
+}
+
 static KB_THREAD: AtomicU32 = AtomicU32::new(0);
 static EV_THREAD: AtomicU32 = AtomicU32::new(0);
 
@@ -53,16 +64,19 @@ unsafe extern "system" fn keyboard(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT
         let vk = k.vkCode;
         let down = wp as u32 == WM_KEYDOWN || wp as u32 == WM_SYSKEYDOWN;
         let up = wp as u32 == WM_KEYUP || wp as u32 == WM_SYSKEYUP;
+        if vk < 256 && MOD_KEYS.contains(&vk) && (down || up) {
+            MOD_DOWN[vk as usize].store(down, Ordering::Relaxed);
+        }
         if !injected && vk < 256 {
             if down {
                 if SWALLOWED[vk as usize].load(Ordering::Relaxed) {
                     return 1; // auto-repeat of a chord we took
                 }
                 let mods = Mods {
-                    win: held(VK_LWIN as u16) || held(VK_RWIN as u16),
-                    shift: held(VK_SHIFT),
-                    alt: held(VK_MENU),
-                    ctrl: held(VK_CONTROL),
+                    win: mod_held(&[VK_LWIN, VK_RWIN]),
+                    shift: mod_held(&[0xA0, 0xA1, 0x10]),
+                    alt: mod_held(&[0xA4, 0xA5, 0x12]),
+                    ctrl: mod_held(&[0xA2, 0xA3, 0x11]),
                 };
                 if mods.win {
                     if let (Some(table), Some(tx)) = (TABLE.get(), TX.get()) {
@@ -107,6 +121,10 @@ pub fn start(tx: Sender<Msg>, table: Vec<Binding>) -> Vec<String> {
     let r1 = ready_tx.clone();
     std::thread::Builder::new().name("kbd-hook".into()).spawn(move || unsafe {
         KB_THREAD.store(GetCurrentThreadId(), Ordering::Relaxed);
+        // Modifiers already down when the hook goes in.
+        for k in MOD_KEYS {
+            MOD_DOWN[k as usize].store(held(k as u16), Ordering::Relaxed);
+        }
         let h = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard), std::ptr::null_mut(), 0);
         if h.is_null() {
             let _ = r1.send(Err(format!("WH_KEYBOARD_LL not installed (error {})", windows_sys::Win32::Foundation::GetLastError())));

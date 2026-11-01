@@ -22,7 +22,7 @@ daemon_start() { scp "${SSH_OPTS[@]}" -q "$HERE/daemon-task.ps1" baney@192.168.1
 
 say "== 0. clean start"
 scp "${SSH_OPTS[@]}" -q "$HERE/readback.ps1" "$HERE/watch.ps1" baney@192.168.122.50:C:/
-vmx 'C:\bs\baneyspaces\target\release\baneyspaces.exe daemon stop | Out-Null; Start-Sleep 1; Get-Process notepad,CalculatorApp,Calculator -ErrorAction SilentlyContinue | Stop-Process -Force; Get-Process explorer | ? { $_.MainWindowTitle -ne "" } | Out-Null' >/dev/null
+vmx 'C:\bs\baneyspaces\target\release\baneyspaces.exe stop | Out-Null; Start-Sleep 1; taskkill /F /IM baneyspaces.exe 2>&1 | Out-Null; Get-Process notepad,CalculatorApp,Calculator -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep 1; Remove-Item -Recurse -Force $env:LOCALAPPDATA\BaneySpaces -ErrorAction SilentlyContinue' >/dev/null
 sleep 2
 daemon_start
 cli doctor | grep -q '"healthy":true' && ok "doctor is healthy with the daemon up" || bad "doctor"
@@ -32,7 +32,7 @@ vmi 'Start-Process notepad; Start-Sleep 3; Start-Process explorer.exe -ArgumentL
 S=$(seen_now); shot 01-opened >/dev/null
 has "$S" "Notepad" "Notepad shows"; has "$S" "File Explorer" "Explorer shows"; has "$S" "Calculator" "Calculator shows"
 RB=$(readback)
-NOTEPADS=$(grep 'class=Notepad ' <<<"$RB" | sed 's/ .*//' | tr '\n' ' ')
+NOTEPADS=$(grep 'class=Notepad ' <<<"$RB" | grep 'SEEN=True' | sed 's/ .*//' | tr '\n' ' ')
 CALC=$(grep 'title=.Calculator.' <<<"$RB" | sed 's/ .*//' | head -1)
 say "notepad windows: $NOTEPADS  calculator: $CALC"
 
@@ -74,11 +74,12 @@ RB=$(readback); grep -q 'cloaked=2' <<<"$RB" && bad "something is still cloaked 
 cli switch 1 >/dev/null
 
 say "== 6. agent: open notepad, snapshot, type. It must never show on workspace 1"
-(vmi 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\watch.ps1 -Seconds 12' > "$OUT/watch-open.txt" 2>&1 &)
-sleep 4
+(vmi 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\watch.ps1 -Seconds 14' > "$OUT/watch-open.txt" 2>&1) &
+WATCH=$!
+sleep 5
 O=$(cli agent open notepad); echo "$O" | grep -q '"ok":true' && ok "agent open notepad" || bad "agent open: $O"
 AW=$(sed -n 's/.*"window":"\(w-[0-9]*\)".*/\1/p' <<<"$O")
-sleep 9
+wait $WATCH
 grep -q 'NEW none' "$OUT/watch-open.txt" && bad "the watcher never saw the agent window" || { grep -q 'visible_polls=0' "$OUT/watch-open.txt" && ok "the agent window was never visible in $(sed -n 's/polls=\([0-9]*\).*/\1/p' "$OUT/watch-open.txt") polls while it opened" || bad "the agent window was visible: $(cat "$OUT/watch-open.txt")"; }
 S=$(seen_now); shot 07-agent-open >/dev/null
 [[ "$(count "$S" Notepad)" == "$(grep -o 'Notepad' <<<"$NOTEPADS" | wc -l)" || true ]]
@@ -100,7 +101,7 @@ echo "$T" | grep -q '"screen_changed":false' && ok "typing changed nothing you c
 RB=$(readback); echo "$RB" >> "$LOG"; shot 09-agent-typed >/dev/null
 grep -q "w-${AW#w-} .*alpha=0.*SEEN=False" <<<"$RB" || grep "$AW " <<<"$RB" | grep -q 'SEEN=False' && ok "the agent's window is still invisible after typing" || bad "agent window is visible"
 grep -c "title='Untitled - Notepad'" <<<"$RB" | grep -q . && ok "your Notepad windows still say 'Untitled' (not modified)" 
-U=$(vmi '$env:AGENT_DESKTOP_HOME="$env:LOCALAPPDATA\BaneySpaces\engine-state"; $e="C:\bs\baneyspaces\platforms\windows\engine\agent-desktop.exe"; foreach($w in "'"${NOTEPADS// /\",\"}"'"){ if($w){ $s=(& $e snapshot --window-id $w | ConvertFrom-Json); $v=(& $e get "@$($s.data.snapshot_id):e1" --property value | ConvertFrom-Json).data.value; "[$w] value=[$v]" } }')
+U=$(vmi '$env:AGENT_DESKTOP_HOME="C:\bs\harness-state"; $e="C:\bs\baneyspaces\platforms\windows\engine\agent-desktop.exe"; foreach($w in "'"${NOTEPADS// /\",\"}"'"){ if($w){ $s=(& $e snapshot --window-id $w | ConvertFrom-Json); $v=(& $e get "@$($s.data.snapshot_id):e1" --property value | ConvertFrom-Json).data.value; "[$w] value=[$v]" } }')
 echo "$U" >> "$LOG"; grep -q 'agent' <<<"$U" && bad "your Notepad has the agent's text: $U" || ok "your Notepad windows hold none of the agent's text"
 cli agent log --since 120 | grep -q '"verb":"type"' && ok "the action log recorded the type (no content)" || bad "no log record"
 
@@ -115,8 +116,8 @@ cli set dock.enabled true >/dev/null
 cli stop >/dev/null; sleep 2
 vmx 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\daemon-task.ps1 start-test' >> "$LOG"
 BSX='C:\bs\baneyspaces\target\release\baneyspaces.exe'
-vmx 'Remove-Item C:\bs\peer.txt -ErrorAction SilentlyContinue' >/dev/null
-cli agent open cmd.exe /c "$BSX set dock.enabled false > C:\bs\peer.txt 2>&1 & $BSX switch 2 >> C:\bs\peer.txt 2>&1" >/dev/null; sleep 2
+vmx 'Remove-Item C:\bs\peer.txt -ErrorAction SilentlyContinue; Set-Content C:\bs\peer.cmd "@echo off`r`nC:\bs\baneyspaces\target\release\baneyspaces.exe set dock.enabled false > C:\bs\peer.txt 2>&1`r`nC:\bs\baneyspaces\target\release\baneyspaces.exe switch 2 >> C:\bs\peer.txt 2>&1"' >/dev/null
+cli agent open cmd.exe /c 'C:\bs\peer.cmd' >/dev/null; sleep 2
 PEER=$(vmx 'Get-Content C:\bs\peer.txt'); echo "$PEER" >> "$LOG"
 [[ "$(grep -c not_in_scope <<<"$PEER")" == 2 ]] && ok "set and switch from an agent's own process are refused (not_in_scope)" || bad "agent peer not refused: $PEER"
 cli get dock.enabled | grep -q true && ok "the agent's refused set changed nothing" || bad "dock.enabled changed"
