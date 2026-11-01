@@ -9,6 +9,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/live-lib.sh"
 OUT="${1:-$HERE/evidence}"; SHOTS="$OUT"; mkdir -p "$OUT"
 LOG="$OUT/live.log"; : > "$LOG"
+TESTAPP='C:\bs\baneyspaces\target\release\bs-testapp.exe'
 pass=0; fail=0
 say()  { echo "$*" | tee -a "$LOG"; }
 ok()   { pass=$((pass+1)); say "  ok:   $*"; }
@@ -75,27 +76,25 @@ has "$S" "Notepad" "restart: Notepad is back"; has "$S" "Calculator" "restart: C
 RB=$(readback); grep -q 'cloaked=2' <<<"$RB" && bad "something is still cloaked after restart" || ok "nothing is left cloaked after restart"
 cli switch 1 >/dev/null
 
-say "== 6a. your own Notepad is open at normal level: an agent launch would forward into it, so it is refused"
-BEFORE=$(readback | grep -c 'class=Notepad ')
-O=$(cli agent open notepad)
-grep -q '"code":"single_instance"' <<<"$O" && grep -q '"started":false' <<<"$O" && ok "agent open notepad is refused with single_instance before anything starts" || bad "expected single_instance: ${O:0:300}"
-sleep 2; AFTER=$(readback | grep -c 'class=Notepad ')
-[[ "$BEFORE" == "$AFTER" ]] && ok "no Notepad window appeared (still $AFTER)" || bad "Notepad windows went $BEFORE -> $AFTER"
+say "== 6. production refuses every agent launch (no Windows sandbox yet)"
+for app in notepad explorer "$TESTAPP"; do
+  O=$(cli agent open "$app"); grep -q '"code":"needs_sandbox"' <<<"$O" && ok "agent open $(basename "$app") is refused (needs_sandbox) before anything starts" || bad "expected needs_sandbox for $app: ${O:0:200}"
+done
+sleep 1; S=$(seen_now); lacks "$S" "test app" "no test window appeared"
+O=$(cli agent run -- cmd); grep -q '"code":"needs_sandbox"' <<<"$O" && ok "agent run is refused too" || bad "agent run: ${O:0:200}"
 
-say "== 6b. the agent flow, with your Notepad running elevated (Windows will not forward a launch into it)"
-vmx 'Get-Process notepad -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep 1; $n="$env:LOCALAPPDATA\Packages\Microsoft.WindowsNotepad_8wekyb3d8bbwe\LocalState"; Remove-Item -Recurse -Force "$n\TabState","$n\WindowState" -ErrorAction SilentlyContinue' >/dev/null
+say "== 6b. the agent flow with the bundled test app (a test daemon, BANEYSPACES_TEST_OPS), your Notepad open at normal level"
+cli stop >/dev/null; sleep 2
+vmx 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\daemon-task.ps1 start-test' >> "$LOG"
 cli switch 1 >/dev/null
-vmi 'Start-Process notepad; Start-Sleep 4' >/dev/null
-RB=$(readback); NOTEPADS=$(grep 'class=Notepad ' <<<"$RB" | grep 'SEEN=True' | sed 's/ .*//' | tr '\n' ' '); say "your notepad windows: $NOTEPADS"
 (vmi 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\watch.ps1 -Seconds 14' > "$OUT/watch-open.txt" 2>&1) &
 WATCH=$!
 sleep 5
-O=$(cli agent open notepad); echo "$O" | grep -q '"ok":true' && ok "agent open notepad" || bad "agent open: $O"
+O=$(cli agent open "$TESTAPP"); echo "$O" | grep -q '"ok":true' && ok "agent open bs-testapp" || bad "agent open: $O"
 AW=$(sed -n 's/.*"window":"\(w-[0-9]*\)".*/\1/p' <<<"$O")
 wait $WATCH
 grep -q 'NEW none' "$OUT/watch-open.txt" && bad "the watcher never saw the agent window" || { grep -q 'visible_polls=0' "$OUT/watch-open.txt" && ok "the agent window was never visible in $(sed -n 's/polls=\([0-9]*\).*/\1/p' "$OUT/watch-open.txt") polls while it opened" || bad "the agent window was visible: $(cat "$OUT/watch-open.txt")"; }
 S=$(seen_now); shot 07-agent-open >/dev/null
-[[ "$(count "$S" Notepad)" == "$(grep -o 'Notepad' <<<"$NOTEPADS" | wc -l)" || true ]]
 SN=$(cli agent snapshot --window "$AW" -i); REF=$(python3 -c "
 import sys,json
 d=json.loads(sys.stdin.read()); 
@@ -112,14 +111,13 @@ T=$(cli agent type "'$REF'" "hello from the agent")
 echo "$T" | grep -q '"verified":true' && ok "agent type landed and the engine read it back (verified)" || bad "agent type: ${T:0:300}"
 echo "$T" | grep -q '"screen_changed":false' && ok "typing changed nothing you can see" || bad "typing changed the screen"
 RB=$(readback); echo "$RB" >> "$LOG"; shot 09-agent-typed >/dev/null
-grep -q "w-${AW#w-} .*alpha=0.*SEEN=False" <<<"$RB" || grep "$AW " <<<"$RB" | grep -q 'SEEN=False' && ok "the agent's window is still invisible after typing" || bad "agent window is visible"
-grep -c "title='Untitled - Notepad'" <<<"$RB" | grep -q . && ok "your Notepad windows still say 'Untitled' (not modified)" 
+grep "^$AW " <<<"$RB" | grep -q 'SEEN=False' && ok "the agent's window is still invisible after typing" || bad "agent window is visible"
+[[ "$(grep 'class=Notepad ' <<<"$RB" | grep -c "title='\*")" == 0 ]] && ok "your Notepad windows still say 'Untitled' (not modified)" || bad "a Notepad title shows unsaved changes"
 U=$(vmi '$env:AGENT_DESKTOP_HOME="C:\bs\harness-state"; $e="C:\bs\baneyspaces\platforms\windows\engine\agent-desktop.exe"; foreach($w in "'"${NOTEPADS// /\",\"}"'"){ if($w){ $s=(& $e snapshot --window-id $w | ConvertFrom-Json); $v=(& $e get "@$($s.data.snapshot_id):e1" --property value | ConvertFrom-Json).data.value; "[$w] value=[$v]" } }')
 echo "$U" >> "$LOG"; grep -q 'agent' <<<"$U" && bad "your Notepad has the agent's text: $U" || ok "your Notepad windows hold none of the agent's text"
 cli agent log --since 120 | grep -q '"verb":"type"' && ok "the action log recorded the type (no content)" || bad "no log record"
 
 say "== 7. deny by default, settings, and agent peers"
-O=$(cli agent open explorer); grep -q '"code":"needs_sandbox"' <<<"$O" && ok "agent open explorer is refused (needs_sandbox) before it starts" || bad "explorer not refused: ${O:0:200}"
 cli get | grep -q '"dock.enabled":true' && ok "settings default: dock true, theme baneyspaces, palette auto" || bad "settings defaults"
 cli set dock.enabled false | grep -q '"ok":true' && cli get dock.enabled | grep -q 'false' && ok "set/get round-trips dock.enabled" || bad "set dock.enabled"
 cli set appearance.theme neon | grep -q invalid_args && ok "a bad theme is invalid_args" || bad "bad theme accepted"

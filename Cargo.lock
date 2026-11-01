@@ -21,6 +21,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "baneyspaces-testapp"
+version = "0.1.0"
+dependencies = [
+ "windows-sys",
+]
+
+[[package]]
 name = "baneyspaces-windows"
 version = "0.1.0"
 dependencies = [

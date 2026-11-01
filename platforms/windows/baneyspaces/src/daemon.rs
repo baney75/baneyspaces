@@ -713,30 +713,13 @@ fn agent_open(shared: &Shared, agent: &str, args: &Value) -> Envelope {
     if !apps::may_start(app) {
         let env = Envelope::err(
             "needs_sandbox",
-            format!("{app} is not on the list of apps BaneySpaces can start as a separate process for an agent"),
+            format!("{app} was not started: on Windows an agent may not start any app until there is a sandbox"),
             Retry::Never,
-            "Deny by default: an app that is not known to run as its own process could hand your launches to the agent's copy, or take the agent's request into yours. Use the app's files or command line instead; a sandbox for apps like this comes later.",
+            "No Windows app is safe to hand an agent yet: Notepad would show it your unsaved tabs, and most apps forward a launch into the copy you already run. A Windows sandbox (Windows Sandbox or a Hyper-V VM) is a later part. Use files or the command line instead.",
         )
         .with_data(json!({ "allowed": apps::allowed() }));
         record(&lock(shared), agent, "open", None, None, None, "preflight", &env);
         return env;
-    }
-    if apps::forwards_to_running(app) {
-        let (mine, agents): (Vec<u32>, Vec<u32>) = {
-            let c = lock(shared);
-            winapi::same_level_processes(&apps::process_name(app)).into_iter().partition(|p| c.model.agent_proc(*p).is_none() && !c.jobs.iter().any(|(_, j)| agent::in_job(j, *p)))
-        };
-        if !mine.is_empty() {
-            let env = Envelope::err(
-                "single_instance",
-                format!("{app} is already running for you (pid {}): a new launch would open its window in your copy, so nothing was started", mine[0]),
-                Retry::Never,
-                "Close your copy first, or use the app's files or command line instead. Nothing of yours was touched.",
-            )
-            .with_data(json!({ "running_copies": mine, "agent_copies": agents, "started": false }));
-            record(&lock(shared), agent, "open", None, None, None, "preflight", &env);
-            return env;
-        }
     }
     let Some(exe) = cmdline::find_program(app, &path_dirs(), |p| p.is_file()) else {
         return Envelope::err("not_found", format!("no program {app:?} on PATH"), Retry::Never, "Give an executable name or a full path.");

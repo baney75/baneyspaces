@@ -5,7 +5,6 @@ use std::ffi::c_void;
 use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HWND, LPARAM, RECT, TRUE};
 use windows_sys::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows_sys::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, MonitorFromWindow, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW, MONITOR_DEFAULTTONEAREST};
-use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS};
 use windows_sys::Win32::System::SystemInformation::GetTickCount;
 use windows_sys::Win32::System::Threading::{GetCurrentThreadId, GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
@@ -153,65 +152,6 @@ pub fn process_name(pid: u32) -> String {
         let file = path.rsplit(['\\', '/']).next().unwrap_or("").to_lowercase();
         file.strip_suffix(".exe").unwrap_or(&file).to_string()
     }
-}
-
-/// The mandatory integrity level of a process token (0x2000 medium, 0x3000 high), 0 if unreadable.
-fn integrity_of(process: windows_sys::Win32::Foundation::HANDLE) -> u32 {
-    use windows_sys::Win32::Security::{GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TokenIntegrityLevel, TOKEN_MANDATORY_LABEL, TOKEN_QUERY};
-    unsafe {
-        let mut tok: windows_sys::Win32::Foundation::HANDLE = std::ptr::null_mut();
-        if windows_sys::Win32::System::Threading::OpenProcessToken(process, TOKEN_QUERY, &mut tok) == 0 {
-            return 0;
-        }
-        let mut need = 0u32;
-        GetTokenInformation(tok, TokenIntegrityLevel, std::ptr::null_mut(), 0, &mut need);
-        let mut buf = vec![0u8; need as usize];
-        let ok = GetTokenInformation(tok, TokenIntegrityLevel, buf.as_mut_ptr() as *mut _, need, &mut need) != 0;
-        CloseHandle(tok);
-        if !ok {
-            return 0;
-        }
-        let label = &*(buf.as_ptr() as *const TOKEN_MANDATORY_LABEL);
-        let sid = label.Label.Sid;
-        let n = *GetSidSubAuthorityCount(sid);
-        if n == 0 {
-            return 0;
-        }
-        *GetSidSubAuthority(sid, u32::from(n) - 1)
-    }
-}
-
-/// Pids of running programs named `name` (`notepad`) that a launch from this process could be handed
-/// to: the ones at this process's integrity level or lower. A copy running elevated is out of reach
-/// (Windows will not redirect a normal process's launch into it), so it does not count.
-pub fn same_level_processes(name: &str) -> Vec<u32> {
-    let mut out = vec![];
-    let mine = integrity_of(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() });
-    unsafe {
-        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        if snap as isize == -1 {
-            return out;
-        }
-        let mut e: PROCESSENTRY32W = std::mem::zeroed();
-        e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-        let mut ok = Process32FirstW(snap, &mut e) != 0;
-        while ok {
-            let exe = wide_to_string(&e.szExeFile).to_lowercase();
-            if exe.strip_suffix(".exe").unwrap_or(&exe) == name {
-                let p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, e.th32ProcessID);
-                if !p.is_null() {
-                    let theirs = integrity_of(p);
-                    if theirs == 0 || theirs <= mine {
-                        out.push(e.th32ProcessID);
-                    }
-                    CloseHandle(p);
-                }
-            }
-            ok = Process32NextW(snap, &mut e) != 0;
-        }
-        CloseHandle(snap);
-    }
-    out
 }
 
 pub fn alive(pid: u32, start: u64) -> bool {
