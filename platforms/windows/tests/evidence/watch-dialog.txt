@@ -1,0 +1,2 @@
+polls=105206 over 9 s
+NEW w-1246468 first_seen_at=2620ms visible_polls=1 exposed_ms=0 :: w-1246468 class=#32770 title='Test dialog' cloaked=0 alpha=0 parked=False rect=407,322 SEEN=False
