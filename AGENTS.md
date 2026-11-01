@@ -44,6 +44,16 @@ A change is done when steps 1–3 pass on its branch and step 4 passes on `main`
 Unit tests and CI only prove the plan logic. They have never caught a visible bug here. If step 4
 can't run, say "untested live" in the report and don't call the bug fixed.
 
+## Run and check
+
+Crash-loop guard (`CrashLoopGuard`, checked in `main.swift` before the delegate exists): a launch
+whose run is still in `~/Library/Application Support/BaneySpaces/crash-ledger.json` (no clean quit)
+counts as a crash. After 3 within 5 minutes the next launch puts Mission Control, the macOS Dock and
+the drag to the top back, says so in an alert (Quit, or Start Anyway, which clears the crashes) and
+doesn't start. `--render` keeps its own `crash-ledger-render.json` and exits 75 instead. Knobs:
+`defaults write com.baney.baneyspaces crashLoopLimit -int N` (0 never stops) and
+`crashLoopWindowMinutes -float M`. `trace.log` says `crash loop: …`.
+
 ## Linux (`platforms/linux`, `crates/`, `spec/`)
 
 A change there is done when `cargo test`, `platforms/linux/tests/omarchy-scripts.sh` and
