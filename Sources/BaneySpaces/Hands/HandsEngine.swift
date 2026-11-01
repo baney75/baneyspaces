@@ -41,7 +41,7 @@ final class HandsEngine {
     /// Seconds each kind of call may take before the caller gets `timeout`.
     /// How long an action waits for its target to become actionable before it gives up.
     static let actionableWait: TimeInterval = 5
-    enum Budget { static let snapshot: TimeInterval = 25, get: TimeInterval = 10, act: TimeInterval = 20, transaction: TimeInterval = 40 }
+    enum Budget { static let snapshot: TimeInterval = 25, get: TimeInterval = 10, act: TimeInterval = 20, transaction: TimeInterval = 60, bounds: TimeInterval = 0.05 }
 
     /// BaneySpaces' own folder for agents (handoff files, shots), readable by this user only.
     static var home: URL { Wire.supportDir.appendingPathComponent("hands", isDirectory: true) }
@@ -71,6 +71,22 @@ final class HandsEngine {
     private static let queueKey = DispatchSpecificKey<Int32>()
     /// Whether the caller is running on this process's queue (inside `transaction`).
     func isOnQueue(of pid: Int32) -> Bool { DispatchQueue.getSpecific(key: Self.queueKey) == pid }
+
+    /// A read lane per process for the cursor's bounds reads, beside the process queue, so an action never waits behind one.
+    /// The pinned engine documents this: "Adapters are safe to call from multiple host threads. Native element handles are
+    /// thread-affine ... Desktop mutations are serialized by the adapter's cross-process interaction lease"
+    /// (agent-desktop 5261b52, crates/ffi/src/lib.rs "Thread safety"; the same words are in include/agent_desktop.h and
+    /// crates/ffi/README.md "Thread Safety (macOS)"). `ad_get_ref` resolves and frees its element inside the one call on
+    /// the lane's thread, and a read is no mutation. A hung app clogs only its own lane, and reads that can't start
+    /// within their deadline are dropped.
+    private var lanes: [Int32: DispatchQueue] = [:]
+    private func lane(for pid: Int32) -> DispatchQueue {
+        initLock.lock(); defer { initLock.unlock() }
+        if let q = lanes[pid] { return q }
+        let q = DispatchQueue(label: "baneyspaces.hands.bounds.\(pid)", qos: .userInitiated)
+        lanes[pid] = q
+        return q
+    }
 
     private func queue(for pid: Int32) -> DispatchQueue {
         initLock.lock(); defer { initLock.unlock() }
@@ -228,6 +244,24 @@ final class HandsEngine {
         var out: UnsafeMutablePointer<CChar>?
         let code = ref.withCString { r in property.withCString { p in ad_get_ref(adapter, r, p, &out) } }
         return finish(code, out)
+    }
+
+    /// The target's bounds for the agent cursor, read on the process's read lane and handed to `completion`; nobody
+    /// waits for it, and the action does not queue behind it. Nil when the read couldn't start within `within` seconds of now (the app is busy: the cursor settles
+    /// for its last known point), when the scope check fails, or when the engine can't answer. The same scope check and
+    /// focus-guard mark as every other call; it only reads.
+    func measureBounds(window w: HandsWindow, ref: String, within: TimeInterval, check: @escaping Check, completion: @escaping (CGRect?) -> Void) {
+        let queued = ProcessInfo.processInfo.systemUptime
+        lane(for: w.pid).async { [self] in
+            // The mark is held while the read runs, not while it waits in the lane.
+            guard ProcessInfo.processInfo.systemUptime - queued <= within else { return completion(nil) }
+            let token = AgentActivity.shared.begin(pid: w.pid, window: w.id)
+            defer { AgentActivity.shared.end(token) }
+            guard check() == nil, ready() == nil, let adapter else { return completion(nil) }
+            var out: UnsafeMutablePointer<CChar>?
+            let code = ref.withCString { r in "bounds".withCString { p in ad_get_ref(adapter, r, p, &out) } }
+            if case .ok(let v) = finish(code, out) { completion(HandsEvents.frame(ofBounds: v["value"])) } else { completion(nil) }
+        }
     }
 
     /// An action on a ref. Always the strict Headless policy; the auto-wait is the engine's default.

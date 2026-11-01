@@ -138,7 +138,13 @@ never moves yours.
 - It never takes focus, clicks or keys. Screenshots and recordings of the agent workspace can
   include it or leave it out (`agent shot --cursor`), so the evidence in a result is the app
   itself.
-- `baneyspaces agent cursor on|off|theme <name>` and a Settings switch. It's on by default.
+- `baneyspaces agent cursor on|theme <name>|status` and a Settings switch. It's on by default. Only Donovan turns it
+  off, in Settings: the cursor is how he sees agents work, so the socket refuses `agent cursor off` (and logs it) and
+  a `behavior.cursor.enabled = false` line in `config.toml` is ignored. Agents may change its theme.
+  This guards the socket and the config file, not the user's other files: BaneySpaces' saved settings (its defaults
+  domain) are the user's, and any process of the same user can edit them, as it can any other file of his. That is
+  out of scope under the host threat model above (nothing on the host stops a hostile same-user process; the sandbox is
+  the boundary). It is not silent: BaneySpaces writes a line to `trace.log` at launch when the saved setting is off.
 
 The bench measures it too: drawing the cursor must add under 5 ms to the median action.
 
