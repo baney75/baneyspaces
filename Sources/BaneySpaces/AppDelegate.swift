@@ -138,21 +138,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         a.openMode = { OpenHere.Mode(setting: UserDefaults.standard.string(forKey: Self.launcherOpenKey)) }
         a.openApp = { [weak self] url, pid, action, target in self?.openApp(url, pid: pid, action, on: target) }
         a.searchIPhone = { [weak self] query, target in self?.searchIPhone(query, on: target) }
+        a.openSite = { [weak self] address, target in self?.openSite(address, on: target) }
         a.switchTo = { [weak self] n in self?.run { $0.switchTo(n) } }
         a.appsOn = { [weak self] n in self?.spaces.apps(on: n) ?? [] }
         a.workspacesByApp = { [weak self] in
             guard let self, self.started else { return [:] }
-            self.spaces.refresh()
-            var out: [String: [Int]] = [:]
-            // The user's windows only: nothing on the agent workspace, nothing of a process started for an agent.
-            let agents = AgentOwned.shared.pids
-            for n in OpenHere.userWorkspaces(Array(Workspaces.range), agentWorkspace: Spaces.agentWorkspace) {
-                for e in self.spaces.entries(on: n) where !agents.contains(e.pid) {
-                    guard let path = NSRunningApplication(processIdentifier: e.pid)?.bundleURL?.path else { continue }
-                    if out[path]?.contains(n) != true { out[path, default: []].append(n) }
-                }
-            }
-            return out
+            return self.userWorkspacesByApp()
         }
         a.showOverview = { [weak self] in self?.viewer.open() }
         a.deckItems = { [weak self] q in self?.deck.launcherItems(q) ?? [] }
@@ -921,6 +912,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         d.removeObject(forKey: "openHereURLCommands")
         if d.object(forKey: Self.openHereGateKey) != nil, d.double(forKey: Self.openHereGateKey) < Date().timeIntervalSince1970 + 1 {
             d.removeObject(forKey: Self.openHereGateKey)
+        }
+    }
+
+    /// The workspaces each app (by bundle path) has windows on, for open here: the user's windows only, nothing
+    /// on the agent workspace and nothing of a process started for an agent.
+    private func userWorkspacesByApp() -> [String: [Int]] {
+        spaces.refresh()
+        var out: [String: [Int]] = [:]
+        let agents = AgentOwned.shared.pids
+        for n in OpenHere.userWorkspaces(Array(Workspaces.range), agentWorkspace: Spaces.agentWorkspace) {
+            for e in spaces.entries(on: n) where !agents.contains(e.pid) {
+                guard let path = NSRunningApplication(processIdentifier: e.pid)?.bundleURL?.path else { continue }
+                if out[path]?.contains(n) != true { out[path, default: []].append(n) }
+            }
+        }
+        return out
+    }
+
+    /// Opens a site in the default browser on workspace `target`, with the same rules as any app (`OpenHere`):
+    /// not running, it starts there with the address; a window already there, that window takes the address as a
+    /// tab; only elsewhere, a new window opens here (or the window moves here) and then takes it. The log
+    /// names the action and the workspace, never the address.
+    private func openSite(_ address: String, on target: Int) {
+        guard let url = URL(string: address) else { return }
+        guard started, let browser = NSWorkspace.shared.urlForApplication(toOpen: url),
+              let bundle = Bundle(url: browser)?.bundleIdentifier else { return _ = NSWorkspace.shared.open(url) }
+        let agents = AgentOwned.shared.pids
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).first { !agents.contains($0.processIdentifier) }
+        let on = running == nil ? [] : userWorkspacesByApp()[browser.path] ?? []
+        let mode = OpenHere.Mode(setting: UserDefaults.standard.string(forKey: Self.launcherOpenKey))
+        let known: OpenHere.WindowCommand = NewWindowLedger.shared.knownSingleWindow(forApp: browser.path) ? .no : .unknown
+        let action = OpenHere.plan(.init(target: target, running: running != nil, windowsOn: on, windowCommand: known), mode: mode, modifier: false)
+        Trace.log("open site: \(action) on workspace \(target)")
+        func load(after delay: TimeInterval) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                let config = NSWorkspace.OpenConfiguration()
+                config.activates = true
+                NSWorkspace.shared.open([url], withApplicationAt: browser, configuration: config)
+            }
+        }
+        switch action {
+        case .launch:
+            // The browser starts with the address; its first window is claimed for the target.
+            let config = NSWorkspace.OpenConfiguration()
+            config.activates = true
+            if mode == .here { spaces.expectLaunch(bundle: bundle, on: target) }
+            NSWorkspace.shared.open([url], withApplicationAt: browser, configuration: config) { [weak self] app, _ in
+                DispatchQueue.main.async {
+                    guard mode == .here else { return }
+                    if let app { self?.spaces.launched(app) } else { self?.spaces.launchFailed() }
+                }
+            }
+        case .focusHere:
+            if let pid = running?.processIdentifier { spaces.focusApp(pid, on: target) }
+            load(after: 0.15)
+        case .newWindow, .moveWindowHere, .reopen:
+            openApp(browser, pid: running?.processIdentifier, action, on: target)
+            // The new window (or the moved one) is the one in front when the address arrives.
+            load(after: action == .reopen ? 0.3 : 1.0)
+        case .goThere:
+            if let pid = running?.processIdentifier { spaces.focusApp(pid) }
+            load(after: 0.15)
         }
     }
 

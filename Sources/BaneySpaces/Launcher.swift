@@ -152,6 +152,9 @@ struct LauncherActions {
     var openApp: (URL, pid_t?, OpenHere.Action, Int) -> Void = { _, _, _, _ in }
     /// Asks iPhone Mirroring's Spotlight for a query, with Mirroring opened on the workspace given.
     var searchIPhone: (String, Int) -> Void = { _, _ in }
+    /// Opens a site's address in the default browser, on the workspace given (a new window there, or the
+    /// browser's window that is already there).
+    var openSite: (String, Int) -> Void = { _, _ in }
     /// Whether a running app has a New Window command: true only when the item was found. A false says
     /// nothing (the app may be busy), so it is never kept.
     var canOpenWindow: (pid_t) -> Bool = { _ in false }
@@ -292,6 +295,8 @@ struct LauncherItem: Identifiable {
     var run: () -> Void
     /// ⌘↩: show in Finder, or a cask's web page.
     var reveal: URL?
+    /// ⇥: a second thing to do with the row ("Open on iPhone", "Open the site"), shown in the footer.
+    var secondary: (label: String, run: () -> Void)?
 }
 
 final class LauncherModel: ObservableObject {
@@ -364,7 +369,14 @@ final class LauncherModel: ObservableObject {
     var target: Int?
 
     private let actions: LauncherActions
-    private var apps: [AppEntry] = [] { didSet { appIndex = AppNameIndex(names: apps.map(\.name)) } }
+    private var apps: [AppEntry] = [] {
+        didSet {
+            appIndex = AppNameIndex(names: apps.map(\.name))
+            installedNames = Set(apps.map { Fuzzy.fold($0.name) })
+        }
+    }
+    /// The folded names of the apps on this Mac, to tell a site with a native app from one without.
+    private var installedNames = Set<String>()
     /// The apps' names folded once, so a keystroke matches them without folding each again.
     private var appIndex = AppNameIndex(names: [])
     private var running: [String: [Int]] = [:]
@@ -423,6 +435,7 @@ final class LauncherModel: ObservableObject {
         refreshIPhoneState()
         // The first read of iPhone Mirroring's data is what makes macOS ask once.
         IPhoneAppCache.shared.refreshIfNeeded()
+        SiteSources.shared.refreshIfNeeded()
         // Apps installed since the last look show up without a restart.
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let fresh = AppEntry.scan()
@@ -492,6 +505,7 @@ final class LauncherModel: ObservableObject {
     func tab() {
         guard items.indices.contains(selected) else { return }
         let id = items[selected].id
+        if let second = items[selected].secondary { close(); second.run(); return }
         if id.hasPrefix("scope:"), let s = Scope(rawValue: String(id.dropFirst("scope:".count))) { enter(s) }
         else if id == "find-install" || id.hasPrefix("bang-pick:") { items[selected].run() }
     }
@@ -516,6 +530,8 @@ final class LauncherModel: ObservableObject {
                 out += menuItems()
             } else {
                 out += appItems(q, limit: 8)
+                // Sites: the built-in list, bookmarks and most visited, above anything from the web.
+                out += siteItems(q)
                 // The phone's apps and a search of the phone: below real apps, above everything from the web.
                 out += iphoneItems(q)
                 out += actions.deckItems(q).prefix(8)
@@ -688,6 +704,48 @@ final class LauncherModel: ObservableObject {
         }
     }
 
+    // MARK: Sites
+
+    /// Built-in sites by the Mac app that does the same job (folded name): the app row offers the site one step away.
+    private static let sitesByNativeApp: [String: Site] = {
+        var d: [String: Site] = [:]
+        for s in SiteCatalog.builtIn { for n in s.nativeApps { d[Fuzzy.fold(n)] = s } }
+        return d
+    }()
+    private var siteIcons: [String: NSImage] = [:]
+
+    /// A site with an app on this Mac is the app's secondary action instead of a row of its own.
+    private func hasNativeApp(_ s: Site) -> Bool { s.nativeApps.contains { installedNames.contains(Fuzzy.fold($0)) } }
+
+    /// Bookmarks, most visited and the built-in list, ranked in memory (`SiteIndex`): no file is read here.
+    private func siteItems(_ q: String) -> [LauncherItem] {
+        let phone = iphoneProvider.apps()
+        let hits = SiteSources.shared.index.rank(q, limit: 5).filter { !hasNativeApp($0.site) }.prefix(3)
+        return hits.map { hit in
+            let site = hit.site
+            let kind = site.source == .bookmark ? " · Bookmark" : site.source == .frequent ? " · Visited often" : ""
+            let icon = siteIcons[site.host] ?? SiteSources.shared.icon(for: site)
+            siteIcons[site.host] = icon
+            var item = LauncherItem(id: "site:\(site.source.rawValue):\(site.id)", section: "Sites", title: site.name,
+                                    subtitle: site.host + kind, icon: .image(icon), badge: "Site", run: { [weak self] in self?.openSite(site) })
+            // The same service as an app on the phone, if the phone's list has it: one step away.
+            if let name = site.iphoneApp, let app = phone.first(where: { Fuzzy.fold($0.name) == Fuzzy.fold(name) }) {
+                item.secondary = ("Open on iPhone", { [weak self] in
+                    guard let self else { return }
+                    self.actions.searchIPhone(app.name, self.target ?? self.actions.current())
+                })
+            }
+            return item
+        }
+    }
+
+    private func openSite(_ site: Site) {
+        close()
+        // The trace names the workspace and where it came from, never the address.
+        Trace.log("launcher open: site (\(site.source)) for workspace \(target ?? actions.current())")
+        actions.openSite(site.url, target ?? actions.current())
+    }
+
     // MARK: iPhone
 
     /// The phone's apps, from a provider (none until the container reader fills one in).
@@ -755,9 +813,14 @@ final class LauncherModel: ObservableObject {
         let on = running[a.path] ?? []
         var where_ = on.isEmpty ? a.folder : on.count == 1 ? "Open on workspace \(on[0])" : "Open on workspaces \(on.map(String.init).joined(separator: ", "))"
         if let note = hereNote(a) { where_ += " · " + note }
-        return LauncherItem(id: "app:\(a.path)", section: section, title: a.name, subtitle: where_, icon: .file(a.path),
-                            workspaces: on,
-                            run: { [weak self] in self?.open(a) }, reveal: URL(fileURLWithPath: a.path))
+        var item = LauncherItem(id: "app:\(a.path)", section: section, title: a.name, subtitle: where_, icon: .file(a.path),
+                                workspaces: on,
+                                run: { [weak self] in self?.open(a) }, reveal: URL(fileURLWithPath: a.path))
+        // An app with a site (Spotify, Slack) is preferred; the site is a step away.
+        if let site = Self.sitesByNativeApp[Fuzzy.fold(a.name)] {
+            item.secondary = ("Open \(site.name) on the web", { [weak self] in self?.openSite(site) })
+        }
+        return item
     }
 
     /// The apps found to have a New Window command, with the process it was found in. Only a yes is kept,
@@ -1798,7 +1861,7 @@ struct LauncherView: View {
             hint("↩", model.target.map { "Open on workspace \($0)" } ?? "Open")
             hint("⌥↩", "Go to app")
             hint("⌘↩", "Show in Finder")
-            hint("⇥", "Open menu")
+            hint("⇥", model.items.indices.contains(model.selected) ? (model.items[model.selected].secondary?.label ?? "Open menu") : "Open menu")
             if model.scope != .root { hint("⌫", "Back") }
             Spacer()
             hint("esc", "Close")

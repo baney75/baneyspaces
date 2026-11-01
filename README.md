@@ -223,6 +223,15 @@ Spotlight. Turning that off gives ⌘Space back to Spotlight, and so does quitti
 
 - **Type** to search apps, files, commands and workspaces at once. Apps are listed as you type;
   files you used lately appear on the same keystroke, and the rest of Spotlight's answer follows.
+- **Sites.** Type `x`, `yt`, `github` or part of a bookmark's name and the site comes up with its icon,
+  above the web search: your default browser's bookmarks, the sites you visit most, and a built-in list of
+  about 70 (`spec/sites.json`, with aliases). Return opens it in your default browser, on the workspace you
+  opened the launcher on. If the Mac has an app for it (Spotify, Slack), the app comes first and **⇥** opens
+  the site; if the iPhone has one and iPhone Mirroring's list is known, **⇥** says **Open on iPhone**. Only
+  the bookmarks file and copies of the history and favicon files are read, never cookies or logins, nothing
+  is fetched, and no address is ever logged. See `spec/launcher.md`.
+- **Your iPhone.** Every search offers "Search iPhone for …" through iPhone Mirroring, which opens on your
+  workspace and searches its Spotlight. See **Settings › Launcher**.
 - **What you open lands on the workspace you opened the launcher on.** Open it on the empty
   workspace 3 and pick Photos (open on 2): its window moves to 3 and you stay on 3. Pick Ghostty,
   Helium, TextEdit or Finder, which can make a window: a new one opens on 3. An app that isn't

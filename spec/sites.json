@@ -1,0 +1,696 @@
+{
+  "version": 1,
+  "note": "One list for every platform (spec/launcher.md). Names, domains and aliases only; icons come from the browser's local favicon cache or a letter tile. Nothing is fetched.",
+  "sites": [
+    {
+      "id": "x",
+      "name": "X",
+      "url": "https://x.com",
+      "aliases": [
+        "x",
+        "twitter",
+        "tweet"
+      ],
+      "iphone": "X"
+    },
+    {
+      "id": "youtube",
+      "name": "YouTube",
+      "url": "https://www.youtube.com",
+      "aliases": [
+        "yt",
+        "youtube",
+        "you tube"
+      ],
+      "iphone": "YouTube"
+    },
+    {
+      "id": "gmail",
+      "name": "Gmail",
+      "url": "https://mail.google.com",
+      "aliases": [
+        "gmail",
+        "google mail",
+        "mail"
+      ],
+      "iphone": "Gmail"
+    },
+    {
+      "id": "google-drive",
+      "name": "Google Drive",
+      "url": "https://drive.google.com",
+      "aliases": [
+        "drive",
+        "gdrive",
+        "google drive"
+      ],
+      "iphone": "Google Drive"
+    },
+    {
+      "id": "google-docs",
+      "name": "Google Docs",
+      "url": "https://docs.google.com/document",
+      "aliases": [
+        "docs",
+        "gdocs",
+        "google docs"
+      ]
+    },
+    {
+      "id": "google-sheets",
+      "name": "Google Sheets",
+      "url": "https://docs.google.com/spreadsheets",
+      "aliases": [
+        "sheets",
+        "gsheets",
+        "google sheets"
+      ]
+    },
+    {
+      "id": "google-slides",
+      "name": "Google Slides",
+      "url": "https://docs.google.com/presentation",
+      "aliases": [
+        "slides",
+        "gslides",
+        "google slides"
+      ]
+    },
+    {
+      "id": "google-calendar",
+      "name": "Google Calendar",
+      "url": "https://calendar.google.com",
+      "aliases": [
+        "gcal",
+        "calendar",
+        "google calendar"
+      ],
+      "iphone": "Google Calendar"
+    },
+    {
+      "id": "google-maps",
+      "name": "Google Maps",
+      "url": "https://maps.google.com",
+      "aliases": [
+        "gmaps",
+        "maps",
+        "google maps"
+      ],
+      "iphone": "Google Maps"
+    },
+    {
+      "id": "google",
+      "name": "Google",
+      "url": "https://www.google.com",
+      "aliases": [
+        "google",
+        "g"
+      ]
+    },
+    {
+      "id": "github",
+      "name": "GitHub",
+      "url": "https://github.com",
+      "aliases": [
+        "gh",
+        "github",
+        "git hub"
+      ]
+    },
+    {
+      "id": "gitlab",
+      "name": "GitLab",
+      "url": "https://gitlab.com",
+      "aliases": [
+        "gl",
+        "gitlab"
+      ]
+    },
+    {
+      "id": "reddit",
+      "name": "Reddit",
+      "url": "https://www.reddit.com",
+      "aliases": [
+        "reddit",
+        "r"
+      ],
+      "iphone": "Reddit"
+    },
+    {
+      "id": "instagram",
+      "name": "Instagram",
+      "url": "https://www.instagram.com",
+      "aliases": [
+        "ig",
+        "insta",
+        "instagram"
+      ],
+      "iphone": "Instagram"
+    },
+    {
+      "id": "facebook",
+      "name": "Facebook",
+      "url": "https://www.facebook.com",
+      "aliases": [
+        "fb",
+        "facebook"
+      ],
+      "iphone": "Facebook"
+    },
+    {
+      "id": "messenger",
+      "name": "Messenger",
+      "url": "https://www.messenger.com",
+      "aliases": [
+        "messenger",
+        "fb messenger"
+      ],
+      "iphone": "Messenger"
+    },
+    {
+      "id": "linkedin",
+      "name": "LinkedIn",
+      "url": "https://www.linkedin.com",
+      "aliases": [
+        "li",
+        "linkedin"
+      ],
+      "iphone": "LinkedIn"
+    },
+    {
+      "id": "netflix",
+      "name": "Netflix",
+      "url": "https://www.netflix.com",
+      "aliases": [
+        "netflix"
+      ],
+      "iphone": "Netflix"
+    },
+    {
+      "id": "spotify",
+      "name": "Spotify",
+      "url": "https://open.spotify.com",
+      "aliases": [
+        "spotify",
+        "spot"
+      ],
+      "native": [
+        "Spotify"
+      ],
+      "iphone": "Spotify"
+    },
+    {
+      "id": "chatgpt",
+      "name": "ChatGPT",
+      "url": "https://chatgpt.com",
+      "aliases": [
+        "chatgpt",
+        "gpt",
+        "openai"
+      ],
+      "native": [
+        "ChatGPT"
+      ],
+      "iphone": "ChatGPT"
+    },
+    {
+      "id": "claude",
+      "name": "Claude",
+      "url": "https://claude.ai",
+      "aliases": [
+        "claude",
+        "anthropic"
+      ],
+      "native": [
+        "Claude"
+      ],
+      "iphone": "Claude"
+    },
+    {
+      "id": "perplexity",
+      "name": "Perplexity",
+      "url": "https://www.perplexity.ai",
+      "aliases": [
+        "perplexity",
+        "pplx"
+      ],
+      "iphone": "Perplexity"
+    },
+    {
+      "id": "wikipedia",
+      "name": "Wikipedia",
+      "url": "https://en.wikipedia.org",
+      "aliases": [
+        "wiki",
+        "wikipedia"
+      ]
+    },
+    {
+      "id": "amazon",
+      "name": "Amazon",
+      "url": "https://www.amazon.com",
+      "aliases": [
+        "amazon",
+        "amzn"
+      ],
+      "iphone": "Amazon"
+    },
+    {
+      "id": "canvas",
+      "name": "Canvas",
+      "url": "https://canvas.instructure.com",
+      "aliases": [
+        "canvas",
+        "instructure"
+      ],
+      "iphone": "Canvas Student"
+    },
+    {
+      "id": "blackboard",
+      "name": "Blackboard",
+      "url": "https://www.blackboard.com",
+      "aliases": [
+        "blackboard",
+        "bb"
+      ],
+      "iphone": "Blackboard"
+    },
+    {
+      "id": "outlook",
+      "name": "Outlook",
+      "url": "https://outlook.office.com",
+      "aliases": [
+        "outlook",
+        "office mail"
+      ],
+      "native": [
+        "Microsoft Outlook"
+      ],
+      "iphone": "Outlook"
+    },
+    {
+      "id": "office",
+      "name": "Microsoft 365",
+      "url": "https://www.office.com",
+      "aliases": [
+        "office",
+        "m365",
+        "microsoft 365"
+      ]
+    },
+    {
+      "id": "onedrive",
+      "name": "OneDrive",
+      "url": "https://onedrive.live.com",
+      "aliases": [
+        "onedrive"
+      ],
+      "iphone": "OneDrive"
+    },
+    {
+      "id": "teams",
+      "name": "Microsoft Teams",
+      "url": "https://teams.microsoft.com",
+      "aliases": [
+        "teams",
+        "ms teams"
+      ],
+      "native": [
+        "Microsoft Teams"
+      ],
+      "iphone": "Microsoft Teams"
+    },
+    {
+      "id": "icloud",
+      "name": "iCloud",
+      "url": "https://www.icloud.com",
+      "aliases": [
+        "icloud"
+      ]
+    },
+    {
+      "id": "notion",
+      "name": "Notion",
+      "url": "https://www.notion.so",
+      "aliases": [
+        "notion"
+      ],
+      "native": [
+        "Notion"
+      ],
+      "iphone": "Notion"
+    },
+    {
+      "id": "slack",
+      "name": "Slack",
+      "url": "https://app.slack.com",
+      "aliases": [
+        "slack"
+      ],
+      "native": [
+        "Slack"
+      ],
+      "iphone": "Slack"
+    },
+    {
+      "id": "discord",
+      "name": "Discord",
+      "url": "https://discord.com/app",
+      "aliases": [
+        "discord"
+      ],
+      "native": [
+        "Discord"
+      ],
+      "iphone": "Discord"
+    },
+    {
+      "id": "whatsapp",
+      "name": "WhatsApp",
+      "url": "https://web.whatsapp.com",
+      "aliases": [
+        "whatsapp",
+        "wa"
+      ],
+      "native": [
+        "WhatsApp"
+      ],
+      "iphone": "WhatsApp"
+    },
+    {
+      "id": "telegram",
+      "name": "Telegram",
+      "url": "https://web.telegram.org",
+      "aliases": [
+        "telegram",
+        "tg"
+      ],
+      "native": [
+        "Telegram"
+      ],
+      "iphone": "Telegram"
+    },
+    {
+      "id": "snapchat",
+      "name": "Snapchat",
+      "url": "https://www.snapchat.com",
+      "aliases": [
+        "snap",
+        "snapchat"
+      ],
+      "iphone": "Snapchat"
+    },
+    {
+      "id": "tiktok",
+      "name": "TikTok",
+      "url": "https://www.tiktok.com",
+      "aliases": [
+        "tiktok",
+        "tt"
+      ],
+      "iphone": "TikTok"
+    },
+    {
+      "id": "pinterest",
+      "name": "Pinterest",
+      "url": "https://www.pinterest.com",
+      "aliases": [
+        "pinterest",
+        "pin"
+      ],
+      "iphone": "Pinterest"
+    },
+    {
+      "id": "twitch",
+      "name": "Twitch",
+      "url": "https://www.twitch.tv",
+      "aliases": [
+        "twitch"
+      ],
+      "iphone": "Twitch"
+    },
+    {
+      "id": "zoom",
+      "name": "Zoom",
+      "url": "https://zoom.us",
+      "aliases": [
+        "zoom"
+      ],
+      "native": [
+        "zoom.us"
+      ],
+      "iphone": "Zoom"
+    },
+    {
+      "id": "dropbox",
+      "name": "Dropbox",
+      "url": "https://www.dropbox.com",
+      "aliases": [
+        "dropbox"
+      ],
+      "native": [
+        "Dropbox"
+      ],
+      "iphone": "Dropbox"
+    },
+    {
+      "id": "figma",
+      "name": "Figma",
+      "url": "https://www.figma.com",
+      "aliases": [
+        "figma"
+      ],
+      "native": [
+        "Figma"
+      ]
+    },
+    {
+      "id": "canva",
+      "name": "Canva",
+      "url": "https://www.canva.com",
+      "aliases": [
+        "canva"
+      ],
+      "iphone": "Canva"
+    },
+    {
+      "id": "stackoverflow",
+      "name": "Stack Overflow",
+      "url": "https://stackoverflow.com",
+      "aliases": [
+        "so",
+        "stackoverflow",
+        "stack overflow"
+      ]
+    },
+    {
+      "id": "hackernews",
+      "name": "Hacker News",
+      "url": "https://news.ycombinator.com",
+      "aliases": [
+        "hn",
+        "hacker news"
+      ]
+    },
+    {
+      "id": "npm",
+      "name": "npm",
+      "url": "https://www.npmjs.com",
+      "aliases": [
+        "npm"
+      ]
+    },
+    {
+      "id": "docker-hub",
+      "name": "Docker Hub",
+      "url": "https://hub.docker.com",
+      "aliases": [
+        "docker hub",
+        "dockerhub"
+      ]
+    },
+    {
+      "id": "cloudflare",
+      "name": "Cloudflare",
+      "url": "https://dash.cloudflare.com",
+      "aliases": [
+        "cloudflare",
+        "cf"
+      ]
+    },
+    {
+      "id": "vercel",
+      "name": "Vercel",
+      "url": "https://vercel.com",
+      "aliases": [
+        "vercel"
+      ]
+    },
+    {
+      "id": "paypal",
+      "name": "PayPal",
+      "url": "https://www.paypal.com",
+      "aliases": [
+        "paypal"
+      ],
+      "iphone": "PayPal"
+    },
+    {
+      "id": "venmo",
+      "name": "Venmo",
+      "url": "https://venmo.com",
+      "aliases": [
+        "venmo"
+      ],
+      "iphone": "Venmo"
+    },
+    {
+      "id": "ebay",
+      "name": "eBay",
+      "url": "https://www.ebay.com",
+      "aliases": [
+        "ebay"
+      ],
+      "iphone": "eBay"
+    },
+    {
+      "id": "etsy",
+      "name": "Etsy",
+      "url": "https://www.etsy.com",
+      "aliases": [
+        "etsy"
+      ],
+      "iphone": "Etsy"
+    },
+    {
+      "id": "walmart",
+      "name": "Walmart",
+      "url": "https://www.walmart.com",
+      "aliases": [
+        "walmart"
+      ],
+      "iphone": "Walmart"
+    },
+    {
+      "id": "target",
+      "name": "Target",
+      "url": "https://www.target.com",
+      "aliases": [
+        "target"
+      ],
+      "iphone": "Target"
+    },
+    {
+      "id": "doordash",
+      "name": "DoorDash",
+      "url": "https://www.doordash.com",
+      "aliases": [
+        "doordash"
+      ],
+      "iphone": "DoorDash"
+    },
+    {
+      "id": "uber",
+      "name": "Uber",
+      "url": "https://www.uber.com",
+      "aliases": [
+        "uber"
+      ],
+      "iphone": "Uber"
+    },
+    {
+      "id": "maps-apple",
+      "name": "Apple Maps",
+      "url": "https://maps.apple.com",
+      "aliases": [
+        "apple maps"
+      ]
+    },
+    {
+      "id": "apple",
+      "name": "Apple",
+      "url": "https://www.apple.com",
+      "aliases": [
+        "apple"
+      ]
+    },
+    {
+      "id": "youtube-music",
+      "name": "YouTube Music",
+      "url": "https://music.youtube.com",
+      "aliases": [
+        "yt music",
+        "youtube music"
+      ],
+      "iphone": "YouTube Music"
+    },
+    {
+      "id": "prime-video",
+      "name": "Prime Video",
+      "url": "https://www.primevideo.com",
+      "aliases": [
+        "prime video",
+        "prime"
+      ],
+      "iphone": "Prime Video"
+    },
+    {
+      "id": "disney-plus",
+      "name": "Disney+",
+      "url": "https://www.disneyplus.com",
+      "aliases": [
+        "disney",
+        "disney plus"
+      ],
+      "iphone": "Disney+"
+    },
+    {
+      "id": "hulu",
+      "name": "Hulu",
+      "url": "https://www.hulu.com",
+      "aliases": [
+        "hulu"
+      ],
+      "iphone": "Hulu"
+    },
+    {
+      "id": "bible",
+      "name": "Bible Gateway",
+      "url": "https://www.biblegateway.com",
+      "aliases": [
+        "bible",
+        "bible gateway"
+      ]
+    },
+    {
+      "id": "duckduckgo",
+      "name": "DuckDuckGo",
+      "url": "https://duckduckgo.com",
+      "aliases": [
+        "ddg",
+        "duckduckgo"
+      ]
+    },
+    {
+      "id": "bing",
+      "name": "Bing",
+      "url": "https://www.bing.com",
+      "aliases": [
+        "bing"
+      ]
+    },
+    {
+      "id": "proton-mail",
+      "name": "Proton Mail",
+      "url": "https://mail.proton.me",
+      "aliases": [
+        "proton",
+        "proton mail"
+      ],
+      "native": [
+        "Proton Mail"
+      ],
+      "iphone": "Proton Mail"
+    }
+  ]
+}
