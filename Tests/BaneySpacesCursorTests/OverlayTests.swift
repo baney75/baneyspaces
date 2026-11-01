@@ -86,6 +86,19 @@ final class OverlayTests: XCTestCase {
         XCTAssertTrue(s.isGliding("a"), "one animation on the cursor layer, run by the compositor")
     }
 
+    func testWithMotionOffNothingScalesGrowsOrSquishes() {
+        func scheduled(still: Bool) -> [String] {
+            let s = surface()
+            s.configure("a", look: CursorLook(name: "Claude", status: .working, identity: look.identity, theme: .standard, still: still))
+            s.appear("a", at: CGPoint(x: 100, y: 100))
+            s.act("a", effect: .click, point: CGPoint(x: 100, y: 100), frame: CGRect(x: 80, y: 90, width: 40, height: 20), delay: 0.1)
+            s.act("a", effect: .scroll(dx: 0, dy: 1), point: CGPoint(x: 300, y: 300), frame: CGRect(x: 280, y: 290, width: 40, height: 20), delay: 0)
+            return s.motionAnimationKeys("a")
+        }
+        XCTAssertFalse(scheduled(still: false).isEmpty, "the default theme pops, squishes, grows a ripple and draws a trail")
+        XCTAssertEqual(scheduled(still: true), [], "with motion off only fades run")
+    }
+
     func testAMarkOutsideTheCaptureDrawsNothing() throws {
         let space = CGColorSpace(name: CGColorSpace.displayP3)!
         let ctx = CGContext(data: nil, width: 200, height: 100, bitsPerComponent: 8, bytesPerRow: 0, space: space, bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue)!

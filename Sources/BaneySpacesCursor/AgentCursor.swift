@@ -80,6 +80,17 @@ final class AgentCursor {
         return zip(marks, markShapes).allSatisfy { $0.superlayer === d.root && $1.superlayer === $0 }
     }
 
+    /// For checks: the animations that change a layer's size or draw a stroke in (scale, growth, squish, trail).
+    var motionAnimationKeys: [String] {
+        let layers: [CALayer] = [root, body, badge, focus] + ripples + markShapes
+        return layers.flatMap { l in
+            (l.animationKeys() ?? []).filter { key in
+                let path = (l.animation(forKey: key) as? CAPropertyAnimation)?.keyPath ?? ""
+                return path.hasPrefix("transform") || path == "strokeEnd"
+            }
+        }
+    }
+
     private func applyScale() {
         for l in [body, badge, focus] + ripples + markShapes { l.contentsScale = scale }
         badgeText.contentsScale = scale
@@ -310,17 +321,21 @@ final class AgentCursor {
             layer.opacity = 0
         }
         layer.removeAllAnimations()
-        let grow = CABasicAnimation(keyPath: "transform.scale")
-        grow.fromValue = t.appearScale < 1 ? 0.25 : 0.5; grow.toValue = 1
         let fade = CAKeyframeAnimation(keyPath: "opacity")
         fade.values = [0.9, 0.0]; fade.keyTimes = [0, 1]
-        for a in [grow, fade] as [CAAnimation] {
+        var anims: [String: CAAnimation] = [Self.rippleKey: fade]
+        // With motion off the ring shows at full size and only fades.
+        if !look.still {
+            let grow = CABasicAnimation(keyPath: "transform.scale")
+            grow.fromValue = t.appearScale < 1 ? 0.25 : 0.5; grow.toValue = 1
+            anims["grow"] = grow
+        }
+        for (key, a) in anims {
             a.duration = t.rippleDuration
             a.beginTime = begin
             a.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.8, 0.3, 1)
+            layer.add(a, forKey: key)
         }
-        layer.add(grow, forKey: "grow")
-        layer.add(fade, forKey: Self.rippleKey)
     }
 
     /// The press: the glyph dips and springs back, as the ripple starts.
@@ -368,7 +383,7 @@ final class AgentCursor {
         a.duration = life
         a.beginTime = begin
         layer.add(a, forKey: Self.markKey)
-        if trail {
+        if trail && !look.still {
             let draw = CABasicAnimation(keyPath: "strokeEnd")
             draw.fromValue = 0; draw.toValue = 1; draw.duration = 0.18
             draw.beginTime = begin

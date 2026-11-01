@@ -114,8 +114,14 @@ public struct CursorLook: Equatable, Sendable {
     public var status: DockAgent.State
     public var identity: RGB
     public var theme: CursorTheme
-    public init(name: String, status: DockAgent.State, identity: RGB, theme: CursorTheme) {
-        self.name = name; self.status = status; self.identity = identity; self.theme = theme
+    /// Motion is off (Reduce Motion, or a glide preset of `off`): nothing scales, grows or squishes, so the theme's
+    /// `appearScale` and `squish` are 1 and the ripple and scroll trail appear at full size (spec/config.md).
+    public var still: Bool
+    public init(name: String, status: DockAgent.State, identity: RGB, theme: CursorTheme, still: Bool = false) {
+        self.name = name; self.status = status; self.identity = identity; self.still = still
+        var t = theme
+        if still { t.appearScale = 1; t.squish = 1 }
+        self.theme = t
     }
     public var statusColor: RGB { CursorPalette.status(status) }
 }

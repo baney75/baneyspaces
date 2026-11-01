@@ -190,7 +190,8 @@ public final class CursorDirector: HandsEventListener {
     private func look(for session: String, _ e: CursorEnvironment) -> CursorLook {
         let a = host.agent(session)
         let name = a.name.count > Self.maxNameLength ? String(a.name.prefix(Self.maxNameLength - 1)) + "…" : a.name
-        return CursorLook(name: name, status: a.status, identity: CursorPalette.identityColor(for: session), theme: e.settings.resolvedTheme)
+        return CursorLook(name: name, status: a.status, identity: CursorPalette.identityColor(for: session), theme: e.settings.resolvedTheme,
+                          still: e.settings.skipsGlide(reduceMotion: e.reduceMotion))
     }
 
     private func current(_ t: Track, _ now: TimeInterval) -> GlideState? {
