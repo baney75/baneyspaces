@@ -169,7 +169,7 @@ the engine's own evidence: `verified` is true only when the engine read the outc
 element. `press`, `key` and `pointer` are `not_supported` (phase 3-4). `shot` is refused locally with `not_supported`: a capture can show your whole screen, and no
 per-window capture path exists on Hyprland yet.
 
-## Install on an Omarchy seat (part 2 does this on Chapel1 and Parish1)
+## Install on an Omarchy seat (part 2 does this on seat-b and seat-a)
 
 ```sh
 cargo build --release -p baneyspaces-linux && platforms/linux/scripts/build-engine.sh

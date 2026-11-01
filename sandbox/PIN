@@ -1,5 +1,5 @@
 # What the sandbox runs on. Everything is pinned; `up` refuses an image that isn't pinned by digest.
-# Resolved 2026-10-31/11-01 on rectory1 (M5, macOS 27.2).
+# Resolved 2026-10-31/11-01 on mac-a (M5, macOS 27.2).
 
 tart            2.41.1
   release       https://github.com/openai/tart/releases/download/2.41.1/tart.tar.gz
@@ -31,7 +31,7 @@ softnet         0.25.0
                 for --net-softnet and it drops privileges). BaneySpaces puts that folder first on Tart's PATH.
                   scripts/install-sandbox.sh does this (sha256-checked, idempotent, repairs a wrong mode)
 
-ipv6            Softnet 0.25.0 forwards IPv4 only. Measured 2026-11-01 on rectory1 with `tcpdump -i bridge100 ether src <guest mac>`:
+ipv6            Softnet 0.25.0 forwards IPv4 only. Measured 2026-11-01 on mac-a with `tcpdump -i bridge100 ether src <guest mac>`:
                 a guest with root, IPv6 re-enabled, a static address in the bridge's prefix, and ping6/nc -6 to ff02::1, the
                 Mac's link-local and unique-local emitted 389 frames, all IPv4, none IPv6. The probe repeats the guest-root
                 attempt every run (SandboxSelfcheck.rootIPv6Attempt), and IPv6 is also switched off in the guest and asserted.

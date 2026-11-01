@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Helpers for the live test in the Windows 11 VM (Parish1). Source, do not run.
-VMDIR="${VMDIR:-/home/baney75/Projects/_work/win11-vm}"
+# Helpers for the live test in the Windows 11 VM (seat-a). Source, do not run.
+VMDIR="${VMDIR:?set VMDIR to your win11-vm tree}"
 . "$VMDIR/lib.sh"
 BS='C:\bs\baneyspaces\target\release\baneyspaces.exe'
 vmx()  { "$VMDIR/exec" "$@" 2>&1 | sed 's/_x000D__x000A_//g; /^#< CLIXML/d'; }

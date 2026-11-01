@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The live test of BaneySpaces for Windows, driven from Parish1 against the win11-bs VM.
+# The live test of BaneySpaces for Windows, driven from seat-a against the win11-bs VM.
 # Needs: the VM up with the toolchain provisioned (platforms/windows/vm/provision-toolchain.ps1) and
 # the engine built (platforms/windows/scripts/build-engine.ps1), the tree synced to C:\bs\baneyspaces
 # and built in release. Prints PASS or FAIL with counts; screenshots go to $OUT.
