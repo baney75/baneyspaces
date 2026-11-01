@@ -181,6 +181,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let c = SetupWindowController()
         c.model.onModifierChange = { [weak self] _ in self?.registerShortcuts() }
         c.model.onUninstall = { [weak self] in self?.uninstall() }
+        c.model.onBringBack = { [weak self] in self?.bringBack() }
+        c.model.onAbout = { [weak self] in self?.about() }
+        c.model.isStarted = { [weak self] in self?.started ?? false }
+        c.model.parkedApps = { [weak self] in self?.parkedRows() ?? [] }
+        c.model.onToggleParked = { [weak self] id in self?.toggleParked(id) }
+        c.model.updateInfo = { [weak self] in self?.updateInfo() ?? .init() }
+        c.model.onUpdatesShown = { [weak self] in self?.refreshCommandLineTools() }
+        c.model.onCheckForUpdates = { [weak self] in self?.checkForUpdates() }
+        c.model.onOfferUpdate = { [weak self] in if let r = self?.updater.available { self?.updater.offer(r) } }
+        c.model.onSetUpdateChannel = { [weak self] in self?.updater.channel = $0 }
+        c.model.onSetCheckDaily = { [weak self] in self?.updater.checksAutomatically = $0 }
+        c.model.finishedRows = { [weak self] in
+            guard let self, self.deck.started else { return [] }
+            return self.deck.finishedRows().map { .init(id: $0.id, label: $0.label) }
+        }
+        c.model.onFocusFinished = { [weak self] id in self?.deck.focusFinished(id) }
         c.model.viewerKeysActive = { [weak self] in self?.missionControlKeys.isActive ?? false }
         c.model.onViewerKeysChange = { [weak self] on in
             MissionControlKeys.enabled = on
@@ -578,71 +594,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         spaces.refresh()
         var apps: [Int: [String]] = [:]
         for n in Workspaces.range { apps[n] = spaces.apps(on: n) }
-        for row in MenuLayout.rows(current: spaces.model.current, apps: apps) {
+        let entries = MenuLayout.entries(rows: MenuLayout.rows(current: spaces.model.current, apps: apps),
+                                         finished: deck.started ? deck.unseenCount : 0, update: updateNotice())
+        for entry in entries { menu.addItem(menuItem(for: entry)) }
+    }
+
+    /// Each entry `MenuLayout.entries` lists, as the one menu item it is. Every item the menu holds
+    /// is built here or in `item(_:_:key:)`, which `MenuLayoutTests` counts.
+    private func menuItem(for entry: MenuEntry) -> NSMenuItem {
+        switch entry {
+        case .workspace(let row):
             let it = item(row.title, #selector(pick(_:)), key: "\(row.workspace)")
             it.keyEquivalentModifierMask = Modifier.current.menuFlags
             it.tag = row.workspace
             it.state = row.isCurrent ? .on : .off
             it.toolTip = row.fullList
-            menu.addItem(it)
-        }
-        menu.addItem(.separator())
-        let find = item("Find or Install an App…", #selector(showLauncher))
-        if Launcher.onCmdSpace { find.keyEquivalent = " "; find.keyEquivalentModifierMask = [.command] }
-        menu.addItem(find)
-        menu.addItem(item("Show All Workspaces", #selector(showViewer)))
-        if deck.started { deck.menuItems().forEach(menu.addItem) }
-        menu.addItem(.separator())
-        menu.addItem(optionsItem())
-        menu.addItem(item("Settings…", #selector(showSetup), key: ","))
-        menu.addItem(.separator())
-        // A waiting update gets its own line; the rest of updates live in the submenu.
-        if let update = updateItem() { menu.addItem(update) }
-        menu.addItem(channelItem())
-        menu.addItem(item("About BaneySpaces", #selector(about)))
-        menu.addItem(item("Quit BaneySpaces", #selector(quit), key: "q"))
-    }
-
-    /// The switches and the rarely needed tools, one level down so the menu stays short.
-    private func optionsItem() -> NSMenuItem {
-        let parent = NSMenuItem(title: "Options", action: nil, keyEquivalent: "")
-        let sub = NSMenu()
-        let dockItem = item("Workspace Dock", #selector(toggleWorkspaceDock))
-        dockItem.state = WorkspaceDock.enabled ? .on : .off
-        dockItem.toolTip = "A dock of your workspaces in place of the macOS Dock. Rest the pointer on the \(WorkspaceDock.edge.title.lowercased()) edge of the screen to show it."
-        sub.addItem(dockItem)
-        if WorkspaceDock.enabled {
-            let pos = NSMenuItem(title: "Dock Position", action: nil, keyEquivalent: "")
-            let edges = NSMenu()
-            for e in DockEdge.allCases {
-                let it = item(e.title, #selector(pickDockEdge(_:)))
-                it.representedObject = e.rawValue
-                it.state = WorkspaceDock.edge == e ? .on : .off
-                edges.addItem(it)
+            return it
+        case .showAll:
+            return item("Show All Workspaces", #selector(showViewer))
+        case .find:
+            let find = item("Find or Install an App…", #selector(showLauncher))
+            if Launcher.onCmdSpace { find.keyEquivalent = " "; find.keyEquivalentModifierMask = [.command] }
+            return find
+        case .settings:
+            return item("Settings…", #selector(showSetup), key: ",")
+        case .quit:
+            return item("Quit BaneySpaces", #selector(quit), key: "q")
+        case .finished(let count):
+            // Clicking an agent goes to it and marks it seen, which drops it from this list.
+            return deck.finishedMenuItem(title: MenuLayout.finishedTitle(count))
+        case .update(let notice):
+            let it = item(notice.menuTitle, #selector(offerUpdate))
+            if notice.installing {
+                it.action = nil
+                it.isEnabled = false
+            } else {
+                it.attributedTitle = NSAttributedString(string: it.title, attributes: [.font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)])
             }
-            pos.submenu = edges
-            sub.addItem(pos)
-            let status = item("Agent Status on the Dock", #selector(toggleDockAgentStatus))
-            status.state = WorkspaceDock.agentStatus ? .on : .off
-            status.indentationLevel = 1
-            status.toolTip = "Badges on app icons: a turning ring while an agent works, a yellow ? when it asks you something, a red ! when it stops on an error, an orange count when it finishes."
-            sub.addItem(status)
+            return it
+        case .separator:
+            return .separator()
         }
-        let spaceItem = item("Launcher on ⌘Space", #selector(toggleLauncherKey))
-        spaceItem.state = Launcher.onCmdSpace ? .on : .off
-        spaceItem.toolTip = "⌘Space opens the BaneySpaces launcher instead of Spotlight. Turning it off gives ⌘Space back to Spotlight."
-        sub.addItem(spaceItem)
-        sub.addItem(.separator())
-        sub.addItem(parkedAppsItem())
-        let back = item("Bring Every Window Back", #selector(bringBack))
-        back.toolTip = "Gathers every window onto workspace 1, all visible."
-        sub.addItem(back)
-        sub.addItem(.separator())
-        let remove = item("Uninstall BaneySpaces…", #selector(uninstall))
-        remove.toolTip = "Puts back your windows, Dock, shortcuts and agent settings, then removes BaneySpaces."
-        sub.addItem(remove)
-        parent.submenu = sub
-        return parent
     }
 
     private func item(_ title: String, _ action: Selector, key: String = "") -> NSMenuItem {
@@ -651,47 +643,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return it
     }
 
+    /// A release waiting or installing, if any: the menu's "Update to …" row and Settings > Updates.
+    private func updateNotice() -> UpdateNotice? {
+        if let r = updater.installing { return UpdateNotice(name: r.name, isNightly: r.isNightly, installing: true) }
+        return updater.available.map { UpdateNotice(name: $0.name, isNightly: $0.isNightly, installing: false) }
+    }
+
+    @objc private func offerUpdate() { if let r = updater.available { updater.offer(r) } }
+
     @objc private func pick(_ sender: NSMenuItem) { spaces.switchTo(sender.tag) }
 
-    /// Apps whose windows are parked instead of hidden, so automation can still use them.
-    private func parkedAppsItem() -> NSMenuItem {
-        let parent = NSMenuItem(title: "Keep Usable by Automation", action: nil, keyEquivalent: "")
-        let sub = NSMenu()
-        let note = NSMenuItem(title: "Checked apps aren't hidden on other workspaces, so tools like Cua can still click and type in them.", action: nil, keyEquivalent: "")
-        note.isEnabled = false
-        sub.addItem(note)
-        sub.addItem(.separator())
+    /// Apps whose windows are parked instead of hidden, so automation can still use them: Settings >
+    /// Automation. Apps with windows, plus every app already on the list, so any of them can be unchecked.
+    private func parkedRows() -> [SetupModel.ParkedRow] {
         let on = ParkedApps.bundleIDs
-        // Apps with windows, plus every app already on the list, so any of them can be unchecked.
-        var apps = spaces.appsWithWindows()
+        let slow = SlowMovers.bundleIDs
+        // The window list as it is now, as the menu did: an app's late first window shows.
+        if started { spaces.refresh() }
+        var apps = started ? spaces.appsWithWindows() : []
         for id in on where !apps.contains(where: { $0.bundleID == id }) {
             let name = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id)
                 .map { FileManager.default.displayName(atPath: $0.path).replacingOccurrences(of: ".app", with: "") } ?? id
             apps.append((name, id))
         }
-        let slow = SlowMovers.bundleIDs
-        for app in apps {
-            // An app that slides its windows when moved is hidden anyway, so nothing moves on screen.
-            let title = on.contains(app.bundleID) && slow.contains(app.bundleID) ? "\(app.name) (hidden: it animates window moves)" : app.name
-            let it = item(title, #selector(toggleParked(_:)))
-            it.representedObject = app.bundleID
-            it.state = on.contains(app.bundleID) ? .on : .off
-            sub.addItem(it)
-        }
-        parent.submenu = sub
-        return parent
+        // An app that slides its windows when moved is hidden anyway, so nothing moves on screen.
+        return apps.map { .init(id: $0.bundleID, name: $0.name, on: on.contains($0.bundleID), animates: slow.contains($0.bundleID)) }
     }
 
     // MARK: Workspace Dock
 
-    @objc private func toggleWorkspaceDock() { setWorkspaceDock(!WorkspaceDock.enabled) }
+    private func toggleWorkspaceDock() { setWorkspaceDock(!WorkspaceDock.enabled) }
 
-    @objc private func pickDockEdge(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String, let e = DockEdge(rawValue: raw) else { return }
-        setDockEdge(e)
-    }
-
-    /// Moves the Workspace Dock to another side of the screen; setup and the menu follow.
+    /// Moves the Workspace Dock to another side of the screen; setup follows.
     func setDockEdge(_ e: DockEdge) {
         dock.setEdge(e)
         if setup.model.dockEdge != e { setup.model.dockEdge = e }
@@ -699,7 +682,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Asks, then hands off to the bundled uninstall.sh and quits; quitting brings every window
     /// back, and the script waits for that before it removes anything.
-    @objc private func uninstall() {
+    private func uninstall() {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = "Uninstall BaneySpaces?"
@@ -719,9 +702,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    @objc private func toggleDockAgentStatus() { setDockAgentStatus(!WorkspaceDock.agentStatus) }
-
-    /// Shows or hides agent badges on the Workspace Dock; settings and the menu follow.
+    /// Shows or hides agent badges on the Workspace Dock; settings follow.
     func setDockAgentStatus(_ on: Bool) {
         WorkspaceDock.agentStatus = on
         dock.model.agentStatus = on
@@ -740,7 +721,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: Launcher
 
     @objc private func showLauncher() { launcher.show() }
-    @objc private func toggleLauncherKey() { setLauncherOnCmdSpace(!Launcher.onCmdSpace) }
 
     /// Takes ⌘Space from Spotlight for the launcher, or gives it back. Changing macOS's shortcut
     /// takes a moment, so it happens off the main thread.
@@ -755,65 +735,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: Updates
 
-    /// "Update to …" when a newer build is waiting, "Updating to …" while it installs, otherwise
-    /// nothing: the manual check is in the Updates submenu.
-    private func updateItem() -> NSMenuItem? {
-        if let r = updater.installing {
-            let it = NSMenuItem(title: "Updating to \(r.isNightly ? "the nightly build" : r.name)…", action: nil, keyEquivalent: "")
-            it.isEnabled = false
-            return it
+    /// What Settings > Updates shows: the build you have, the channel, and any release waiting.
+    private func updateInfo() -> SetupModel.UpdateInfo {
+        .init(have: Updater.buildDescription, channel: updater.channel, daily: updater.checksAutomatically,
+              nightlyNeedsTools: !commandLineTools, notice: updateNotice())
+    }
+
+    /// Whether Apple's command line tools are installed, as of the last look: `refreshCommandLineTools`
+    /// looks again (it runs a process, so off the main thread) whenever Settings > Updates appears.
+    private var commandLineTools = true
+
+    private func refreshCommandLineTools() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let found = Updater.hasCommandLineTools
+            DispatchQueue.main.async {
+                guard let self, self.commandLineTools != found else { return }
+                self.commandLineTools = found
+                self.setup.model.reload()
+            }
         }
-        guard let r = updater.available else { return nil }
-        let it = item("Update to \(r.isNightly ? "the Nightly Build" : r.name)…", #selector(offerUpdate))
-        it.attributedTitle = NSAttributedString(string: it.title, attributes: [.font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)])
-        return it
     }
 
-    /// Stable or Nightly, and whether to look for updates by itself. Nothing installs without
-    /// pressing Update Now.
-    private func channelItem() -> NSMenuItem {
-        let parent = NSMenuItem(title: "Updates", action: nil, keyEquivalent: "")
-        let sub = NSMenu()
-        let current = NSMenuItem(title: "You have \(Updater.buildDescription)", action: nil, keyEquivalent: "")
-        current.isEnabled = false
-        sub.addItem(current)
-        sub.addItem(.separator())
-        for (channel, title) in [(UpdateChannel.stable, "Stable: tested releases"), (.nightly, Updater.hasCommandLineTools ? "Nightly: newest changes, every night" : "Nightly: needs Apple's command line tools")] {
-            let it = item(title, #selector(pickChannel(_:)))
-            it.representedObject = channel.rawValue
-            it.state = updater.channel == channel ? .on : .off
-            sub.addItem(it)
-        }
-        sub.addItem(.separator())
-        let auto = item("Check for Updates Daily", #selector(toggleAutoCheck))
-        auto.state = updater.checksAutomatically ? .on : .off
-        sub.addItem(auto)
-        sub.addItem(item("Check for Updates Now…", #selector(checkForUpdates)))
-        parent.submenu = sub
-        return parent
-    }
+    private func checkForUpdates() { updater.check(manual: true) }
 
-    @objc private func checkForUpdates() { updater.check(manual: true) }
-    @objc private func offerUpdate() { if let r = updater.available { updater.offer(r) } }
-    @objc private func toggleAutoCheck() { updater.checksAutomatically.toggle() }
-    @objc private func pickChannel(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String, let channel = UpdateChannel(rawValue: raw) else { return }
-        updater.channel = channel
-    }
-
-    @objc private func toggleParked(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String else { return }
+    private func toggleParked(_ id: String) {
+        guard started else { return }
         ParkedApps.toggle(id)
         // Checking an app again gives it a fresh try at parking.
         if ParkedApps.bundleIDs.contains(id) { SlowMovers.bundleIDs.remove(id) }
         spaces.reapply()
     }
 
-    @objc private func bringBack() { spaces.gatherOnOne() }
+    private func bringBack() {
+        guard started else { return }
+        spaces.gatherOnOne()
+    }
 
     @objc private func showViewer() { viewer.open() }
 
-    @objc private func about() {
+    private func about() {
         NSApp.activate(ignoringOtherApps: true)
         NSApp.orderFrontStandardAboutPanel(options: [
             .credits: NSAttributedString(string: "Nine workspaces on one keyboard row.\n\(Modifier.current.symbol)1–\(Modifier.current.symbol)9 to switch. Add ⇧ to bring the window along."),
@@ -849,6 +809,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             case "show" where checks: run { _ in dock.pin(true) }
             case "hide": run { _ in dock.pin(false) }
             case "on" where checks: run { _ in setWorkspaceDock(true) }
+            // For `scripts/dock-motion-probe.swift`: open and close the first "+N" list without the pointer.
+            case "more" where checks: run { _ in _ = dock.openMoreForCheck() }
+            case "lessmore" where checks: run { _ in dock.closeMoreForCheck() }
             default: NSLog("BaneySpaces: dock command refused or unknown %@", text)
             }
         default: NSLog("BaneySpaces: unknown command %@", text)

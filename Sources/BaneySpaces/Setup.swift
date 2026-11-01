@@ -29,8 +29,78 @@ final class SetupModel: ObservableObject {
     var hooksInstalled: () -> HookState = { .on }
     var onInstallHooks: (() -> Void)?
     @Published var hooks: HookState = .on
-    @Published var tab: SettingsTab = .general
+    @Published var tab: SettingsTab = .general {
+        // The app list changes while the window is open; it's read when you look at it.
+        didSet {
+            if tab == .automation { reloadParked() }
+            if tab == .updates { onUpdatesShown?() }
+        }
+    }
     var onUninstall: (() -> Void)?
+    /// Everything the menu bar menu's Options, Updates and About items used to do (2026-10-31).
+    var onBringBack: (() -> Void)?
+    var onAbout: (() -> Void)?
+    /// An app that can be kept usable by automation: its windows are parked, not hidden.
+    struct ParkedRow: Identifiable, Equatable {
+        let id: String
+        let name: String
+        var on: Bool
+        /// It slides its windows when moved, so it is hidden even with the box checked.
+        var animates: Bool
+    }
+    @Published var parkedRows: [ParkedRow] = []
+    /// The parked list is read when the tab appears, the window takes the keyboard, or an app
+    /// launches or quits (`SetupWindowController`), not on every tick: it walks every window.
+    var parkedApps: () -> [ParkedRow] = { [] }
+    /// BaneySpaces has started (Accessibility allowed, AeroSpace gone). Automation waits for it.
+    /// False until the first read says otherwise, so nothing is live before the gate knows.
+    @Published var started = false {
+        didSet {
+            // The list was empty while waiting; read it as soon as BaneySpaces is up, and once more
+            // after its first scan of the windows.
+            guard started, !oldValue, tab == .automation, windowVisible() else { return }
+            reloadParked()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                if self?.tab == .automation, self?.windowVisible() == true { self?.reloadParked() }
+            }
+        }
+    }
+    /// Whether the Settings window is on screen: a read nobody can see is a scan for nothing.
+    var windowVisible: () -> Bool = { false }
+    var isStarted: () -> Bool = { false } {
+        didSet { started = isStarted() }
+    }
+    /// Why Automation can't act yet, or nil.
+    var automationReason: String? { AutomationGate.reason(trusted: trusted, aeroSpaceRunning: aeroSpaceRunning, started: started) }
+    var onToggleParked: ((String) -> Void)?
+    /// BaneySpaces' own updates: the build you have, the channel, and any release waiting.
+    struct UpdateInfo: Equatable {
+        var have = ""
+        var channel = UpdateChannel.stable
+        var daily = true
+        var nightlyNeedsTools = false
+        /// A release waiting, or installing.
+        var notice: UpdateNotice?
+    }
+    @Published var update = UpdateInfo()
+    var updateInfo: () -> UpdateInfo = { UpdateInfo() }
+    /// The Updates tab came up: look again for the command line tools, which a Mac can gain while this runs.
+    var onUpdatesShown: (() -> Void)?
+    var onCheckForUpdates: (() -> Void)?
+    var onOfferUpdate: (() -> Void)?
+    var onSetUpdateChannel: ((UpdateChannel) -> Void)?
+    var onSetCheckDaily: ((Bool) -> Void)?
+    /// Agents that finished while you were away, newest to oldest; a click goes to the agent.
+    struct FinishedRow: Identifiable, Equatable { let id: String; let label: String }
+    @Published var finished: [FinishedRow] = []
+    var finishedRows: () -> [FinishedRow] = { [] }
+    var onFocusFinished: ((String) -> Void)?
+
+    /// Goes to the agent, which marks it seen; the list drops it at once instead of at the next tick.
+    func focusFinished(_ id: String) {
+        onFocusFinished?(id)
+        finished = finishedRows()
+    }
     @Published var launcherOnCmdSpace = Launcher.onCmdSpace
     @Published var searchEngine = Launcher.searchEngine { didSet { Launcher.searchEngine = searchEngine } }
     @Published var agent = Launcher.agent { didSet { Launcher.agent = agent } }
@@ -89,6 +159,9 @@ final class SetupModel: ObservableObject {
         if !wasReady && ready { becameReady() }
         // The slower checks once a second.
         if ticks % 4 == 0 { reloadOptional() }
+        // An app's first window can come long after it launches, and one can close with the app still
+        // running: no notification says so, so the Automation list reads every few seconds while up.
+        if ticks % 12 == 0, tab == .automation, windowVisible() { reloadParked() }
     }
 
     func reload() {
@@ -106,6 +179,32 @@ final class SetupModel: ObservableObject {
         loginNeedsApproval = status == .requiresApproval
         viewerKeysFailed = trusted && viewerKeys && !viewerKeysActive()
         hooks = hooksInstalled()
+        let info = updateInfo()
+        if info != update { update = info }
+        let rows = finishedRows()
+        if rows != finished { finished = rows }
+        let running = isStarted()
+        if running != started { started = running }
+    }
+
+    func reloadParked() {
+        let rows = parkedApps()
+        if rows != parkedRows { parkedRows = rows }
+    }
+
+    func toggleParked(_ id: String) {
+        onToggleParked?(id)
+        reloadParked()
+    }
+
+    func setUpdateChannel(_ channel: UpdateChannel) {
+        onSetUpdateChannel?(channel)
+        update = updateInfo()
+    }
+
+    func setCheckDaily(_ on: Bool) {
+        onSetCheckDaily?(on)
+        update = updateInfo()
     }
 
     private func becameReady() {
@@ -261,7 +360,8 @@ final class SetupModel: ObservableObject {
 
 /// The settings window's tabs. General comes first: it's where a new Mac starts.
 enum SettingsTab: String, CaseIterable, Identifiable {
-    case general = "General", keys = "Keys", dock = "Dock", appearance = "Appearance", launcher = "Launcher"
+    case general = "General", keys = "Keys", dock = "Dock", appearance = "Appearance", launcher = "Launcher",
+         automation = "Automation", updates = "Updates"
     var id: Self { self }
 
     var symbol: String {
@@ -271,6 +371,8 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .dock: "dock.rectangle"
         case .appearance: "paintpalette"
         case .launcher: "magnifyingglass"
+        case .automation: "gearshape.2"
+        case .updates: "arrow.down.circle"
         }
     }
 }
@@ -297,6 +399,8 @@ struct SetupView: View {
                 case .dock: dock
                 case .appearance: appearanceTab
                 case .launcher: launcher
+                case .automation: automation
+                case .updates: updates
                 }
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -305,7 +409,7 @@ struct SetupView: View {
             HStack {
                 // About the app as a whole, so only under General; on another tab it read like a stray note.
                 if model.tab == .general {
-                    Text("Full screen works as usual; switching workspaces takes a window out of it first. Change anything later from the menu bar icon.")
+                    Text("Full screen works as usual; switching workspaces takes a window out of it first. Change anything later with Settings… in the menu bar icon's menu (⌘,).")
                         .font(.footnote).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -438,7 +542,7 @@ struct SetupView: View {
         section("See every workspace at once") {
             Toggle("The Mission Control key and ⌃↑ open BaneySpaces' overview", isOn: Binding(get: { model.viewerKeys }, set: { model.setViewerKeys($0) }))
             if model.viewerKeysFailed {
-                Text("macOS didn't let BaneySpaces watch those keys, so they still open Mission Control. Turn the switch off and on to try again. The overview is always in the menu bar menu.")
+                Text("macOS didn't let BaneySpaces watch those keys, so they still open Mission Control. Turn the switch off and on to try again. The overview is always in the menu bar menu (Show All Workspaces).")
                     .font(.callout).foregroundStyle(.orange)
             } else {
                 Text("Turn this off to give both keys back to Mission Control and to apps that use ⌃↑. The overview stays in the menu bar menu.")
@@ -487,6 +591,17 @@ struct SetupView: View {
                 .font(.callout).foregroundStyle(.secondary)
         }
 
+        if !model.finished.isEmpty {
+            section("Finished while you were away") {
+                ForEach(model.finished) { row in
+                    Button { model.focusFinished(row.id) } label: {
+                        Label(row.label, systemImage: "checkmark.circle").lineLimit(1)
+                    }
+                    .buttonStyle(.link)
+                }
+            }
+        }
+
         section("Agent hooks") {
             if model.hooks == .noClaudeCode {
                 Text("Claude Code isn't set up on this Mac (there's no ~/.claude/settings.json). Once it is, install the hooks here.")
@@ -510,6 +625,79 @@ struct SetupView: View {
         GridRow {
             badge.frame(width: 18, alignment: .center)
             Text(text).font(.callout)
+        }
+    }
+
+    // MARK: Automation
+
+    @ViewBuilder private var automation: some View {
+        section("Keep usable by automation") {
+            Text("Checked apps aren't hidden on other workspaces, so tools like Cua can still click and type in them. Their windows are parked just out of view instead.")
+                .font(.callout).foregroundStyle(.secondary)
+            if let why = model.automationReason {
+                Text(why).font(.callout).foregroundStyle(.orange)
+            }
+            if model.parkedRows.isEmpty {
+                if model.automationReason == nil { Text("No apps with windows yet.").font(.callout).foregroundStyle(.secondary) }
+            } else {
+                // Past eight, the list scrolls, so the window never runs off a laptop screen.
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(model.parkedRows) { row in
+                            Toggle(row.on && row.animates ? "\(row.name) (hidden: it animates window moves)" : row.name,
+                                   isOn: Binding(get: { row.on }, set: { _ in model.toggleParked(row.id) }))
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(height: CGFloat(min(model.parkedRows.count, 8)) * 24)
+                .disabled(model.automationReason != nil)
+            }
+        }
+
+        section("If windows get tangled") {
+            Text("Gathers every window onto workspace 1, all visible. It gets you out of any tangle.")
+                .font(.callout).foregroundStyle(.secondary)
+            Button("Bring Every Window Back") { model.onBringBack?() }.disabled(model.automationReason != nil)
+        }
+    }
+
+    // MARK: Updates
+
+    @ViewBuilder private var updates: some View {
+        section("Software update") {
+            Text("You have \(model.update.have).").foregroundStyle(.secondary)
+            if let notice = model.update.notice, notice.installing {
+                Label(notice.menuTitle, systemImage: "arrow.down.circle")
+            } else if let notice = model.update.notice {
+                HStack {
+                    Label(notice.sentence, systemImage: "arrow.down.circle.fill").font(.headline)
+                    Spacer()
+                    Button(notice.menuTitle) { model.onOfferUpdate?() }
+                }
+                Text("Shows what's new first. Nothing installs until you press Update Now.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            Picker("Follow", selection: Binding(get: { model.update.channel }, set: { model.setUpdateChannel($0) })) {
+                Text("Stable: tested releases").tag(UpdateChannel.stable)
+                Text(model.update.nightlyNeedsTools ? "Nightly: needs Apple's command line tools" : "Nightly: newest changes, every night").tag(UpdateChannel.nightly)
+            }
+            .pickerStyle(.radioGroup)
+            Toggle("Check for updates daily", isOn: Binding(get: { model.update.daily }, set: { model.setCheckDaily($0) }))
+            Button("Check for Updates Now…") { model.onCheckForUpdates?() }
+        }
+
+        section("About") {
+            HStack(spacing: 14) {
+                Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 48, height: 48)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("BaneySpaces").font(.title3.bold())
+                    Text("Nine workspaces on one keyboard row.").foregroundStyle(.secondary)
+                    Text("\(model.modifier.symbol)1–\(model.modifier.symbol)9 to switch. Add ⇧ to bring the window along.")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+            }
+            Button("About BaneySpaces…") { model.onAbout?() }
         }
     }
 
@@ -749,6 +937,8 @@ struct SetupView: View {
 final class SetupWindowController: NSWindowController, NSWindowDelegate {
     let model = SetupModel()
     private var activeObserver: NSObjectProtocol?
+    /// The window taking the keyboard, and apps launching or quitting: kept so `deinit` can remove them.
+    private var observers: [(center: NotificationCenter, token: NSObjectProtocol)] = []
     private var sizing: AnyCancellable?
 
     convenience init() {
@@ -756,6 +946,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         self.init(window: window)
         window.title = "BaneySpaces Settings"
         window.delegate = self
+        model.windowVisible = { [weak window] in window?.isVisible == true }
         let host = NSHostingView(rootView: SetupView(model: model) { [weak window] in window?.close() })
         // Its size comes from the content. With .preferredContentSize the hosting view reported
         // 0×0 on macOS 27 and the window opened invisible (2026-10-16, on main too).
@@ -790,12 +981,35 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
                 self.window?.close()
             }
         }
+        // The window taking the keyboard (opened, or clicked back to) reads the lists again.
+        observers.append((NotificationCenter.default, NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] _ in
+            self?.model.reload()
+            self?.model.reloadParked()
+        }))
+        // An app launching or quitting changes the list on the Automation tab; a launch has no
+        // windows for a moment, so it's read once soon after. Later windows are caught by the
+        // model's slow read while the tab is up.
+        let workspace = NSWorkspace.shared.notificationCenter
+        for (name, delay) in [(NSWorkspace.didLaunchApplicationNotification, 1.5), (NSWorkspace.didTerminateApplicationNotification, 0.3)] {
+            observers.append((workspace, workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                    guard let self, self.window?.isVisible == true, self.model.tab == .automation else { return }
+                    self.model.reloadParked()
+                }
+            }))
+        }
         // Coming back from System Settings re-checks at once instead of waiting for the next tick.
         activeObserver = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification,
                                                                 object: nil, queue: .main) { [weak self] _ in
             guard self?.window?.isVisible == true else { return }
             self?.model.reload()
         }
+    }
+
+    deinit {
+        if let activeObserver { NotificationCenter.default.removeObserver(activeObserver) }
+        for o in observers { o.center.removeObserver(o.token) }
     }
 
     var isVisible: Bool { window?.isVisible == true }
@@ -805,6 +1019,8 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         if !model.ready { model.tab = .general }
         model.dockAgentStatus = WorkspaceDock.agentStatus
         model.reload()
+        model.reloadParked()
+        if model.tab == .updates { model.onUpdatesShown?() }
         model.reloadBangs()
         model.startWatching()
         NSApp.activate(ignoringOtherApps: true)

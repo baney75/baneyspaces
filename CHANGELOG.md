@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- **The "+N" list lets go, and the dock moves.** The window strip and the "+N" list are a panel of their
+  own, so opening one no longer resizes or jumps the dock. The dock stays up only while the pointer is
+  on its bar or on the list (each with a little room), not anywhere over the whole panel; the list
+  closes 250 ms after the pointer leaves it, at once on Esc or a click elsewhere. The dock slides 8 pt
+  and fades in and out, the list grows from its tile and fades, rows light in 80 ms, and a picked-up
+  row or icon lifts and settles. All of it is instant with Reduce Motion on.
+- **A drag out of the "+N" list ends cleanly if its app goes.** Closing the window or quitting the app
+  mid-drag, or the list closing under the pointer, cancels the drag instead of leaving the dock in
+  drag mode; a window that closed is never moved. Settings > Automation waits for BaneySpaces to
+  start (and says whether it's Accessibility or AeroSpace), the menu badge counts only agents the
+  menu can list, and the Automation app list reads when the tab opens or an app launches or quits.
+- **Drag an app out of a tile's "+N" list.** Each app in the list that opens over a workspace tile
+  drags like the tile's own icons: onto another workspace's tile, or the dashed "+", to move its
+  windows there. A click still goes to the app, and the list stays open as the drag starts.
+- **A shorter menu bar menu.** It keeps the workspaces, Show All Workspaces, Find or Install an App,
+  Settings (⌘,) and Quit. What was under Options, Updates and About is in Settings: the switches are
+  where they were, Keep Usable by Automation and Bring Every Window Back are under **Automation**,
+  and the update channel, daily check, Check for Updates Now, and About are under **Updates**. Agents
+  that finished while you were away list under **Dock**. When agents have finished, or an update
+  is waiting, a row for it appears in the menu (and goes away when there's nothing to act on); the
+  update controls are also in Settings > Updates.
 - **The Workspace Dock goes down once the pointer leaves it.** It used to stay up while the pointer
   rested above or beside it, over the app underneath, because it counted the empty room it keeps for
   its hover label. Now only the dock itself counts, plus the window strip while it's open.
