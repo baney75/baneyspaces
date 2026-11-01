@@ -33,7 +33,7 @@ PanelWindow {
   mask: Region { item: barBg }
 
   onWantedChanged: if (!wanted) host.closeList()
-  Connections { target: win.backingWindow; function onFrameSwapped() { bs.probeTick("dock") } }
+  Connections { target: layer.Window.window; function onFrameSwapped() { bs.probeTick("dock") } }
   function publish() { host.barRect = { x: originX, y: originY, w: barBg.width, h: barBg.height } }
   onOriginXChanged: publish()
   onOriginYChanged: publish()
@@ -267,7 +267,7 @@ PanelWindow {
             MouseArea { anchors.fill: parent; onClicked: bs.call("switch", { n: win.dock.new_target }) }
           }
 
-          Rectangle { width: 1; height: spec.height * 0.6; anchors.verticalCenter: parent.verticalCenter; color: th.panelEdge }
+          Rectangle { width: 1; height: spec.height * 0.6; anchors.verticalCenter: parent.verticalCenter; color: th.tok.roles.border }
 
           // Launcher and overview.
           Column {

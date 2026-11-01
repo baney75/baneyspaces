@@ -238,9 +238,20 @@ Verdicts: **kept** = Omarchy's own, untouched and still working after install (`
 
 Kept, not replaced. It reads Hyprland's workspaces (one to ten) and a click runs `hyprctl dispatch hl.dsp.focus({ workspace = N })`, which is the same workspace the BaneySpaces model calls n, so what it shows is what BaneySpaces holds. `nested.sh` clicks it the way the widget does: a click on an unshown workspace shows it on the display you are on; a click on one another display shows goes to that display with nothing else changed; the occupied workspaces the bar reads equal the model's. All checked, all pass.
 
-## The workspace switch animation
+## Animations
 
-Omarchy's own animation stays: BaneySpaces no longer turns it off (it did in part 1). `motion.workspace_animation = off` makes a switch instant, and `omarchy` brings Omarchy's back. Measured with the animation on (hyprctl j/monitors polled every 2 ms for 1.4 s per command): a switch passes through no third workspace, the agent workspace closes when you switch away and does not come back. That is the compositor's state; a pixel-level glitch check needs a person (untested live).
+Omarchy's own looknfeel turns the `workspaces` animation **off** (a workspace switch is instant) and leaves `specialWorkspace` (the scratchpad) as a vertical slide. BaneySpaces matches the first and leaves everything else of Omarchy's alone: `animation.workspace.style` is `off` by default, so a switch is as instant as Omarchy's; `fade` or `slide` turn Hyprland's own workspace animation on. The daemon no longer touches `specialWorkspace`, windows, layers, fades or the border (part 1 turned the scratchpad's slide off; that is gone). Measured in the nested session with Omarchy's real looknfeel loaded: every Omarchy animation leaf is identical before and after the include and the daemon; a switch is one step with no third workspace; with the agent workspace up a switch closes it first, ends on the new workspace and the agent workspace never comes back (hyprctl j/monitors polled every 2 ms for 1.4 s per command). That is the compositor's state; a pixel-level glitch check needs a person (untested live).
+
+BaneySpaces' own surfaces (dock, lists, switcher, launcher, overview, settings) animate on the Qt Quick scene graph from the `animation` settings: presets `baneyspaces`, `omarchy` (Omarchy's curves in ms: pop-in 410, pop-out 149, layers 400 and 150), `snappy`, `smooth`, `off`, a speed, and your own time for a surface. Omarchy has no such knob for its own shell. A frame-timing probe (Qt's `frameSwapped`, 20 transitions per surface) runs in the nested session:
+
+| Surface | frames | median frame | over 1.5x | over 2x | per 200 frames over 1.5x |
+| --- | --- | --- | --- | --- | --- |
+| dock | 366 | 17 ms | 0 | 0 | 0 |
+| overview | 201 | 16 ms | 0 | 0 | 0 |
+| launcher | 204 | 16 ms | 1 | 0 | 1.1 |
+| switcher | 196 | 16 ms | 0 | 0 | 0 |
+
+The nested session draws with Qt's software renderer on a headless 60 Hz output: these numbers show the probe works, they are not a verdict on a GPU, and the bar (at most 1 frame in 200 over 1.5x, none over 2x, 120 Hz included) is **untested live**.
 
 ## Switch latency, key to compositor
 
@@ -248,10 +259,10 @@ Native is what Omarchy's bind runs (`hl.dsp.focus`, in Hyprland). Ours is what B
 
 | | p50 | p90 | max |
 | --- | --- | --- | --- |
-| Omarchy (native bind) | 0.31 ms | 0.43 ms | 0.67 ms |
-| BaneySpaces, the usual switch (the bind's function) | 0.3 ms | 0.41 ms | 0.51 ms |
-| BaneySpaces, handed to the daemon (a workspace hidden on another display, or the agent workspace up) | 7.1 ms | 8.36 ms | 9.8 ms |
-| Difference | -0.01 ms | -0.02 ms | |
+| Omarchy (native bind) | 0.38 ms | 0.43 ms | 0.82 ms |
+| BaneySpaces, the usual switch (the bind's function) | 0.37 ms | 0.44 ms | 0.7 ms |
+| BaneySpaces, handed to the daemon (a workspace hidden on another display, or the agent workspace up) | 6.94 ms | 7.67 ms | 8.27 ms |
+| Difference | -0.01 ms | 0.01 ms | |
 
 Budget: BaneySpaces' usual switch within native + 5 ms at p50 and p90 (asserted by `nested.sh` in a release build). The daemon path costs a process start more (Hyprland's own spawn is most of it) and is the rarer case.
 
@@ -277,7 +288,20 @@ Fuzzy-match quality on the same installed apps and 31 queries (a query names the
 | Omarchy | 0.903 | 1 | 0.946 |
 | BaneySpaces | 0.903 | 1 | 0.946 |
 
+## Configuration
+
+Part 2 reads `~/.config/baneyspaces/config.toml` with the paths and defaults of `spec/config.md` (`behavior.dock.*`, `behavior.switcher.mode`, `behavior.overview.*`, `theme.name`, `theme.palette`, `theme.override.*`, `animation.*`) and applies a hand edit within a second; `baneyspaces set <path> <value>` writes one key, keeping your comments. Agents may set anything in the file (the caller is logged); switching, moving and showing the agent workspace stay refused to them.
+
+| | Omarchy | BaneySpaces now |
+| --- | --- | --- |
+| Where bindings, theme and animation live | Lua files (`bindings.lua`, `looknfeel.lua`), `shell.json`, theme folders | one TOML file for theme, palette, token overrides, animation, dock, switcher, launcher, overview |
+| Agent-safe edits | an agent edits Lua with no check; a typo breaks the reload | `set` validates the key and value (path and reason on refusal, animation over 1000 ms refused), writes atomically, and logs the caller |
+| Undo | none; `omarchy refresh` resets to defaults | **not yet**: no history or `config undo` (the shared core's config module brings it) |
+| Whole-document validate and apply | no | **not yet** (`config validate`, `apply`, `schema`, `diff`, `reset`) |
+| Key bindings | Lua, any chord | **not yet** from the file: the bindings are the generated include (`spec/keys.json`); `[keys]` is read by nothing yet |
+| Custom themes, hooks, window rules | themes yes; the rest in Lua | **not yet**: `theme.override` works, `themes/*.toml`, `[[rules]]` and `[hooks]` are not read |
+
 ## Themes
 
-The shell plugin draws every surface (dock, +N list, switcher, launcher, overview, settings) from `spec/themes.json` and `spec/palettes.json`. On Omarchy the default is the `omarchy` theme (square corners, 2 px border, opaque, monospace) and the palette `auto`, which is the live Omarchy theme's `colors.toml`, followed without a restart. `nested.sh` renders every surface in all three themes with all 22 palettes and `auto` and fails on a token mismatch. Dock off: `baneyspaces set dock.enabled false`.
+The shell plugin draws every surface (dock, +N list, switcher, launcher, overview, settings) from `spec/themes.json` and `spec/palettes.json`. On Omarchy the default is the `omarchy` theme (square corners, 2 px border, opaque, monospace) and the palette `auto`, which is the live Omarchy theme's `colors.toml`, followed without a restart. `nested.sh` renders every surface in all three themes with all 22 palettes and `auto` and fails on a token mismatch. Dock off: `baneyspaces set behavior.dock.enabled false`.
 

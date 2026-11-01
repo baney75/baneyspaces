@@ -36,7 +36,7 @@ PanelWindow {
   function framesUsed() { return [{ surface: "dock-list", frame: card.used }] }
 
   onLsChanged: { if (ls) shown = ls }
-  Connections { target: win.backingWindow; function onFrameSwapped() { bs.probeTick("list") } }
+  Connections { target: content.Window.window; function onFrameSwapped() { bs.probeTick("list") } }
   function publish() {
     host.listRect = ls ? { x: place.x, y: host.barRect.y - 8 - panelH, w: listW, h: panelH } : null
   }

@@ -77,7 +77,7 @@ Item {
       WlrLayershell.namespace: "baneyspaces-launcher"
       WlrLayershell.layer: WlrLayer.Overlay
       WlrLayershell.keyboardFocus: wanted ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
-      Connections { target: win.backingWindow; function onFrameSwapped() { root.bs.probeTick("launcher") } }
+      Connections { target: scrim.Window.window; function onFrameSwapped() { root.bs.probeTick("launcher") } }
       function framesUsed() { return [{ surface: "launcher", frame: card.used }] }
       onWantedChanged: if (wanted) { root.reset(); input.forceActiveFocus() }
 

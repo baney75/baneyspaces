@@ -60,7 +60,7 @@ Item {
       WlrLayershell.namespace: "baneyspaces-overview"
       WlrLayershell.layer: WlrLayer.Overlay
       WlrLayershell.keyboardFocus: wanted ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
-      Connections { target: win.backingWindow; function onFrameSwapped() { root.bs.probeTick("overview") } }
+      Connections { target: keys.Window.window; function onFrameSwapped() { root.bs.probeTick("overview") } }
       onWantedChanged: if (wanted) keys.forceActiveFocus()
 
       function cardRects() {

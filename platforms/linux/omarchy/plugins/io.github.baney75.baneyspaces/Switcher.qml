@@ -31,7 +31,7 @@ Item {
       readonly property int sp: th.shadowPad
       implicitWidth: card.width + sp * 2
       implicitHeight: card.height + sp * 2
-      Connections { target: win.backingWindow; function onFrameSwapped() { root.bs.probeTick("switcher") } }
+      Connections { target: keys.Window.window; function onFrameSwapped() { root.bs.probeTick("switcher") } }
       function framesUsed() { return [{ surface: "switcher", frame: card.used }] }
       exclusionMode: ExclusionMode.Ignore
       WlrLayershell.namespace: "baneyspaces-switcher"

@@ -76,7 +76,7 @@ eq "dock show brings it up on the display you are on" "$(D state | jq -r '[.want
 eq "tiles: 1, 2, 4, 6 and the dashed one" "$(D state | jq -c '[.tiles[]|.n]|sort')" "[0,1,2,4,6]"
 eq "each tile has its own apps" "$(D state | jq -c '[.tiles[]|select(.n==1)|.apps[]]')" '["foot","chromium","obsidian","libreoffice-writer","libreoffice-calc"]'
 check "the tiles sit inside the bar and the bar on screen" sh -c "qs ipc -p '$QSD/shell.qml' call baneyspaces.dock state | jq -e '.bar as \$b | .tiles | all(.x >= \$b.x and .x + .w <= \$b.x + \$b.w and .y >= \$b.y and .y + .h <= \$b.y + \$b.h)'"
-grim -g "$((960-300)),$((1080-150)) 600x150" "$TMP/shots/dock.png"
+grim -g "$((960-480)),$((1080-170)) 960x170" "$TMP/shots/dock.png"
 eq "clicking tile 4 goes there" "$(D clickTile 4 >/dev/null; sleep 0.3; mon_ws $M1)" "4"
 D clickTile 1 >/dev/null; sleep 0.3
 eq "clicking the dashed tile goes to the first empty workspace" "$(D clickTile 0 >/dev/null; sleep 0.3; mon_ws $M1)" "3"
@@ -89,7 +89,7 @@ check "clicking the app again goes to its next window" test "$(active)" != "$F1"
 echo "== dock: the +N list, drag to a tile, the dashed tile"
 eq "the +2 list holds the apps the tile cannot show (by their names)" "$(D openList 1 more >/dev/null; sleep 0.5; D state | jq -c '.list|[.kind,.rows]')" '["more",["LibreOffice Writer","LibreOffice Calc"]]'
 eq "an open list is part of the dock's keep zone (the daemon knows its rect)" "$(sleep 0.3; baneyspaces ui | jq -r '.data.dock.list_open')" "true"
-grim -g "$((960-300)),$((1080-330)) 600x330" "$TMP/shots/dock-overflow.png"
+grim -g "$((960-480)),$((1080-350)) 960x350" "$TMP/shots/dock-overflow.png"
 LW="$(addr_of Letter)"
 eq "dragging a row from the list onto tile 2 moves that window there" "$(D dragRow 0 2 >/dev/null; sleep 0.4; client_ws $LW)" "2"
 eq "and you stay where you are" "$(mon_ws $M1)" "1"
@@ -206,7 +206,7 @@ eq "Super+Tab again closes it (toggle)" "$(baneyspaces overview >/dev/null; bane
 
 echo "== settings and config"
 CFG="$XDG_CONFIG_HOME/baneyspaces/config.toml"
-baneyspaces settings show >/dev/null; sleep 0.8; grim -g "$((960-290)),60 580x960" "$TMP/shots/settings.png"
+baneyspaces settings show >/dev/null; sleep 0.8; grim -g "$((960-290)),0 580x1080" "$TMP/shots/settings.png"
 baneyspaces settings hide >/dev/null
 eq "a bad value is refused" "$(baneyspaces config set behavior.dock.size huge | jq -r .error.code)" "invalid_args"
 eq "an unknown key is refused" "$(baneyspaces config set behavior.dock.nope 1 | jq -r .error.code)" "invalid_args"
@@ -233,7 +233,7 @@ baneyspaces set animation.speed 1.0 >/dev/null; baneyspaces set animation.dock.i
 baneyspaces set theme.override.fill.opacity 0.5 >/dev/null; sleep 0.5
 QI baneyspaces.theme frames > "$TMP/frames.json"
 eq "a theme.override token reaches the surfaces (panels drew opacity 0.5 under the omarchy theme)" "$(jq -r '[.frames[]|select(.frame.customFill==false)|.frame.fill[1:3]]|unique|join(",")' "$TMP/frames.json")" "80"
-/usr/bin/python3 -I -c "import re,sys; p=sys.argv[1]; t=open(p).read(); t=re.sub(r'\n\[theme\.override[^\n]*\][^\[]*','\n',t); open(p,'w').write(t)" "$CFG"; sleep 1.6
+/usr/bin/python3 -I "$HERE/cfg-drop.py" "$CFG" theme.override; sleep 1.6
 eq "taking the override out of the file puts the theme's own value back" "$(baneyspaces config | jq -c '.data.settings.appearance.override')" "{}"
 baneyspaces config set behavior.launcher.enabled false >/dev/null
 eq "a switched-off launcher says so" "$(baneyspaces launcher show | jq -r .error.code)" "not_supported"
@@ -282,7 +282,7 @@ done
 baneyspaces set theme.palette auto >/dev/null
 for theme in omarchy baneyspaces minimal; do
   baneyspaces set theme.name $theme >/dev/null; baneyspaces dock show >/dev/null; sleep 0.9
-  grim -g "$((960-300)),$((1080-150)) 600x150" "$TMP/shots/dock-$theme.png"; baneyspaces dock hide >/dev/null; sleep 0.3
+  grim -g "$((960-480)),$((1080-170)) 960x170" "$TMP/shots/dock-$theme.png"; baneyspaces dock hide >/dev/null; sleep 0.3
 done
 baneyspaces set theme.name baneyspaces >/dev/null; sleep 0.4
 baneyspaces launcher show >/dev/null; sleep 0.5; LQ type "libre" >/dev/null; sleep 0.7; grim -g "$((960-360)),150 720x480" "$TMP/shots/launcher-baneyspaces.png"; baneyspaces launcher hide >/dev/null; sleep 0.3

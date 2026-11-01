@@ -1,4 +1,42 @@
 {
+  "frame_probe": {
+    "dock": {
+      "surface": "dock",
+      "frames": 366,
+      "intervals": 354,
+      "median_ms": 17,
+      "late_1_5x": 0,
+      "late_2x": 0,
+      "late_per_200": 0
+    },
+    "overview": {
+      "surface": "overview",
+      "frames": 201,
+      "intervals": 177,
+      "median_ms": 16,
+      "late_1_5x": 0,
+      "late_2x": 0,
+      "late_per_200": 0
+    },
+    "launcher": {
+      "surface": "launcher",
+      "frames": 204,
+      "intervals": 180,
+      "median_ms": 16,
+      "late_1_5x": 1,
+      "late_2x": 0,
+      "late_per_200": 1.1
+    },
+    "switcher": {
+      "surface": "switcher",
+      "frames": 196,
+      "intervals": 172,
+      "median_ms": 16,
+      "late_1_5x": 0,
+      "late_2x": 0,
+      "late_per_200": 0
+    }
+  },
   "bindings": {
     "before": 228,
     "after": 227,
@@ -7,7 +45,8 @@
     "added": 33
   },
   "animation": {
-    "default": "omarchy (on)",
+    "workspaces": "instant by default (Omarchy turns it off too)",
+    "omarchy_animations": "untouched: windows, layers, fade, border and the scratchpad slide are identical before and after",
     "switch_states": [
       [
         1,
@@ -23,21 +62,21 @@
   },
   "switch_latency_ms": {
     "native": {
-      "p50": 0.3,
-      "p90": 0.41,
-      "max": 0.75,
+      "p50": 0.38,
+      "p90": 0.43,
+      "max": 0.82,
       "n": 40
     },
     "ours": {
-      "p50": 0.28,
-      "p90": 0.41,
-      "max": 0.64,
+      "p50": 0.37,
+      "p90": 0.44,
+      "max": 0.7,
       "n": 40
     },
     "ours_daemon": {
-      "p50": 6.93,
-      "p90": 7.74,
-      "max": 14.82,
+      "p50": 6.94,
+      "p90": 7.67,
+      "max": 8.27,
       "n": 40
     },
     "samples": 40
