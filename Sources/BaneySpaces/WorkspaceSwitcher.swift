@@ -485,9 +485,12 @@ extension NSWindow {
 /// so they're public.
 enum Trace {
     private static let unified = Logger(subsystem: "com.baney.baneyspaces", category: "trace")
+    /// Callable from any thread: the file is checked, trimmed and appended to under one lock.
+    private static let lock = NSLock()
 
     static func log(_ line: String) {
         unified.notice("\(line, privacy: .public)")
+        lock.lock(); defer { lock.unlock() }
         let url = Spaces.folder.appendingPathComponent("trace.log")
         let text = "\(Date().timeIntervalSince1970) \(line)\n"
         if let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int, size > 200_000 {

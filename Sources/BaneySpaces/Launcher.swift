@@ -152,8 +152,11 @@ struct LauncherActions {
     var openApp: (URL, pid_t?, OpenHere.Action, Int) -> Void = { _, _, _, _ in }
     /// Asks iPhone Mirroring's Spotlight for a query, with Mirroring opened on the workspace given.
     var searchIPhone: (String, Int) -> Void = { _, _ in }
-    /// Whether a running app has a New Window command.
+    /// Whether a running app has a New Window command: true only when the item was found. A false says
+    /// nothing (the app may be busy), so it is never kept.
     var canOpenWindow: (pid_t) -> Bool = { _ in false }
+    /// Processes BaneySpaces started for an agent: open here never sees them.
+    var agentPids: () -> Set<pid_t> = { [] }
     var current: () -> Int = { 1 }
     var switchTo: (Int) -> Void = { _ in }
     var appsOn: (Int) -> [String] = { _ in [] }
@@ -753,21 +756,22 @@ final class LauncherModel: ObservableObject {
                             run: { [weak self] in self?.open(a) }, reveal: URL(fileURLWithPath: a.path))
     }
 
-    /// Whether each running app has a New Window command, by path. Asked in the background when the
-    /// launcher opens (`probeWindowCommands`): reading an app's menus takes 15–130 ms, which must
-    /// never sit between a keystroke and the list. An app not asked yet isn't in it.
-    private var windowCommand: [String: Bool] = [:]
+    /// The apps found to have a New Window command, with the process it was found in. Only a yes is kept,
+    /// and only for that process: a no can be an app that was busy, still building its menus or showing a
+    /// sheet, and a restarted app is asked again. Asked in the background when the launcher opens
+    /// (`probeWindowCommands`): reading an app's menus takes 15–130 ms, which must never sit between a
+    /// keystroke and the list.
+    private var windowYes: [String: pid_t] = [:]
     private static let probeQueue = DispatchQueue(label: "BaneySpaces launcher menus", qos: .userInitiated)
 
     /// What Return does to an app open somewhere other than the workspace this launcher is for, in
     /// words for its subtitle; nil when it just opens or the answer isn't known yet.
     private func hereNote(_ a: AppEntry) -> String? {
-        guard actions.openMode() == .here, let target, let on = running[a.path], !on.isEmpty, !on.contains(target),
-              let can = windowCommand[a.path] else { return nil }
-        switch OpenHere.plan(.init(target: target, running: true, windowsOn: on, canMakeWindow: can), mode: .here, modifier: false) {
-        case .newWindow: return "Return opens a new window on workspace \(target) · ⌥↩ goes there"
-        case .moveWindowHere: return "Return brings it to workspace \(target) · ⌥↩ goes there"
-        default: return nil
+        guard actions.openMode() == .here, let target, let on = running[a.path], !on.isEmpty, !on.contains(target) else { return nil }
+        switch windowCommand(for: a) {
+        case .yes: return "Return opens a new window on workspace \(target) · ⌥↩ goes there"
+        case .no: return "Return brings it to workspace \(target) · ⌥↩ goes there"
+        case .unknown: return nil
         }
     }
 
@@ -775,28 +779,39 @@ final class LauncherModel: ObservableObject {
     /// main thread, then redraws the rows that mention it.
     private func probeWindowCommands() {
         guard let target else { return }
+        let agents = actions.agentPids()
         let todo: [(path: String, pid: pid_t)] = running.compactMap { path, on in
-            guard !on.contains(target), windowCommand[path] == nil,
-                  let pid = NSWorkspace.shared.runningApplications.first(where: { $0.bundleURL?.path == path })?.processIdentifier
+            guard !on.contains(target),
+                  let pid = NSWorkspace.shared.runningApplications.first(where: { $0.bundleURL?.path == path && !agents.contains($0.processIdentifier) })?.processIdentifier,
+                  windowYes[path] != pid, !NewWindowLedger.shared.knownSingleWindow(forApp: path)
             else { return nil }
             return (path, pid)
         }
         guard !todo.isEmpty else { return }
         let actions = actions
         Self.probeQueue.async { [weak self] in
-            var found: [String: Bool] = [:]
-            for item in todo { found[item.path] = actions.canOpenWindow(item.pid) }
+            var found: [String: pid_t] = [:]
+            for item in todo where actions.canOpenWindow(item.pid) { found[item.path] = item.pid }
             DispatchQueue.main.async {
-                guard let self else { return }
-                // A no can be an app that was busy or showing a sheet; it is asked again next time.
-                self.windowCommand.merge(found) { _, new in new }
+                guard let self, !found.isEmpty else { return }
+                self.windowYes.merge(found) { _, new in new }
                 self.rebuildKeepingSelection()
             }
         }
     }
 
+    /// The user's copy of an app. A process BaneySpaces started for an agent is not it: open here never
+    /// moves, focuses or makes windows in one, and if that is all that is running, a copy of its own starts.
     private func runningApp(_ a: AppEntry) -> NSRunningApplication? {
-        NSWorkspace.shared.runningApplications.first { $0.bundleURL?.path == a.path }
+        let agents = actions.agentPids()
+        return NSWorkspace.shared.runningApplications.first { $0.bundleURL?.path == a.path && !agents.contains($0.processIdentifier) }
+    }
+
+    /// What is known about the app's New Window command without asking it: a yes found in this process,
+    /// a curated or three-days-of-evidence no, otherwise unknown (tried at the moment of opening).
+    private func windowCommand(for a: AppEntry) -> OpenHere.WindowCommand {
+        if let pid = runningApp(a)?.processIdentifier, windowYes[a.path] == pid { return .yes }
+        return NewWindowLedger.shared.knownSingleWindow(forApp: a.path) ? .no : .unknown
     }
 
     /// Opens an app on the workspace this launcher was opened for (`OpenHere`): started if it isn't
@@ -815,13 +830,12 @@ final class LauncherModel: ObservableObject {
         let app = runningApp(a)
         // Read now, not when the list was drawn: windows move while the launcher is up.
         let on = app == nil ? [] : actions.workspacesByApp()[a.path] ?? []
-        var can = windowCommand[a.path] ?? false
-        if let app, mode == .here, !modifier, !on.isEmpty, !on.contains(target), windowCommand[a.path] == nil {
-            can = actions.canOpenWindow(app.processIdentifier)
-        }
-        let action = OpenHere.plan(.init(target: target, running: app != nil, windowsOn: on, canMakeWindow: can),
+        // No menu is read here: an unknown is tried as a new window when the open runs, and only a failed
+        // try falls back to moving the window (`Spaces.openWindowHere`).
+        let command = windowCommand(for: a)
+        let action = OpenHere.plan(.init(target: target, running: app != nil, windowsOn: on, windowCommand: command),
                                    mode: mode, modifier: modifier)
-        Trace.log("launcher open: \(a.name) for workspace \(target) on=\(on) newWindow=\(can) mode=\(mode.rawValue) option=\(modifier) -> \(action)")
+        Trace.log("launcher open: \(a.name) for workspace \(target) on=\(on) newWindow=\(command) mode=\(mode.rawValue) option=\(modifier) -> \(action)")
         actions.openApp(URL(fileURLWithPath: a.path), app?.processIdentifier, action, target)
     }
 
@@ -1172,14 +1186,27 @@ enum FileFinder {
     private final class Job {
         private let lock = NSLock()
         private var query: MDQuery?
+        private var finished = false
         private(set) var cancelled = false
-        func attach(_ q: MDQuery) -> Bool { lock.lock(); defer { lock.unlock() }; query = q; return !cancelled }
+        /// Called right before `MDQueryExecute`. False when a stop already came, so the query never starts.
+        func begin(_ q: MDQuery) -> Bool { lock.lock(); defer { lock.unlock() }; query = q; return !cancelled }
+        func end() { lock.lock(); finished = true; lock.unlock() }
         func cancel() {
             lock.lock()
             cancelled = true
             let q = query
             lock.unlock()
-            if let q { MDQueryStop(q) }
+            guard let q else { return }
+            MDQueryStop(q)
+            // A stop that lands in the instant between `begin` and the query actually starting does
+            // nothing, so it is sent again until the query has returned.
+            for delay in [0.02, 0.06, 0.15, 0.4] {
+                DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + delay) { [weak self] in
+                    guard let self else { return }
+                    self.lock.lock(); let done = self.finished; self.lock.unlock()
+                    if !done { MDQueryStop(q) }
+                }
+            }
         }
         var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
     }
@@ -1252,7 +1279,10 @@ enum FileFinder {
         else { return [] }
         MDQuerySetSearchScope(q, scopes as CFArray, 0)
         MDQuerySetMaxCount(q, maxCount)
-        guard job.attach(q), MDQueryExecute(q, CFOptionFlags(kMDQuerySynchronous.rawValue)), !job.isCancelled else { return [] }
+        guard job.begin(q) else { return [] }
+        let ran = MDQueryExecute(q, CFOptionFlags(kMDQuerySynchronous.rawValue))
+        job.end()
+        guard ran, !job.isCancelled else { return [] }
         func value<T>(_ attr: CFString, _ i: Int) -> T? {
             MDQueryGetAttributeValueOfResultAtIndex(q, attr, i).map { Unmanaged<AnyObject>.fromOpaque($0).takeUnretainedValue() } as? T
         }
@@ -1838,5 +1868,45 @@ private struct SearchField: NSViewRepresentable {
             }
             return true
         }
+    }
+}
+
+/// What is known, for sure, about which apps have no New Window command (`NewWindowEvidence`), kept in
+/// the app's defaults. Written only by a complete menu read at the moment of opening.
+final class NewWindowLedger: @unchecked Sendable {
+    static let shared = NewWindowLedger()
+    private let lock = NSLock()
+    private let key = "openHereNoNewWindow"
+    private var evidence: NewWindowEvidence
+
+    private init() {
+        if let data = UserDefaults.standard.data(forKey: key), let e = try? JSONDecoder().decode(NewWindowEvidence.self, from: data) {
+            evidence = e
+        } else {
+            evidence = NewWindowEvidence()
+        }
+    }
+
+    /// The bundle identifier for an app at `path`, else the path.
+    static func id(forApp path: String) -> String { Bundle(url: URL(fileURLWithPath: path))?.bundleIdentifier ?? path }
+
+    func knownSingleWindow(forApp path: String) -> Bool {
+        let id = Self.id(forApp: path)
+        lock.lock(); defer { lock.unlock() }
+        return evidence.knownSingleWindow(id)
+    }
+
+    func sawNo(app id: String) {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        lock.lock(); evidence.sawNo(id, day: f.string(from: Date())); save(); lock.unlock()
+    }
+
+    func sawYes(app id: String) {
+        lock.lock(); evidence.sawYes(id); save(); lock.unlock()
+    }
+
+    private func save() {
+        if let data = try? JSONEncoder().encode(evidence) { UserDefaults.standard.set(data, forKey: key) }
     }
 }

@@ -70,6 +70,19 @@ final class FileSearchFlowTests: XCTestCase {
         XCTAssertEqual(Set(seen[1].1), ["Photos Notes.txt", "Phone Bill.pdf"], "Spotlight's hits and the warm ones, ranked as one list")
     }
 
+    /// The same file from the warm list and from Spotlight is one row.
+    func testAFileInBothListsAppearsOnce() {
+        let clock = Clock(), spotlight = Spotlight()
+        let both = hit("Photos Notes.txt", used: Date())
+        let f = flow(clock, spotlight, warm: [both])
+        var last: [FileSearch.Hit] = []
+        f.typed("ph", limit: 5) { s, hits in if s == .spotlight { last = hits } }
+        clock.fire()
+        spotlight.answers[spotlight.started[0]]?([both, hit("Phone Bill.pdf")])
+        XCTAssertEqual(last.map(\.path).sorted(), [both.path, hit("Phone Bill.pdf").path].sorted())
+        XCTAssertEqual(last.filter { $0.path == both.path }.count, 1)
+    }
+
     func testTextTooShortToSearchAnswersEmptyAndStartsNothing() {
         let clock = Clock(), spotlight = Spotlight()
         let f = flow(clock, spotlight, warm: [hit("a.txt")])
@@ -215,7 +228,6 @@ final class FileSearchFlowTests: XCTestCase {
         XCTAssertFalse(launcher.contains("DispatchQueue(label: \"BaneySpaces file search\""), "no serial queue to wait behind")
         XCTAssertTrue(launcher.contains("fileFlow.typed("), "files go through the flow")
         XCTAssertTrue(launcher.contains("appIndex.rank("), "apps match on the folded index, with no menu reads")
-        XCTAssertFalse(launcher.contains("canOpenWindow(app.processIdentifier) {") && launcher.contains("look: look"),
-                       "no Accessibility menu read while the list is built")
+        // (The menu read itself is pinned in OpenHereTests: one place, off the main thread.)
     }
 }

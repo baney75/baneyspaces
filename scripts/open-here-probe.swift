@@ -12,9 +12,11 @@
 // is already running with a window elsewhere, and put back where it was.
 //
 // Idle only: it moves your screen and starts apps, so it runs after the Mac has had 10 minutes without
-// a key or the pointer (HIDIdleTime). Otherwise it prints "untested live" and exits 3. It sets
-// `openHereURLCommands` for its run and puts the old value back; it quits the apps it started, deletes
-// its temp files and returns you to the workspace you were on.
+// a key or the pointer (HIDIdleTime). Otherwise it prints "untested live" and exits 3. The URL command
+// it uses is gated by `openHereURLCommandsUntil`, a time at most a minute away that the probe renews
+// before each open and removes at the end; a probe that is killed leaves a gate that lapses on its own,
+// and BaneySpaces removes the key at its next launch. It also cleans up on SIGINT, SIGTERM and SIGHUP:
+// it quits the apps it started, deletes its temp files and returns you to the workspace you were on.
 //   swift scripts/open-here-probe.swift            workspaces 2 and 3
 //   swift scripts/open-here-probe.swift 4 5        <from> <to>; <to> must be empty
 import AppKit
@@ -86,26 +88,36 @@ func wait(_ seconds: Double, _ condition: () -> Bool) -> Bool {
 // MARK: Cleanup, run on every way out
 
 let defaultsDomain = "com.baney.baneyspaces"
-let flagKey = "openHereURLCommands"
-let oldFlag = shell("/usr/bin/defaults", ["read", defaultsDomain, flagKey]).trimmingCharacters(in: .whitespacesAndNewlines)
+let gateKey = "openHereURLCommandsUntil"
+/// Opens the gate for the next 50 seconds. Called before each open: nothing stays open longer than that.
+func openGate() { _ = shell("/usr/bin/defaults", ["write", defaultsDomain, gateKey, "-float", String(Date().timeIntervalSince1970 + 50)]) }
 let temp = FileManager.default.temporaryDirectory.appendingPathComponent("open-here-probe-\(getpid())")
 var startedPids: [pid_t] = []
 var originalWorkspace = 0
 var moved: [(path: String, back: Int)] = []
 
 func cleanup() {
-    for (path, back) in moved { open(["-g", "baneyspaces://open-here/\(back)?app=\(path)"]); usleep(800_000) }
+    for (path, back) in moved { openGate(); open(["-g", "baneyspaces://open-here/\(back)?app=\(path)"]); usleep(800_000) }
     for pid in startedPids {
         let app = NSRunningApplication(processIdentifier: pid)
         app?.terminate()
         if !wait(3, { app?.isTerminated ?? true }) { app?.forceTerminate() }
     }
-    if oldFlag.isEmpty { _ = shell("/usr/bin/defaults", ["delete", defaultsDomain, flagKey]) }
-    else { _ = shell("/usr/bin/defaults", ["write", defaultsDomain, flagKey, "-bool", oldFlag == "1" ? "true" : "false"]) }
+    _ = shell("/usr/bin/defaults", ["delete", defaultsDomain, gateKey])
     try? FileManager.default.removeItem(at: temp)
     if originalWorkspace > 0 { open(["-g", "baneyspaces://switch/\(originalWorkspace)"]) }
 }
 func fail(_ s: String) -> Never { print("FAIL: \(s)"); cleanup(); exit(1) }
+
+// A signal runs the same cleanup. The main thread is busy waiting, so the handlers run on a global queue.
+var signalSources: [DispatchSourceSignal] = []
+for sig in [SIGINT, SIGTERM, SIGHUP] {
+    signal(sig, SIG_IGN)
+    let source = DispatchSource.makeSignalSource(signal: sig, queue: .global())
+    source.setEventHandler { print("interrupted (signal \(sig)); cleaning up"); cleanup(); exit(130) }
+    source.resume()
+    signalSources.append(source)
+}
 
 // MARK: Guards
 
@@ -123,7 +135,6 @@ guard start.windows.values.allSatisfy({ $0.workspace != to }) else {
     exit(3)
 }
 originalWorkspace = start.current
-_ = shell("/usr/bin/defaults", ["write", defaultsDomain, flagKey, "-bool", "true"])
 try? FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
 
 func running(_ bundle: String) -> NSRunningApplication? { NSWorkspace.shared.runningApplications.first { $0.bundleIdentifier == bundle } }
@@ -137,6 +148,7 @@ func goTo(_ n: Int) {
 /// result has settled. Returns every workspace `current` was seen on after the open.
 func openHere(_ path: String, settle: Bool = true) -> Set<Int> {
     var seen = Set<Int>()
+    openGate()
     open(["-g", "baneyspaces://open-here/\(to)?app=\(path)"])
     let end = Date().addingTimeInterval(settle ? 5.0 : 1.0)
     while Date() < end {

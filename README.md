@@ -226,7 +226,7 @@ Spotlight. Turning that off gives ⌘Space back to Spotlight, and so does quitti
 - **What you open lands on the workspace you opened the launcher on.** Open it on the empty
   workspace 3 and pick Photos (open on 2): its window moves to 3 and you stay on 3. Pick Ghostty,
   Helium, TextEdit or Finder, which can make a window: a new one opens on 3. An app that isn't
-  running starts there. **⌥Return** (or ⌥-click) goes to the app where it already is, and
+  running starts there. **⌥Return** (or ⌥-click on its row) goes to the app where it already is, and
   `baneyspaces set behavior.launcher.open go` makes that the default. Click an empty
   workspace's "+" in the dock, or its empty slot in the overview, and you go there with the
   launcher open for it. Right-click any dock tile, the "+" or an overview tile and choose

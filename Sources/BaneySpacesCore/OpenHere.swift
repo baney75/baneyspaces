@@ -30,9 +30,6 @@ public enum OpenHere {
         /// The launcher, opened by ⌘Space, ⌃⌘K, the dock's search button or a link, on the
         /// workspace the screen it appears on is showing.
         case launcher(shownOn: Int)
-        /// An app icon in a dock tile. It opens here only when the tile is the workspace you're on;
-        /// another workspace's tile goes to that workspace's window, as it always did.
-        case dockApp(tile: Int, current: Int)
     }
 
     /// The workspace an open from `entry` lands on, or nil when the entry isn't an open here.
@@ -41,27 +38,46 @@ public enum OpenHere {
         switch entry {
         case .dockPlus(let w), .dockTileMenu(let w), .overviewSlot(let w), .overviewTile(let w), .launcher(shownOn: let w):
             n = w
-        case .dockApp(tile: let tile, current: let current):
-            guard tile == current else { return nil }
-            n = tile
         }
         return Workspaces.range.contains(n) ? n : nil
+    }
+
+    /// What is known about an app's New Window command. A no is only ever *known*: an app that was busy,
+    /// still building its menus, showing a sheet or slow to answer says nothing, and is `unknown`, which
+    /// is tried (the menu is asked again at the moment of opening) rather than assumed to be a no.
+    public enum WindowCommand: Equatable, Sendable {
+        /// Its New Window item was found and is enabled.
+        case yes
+        /// A curated single-window app, or one whose menus were read in full on three separate days
+        /// and never had a New Window item (`NewWindowEvidence`).
+        case no
+        case unknown
     }
 
     /// What is known about the app when it's opened.
     public struct Situation: Equatable, Sendable {
         public var target: Int
         public var running: Bool
-        /// The workspaces where the app has a window (minimized ones included); empty when it has none.
+        /// The workspaces where the user's copy of the app has a window (minimized ones included); empty
+        /// when it has none. Never the agent workspace, never a window of a process started for an agent.
         public var windowsOn: [Int]
-        /// Its New Window menu item exists and is enabled.
-        public var canMakeWindow: Bool
-        public init(target: Int, running: Bool, windowsOn: [Int] = [], canMakeWindow: Bool = false) {
+        public var windowCommand: WindowCommand
+        public init(target: Int, running: Bool, windowsOn: [Int] = [], windowCommand: WindowCommand = .unknown) {
             self.target = target
             self.running = running
             self.windowsOn = windowsOn
-            self.canMakeWindow = canMakeWindow
+            self.windowCommand = windowCommand
         }
+    }
+
+    /// The workspaces open here may count windows on: all but the agent workspace, which is not the user's.
+    public static func userWorkspaces(_ workspaces: [Int], agentWorkspace: Int?) -> [Int] {
+        workspaces.filter { $0 != agentWorkspace }
+    }
+
+    /// Processes open here may act on: the user's. One BaneySpaces started for an agent is invisible to it.
+    public static func userProcesses<P: Hashable>(_ processes: [P], agent: Set<P>) -> [P] {
+        processes.filter { !agent.contains($0) }
     }
 
     public enum Action: Equatable, Sendable {
@@ -85,7 +101,9 @@ public enum OpenHere {
         if mode == .go || modifier { return .goThere }
         if s.windowsOn.isEmpty { return .reopen }
         if s.windowsOn.contains(s.target) { return .focusHere }
-        return s.canMakeWindow ? .newWindow : .moveWindowHere
+        // Only a known no moves the window. An unknown is tried as a new window first (the menu is asked at
+        // the moment of opening); the move is what a failed try falls back to.
+        return s.windowCommand == .no ? .moveWindowHere : .newWindow
     }
 
     /// Whether the activation an open causes is followed to the app's other workspace. It never is
@@ -101,4 +119,72 @@ public enum OpenHere {
 
     /// Whether the person is on the target afterward: every action that opens here.
     public static func staysOnTarget(_ action: Action) -> Bool { action != .goThere }
+}
+
+/// What is known, for sure, about apps that have no New Window command. The launcher never caches a no
+/// from one menu read (the app may have been busy, or showing a sheet); a no counts only from a list of
+/// apps known to be single-window, or from reads that came back whole and found no item on three
+/// separate days. A yes, or any day it was found, clears the record.
+public struct NewWindowEvidence: Equatable, Codable, Sendable {
+    /// Bundle identifiers (macOS): the apps whose one window is the app (Donovan's list, 2026-11-01).
+    public static let curated: Set<String> = [
+        "com.apple.Photos", "com.apple.Music", "com.apple.AppStore", "com.apple.systempreferences",
+        "com.apple.calculator", "com.apple.MobileSMS",
+    ]
+    public static let daysNeeded = 3
+
+    /// App key (bundle id, else path) to the days (yyyy-MM-dd) a complete read found no New Window item.
+    public private(set) var noDays: [String: [String]] = [:]
+
+    public init() {}
+
+    public mutating func sawNo(_ key: String, day: String) {
+        var days = noDays[key] ?? []
+        if !days.contains(day) { days.append(day) }
+        noDays[key] = Array(days.suffix(Self.daysNeeded + 2))
+    }
+
+    public mutating func sawYes(_ key: String) { noDays[key] = nil }
+
+    /// Whether to skip asking the app: it is curated, or three separate days said no.
+    public func knownSingleWindow(_ key: String) -> Bool {
+        Self.curated.contains(key) || (noDays[key]?.count ?? 0) >= Self.daysNeeded
+    }
+}
+
+/// A launch the launcher asked for, registered before the app is asked to start. The app activates
+/// before the request returns and before its first window exists; that activation must be held, not
+/// followed to the app's other workspace. Whichever arrives first, the activation or the request's
+/// completion, binds the launch to the process.
+public struct PendingLaunch: Equatable, Sendable {
+    public let bundle: String
+    public let target: Int
+    /// The processes of this app running when the request was made: none of them is the new one.
+    public let before: Set<Int32>
+    public let until: Date
+
+    public init(bundle: String, target: Int, before: Set<Int32>, until: Date) {
+        self.bundle = bundle
+        self.target = target
+        self.before = before
+        self.until = until
+    }
+
+    public enum Arrival: Equatable, Sendable {
+        /// This is the launched process: hold its activation and claim its first window for the target.
+        /// `newProcess` is false for a process that was already running (its windows are the person's).
+        case bind(pid: Int32, newProcess: Bool)
+        case unrelated
+        case expired
+    }
+
+    /// An activation or a completion for `bundle`, process `pid`, at `now`.
+    public func arrival(bundle: String?, pid: Int32, now: Date, activation: Bool) -> Arrival {
+        if now >= until { return .expired }
+        guard bundle == self.bundle else { return .unrelated }
+        // An activation of a process that was already running is the person's own; the request's
+        // completion, though, may hand back the process that was already running (it answered the request).
+        if activation, before.contains(pid) { return .unrelated }
+        return .bind(pid: pid, newProcess: !before.contains(pid))
+    }
 }

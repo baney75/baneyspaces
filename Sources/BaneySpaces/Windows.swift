@@ -433,16 +433,36 @@ enum Windows {
     /// alone, which in Notes or Mail makes a note or a message instead, and which Ghostty gives
     /// up when its New Window key is changed. Works on a hidden app, which stays hidden.
     static func newWindowItem(_ pid: pid_t) -> AXUIElement? {
-        guard isResponsive(pid) else { return nil }
+        if case .found(let item) = newWindowProbe(pid) { return item }
+        return nil
+    }
+
+    /// What asking an app for its New Window command found. `absent` only when every menu was read in
+    /// full and none held the item; an app that was busy, still building its menus, showing a sheet or
+    /// slow to answer, or whose item is greyed out, is `unknown`, which is never a no.
+    enum NewWindowProbe {
+        case found(AXUIElement)
+        case absent
+        case unknown
+    }
+
+    static func newWindowProbe(_ pid: pid_t) -> NewWindowProbe {
+        guard isResponsive(pid) else { return .unknown }
+        var complete = true
         // Every element asked gets the short timeout: an app that hangs partway through its
-        // menus must not hold the launcher.
+        // menus must not hold the launcher. An error other than "nothing there" is a read that failed.
         func children(_ e: AXUIElement) -> [AXUIElement] {
             AXUIElementSetMessagingTimeout(e, 0.25)
-            return e.value(kAXChildrenAttribute) ?? []
+            var raw: CFTypeRef?
+            switch AXUIElementCopyAttributeValue(e, kAXChildrenAttribute as CFString, &raw) {
+            case .success: return raw as? [AXUIElement] ?? []
+            case .noValue, .attributeUnsupported: return []
+            default: complete = false; return []
+            }
         }
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, 0.25)
-        guard let bar: AXUIElement = app.value(kAXMenuBarAttribute) else { return nil }
+        guard let bar: AXUIElement = app.value(kAXMenuBarAttribute) else { return .unknown }
         var named: AXUIElement?
         // A document app's plain "New" on ⌘N (TextEdit) opens an empty window, and counts only
         // when the app has no command with "window" in its name.
@@ -451,22 +471,25 @@ enum Windows {
         for menu in children(bar).dropFirst() {
             for list in children(menu) {
                 for item in children(list) {
-                    if let title = item.string(kAXTitleAttribute), title == "New" || title == "New Document", document == nil,
+                    let title = item.string(kAXTitleAttribute)
+                    if let title, title == "New" || title == "New Document", document == nil,
                        item.bool(kAXEnabledAttribute), item.string("AXMenuItemCmdChar") == "N",
                        (item.value("AXMenuItemCmdModifiers") as NSNumber?)?.intValue == 0 {
                         document = item
                     }
-                    guard let title = item.string(kAXTitleAttribute), title.hasPrefix("New"),
-                          title.localizedCaseInsensitiveContains("window"), item.bool(kAXEnabledAttribute) else { continue }
+                    guard let title, title.hasPrefix("New"), title.localizedCaseInsensitiveContains("window") else { continue }
+                    // Greyed out: a sheet or a busy moment, not an app without the command.
+                    guard item.bool(kAXEnabledAttribute) else { complete = false; continue }
                     if item.string("AXMenuItemCmdChar") == "N", (item.value("AXMenuItemCmdModifiers") as NSNumber?)?.intValue == 0 {
-                        return item
+                        return .found(item)
                     }
                     if named == nil { named = item }
                 }
             }
-            guard isResponsive(pid) else { return nil }
+            guard isResponsive(pid) else { return .unknown }
         }
-        return named ?? document
+        if let item = named ?? document { return .found(item) }
+        return complete ? .absent : .unknown
     }
 }
 
