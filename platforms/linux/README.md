@@ -169,6 +169,24 @@ the engine's own evidence: `verified` is true only when the engine read the outc
 element. `press`, `key` and `pointer` are `not_supported` (phase 3-4). `shot` is refused locally with `not_supported`: a capture can show your whole screen, and no
 per-window capture path exists on Hyprland yet.
 
+## Configuration (`spec/config.md`)
+
+`baneyspaces config ...` and `theme ...` (and the `config_*` and `theme_*` MCP tools) go through the daemon, the single writer. A change is
+validated whole, written atomically, recorded in `~/.config/baneyspaces/history/` with its caller, and applied at once:
+
+| Setting | Where it goes |
+| --- | --- |
+| `keys` | `$XDG_STATE_HOME/baneyspaces/hyprland-keys.lua`, run inside Hyprland (`hyprctl eval dofile`). The include loads the same file on a reload, and falls back to the default binds when it is missing or the daemon never ran. Global binds are removed by key and mode binds disabled: Hyprland 0.56.2 crashes when more than one bind is removed through its handle. A chord you bind takes the key from Omarchy's own binding until the next reload. |
+| `theme`, `animation` | `$XDG_RUNTIME_DIR/baneyspaces/config.json`, the one file the UIs read: the effective config, the resolved theme tokens and palette, the final animation numbers (speed and Reduce Motion applied) and `status`. The focus border's animation is also set in Hyprland. Workspace animations stay off. |
+| `behavior`, `rules` | The daemon's model (`Event::Settings`). |
+| `hooks` | Run by the daemon as you, logged to `config.log`. |
+
+`config.toml` and `themes/*.toml` are watched with inotify; a hand edit is applied within a second. `config.log` in the state directory keeps every
+change and refusal. The recovery chord (Super+Shift+Escape held 2 s: Lua timer and `hl.is_key_down` in the include) runs
+`baneyspaces config reset keys --notify` and `config reset theme --notify`; it is bound in the include and in every mode, never from config.
+Not exercised by `nested.sh`: the nested host has no input device, so key presses and the 2 s hold cannot be delivered; the test runs the command a
+bind holds.
+
 ## Install on an Omarchy seat (part 2 does this on Chapel1 and Parish1)
 
 ```sh

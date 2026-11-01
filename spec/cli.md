@@ -22,6 +22,9 @@ window id, or a pid.
 | `agent press|key|pointer` | phase 3-4 | `not_supported` (part 1) | phase 3-4 |
 | `agent log [--since SECS]` | yes | yes | yes |
 | `agent lend|return` | the user only | `not_supported` (later) | the user only |
+| `config get\|set\|unset\|apply\|validate\|schema\|diff\|undo\|history\|reset` | yes | yes (`validate`, `schema` and `reset` need no daemon) | yes |
+| `theme list\|show\|create\|set\|delete` | yes | yes | yes |
+| `launcher`, `switcher windows\|apps`, `window resize <dx> <dy>` | yes | `not_supported` until the shell plugin (part 2) | yes |
 | `keys [--platform P]` | yes | yes | yes |
 | `daemon` | the app | yes | the app |
 | `stop` | quit the app | yes (the uninstall script uses it) | quit the app |
@@ -39,6 +42,11 @@ Linux: `$XDG_STATE_HOME/baneyspaces/state.json` (default `~/.local/state/baneysp
 `--agent-id ID` or `BANEYSPACES_AGENT_ID` names the caller in the action log (default `agent`).
 `agent log` prints the records: agent id, verb, pid, window id, ref, route, result, refusal. It never
 holds snapshot text, values, typed text or captures. Records older than 30 days are dropped.
+
+## Configuration
+
+`config` and `theme` are described in [config.md](config.md). `config reset` is the recovery chord's command and always works: with no
+daemon (or one that does not answer in 5 s) the CLI does it itself under the config directory's lock. `--notify` shows what changed.
 
 ## MCP
 

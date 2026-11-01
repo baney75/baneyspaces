@@ -5,8 +5,9 @@ themes, animations, behavior and more", and its animations must be the best. One
 works the same on macOS, Windows, Linux and Omarchy. A person edits a file; an agent uses the CLI
 or MCP tools that validate every change before it lands. Both reach the same settings.
 
-This file is the contract. `config.schema.json` is generated from it by the first implementation, and from then on the two
-change together. A platform that reads a key the schema doesn't define, or ignores one it does,
+This file is the contract. `config.schema.json` is generated from the Rust schema tree in `crates/baneyspaces-core/src/config_schema.rs`
+(`UPDATE_SPEC=1 cargo test -p baneyspaces-core`), and the two change together: a test fails when the committed schema differs.
+`animation-presets.json` is generated the same way and holds every preset's numbers. A platform that reads a key the schema doesn't define, or ignores one it does,
 fails its conformance test.
 
 ## Where it lives
@@ -201,6 +202,61 @@ on_window_open = ""
 
 Hooks run with your user's rights. An agent that sets a hook is shown in Settings › Hooks, and
 the change is recorded in `history/`, so nothing runs that you can't see.
+
+## Details every platform follows
+
+These settle what the sections above leave open. The conformance cases hold them.
+
+- **Chords.** `keys.json` `chords` lists the key names, the `mod` values each platform takes (macOS `cmd`, `ctrl`, `alt`; Linux `super`;
+  Windows `win`, `ctrl`, `alt`) and the recovery chord. A chord is lowercase, modifiers then one key. `cmd`, `super` and `win` are one key, the
+  logo key. A chord in `keys.bindings` needs a modifier; a chord in a mode may be a bare key. Two spellings of one chord (`mod+1`, `super+1`
+  when `mod` is `super`) are one chord: the later one in the file replaces a default, and two in the file are `duplicate_chord`.
+- **Defaults.** The default bindings are `keys.json` for the platform, spelled with `mod`: `switch n`, `move n`, `move n --stay` (Linux),
+  `overview`, `agent-workspace toggle` (a key that would collide with `switch 9`, as the Mac's and Windows' agent key does, is left out).
+- **No lockout.** At least one binding in `keys.bindings` must run `switch <n>`, or enter a mode that has one. Every mode needs a way out
+  (`mode default`; `escape` does it unless rebound). The recovery chord, with extra modifiers it is a different chord, is `reserved_chord`
+  whether bound to an action or to `none`, at top level or in a mode.
+- **Actions.** `spec/cli.md` lists the commands. `daemon`, `mcp`, `help` and `recovery` are not bindable.
+- **Animations.** A surface's table overlays its preset. `curve` is optional; the fields imply it (`response` or `damping`: spring; `points`:
+  bezier; `duration_ms` alone keeps a bezier or linear preset curve and turns a spring one into a bezier). A field for another curve than the
+  one named is `wrong_curve`. Durations are checked after `speed`: 410 ms at speed 2.5 is 1025 ms and refused at `animation.<surface>.duration_ms`.
+  `animation.workspace.style` is `off` (default), `fade` or `slide`; the surface's windows never move.
+- **Themes.** `shadow = false` (JSON `null`) is no shadow and `fill.material = "none"` is an opaque fill, because TOML has no null. A partial
+  `shadow` table is completed from the BaneySpaces theme. `theme.palette` is `auto`, a name in `palettes.json`, or the name of a custom theme that
+  carries a `[palette]` (all twelve roles). With `auto`, the active custom theme's own palette wins, else the platform's (Omarchy's live theme),
+  else `catppuccin`. A custom theme file must have `extends`; a problem in a theme the config uses is an error, in one it does not use, a warning.
+- **Linux-only keys.** `behavior.dock.auto_hide|size|in_fullscreen|badges`, `behavior.switcher.enabled`, `behavior.launcher.*`,
+  `behavior.overview.enabled` and `[[bangs]]` (`trigger`, `name`, `url` with `{q}`, `agent`) are in the schema and ignored on other platforms.
+- **Behavior.** `follow_focus = false`: your own activation of a window on another workspace does not take you there. `new_window = "app"`: a
+  new window joins the workspace of its app's most recent window. `[[rules]]` match on `app` (case-insensitive) and `title` (regex); a rule
+  with neither matches nothing. The first match sets `workspace` and `float` for a window that opens (never an agent window).
+- **Hooks** run with `BANEYSPACES_HOOK` set and `BANEYSPACES_WORKSPACE` or `BANEYSPACES_WINDOW`; they are logged to `config.log` and recorded
+  in history. An agent that sets one can make something run that it could not press itself; the history names it.
+
+## Files, history and callers
+
+`config.toml` is rewritten from the settings by every CLI or MCP change, so comments in a hand-edited file are not kept (the earlier text
+stays in `history/`). A file edited by hand is noticed, validated, and recorded as `user`; a file that does not validate leaves the last good
+config running and `config.json` (`status`) and the trace log say why. `config set` is refused while the file is invalid; `config reset`
+and `config undo` work from the last good config and keep the broken file as `config.toml.invalid-<time>`.
+
+`history/NNNNNNNN.json`: `{format: 1, seq, time (RFC 3339 UTC), caller, summary (one line), config (the text of config.toml), themes
+({name: text})}`. The first change also records the state before it (`system`). `config undo [n]` removes the newest n versions and restores
+the one before; repeating it goes further back. Writes use a temp file, `fsync` and `rename`.
+
+The caller is taken from the peer, never from a flag: a process that carries an agent launch token is `agent:<name of the launch>`; a call
+over MCP is `agent:<id>`; a CLI with `--agent-id` is `agent:<id>`; Settings sends `settings`; anything else is `user`.
+
+A refused change is the envelope code `config_invalid` with `error.data.issues` (`{path, code, reason}`): `unknown_key`, `type`, `range`,
+`value`, `length`, `bad_key`, `bad_chord`, `reserved_chord`, `duplicate_chord`, `bad_action`, `bad_mod`, `lockout`, `wrong_curve`, `too_long`,
+`bad_theme`, `bad_palette`, `bad_regex`, `bad_url`, `required`, `syntax`.
+
+## Conformance case format
+
+`conformance/config/*.json` are arrays of `{name, platform?, omarchy?, reduce_motion?, themes?, steps}`. A step has `do` (`set`, `unset`,
+`apply`, `validate`, `reset`, `undo`, `edit_file`, `theme_create`, `theme_set`, `theme_delete`, `recovery`, `check`), its arguments, and
+optionally `expect` (`"ok"` or `{error, issues: [{path, code}]}`), `effective` (dotted path to value), `resolved` (JSON pointer into
+`config.json` to value), `history` (`len`, `callers` newest first) and `file` (the exact text of `config.toml`).
 
 ## Conformance
 
