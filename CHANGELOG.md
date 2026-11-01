@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **A soak gate before a stable release.** `scripts/soak-check.sh` checks a candidate before it is
+  published to the Stable channel: 24 hours on one run on rectory1 with no crash report, a clean crash
+  ledger, the Mission Control watchdog armed, `CrashLoopGuardTests` passing and `--render` (default and
+  reported samples) exiting 0 every time. A stable release stays a draft until it passes and Sol
+  approves (AGENTS.md, "Stable releases"). After the 11-01 render crash loop. 0.3.0 stays published.
 - **Agent hands, phase 4: keys and a pointer for windows that are not in front.** `agent press` now sends keys (several,
   separated by spaces) to the one process, and `agent click-at` and `agent drag` post window-local mouse events to it,
   without activating, raising, switching a Space, moving the real pointer, or posting to the session. Only to a process

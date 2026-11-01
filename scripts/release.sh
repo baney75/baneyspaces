@@ -5,6 +5,8 @@
 #   make release                                 # uploads BaneySpaces.zip, .sha256 and .dmg, then publishes
 # The Release workflow creates the release as a draft. This uploads the files, checks them again as
 # uploaded, and only then publishes it, so nobody is offered a release without its app.
+# Publishing puts the release on the Stable channel, so run this only after scripts/soak-check.sh
+# passed on rectory1 and Sol approved (AGENTS.md, "Stable releases").
 # --dry-run does everything except the tag check, the upload and the publish, so it can run on a branch.
 set -euo pipefail
 cd "$(dirname "$0")/.."

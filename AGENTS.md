@@ -54,6 +54,28 @@ doesn't start. `--render` keeps its own `crash-ledger-render.json` and exits 75 
 `defaults write com.baney.baneyspaces crashLoopLimit -int N` (0 never stops) and
 `crashLoopWindowMinutes -float M`. `trace.log` says `crash loop: …`.
 
+## Stable releases
+
+Every published release that isn't a prerelease is on the Stable channel, and Stable is the updater's
+default: the in-app updater takes the newest one (`Updates.swift`, not only the one marked Latest) and
+`install.sh` takes `/releases/latest`. Publishing is the release. So a stable release stays a draft, and
+`make release` (which publishes with `--latest`) doesn't run, until both of these hold:
+
+1. `scripts/soak-check.sh` prints `SOAK PASSED` on rectory1 with the candidate installed from its tag
+   (`git checkout vX.Y.Z && make install`) and running for 24 hours (`--hours 24`, the default). It checks that the running build is
+   the tag's commit and hasn't restarted, that DiagnosticReports has no BaneySpaces crash in those hours,
+   that the crash ledger holds no crash and no run that died, that the Mission Control watchdog is armed
+   (agent loaded, scripts in place, fresh heartbeat), that `CrashLoopGuardTests` pass, and that
+   `BaneySpaces --render` exits 0 five times with the default sample and five with
+   `BANEYSPACES_RENDER_SAMPLE=reported`. `--cmd-tab` records the optional ⌘Tab smoke by hand. Only
+   when rectory1 can't run it, `scripts/soak-check.sh --ci` on a macOS runner (20 renders of each, no
+   live soak) stands in, and the PR says "no live soak".
+2. Sol APPROVE on the release PR or its coordinator task, with the receipt from `build/soak/` pasted in.
+
+A release already published stays as it is: never unpublish or retag it. If it turns out bad, ship a
+fixed patch version through this gate. Nightly is a prerelease and isn't gated. `scripts/soak-check-test.sh`
+tests the script itself (CI runs it).
+
 ## Linux (`platforms/linux`, `crates/`, `spec/`)
 
 A change there is done when `cargo test`, `platforms/linux/tests/omarchy-scripts.sh` and
