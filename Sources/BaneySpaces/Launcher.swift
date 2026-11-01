@@ -150,6 +150,8 @@ struct LauncherActions {
     var openMode: () -> OpenHere.Mode = { .standard }
     /// Opens an app as `OpenHere.plan` decided, for the workspace the launcher was opened for.
     var openApp: (URL, pid_t?, OpenHere.Action, Int) -> Void = { _, _, _, _ in }
+    /// Asks iPhone Mirroring's Spotlight for a query, with Mirroring opened on the workspace given.
+    var searchIPhone: (String, Int) -> Void = { _, _ in }
     /// Whether a running app has a New Window command: true only when the item was found. A false says
     /// nothing (the app may be busy), so it is never kept.
     var canOpenWindow: (pid_t) -> Bool = { _ in false }
@@ -418,6 +420,9 @@ final class LauncherModel: ObservableObject {
         bangs = Launcher.loadBangs()
         rebuild()
         probeWindowCommands()
+        refreshIPhoneState()
+        // The first read of iPhone Mirroring's data is what makes macOS ask once.
+        IPhoneAppCache.shared.refreshIfNeeded()
         // Apps installed since the last look show up without a restart.
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let fresh = AppEntry.scan()
@@ -511,6 +516,8 @@ final class LauncherModel: ObservableObject {
                 out += menuItems()
             } else {
                 out += appItems(q, limit: 8)
+                // The phone's apps and a search of the phone: below real apps, above everything from the web.
+                out += iphoneItems(q)
                 out += actions.deckItems(q).prefix(8)
                 out += agentItems(q)
                 out += workspaceItems(q)
@@ -677,6 +684,49 @@ final class LauncherModel: ObservableObject {
                 LauncherItem(id: "app:\(a.path):\(n)", section: "Apps", title: "\(a.name) on Workspace \(n)",
                              subtitle: "The \(a.name) windows there", icon: .file(a.path), workspaces: [n],
                              run: { [weak self] in self?.focus(a, on: n) }, reveal: URL(fileURLWithPath: a.path))
+            }
+        }
+    }
+
+    // MARK: iPhone
+
+    /// The phone's apps, from a provider (none until the container reader fills one in).
+    var iphoneProvider: IPhoneAppProvider = IPhoneAppCache.shared
+    /// What iPhone Mirroring last said about the connection, read in the background when the launcher opens.
+    private var iphoneState: (state: IPhoneState, phrase: String?) = (.unknown, nil)
+
+    /// "Search iPhone for “snapchat”" (and "Snapchat · iPhone" when a provider knows the app), with
+    /// Mirroring's icon and, when Mirroring says it can't take a search, its own words for why.
+    private func iphoneItems(_ q: String) -> [LauncherItem] {
+        let rows = IPhoneSearch.rows(q, apps: iphoneProvider.apps(), installed: IPhoneMirroring.installed,
+                                     state: iphoneState.state, phrase: iphoneState.phrase)
+        return rows.map { row in
+            let query: String
+            let id: String
+            var icon = LauncherItem.Icon.file(IPhoneMirroring.path)
+            switch row.kind {
+            case .app(let a): query = a.name; id = "iphone:app:\(a.bundleID ?? a.name)"
+                icon = a.icon.flatMap(NSImage.init(data:)).map { LauncherItem.Icon.image($0) } ?? .file(IPhoneMirroring.path)
+            case .search(let q): query = q; id = "iphone:search"
+            }
+            return LauncherItem(id: id, section: "iPhone", title: row.title, subtitle: row.subtitle,
+                                icon: icon, badge: "iPhone", run: { [weak self] in
+                                    guard let self else { return }
+                                    self.close()
+                                    self.actions.searchIPhone(query, self.target ?? self.actions.current())
+                                })
+        }
+    }
+
+    /// Reads what Mirroring says (it isn't started for this), then redraws the rows that show it.
+    private func refreshIPhoneState() {
+        guard IPhoneMirroring.installed else { return }
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let read = IPhoneMirroring.readState()
+            DispatchQueue.main.async {
+                guard let self, self.iphoneState.state != read.state || self.iphoneState.phrase != read.phrase else { return }
+                self.iphoneState = read
+                self.rebuildKeepingSelection()
             }
         }
     }

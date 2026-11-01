@@ -137,6 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         a.shownOn = { [weak self] screen in self?.spaces.workspace(onScreen: screen) ?? 1 }
         a.openMode = { OpenHere.Mode(setting: UserDefaults.standard.string(forKey: Self.launcherOpenKey)) }
         a.openApp = { [weak self] url, pid, action, target in self?.openApp(url, pid: pid, action, on: target) }
+        a.searchIPhone = { [weak self] query, target in self?.searchIPhone(query, on: target) }
         a.switchTo = { [weak self] n in self?.run { $0.switchTo(n) } }
         a.appsOn = { [weak self] n in self?.spaces.apps(on: n) ?? [] }
         a.workspacesByApp = { [weak self] in
@@ -920,6 +921,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         d.removeObject(forKey: "openHereURLCommands")
         if d.object(forKey: Self.openHereGateKey) != nil, d.double(forKey: Self.openHereGateKey) < Date().timeIntervalSince1970 + 1 {
             d.removeObject(forKey: Self.openHereGateKey)
+        }
+    }
+
+    /// "Search iPhone for …": iPhone Mirroring comes up on workspace `target` like any single-window app
+    /// (the launcher's open here), then its Spotlight is opened from its menu bar and the query typed. Off the
+    /// main thread, since it waits for Mirroring's window. What the phone then shows is video, so the answer
+    /// says what was asked, never that the app opened.
+    private func searchIPhone(_ query: String, on target: Int) {
+        let driver = LiveMirroring { [weak self] in self?.launcher.openHere(app: IPhoneMirroring.path, target: target) }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let outcome = IPhoneOpen.run(query, driver: driver)
+            // The log names the outcome, never the query.
+            Trace.log("iphone search: \(outcome == .asked(query) ? "asked" : "\(outcome)".replacingOccurrences(of: query, with: "…"))")
+            DispatchQueue.main.async {
+                Toast.show(IPhoneOpen.message(outcome, phrase: driver.phrase), symbol: "iphone")
+            }
         }
     }
 

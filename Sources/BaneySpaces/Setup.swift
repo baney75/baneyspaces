@@ -899,6 +899,13 @@ struct SetupView: View {
             Text("Type !yt cats, !i sunsets or ? a question. Type ! to see every bang.")
                 .font(Chrome.font(12)).foregroundStyle(.secondary)
         }
+        if IPhoneMirroring.installed {
+            section("Your iPhone's apps") {
+                Text("Type an app's name and the launcher offers to search your iPhone through iPhone Mirroring. To list your iPhone's apps by name, BaneySpaces reads iPhone Mirroring's own data on this Mac. The first time, macOS asks whether BaneySpaces may access data from other apps; say Allow. If you say no, the search row still works and the list stays empty. Nothing is written to that data and nothing leaves this Mac.")
+                    .font(Chrome.font(12)).foregroundStyle(.secondary)
+                Text(IPhoneAppCache.shared.statusLine).font(Chrome.font(12))
+            }
+        }
         section("Your bangs\(model.customBangs.isEmpty ? "" : " (\(model.customBangs.count))")") { bangEditor }
     }
 
