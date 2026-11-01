@@ -1,5 +1,7 @@
 # BaneySpaces agent computer use
 
+(For every platform BaneySpaces runs on, see "Every platform" below: Donovan, 2026-11-01, "Baney spaces is for all devices now including Mac, Windows and Linux.")
+
 Decided 2026-10-31 (Donovan): BaneySpaces is the fleet's computer-use layer on the Mac. Cua's driver
 and Cua Spaces are removed from every machine. Tabkyra stays the way agents read and act on pages in
 Donovan's own Helium tabs. Everything else an agent does in a desktop app, any browser included, goes
@@ -144,6 +146,38 @@ All of them, without taking the screen:
 | 3 | Browsers and Electron: agent browser profiles over the debugging pipe, Safari and Firefox in the sandbox. | A page form filled and read back in Helium (agent profile), Chrome, Firefox and Safari (sandbox) and in Obsidian, with zero screen changes. |
 | 4 | Window-local pointer and per-process keys (SkyLight) for apps without a usable tree; the refusal contract. | A canvas app drawn on from behind with zero changes; every refused route returns a suggestion. |
 | 5 | Head-to-head (`bench/`): the same 30 tasks through BaneySpaces, agent-desktop and ChatGPT's computer use, each run in the same place (all on the agent workspace where the task allows it, all in the sandbox otherwise), scored on success, screen changes, time and turns. Cua's driver is a column only inside the sandbox. Fleet routing switches to BaneySpaces' MCP. | BaneySpaces is best or tied on every column; the numbers and the tool versions are committed under `bench/results/`, and the ratchet blocks any regression. |
+
+## Every platform
+
+Donovan, 2026-11-01: BaneySpaces runs on the Mac, Windows and Linux; on Omarchy it is the default
+window manager layer (Hyprland stays the compositor, BaneySpaces owns everything you interact with);
+nightly builds ship for every platform; it gets tested on every platform before it's called done.
+
+| | macOS | Linux (Omarchy, Hyprland) | Windows 11 |
+| --- | --- | --- | --- |
+| Workspaces 1–9 per display, instant | This app (parking, AX) | Hyprland workspaces driven over its IPC socket, one set per monitor, no animations | Our own workspace model: windows of other workspaces are cloaked or minimized without animation; Windows' virtual desktops are not used (they animate and can't be per-display) |
+| Agent workspace | Workspace 9, parked | A Hyprland special workspace, never shown unless you open it | Workspace 9, cloaked |
+| Focus following and its guard | FocusWatcher | Hyprland `activewindow` events | `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` |
+| Workspace Dock, launcher, ⌘Tab bar, overview | SwiftUI/AppKit | Omarchy shell (Quickshell) plugins, so they match Omarchy's look | Native overlay windows (Rust, `windows` crate) |
+| Agent hands | agent-desktop engine through its C library | agent-desktop's Linux adapter (AT-SPI) linked as a Rust crate | agent-desktop's Windows adapter (UI Automation) linked as a Rust crate |
+| Sandbox | Tart macOS VM | A KVM VM (libvirt) | Hyper-V or Windows Sandbox |
+| Keys | ⌘1–9, ⌘⇧1–9 | Super+1–9, Super+Shift+1–9 (Omarchy's own bindings are rebound to BaneySpaces) | Win+1–9 is taken by the taskbar; Alt+1–9 and Alt+Shift+1–9 by default, changeable |
+
+One contract keeps them the same product: `spec/` in this repo holds the workspace rules, the key map,
+the CLI and MCP schemas (one JSON envelope everywhere) and conformance cases as JSON. Every platform's
+test suite runs the same cases. A behavior that isn't in `spec/` doesn't ship on one platform alone.
+
+Code layout: `Sources/` stays the macOS app; `crates/baneyspaces-core` (Rust) holds the shared
+workspace model, CLI/MCP and hands routing for Linux and Windows; `platforms/linux` and
+`platforms/windows` hold each shell; `spec/` is shared.
+
+Testing on every platform: Linux runs in a nested Hyprland session (`Hyprland` inside a headless
+output) in CI and on Parish1, then live on Chapel1 and Parish1; Windows runs in a Windows 11 VM on
+Parish1 (KVM, resettable, never on GIGAPC); macOS on the Mac (and the Mac mini node when it has a
+key). Each platform runs the hands probe and the bench in the same shape.
+
+Nightly: one workflow builds all three every night from `main` into a `nightly` prerelease (signed
+where the platform has signing), and each app's updater offers the nightly channel.
 
 ## Rules that do not bend
 
