@@ -7,6 +7,7 @@
 ## Unreleased
 
 - **Rotating `trace.log`.** When the active file would pass 200 KB it becomes `trace.log.1` (and `.2`), instead of being deleted. `os.Logger` (subsystem `com.baney.baneyspaces`) is unchanged. Guarded by `FileTraceTests`.
+- **Dock tiles and ⌘Tab cards put the app you used last first.** Each workspace keeps when each of its apps last had the focus there, so the tile's icons, its "+N" list and the ⌘Tab workspace card all follow one order, most recent first, and reorder as you switch apps (an open dock reorders at once). Apps not used on that workspace since BaneySpaces started follow in their windows' order. An agent's app still moves into view ahead of the "+N". Pinned by `DockAppOrderTests` and `DockAppOrderWiringTests`.
 - **⌘Tab workspaces mode shows only the workspaces you're using.** Empty workspaces are left out again, except the one you're on, which is always first and marked with its color and "Here". The rest follow most recently used first, then by number. The panel is one row tall for one row of tiles, wraps only when the display you're on is too narrow, and is centered inside that display's visible area (left of the main display too), never past its edges. Tab, ⇧Tab and now the arrow keys (→ ↓ forward, ← ↑ back) step through the cards in the order drawn. Pinned by `WorkspaceSwitcherOrderTests`, `SwitcherLayoutTests`, `SwitcherPanelFrameTests`, `SwitcherSelectionTests`, `SwitcherWiringTests` and `WindowBarGateTests`.
 
 ## Unreleased

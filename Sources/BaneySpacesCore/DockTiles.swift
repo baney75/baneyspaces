@@ -1,6 +1,6 @@
 /// What the Workspace Dock shows: one tile per workspace in use, in number order, plus the
-/// workspace you're on even when it's empty. Each tile lists its apps once, in the order their
-/// windows sit on the workspace, with how many windows each has there.
+/// workspace you're on even when it's empty. Each tile lists its apps once, the one used there
+/// last first (`DockAppOrder`), with how many windows each has there.
 public struct DockTile: Equatable, Sendable {
     public struct App: Equatable, Sendable {
         public let key: String
@@ -16,8 +16,9 @@ public struct DockTile: Equatable, Sendable {
 
 public enum DockTiles {
     /// `windows[n]` is the app of each window on workspace `n`, in order (any stable key, such as
-    /// a bundle identifier or process id).
-    public static func make(current: Int, windows: [Int: [String]]) -> [DockTile] {
+    /// a bundle identifier or process id). `activatedAt[n]` is when each app last came forward on
+    /// workspace `n`; apps without one keep their windows' order, after the rest.
+    public static func make(current: Int, windows: [Int: [String]], activatedAt: [Int: [String: Double]] = [:]) -> [DockTile] {
         let used = Set(windows.filter { !$0.value.isEmpty }.keys)
         return Workspaces.range.filter { used.contains($0) || $0 == current }.map { n in
             var order: [String] = []
@@ -26,6 +27,7 @@ public enum DockTiles {
                 if counts[key] == nil { order.append(key) }
                 counts[key, default: 0] += 1
             }
+            order = DockAppOrder.sort(order, activatedAt: activatedAt[n] ?? [:])
             return DockTile(workspace: n, apps: order.map { DockTile.App(key: $0, windows: counts[$0]!) }, isCurrent: n == current)
         }
     }

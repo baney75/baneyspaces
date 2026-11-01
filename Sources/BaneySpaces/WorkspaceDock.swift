@@ -1240,7 +1240,8 @@ final class DockModel: ObservableObject {
         // Each agent sits on the tile that holds its window, so its badge marks the app it runs in.
         let placed = !agentStatus ? [:] : DockTiles.place(agents(), windows: entries.mapValues { $0.map(\.id) }, current: current)
         let last = spaces.model.lastFocused
-        tiles = DockTiles.make(current: current, windows: entries.mapValues { $0.map { "\($0.pid)" } }).map { t in
+        tiles = DockTiles.make(current: current, windows: entries.mapValues { $0.map { "\($0.pid)" } },
+                               activatedAt: spaces.activations.all).map { t in
             let here = entries[t.workspace] ?? []
             let agents = placed[t.workspace] ?? []
             // The one that needs you most wins: asking, then an error, then finished, then working.

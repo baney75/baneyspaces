@@ -252,11 +252,12 @@ final class WorkspaceSwitcher {
         }
     }
 
+    /// The workspace's apps in the dock tile's order: the one used there last first.
     private func icons(on n: Int) -> [NSImage] {
-        var seen = Set<pid_t>()
-        return spaces.entries(on: n).compactMap { e -> NSImage? in
-            guard seen.insert(e.pid).inserted else { return nil }
-            return NSRunningApplication(processIdentifier: e.pid)?.icon
+        var seen = Set<String>()
+        let keys = spaces.entries(on: n).map { "\($0.pid)" }.filter { seen.insert($0).inserted }
+        return DockAppOrder.sort(keys, activatedAt: spaces.activations.on(n)).compactMap { key in
+            pid_t(key).flatMap { NSRunningApplication(processIdentifier: $0)?.icon }
         }
     }
 
