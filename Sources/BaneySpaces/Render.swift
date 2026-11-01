@@ -82,6 +82,7 @@ enum Render {
 
         let setup = SetupModel()
         setup.trusted = true
+        setup.started = true
         setup.modifier = .command
         setup.conflicts = []
         setup.desktops = 1

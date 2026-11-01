@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 
 /// Where a window or app dragged in the Workspace Dock lands: the workspace tile under the
 /// pointer, or the empty-workspace button's workspace, but never the workspace it came from.
@@ -33,4 +34,30 @@ public enum DockDrop {
     public static func isOrphaned(ids: [WindowID], alive: [WindowID], rowShown: Bool?) -> Bool {
         survivors(of: ids, alive: alive).isEmpty || rowShown == false
     }
+
+    /// How often a drag in flight re-reads the window list to see its windows are still there. The
+    /// read scans, so it is spaced; the cheaper check against the last read runs every tick.
+    public static let freshReadInterval: TimeInterval = 0.5
+
+    public static func freshReadDue(now: TimeInterval, last: TimeInterval?) -> Bool {
+        guard let last else { return true }
+        return now - last >= freshReadInterval
+    }
+}
+
+/// A drag the dock cancelled while the button was still down. SwiftUI's gesture lives on and keeps
+/// reporting moves, which would start the same drag again at once and flicker until the button comes
+/// up; the cancel holds for the rest of that press.
+public struct DragCancel: Equatable, Sendable {
+    private var ids: [WindowID]?
+
+    public init() {}
+
+    public mutating func cancelled(_ ids: [WindowID]) { self.ids = ids }
+
+    /// A move from a gesture for `ids` starts nothing while that gesture's drag is the cancelled one.
+    public func blocks(_ ids: [WindowID]) -> Bool { self.ids == ids }
+
+    /// The press ended (button up, or the gesture's own end).
+    public mutating func released() { ids = nil }
 }

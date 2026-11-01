@@ -232,7 +232,18 @@ final class WorkspaceDock {
         springLoad(carrying)
         // A drag whose windows closed, or whose "+N" row went away (taking its gesture, and the
         // end it would have reported), ends here: the dock stays put until then.
-        if model.dragOrphaned() {
+        let pressed = NSEvent.pressedMouseButtons != 0
+        if !pressed { model.cancelled.released() }
+        // The window list is re-read a couple of times a second mid-drag: reloads wait out a drag,
+        // so nothing else keeps it current, and a closed window must show.
+        var fresh = false
+        if model.drag != nil, DockDrop.freshReadDue(now: ProcessInfo.processInfo.systemUptime, last: model.lastFreshRead) {
+            model.lastFreshRead = ProcessInfo.processInfo.systemUptime
+            fresh = true
+        } else if model.drag == nil {
+            model.lastFreshRead = nil
+        }
+        if model.dragOrphaned(refresh: fresh) {
             Trace.log("dock drag cancelled: its windows or its row are gone")
             model.cancelDrag()
         }
@@ -775,8 +786,9 @@ final class DockModel: ObservableObject {
         /// Another app's window dragged by its title bar down to the dock: the window itself
         /// follows the pointer, so no icon does.
         var carried = false
-        /// Begun on a row of a tile's "+N" list, a short-lived overlay: if the row goes, so does the gesture.
-        var fromList = false
+        /// The app whose row in a tile's "+N" list the drag began on, a short-lived overlay: if the
+        /// row goes, so does the gesture. The row is the app's, so it survives a window closing.
+        var listApp: String?
     }
     /// Something from another app dragged over the dock: what it rests on, and whether it holds
     /// files or links an app can open.
@@ -874,6 +886,10 @@ final class DockModel: ObservableObject {
     /// The windows on a workspace right now, read fresh from the window list (`refresh` first).
     var liveWindows: (_ workspace: Int, _ refresh: Bool) -> [WindowID] = { _, _ in [] }
     var onDragDone: () -> Void = {}
+    /// The drag cancelled while the button is down; cleared when the press ends.
+    var cancelled = DragCancel()
+    /// When the window list was last re-read for a drag in flight.
+    var lastFreshRead: TimeInterval?
     /// Files or links dropped on an app's icon: that app opens them on the icon's workspace.
     var onOpenFiles: ([URL], pid_t, Int) -> Void = { _, _, _ in }
     /// What of the drag an app can open: everything, or nothing.
@@ -998,26 +1014,30 @@ final class DockModel: ObservableObject {
         return DockDrop.target(at: drag.location, from: drag.from, tiles: tiles, empty: empty)
     }
 
-    func dragged(_ ids: [WindowID], from n: Int, icon: NSImage, name: String, fromList: Bool = false, to location: CGPoint) {
+    func dragged(_ ids: [WindowID], from n: Int, icon: NSImage, name: String, listApp: String? = nil, to location: CGPoint) {
         // A gesture still tracking after the dock hid is dead; it starts nothing.
         guard shown else { return }
+        // A drag the dock cancelled mid-press stays cancelled: the gesture is still live.
+        guard !cancelled.blocks(ids) else { return }
         if drag == nil {
             dwell?.cancel()
             NSCursor.closedHand.push()
         }
-        drag = Drag(ids: ids, from: n, icon: icon, name: name, location: location, fromList: fromList)
+        drag = Drag(ids: ids, from: n, icon: icon, name: name, location: location, listApp: listApp)
     }
 
     /// Whether the drag in flight has lost its windows or its row, and should end without moving
     /// anything (`DockDrop.isOrphaned`). Mid-drag the tiles hold still, so this reads the live list.
     func dragOrphaned(refresh: Bool = false) -> Bool {
         guard let d = drag, !d.carried else { return false }
-        let row: Bool? = d.fromList ? (moreApps?.apps.contains { $0.list.map(\.id) == d.ids } ?? false) : nil
+        let row: Bool? = d.listApp.map { id in moreApps?.apps.contains { $0.id == id } ?? false }
         return DockDrop.isOrphaned(ids: d.ids, alive: liveWindows(d.from, refresh), rowShown: row)
     }
 
     /// Let go over another workspace's tile: the windows move there, and you stay where you are.
     func endDrag() {
+        // The gesture ended: whatever it cancelled earlier is over.
+        cancelled.released()
         guard let drag, !drag.carried else { return }
         NSCursor.pop()
         // A window that closed mid-drag is not moved; a drag with none left moves nothing.
@@ -1039,6 +1059,7 @@ final class DockModel: ObservableObject {
     /// Ends a drag without moving anything.
     func cancelDrag() {
         guard let d = drag else { return }
+        cancelled.cancelled(d.ids)
         if !d.carried { NSCursor.pop() }
         drag = nil
         dragEnded = Date()
@@ -1052,6 +1073,7 @@ final class DockModel: ObservableObject {
     func reset() {
         if let drag, !drag.carried { NSCursor.pop() }
         drag = nil
+        cancelled.released()
         fileDrag = nil
         heldTarget = nil
         shown = false
@@ -1343,7 +1365,7 @@ struct DockView: View {
                 // there, exactly as the tile's own icons do.
                 let ids = app.list.map(\.id)
                 MoreRow(app: app, tint: Chrome.workspace(tile.id), dragging: model.drag.map { $0.from == tile.id && $0.ids == ids } ?? false,
-                        onDrag: { model.dragged(ids, from: tile.id, icon: app.icon, name: app.name, fromList: true, to: $0) },
+                        onDrag: { model.dragged(ids, from: tile.id, icon: app.icon, name: app.name, listApp: app.id, to: $0) },
                         onDragEnd: { model.endDrag() }) {
                     guard model.clickCounts else { return }
                     model.onFocusApp(app.pid, tile.id)

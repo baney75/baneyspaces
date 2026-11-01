@@ -32,4 +32,11 @@ final class AutomationGateTests: XCTestCase {
             }
         }
     }
+
+    func testAccessibilityRevokedAfterStartDisablesAgain() throws {
+        // F7: started, then the person turns Accessibility off in System Settings.
+        let why = try XCTUnwrap(AutomationGate.reason(trusted: false, aeroSpaceRunning: false, started: true))
+        XCTAssertTrue(why.contains("Accessibility"))
+        XCTAssertNil(AutomationGate.reason(trusted: true, aeroSpaceRunning: false, started: true))
+    }
 }

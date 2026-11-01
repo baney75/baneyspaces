@@ -110,7 +110,7 @@ final class DockOverflowDragTests: XCTestCase {
 
     func testAnOrphanedDragMovesNothingAndLeavesNoTarget() throws {
         let text = try dockSource()
-        let tick = try XCTUnwrap(text.range(of: "if model.dragOrphaned() {"))
+        let tick = try XCTUnwrap(text.range(of: "if model.dragOrphaned(refresh: fresh) {"))
         XCTAssertTrue(text[tick.upperBound...].prefix(160).contains("model.cancelDrag()"), "the tick ends an orphaned drag")
         let pinned = try XCTUnwrap(text.range(of: "guard !pinned else { return }"))
         XCTAssertLessThan(tick.lowerBound, pinned.lowerBound, "...before the pinned dock returns early")
@@ -130,6 +130,47 @@ final class DockOverflowDragTests: XCTestCase {
         let body = String(text[list.lowerBound...].prefix(2600))
         XCTAssertTrue(body.contains("let dragHere = model.drag?.from == tile.id"))
         XCTAssertTrue(body.contains("WorkspaceBadge(n: (dragHere ? model.dropTarget : nil) ?? tile.id"), "no stale target beside \"N more\"")
-        XCTAssertTrue(body.contains("fromList: true"), "the drag knows it began on a row")
+        XCTAssertTrue(body.contains("listApp: app.id"), "the drag knows which app's row it began on")
+    }
+
+    // Review of #102 round 1.
+
+    func testACancelledDragStaysCancelledWhileTheGestureLivesOn() {
+        // F1: the gesture keeps reporting moves; without this each one starts the drag again.
+        var cancel = DragCancel()
+        XCTAssertFalse(cancel.blocks([11, 12]))
+        cancel.cancelled([11, 12])
+        XCTAssertTrue(cancel.blocks([11, 12]), "the same gesture's next move starts nothing")
+        XCTAssertFalse(cancel.blocks([30]), "another drag is its own")
+        cancel.released()
+        XCTAssertFalse(cancel.blocks([11, 12]), "a new press may drag the same app again")
+    }
+
+    func testTheDockWiresTheCancelIntoDraggedAndReleasesItWhenThePressEnds() throws {
+        let text = try dockSource()
+        let moved = try XCTUnwrap(text.range(of: "func dragged(_ ids"))
+        XCTAssertTrue(text[moved.lowerBound...].prefix(500).contains("guard !cancelled.blocks(ids) else { return }"))
+        let cancel = try XCTUnwrap(text.range(of: "func cancelDrag()"))
+        XCTAssertTrue(text[cancel.upperBound...].prefix(200).contains("cancelled.cancelled(d.ids)"))
+        XCTAssertTrue(text.contains("if !pressed { model.cancelled.released() }"), "buttons up ends the press")
+    }
+
+    func testTheTickReadsTheWindowListFreshWhileADragIsInFlight() throws {
+        // F5: reloads wait out a drag, so the cached list never shows a closed window.
+        XCTAssertTrue(DockDrop.freshReadDue(now: 10, last: nil))
+        XCTAssertFalse(DockDrop.freshReadDue(now: 10.2, last: 10))
+        XCTAssertTrue(DockDrop.freshReadDue(now: 10.5, last: 10))
+        let text = try dockSource()
+        XCTAssertTrue(text.contains("model.dragOrphaned(refresh: fresh)"))
+        XCTAssertTrue(text.contains("DockDrop.freshReadDue(now:"))
+    }
+
+    func testARowKeepsItsDragWhenOneOfItsWindowsCloses() throws {
+        // F3: the row is the app's; it outlives a window, and the survivors move.
+        XCTAssertFalse(DockDrop.isOrphaned(ids: [11, 12], alive: [12], rowShown: true))
+        XCTAssertEqual(DockDrop.survivors(of: [11, 12], alive: [12]), [12])
+        let text = try dockSource()
+        XCTAssertTrue(text.contains("moreApps?.apps.contains { $0.id == id } ?? false"), "row identity, not exact window ids")
+        XCTAssertFalse(text.contains("list.map(\\.id) == d.ids"))
     }
 }

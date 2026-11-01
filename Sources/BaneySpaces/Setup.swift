@@ -53,8 +53,21 @@ final class SetupModel: ObservableObject {
     /// launches or quits (`SetupWindowController`), not on every tick: it walks every window.
     var parkedApps: () -> [ParkedRow] = { [] }
     /// BaneySpaces has started (Accessibility allowed, AeroSpace gone). Automation waits for it.
-    @Published var started = true
-    var isStarted: () -> Bool = { true }
+    /// False until the first read says otherwise, so nothing is live before the gate knows.
+    @Published var started = false {
+        didSet {
+            // The list was empty while waiting; read it as soon as BaneySpaces is up, and once more
+            // after its first scan of the windows.
+            guard started, !oldValue, tab == .automation else { return }
+            reloadParked()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                if self?.tab == .automation { self?.reloadParked() }
+            }
+        }
+    }
+    var isStarted: () -> Bool = { false } {
+        didSet { started = isStarted() }
+    }
     /// Why Automation can't act yet, or nil.
     var automationReason: String? { AutomationGate.reason(trusted: trusted, aeroSpaceRunning: aeroSpaceRunning, started: started) }
     var onToggleParked: ((String) -> Void)?
@@ -144,6 +157,9 @@ final class SetupModel: ObservableObject {
         if !wasReady && ready { becameReady() }
         // The slower checks once a second.
         if ticks % 4 == 0 { reloadOptional() }
+        // An app's first window can come long after it launches, and one can close with the app still
+        // running: no notification says so, so the Automation list reads every few seconds while up.
+        if ticks % 12 == 0, tab == .automation { reloadParked() }
     }
 
     func reload() {
@@ -969,7 +985,8 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             self?.model.reloadParked()
         }))
         // An app launching or quitting changes the list on the Automation tab; a launch has no
-        // windows for a moment, so it's read again after the first scan.
+        // windows for a moment, so it's read once soon after. Later windows are caught by the
+        // model's slow read while the tab is up.
         let workspace = NSWorkspace.shared.notificationCenter
         for (name, delay) in [(NSWorkspace.didLaunchApplicationNotification, 1.5), (NSWorkspace.didTerminateApplicationNotification, 0.3)] {
             observers.append((workspace, workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in

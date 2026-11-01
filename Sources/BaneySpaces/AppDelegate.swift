@@ -658,6 +658,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func parkedRows() -> [SetupModel.ParkedRow] {
         let on = ParkedApps.bundleIDs
         let slow = SlowMovers.bundleIDs
+        // The window list as it is now, as the menu did: an app's late first window shows.
+        if started { spaces.refresh() }
         var apps = started ? spaces.appsWithWindows() : []
         for id in on where !apps.contains(where: { $0.bundleID == id }) {
             let name = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id)

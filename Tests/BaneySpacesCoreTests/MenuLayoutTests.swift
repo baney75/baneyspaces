@@ -207,4 +207,17 @@ final class SettingsFollowUpTests: XCTestCase {
         XCTAssertTrue(setup.contains("NSWorkspace.didTerminateApplicationNotification"))
         XCTAssertTrue(setup.contains("self.model.tab == .automation"), "only while that tab is up")
     }
+
+    func testSettingsReadsTheListWhenStartedFlipsAndWhileTheTabIsUp() throws {
+        let setup = try code("Sources/BaneySpaces/Setup.swift")
+        // F4: nothing is live until the gate has read the state.
+        XCTAssertTrue(setup.contains("@Published var started = false {"))
+        XCTAssertTrue(setup.contains("var isStarted: () -> Bool = { false } {\n        didSet { started = isStarted() }"))
+        // F2: the list read empty while waiting; it reads the moment BaneySpaces is up.
+        XCTAssertTrue(setup.contains("guard started, !oldValue, tab == .automation else { return }\n            reloadParked()"))
+        // F6: a late first window shows without any notification.
+        XCTAssertTrue(setup.contains("if ticks % 12 == 0, tab == .automation { reloadParked() }"))
+        let app = try code("Sources/BaneySpaces/AppDelegate.swift")
+        XCTAssertTrue(app.contains("if started { spaces.refresh() }"), "the list is the window list as it is now")
+    }
 }
