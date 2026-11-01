@@ -1,0 +1,47 @@
+name: Windows
+on:
+  pull_request:
+    paths: ['crates/**', 'platforms/windows/**', 'platforms/linux/engine.pin', 'spec/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/windows.yml']
+  push:
+    branches: [main]
+    paths: ['crates/**', 'platforms/windows/**', 'platforms/linux/engine.pin', 'spec/**', 'Cargo.toml', 'Cargo.lock']
+# The repo is public, so windows-latest minutes are free.
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # The Linux daemon is unix-only, so on Windows the workspace is tested by package:
+      # the core (model, scope guard, envelope, MCP and the conformance cases) and this platform.
+      - name: Core, the conformance cases and the Windows crate
+        run: cargo test -p baneyspaces-core -p baneyspaces-windows --locked
+      - name: Release build
+        run: cargo build --release --locked -p baneyspaces-windows
+      - name: The binary runs
+        run: |
+          ./target/release/baneyspaces.exe keys --platform windows --text
+          ./target/release/baneyspaces.exe doctor
+          # No daemon is running: the CLI must say so, with the envelope's daemon_down code.
+          $out = ./target/release/baneyspaces.exe switch 2
+          if ($out -notmatch 'daemon_down') { throw "expected daemon_down, got: $out" }
+          $global:LASTEXITCODE = 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: baneyspaces-windows-pr
+          path: target/release/baneyspaces.exe
+  engine:
+    # The pinned agent-desktop (platforms/linux/engine.pin) still builds with --locked on Windows.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build the hands engine
+        shell: pwsh
+        run: platforms/windows/scripts/build-engine.ps1
+      - name: The engine is the pinned commit
+        shell: pwsh
+        run: |
+          $pin = (Get-Content platforms/linux/engine.pin | Where-Object { $_ -match '^commit=' }) -replace 'commit=', ''
+          if ((Get-Content platforms/windows/engine/COMMIT) -ne $pin.Trim()) { throw 'engine is not the pinned commit' }
+          platforms/windows/engine/agent-desktop.exe version

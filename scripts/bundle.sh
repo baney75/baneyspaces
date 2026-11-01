@@ -31,6 +31,26 @@ cp uninstall.sh "$APP/Contents/Resources/uninstall.sh"
 # steps that put it in place always come from the same signed bundle.
 cp scripts/install-app.sh "$APP/Contents/Resources/install-app.sh"
 
+# The pointer probe's test app, inside the bundle so that it is sealed with it and signed with the same identity.
+# BaneySpaces starts it for an agent only from here and only when its signature and code hash match (ProbeAppTrust).
+PROBE="$APP/Contents/Resources/probe/CanvasProbe.app"
+mkdir -p "$PROBE/Contents/MacOS"
+PROBE_SLICES=()
+for ARCH in $(for a in "${ARCHS[@]}"; do [ "$a" = "--arch" ] || echo "$a"; done); do
+  swiftc -O -target "$ARCH-apple-macos13.0" -o "build/CanvasProbe-$ARCH" scripts/canvas-probe-app.swift
+  PROBE_SLICES+=("build/CanvasProbe-$ARCH")
+done
+lipo -create "${PROBE_SLICES[@]}" -output "$PROBE/Contents/MacOS/CanvasProbe"
+cat > "$PROBE/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>com.baney.baneyspaces.canvasprobe</string><key>CFBundleName</key><string>Canvas Probe</string>
+<key>CFBundleExecutable</key><string>CanvasProbe</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleVersion</key><string>1</string>
+<key>LSMinimumSystemVersion</key><string>13.0</string><key>NSPrincipalClass</key><string>NSApplication</string>
+</dict></plist>
+PLIST
+
 swift scripts/make-icon.swift build/BaneySpaces.iconset
 iconutil -c icns build/BaneySpaces.iconset -o "$APP/Contents/Resources/BaneySpaces.icns"
 
@@ -43,15 +63,23 @@ if [ "${BANEYSPACES_ADHOC:-}" != 1 ] && IDENT=$(scripts/signing-identity.sh 2>/d
   # Inside out: the engine's library, then the command, then the app that holds both.
   codesign --force --sign "${IDENT%%$'\t'*}" --keychain "${IDENT#*$'\t'}" --identifier com.baney.baneyspaces.engine "$APP/Contents/Frameworks/libagent_desktop_ffi.dylib"
   codesign --force --sign "${IDENT%%$'\t'*}" --keychain "${IDENT#*$'\t'}" --identifier com.baney.baneyspaces.cli "$APP/Contents/Resources/bin/baneyspaces"
+  codesign --force --sign "${IDENT%%$'\t'*}" --keychain "${IDENT#*$'\t'}" --identifier com.baney.baneyspaces.canvasprobe "$PROBE"
+  codesign -dvvv "$PROBE" 2>&1 | sed -n 's/^CDHash=//p' > "$APP/Contents/Resources/probe/CanvasProbe.cdhash"
   codesign --force --sign "${IDENT%%$'\t'*}" --keychain "${IDENT#*$'\t'}" --identifier com.baney.baneyspaces "$APP"
 else
   ADHOC_NOTE="note: signed ad-hoc, so macOS will ask for Accessibility again after each update"
   echo "$ADHOC_NOTE" >&2
   codesign --force --sign - --identifier com.baney.baneyspaces.engine "$APP/Contents/Frameworks/libagent_desktop_ffi.dylib"
   codesign --force --sign - --identifier com.baney.baneyspaces.cli "$APP/Contents/Resources/bin/baneyspaces"
+  codesign --force --sign - --identifier com.baney.baneyspaces.canvasprobe "$PROBE"
+  codesign -dvvv "$PROBE" 2>&1 | sed -n 's/^CDHash=//p' > "$APP/Contents/Resources/probe/CanvasProbe.cdhash"
   codesign --force --sign - --identifier com.baney.baneyspaces "$APP"
 fi
 codesign --verify --deep --strict "$APP"
+# The probe app's recorded hash must be the hash of the signed app inside the sealed bundle.
+[ -s "$APP/Contents/Resources/probe/CanvasProbe.cdhash" ] && [ "$(cat "$APP/Contents/Resources/probe/CanvasProbe.cdhash")" = "$(codesign -dvvv "$PROBE" 2>&1 | sed -n 's/^CDHash=//p')" ] || { echo "bundle: the probe app's code hash is not recorded" >&2; exit 1; }
+# The licence of ported code ships with the app.
+[ -s "$APP/Contents/Resources/licenses/cua-driver-MIT.txt" ] || { echo "bundle: the cua-driver licence is missing from the bundle" >&2; exit 1; }
 # The app must find its library next to itself, not where it was built.
 otool -L "$APP/Contents/MacOS/BaneySpaces" | grep -q '@rpath/libagent_desktop_ffi.dylib' || { echo "bundle: BaneySpaces doesn't link the engine through @rpath" >&2; exit 1; }
 otool -l "$APP/Contents/MacOS/BaneySpaces" | grep -A2 LC_RPATH | grep -q '@executable_path/../Frameworks' || { echo "bundle: no @executable_path/../Frameworks rpath" >&2; exit 1; }

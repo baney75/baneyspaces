@@ -21,11 +21,21 @@ A change is done when steps 1–3 pass on its branch and step 4 passes on `main`
    For the dock's own motion or the "+N" list/strip panel (`DockSide`, `DockMotion`, `WorkspaceDock.show/hide/syncSide`):
    `swift scripts/dock-motion-probe.swift` (no pointer; it shows the dock for about four seconds, so run it
    when Donovan has been idle 10 minutes; it needs `dockURLCommands` on and a tile with more than four apps).
+   For anything that posts keys or pointer events to agent windows (`BackgroundPoster`, `HandsRouter+Background`,
+   `BackgroundPlanner`): `swift scripts/agent-keys-probe.swift`, only when Donovan has been idle 10 minutes (it prints
+   "untested live" and exits 3 otherwise); it needs the build under test installed, so it runs on `main` right after merge.
+   For the agent cursor (`Sources/BaneySpacesCursor`, `CursorDirector`, `CursorVisibility`, `GlidePlan`):
+   `swift run -c release cursor-probe` (100 glides on the display, frame times, the real pointer; the cursor is visible
+   while it runs, so run it when Donovan has been idle 10 minutes; it refuses to start otherwise and fails if nothing drew).
    For anything that decides what each display shows (`Workspaces.shown`, `displays`, `carry`,
    `noteMovedAcrossDisplays`): `swift scripts/displays-probe.swift` with two displays (Sidecar counts).
    For full screen (`FullScreenKeys`, `Spaces.fullScreenCalls`/`leaveFullScreen`/`toggleFill`/`audit`):
    `swift scripts/fullscreen-probe.swift`. It types ⌃⌘F, clicks the green button and takes the pointer, so it
    runs only when Donovan has been idle 10 minutes; otherwise it prints "untested live" and exits 3.
+   For anything under `Sources/BaneySpacesCore/Sandbox/`: `swift scripts/sandbox-probe.swift` (headless, no window; needs
+   Tart, Softnet and the pinned image per `sandbox/PIN`, and the sandbox must not be in use by the app: if it is on in
+   Settings > Agents the probe says SKIPPED and exits 2, so turn it off there first). It must print "sandbox-probe PASS". `view` and Settings > Agents
+   put a window on screen: try them only when he has been idle 10 minutes.
 4. The gesture Donovan reported, done live on his Mac (the real keys, the real hold, the real
    click), with the result read back from the screen, `trace.log` or `state.json`. Pointer and key
    probes run only when he has been idle 10 minutes (`ioreg -c IOHIDSystem` HIDIdleTime); otherwise

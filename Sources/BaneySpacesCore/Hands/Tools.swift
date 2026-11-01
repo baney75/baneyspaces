@@ -70,9 +70,22 @@ public enum HandsTools {
             refParam,
             HandsParam("value", .string, "The new value.", required: true, positional: true, rest: true),
         ], acts: true),
-        HandsTool(verb: "press", summary: "Press a key or combination (Return, cmd+a, shift+tab). Always answers not_supported for now: keys reach only the app in front, and BaneySpaces never raises one for an agent (background keys arrive in a later phase).", params: [
+        HandsTool(verb: "press", summary: "Press keys (Return, cmd+a, \"h i Return\") in a window that is not in front: posted to that one process, never to the session, without activating or raising anything. The ref names the window (and the element you expect to change). Refused unless BaneySpaces started the process, nothing else of its windows could take the key, and the window is where the app's keys go. Answers unverified (retry never) when nothing read back from the window shows the keys landed.", params: [
             refParam,
-            HandsParam("key", .string, "Key name with optional modifiers, like cmd+shift+z.", required: true, positional: true),
+            HandsParam("key", .string, "Key name with optional modifiers, like cmd+shift+z; several keys are separated by spaces (at most 64).", required: true, positional: true, rest: true),
+        ], acts: true),
+        HandsTool(verb: "click-at", summary: "Click a point in a window that is not in front, by process, with window-local coordinates (points from the window's top-left corner). Never moves the real pointer or raises the window. For surfaces with no accessibility tree (a canvas); prefer `click` on a ref. Answers unverified (retry never) when neither the window's tree nor the pixels around the point changed.", params: [
+            HandsParam("window", .integer, "Window id from `windows`.", required: true),
+            HandsParam("x", .integer, "Points from the window's left edge.", required: true),
+            HandsParam("y", .integer, "Points from the window's top edge.", required: true),
+        ], acts: true),
+        HandsTool(verb: "drag", summary: "Press at a point, drag to another and release, in a window that is not in front, by process, with window-local coordinates. Never moves the real pointer or raises the window. Verified by an accessibility change or by pixels changing along the path while the rest of the window stays put.", params: [
+            HandsParam("window", .integer, "Window id from `windows`.", required: true),
+            HandsParam("x", .integer, "Start, points from the window's left edge.", required: true),
+            HandsParam("y", .integer, "Start, points from the window's top edge.", required: true),
+            HandsParam("x2", .integer, "End, points from the window's left edge.", required: true),
+            HandsParam("y2", .integer, "End, points from the window's top edge.", required: true),
+            HandsParam("steps", .integer, "Intermediate moves (default 12, at most 200)."),
         ], acts: true),
         HandsTool(verb: "scroll", summary: "Scroll an element by ref.", params: [
             refParam,
@@ -87,6 +100,7 @@ public enum HandsTools {
         HandsTool(verb: "shot", summary: "Capture one window as a PNG, even while it is parked out of view. Needs Screen Recording for BaneySpaces. The file stays on this Mac.", params: [
             HandsParam("window", .integer, "Window id.", required: true),
             HandsParam("out", .string, "A file name (no folder) for the PNG; it is written in BaneySpaces' own shots folder."),
+            HandsParam("cursor", .boolean, "Draw the agent cursor where it last acted in this window, if it did in the last 30 seconds and was on screen. Off by default, so the picture is the app itself."),
         ], acts: true),
         HandsTool(verb: "open", summary: "Open an app, or files from the agent handoff folder in it, on the agent workspace, without switching the user to it. Apps that hold the user's own data (Safari, Notes, Mail, Messages, Calendar, Photos) answer needs_sandbox.", params: [
             HandsParam("app", .string, "App name or bundle id.", required: true, positional: true),

@@ -20,14 +20,17 @@ usage: \(me) <command>
   agent status|on [N]|off     the agent workspace: agents drive apps there while you work here
   agent open <app> [file…]    open an app (or files in it) there, without switching you
   agent run [--dir D] -- CMD  run a command (claude, grok…) in a Ghostty window there
-  agent windows|snapshot|find|get|click|type|set-value|press|scroll|select|toggle|shot|open
+  agent windows|snapshot|find|get|click|type|set-value|press|click-at|drag|scroll|select|toggle|shot|open
                               read and act on apps on the agent workspace (or lent ones) without touching
                               your screen; each prints one JSON envelope (agent <command> with no
                               arguments shows its usage). `agent open` prints one too.
+  agent cursor on|theme <name>|status   each agent's cursor on the agent workspace (default, minimal, classic, omarchy); only Settings turns it off
+  agent shot --window ID --cursor   draw the agent's cursor into the capture (off by default)
   agent lend <app|pid> [--for 30m]   asks you, in a sheet in BaneySpaces, whether agents may use an app you have open
                               (only a real click on Lend lends it; running this lends nothing by itself)
   mcp                         the same commands as a stdio MCP server (claude mcp add baneyspaces -- baneyspaces mcp)
   agent move <id | words>     send a window there (only windows of apps started for an agent)
+  sandbox up|down|reset|status|view|guest   a throwaway macOS VM for agent work (sandbox help)
   phone ls|ui|shot|tap|swipe|type|key|shell|mirror   phones for agents (phone help)
   set <setting> <value>       appearance.theme omarchy|baneyspaces|minimal, appearance.palette auto|<name>,
                               dock.enabled true|false, behavior.fullscreen baneyspaces|native;
@@ -183,6 +186,9 @@ case "remote":
     let info = r.info ?? [:]
     if sub == "token" { out(info["token"] ?? ""); break }
     out("remote: \(info["remote"] ?? "?")" + (info["listening"].map { " (\($0))" } ?? ""))
+
+case "sandbox":
+    SandboxCommand.run(rest)
 
 case "phone", "phones":
     PhoneCommand.run(rest)

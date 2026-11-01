@@ -1,5 +1,6 @@
 import AppKit
 import BaneySpacesCore
+import BaneySpacesCursor
 import CryptoKit
 import ScreenCaptureKit
 
@@ -12,6 +13,10 @@ enum WindowShot {
         var width: Int
         var height: Int
         var sha256: String
+        /// Whether the agent cursor was drawn in (`--cursor`).
+        var cursorDrawn = false
+        /// With the cursor drawn in, the hash of the capture as taken, before anything was drawn on it.
+        var rawSha256: String?
     }
 
     static var folder: URL { HandsEngine.home.appendingPathComponent("shots", isDirectory: true) }
@@ -28,7 +33,7 @@ enum WindowShot {
         func get() -> Swift.Result<Result, HandsError>? { lock.lock(); defer { lock.unlock() }; return value }
     }
 
-    static func capture(window id: UInt32, named name: String?, check: @escaping () -> HandsError?) -> Swift.Result<Result, HandsError> {
+    static func capture(window id: UInt32, named name: String?, cursor: CursorMark? = nil, check: @escaping () -> HandsError?) -> Swift.Result<Result, HandsError> {
         if let name, !HandoffPath.isPlainFileName(name) {
             return .failure(HandsError(.badArguments, "out must be a file name, not a path", suggestion: "Pass just a name like `page.png`; shots are written in \(folder.path).", retry: .safe))
         }
@@ -39,11 +44,59 @@ enum WindowShot {
         guard #available(macOS 14, *) else {
             return .failure(HandsError(.notSupported, "window captures need macOS 14 or later", suggestion: "Use `baneyspaces agent snapshot` to read the window instead.", retry: .never))
         }
-        return captureWithKit(id, name, check)
+        return captureWithKit(id, name, cursor, check)
+    }
+
+    /// A window's pixels in memory, for comparing before and after (never written to disk, never returned to the caller).
+    struct Pixels {
+        var rgba: [UInt8]
+        var width: Int
+        var height: Int
+        /// Pixels per point.
+        var scale: CGFloat
+    }
+
+    private final class PixelBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: Pixels?
+        private var cancelled = false
+        func set(_ p: Pixels?) { lock.lock(); if !cancelled { value = p }; lock.unlock() }
+        func cancel() { lock.lock(); cancelled = true; lock.unlock() }
+        func get() -> Pixels? { lock.lock(); defer { lock.unlock() }; return value }
+    }
+
+    /// nil when Screen Recording isn't allowed, the window isn't there, or the capture takes too long.
+    static func pixels(window id: UInt32, check: @escaping () -> HandsError?) -> Pixels? {
+        guard CGPreflightScreenCaptureAccess(), #available(macOS 14, *) else { return nil }
+        let box = PixelBox()
+        let done = DispatchSemaphore(value: 0)
+        Task.detached {
+            defer { done.signal() }
+            do {
+                let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+                guard let w = content.windows.first(where: { $0.windowID == id }), check() == nil else { return }
+                let cfg = SCStreamConfiguration()
+                cfg.width = Int(w.frame.width * 2)
+                cfg.height = Int(w.frame.height * 2)
+                cfg.showsCursor = false
+                let image = try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(desktopIndependentWindow: w), configuration: cfg)
+                let width = image.width, height = image.height
+                var bytes = [UInt8](repeating: 0, count: width * height * 4)
+                let ok = bytes.withUnsafeMutableBytes { buf -> Bool in
+                    guard let ctx = CGContext(data: buf.baseAddress, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                                              space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+                    ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+                    return true
+                }
+                if ok { box.set(Pixels(rgba: bytes, width: width, height: height, scale: CGFloat(width) / max(w.frame.width, 1))) }
+            } catch {}
+        }
+        if done.wait(timeout: .now() + budget) == .timedOut { box.cancel() }
+        return box.get()
     }
 
     @available(macOS 14, *)
-    private static func captureWithKit(_ id: UInt32, _ name: String?, _ check: @escaping () -> HandsError?) -> Swift.Result<Result, HandsError> {
+    private static func captureWithKit(_ id: UInt32, _ name: String?, _ cursor: CursorMark?, _ check: @escaping () -> HandsError?) -> Swift.Result<Result, HandsError> {
         let outcome = Outcome()
         let done = DispatchSemaphore(value: 0)
         Task.detached {
@@ -65,7 +118,17 @@ enum WindowShot {
                 let image = try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(desktopIndependentWindow: w), configuration: cfg)
                 if outcome.isCancelled { return }
                 if let e = check() { return outcome.set(.failure(e)) }   // before the bytes are published
-                let rep = NSBitmapImageRep(cgImage: image)
+                // `--cursor`: the capture is of the window alone, so the overlay is never in it; the arrow is drawn in on request.
+                var picture = image, drawn = false
+                if let cursor, let frame = cursor.windowFrame,
+                   let with = ShotComposite.draw(cursor, onto: image, windowFrame: frame, scale: CGFloat(image.width) / max(1, w.frame.width)) {
+                    picture = with; drawn = true
+                }
+                var rawHash: String?
+                if drawn, let raw = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) {
+                    rawHash = SHA256.hash(data: raw).map { String(format: "%02x", $0) }.joined()
+                }
+                let rep = NSBitmapImageRep(cgImage: picture)
                 guard let png = rep.representation(using: .png, properties: [:]) else {
                     return outcome.set(.failure(HandsError(.engineError, "the capture couldn't be encoded", suggestion: "Try again.", retry: .safe)))
                 }
@@ -79,7 +142,7 @@ enum WindowShot {
                 _ = try? FileManager.default.removeItem(at: file)
                 try FileManager.default.moveItem(at: tmp, to: file)
                 let hash = SHA256.hash(data: png).map { String(format: "%02x", $0) }.joined()
-                outcome.set(.success(Result(path: file.path, width: image.width, height: image.height, sha256: hash)))
+                outcome.set(.success(Result(path: file.path, width: picture.width, height: picture.height, sha256: hash, cursorDrawn: drawn, rawSha256: rawHash)))
             } catch {
                 outcome.set(.failure(HandsError(.engineError, "the capture failed: \(error.localizedDescription)", suggestion: "Check Screen Recording access for BaneySpaces.", retry: .safe)))
             }

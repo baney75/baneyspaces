@@ -31,11 +31,44 @@ final class SetupModel: ObservableObject {
     var hooksInstalled: () -> HookState = { .on }
     var onInstallHooks: (() -> Void)?
     @Published var hooks: HookState = .on
+    // Sandbox (Settings > Agents)
+    @Published var sandbox = SandboxSettings.load()
+    @Published var sandboxState = "Not running"
+    @Published var sandboxDisk = ""
+    @Published var sandboxRunning = false
+    @Published var sandboxBusy = false
+    @Published var sandboxProblem: String?
+    var sandboxSummary: () -> AppSandbox.Summary? = { nil }
+    var onSandboxReset: ((@escaping (String?) -> Void) -> Void)?
+    var onSandboxDeleteImages: ((@escaping (String?) -> Void) -> Void)?
+
+    var onSandboxDisabled: (() -> Void)?
+    /// Why this Mac can't run the sandbox (under 16 GB), shown instead of quietly running a smaller VM.
+    var sandboxHostProblem: String? { SandboxSettings.hostProblem(hostMemoryGB: Int(ProcessInfo.processInfo.physicalMemory >> 30)) }
+    func setSandbox(_ s: SandboxSettings) {
+        let wasOn = sandbox.enabled
+        sandbox = s; s.save(); refreshSandbox()
+        if wasOn && !s.enabled { onSandboxDisabled?() } // turning it off removes the VMs, not just refuses new ones
+    }
+    func refreshSandbox() {
+        guard let s = sandboxSummary() else { return }
+        sandboxState = s.state; sandboxDisk = s.detail; sandboxRunning = s.running; sandboxBusy = s.busy
+    }
+    func sandboxReset() {
+        sandboxBusy = true; sandboxProblem = nil
+        onSandboxReset? { [weak self] err in self?.sandboxProblem = err; self?.refreshSandbox() }
+    }
+    func sandboxDeleteImages() {
+        sandboxBusy = true; sandboxProblem = nil
+        onSandboxDeleteImages? { [weak self] err in self?.sandboxProblem = err; self?.refreshSandbox() }
+    }
+
     @Published var tab: SettingsTab = .general {
         // The app list changes while the window is open; it's read when you look at it.
         didSet {
             if tab == .automation { reloadParked() }
             if tab == .updates { onUpdatesShown?() }
+            if tab == .agents { refreshSandbox() }
         }
     }
     var onUninstall: (() -> Void)?
@@ -379,7 +412,7 @@ final class SetupModel: ObservableObject {
 /// The settings window's tabs. General comes first: it's where a new Mac starts.
 enum SettingsTab: String, CaseIterable, Identifiable {
     case general = "General", keys = "Keys", dock = "Dock", appearance = "Appearance", launcher = "Launcher",
-         automation = "Automation", updates = "Updates"
+         automation = "Automation", updates = "Updates", agents = "Agents"
     var id: Self { self }
 
     var symbol: String {
@@ -391,6 +424,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .launcher: "magnifyingglass"
         case .automation: "gearshape.2"
         case .updates: "arrow.down.circle"
+        case .agents: "cpu"
         }
     }
 }
@@ -400,6 +434,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
 struct SetupView: View {
     @ObservedObject var model: SetupModel
     @ObservedObject private var appearance = Appearance.shared
+    @ObservedObject private var cursor = CursorController.shared
     var close: () -> Void
 
     var body: some View {
@@ -419,6 +454,7 @@ struct SetupView: View {
                 case .launcher: launcher
                 case .automation: automation
                 case .updates: updates
+                case .agents: agents
                 }
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -642,6 +678,19 @@ struct SetupView: View {
                 .font(Chrome.font(12)).foregroundStyle(.secondary)
         }
 
+        section("Agent cursor") {
+            Toggle("Show each agent's cursor on the agent workspace", isOn: Binding(get: { cursor.settings.enabled }, set: { cursor.setEnabled($0) }))
+            Picker("Look", selection: Binding(get: { cursor.settings.resolvedTheme.name }, set: { cursor.setTheme($0) })) {
+                ForEach(cursor.themeNames, id: \.self) { Text($0.capitalized).tag($0) }
+            }
+            .fixedSize().disabled(!cursor.settings.enabled || cursor.themeSetInFile)
+            if cursor.themeSetInFile {
+                Text("The look is set in config.toml (behavior.cursor.theme).").font(.callout).foregroundStyle(.secondary)
+            }
+            Text("A small cursor with the agent's name glides to what it is working on, so you can follow it. It is drawn only while you look at the agent workspace (or at an app you lent), never moves your pointer and never takes a click or a key. Its colors are its own. Only you turn it off, here; agents can pick its look with baneyspaces agent cursor theme <name>.")
+                .font(.callout).foregroundStyle(.secondary)
+        }
+
         if !model.finished.isEmpty {
             section("Finished while you were away") {
                 ForEach(model.finished) { row in
@@ -749,6 +798,42 @@ struct SetupView: View {
                 }
             }
             Button("About BaneySpaces…") { model.onAbout?() }
+        }
+    }
+
+    // MARK: Agents
+
+    @ViewBuilder private var agents: some View {
+        section("Sandbox") {
+            Toggle("Allow the sandbox: a throwaway macOS VM for agent work", isOn: Binding(get: { model.sandbox.enabled },
+                set: { var s = model.sandbox; s.enabled = $0; model.setSandbox(s) }))
+                .disabled(model.sandboxHostProblem != nil)
+            if let why = model.sandboxHostProblem { Text(why).font(.callout).foregroundStyle(.orange) }
+            Text("Untrusted sites, throwaway logins and anything that installs software run in a virtual Mac that has no access to your files, iCloud, keychain, the Mac itself, your network or your tailnet: only the internet, and one handoff folder per task. It's deleted when the task ends, and a clean copy is kept ready so a reset takes seconds. Nothing starts until an agent asks.")
+                .font(.callout).foregroundStyle(.secondary)
+            HStack(spacing: 18) {
+                Picker("Memory", selection: Binding(get: { model.sandbox.memoryGB }, set: { var s = model.sandbox; s.memoryGB = $0; model.setSandbox(s) })) {
+                    ForEach(SandboxSettings.memoryChoices, id: \.self) { Text("\($0) GB").tag($0) }
+                }.fixedSize()
+                Picker("CPUs", selection: Binding(get: { model.sandbox.cpus }, set: { var s = model.sandbox; s.cpus = $0; model.setSandbox(s) })) {
+                    ForEach(SandboxSettings.cpuChoices, id: \.self) { Text("\($0)").tag($0) }
+                }.fixedSize()
+            }
+            .disabled(!model.sandbox.enabled || model.sandboxRunning)
+            Picker("Handoff folder limit", selection: Binding(get: { model.sandbox.handoffGB }, set: { var s = model.sandbox; s.handoffGB = $0; model.setSandbox(s) })) {
+                ForEach(SandboxSettings.handoffChoices, id: \.self) { Text("\($0) GB").tag($0) }
+            }
+            .fixedSize().disabled(!model.sandbox.enabled)
+            Text("A guest that writes more than this into its handoff folder is stopped.").font(.callout).foregroundStyle(.secondary)
+            Text("Takes effect the next time the sandbox starts.").font(.callout).foregroundStyle(.secondary)
+            Text(model.sandboxState).font(.callout)
+            Text("Disk used: \(model.sandboxDisk)").font(.callout).foregroundStyle(.secondary)
+            if let p = model.sandboxProblem { Text(p).font(.callout).foregroundStyle(.orange) }
+            HStack {
+                Button("Reset Now", action: model.sandboxReset).disabled(!model.sandboxRunning || model.sandboxBusy)
+                Button("Delete Images…", action: model.sandboxDeleteImages).disabled(model.sandboxRunning || model.sandboxBusy)
+                    .help("Deletes the sandbox's VMs and the downloaded macOS image (about 24 GB, downloaded again next time)")
+            }
         }
     }
 

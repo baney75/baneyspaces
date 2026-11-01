@@ -104,7 +104,9 @@ One command family and one MCP server, the same verbs either way:
 ```sh
 baneyspaces agent snapshot --app TextEdit -i        # refs for what an agent can act on
 baneyspaces agent click @s1:e8                      # act on a ref; prints the evidence
-baneyspaces agent type @s1:e3 "Hello"               # AX value or insertion; keys only from phase 3
+baneyspaces agent type @s1:e3 "Hello"               # AX value or insertion
+baneyspaces agent press @s1:e3 "cmd+a"              # keys to that one process, window not in front (phase 4)
+baneyspaces agent drag --window 4211 --x 60 --y 90 --x2 320 --y2 230   # window-local pointer (phase 4)
 baneyspaces agent open TextEdit ~/tmp/notes.txt     # on the agent workspace, you stay put
 baneyspaces agent open Safari https://example.com   # routed to the sandbox (once-per-user app)
 baneyspaces agent shot --window 4211                # one window, even while parked
@@ -136,7 +138,13 @@ never moves yours.
 - It never takes focus, clicks or keys. Screenshots and recordings of the agent workspace can
   include it or leave it out (`agent shot --cursor`), so the evidence in a result is the app
   itself.
-- `baneyspaces agent cursor on|off|theme <name>` and a Settings switch. It's on by default.
+- `baneyspaces agent cursor on|theme <name>|status` and a Settings switch. It's on by default. Only Donovan turns it
+  off, in Settings: the cursor is how he sees agents work, so the socket refuses `agent cursor off` (and logs it) and
+  a `behavior.cursor.enabled = false` line in `config.toml` is ignored. Agents may change its theme.
+  This guards the socket and the config file, not the user's other files: BaneySpaces' saved settings (its defaults
+  domain) are the user's, and any process of the same user can edit them, as it can any other file of his. That is
+  out of scope under the host threat model above (nothing on the host stops a hostile same-user process; the sandbox is
+  the boundary). It is not silent: BaneySpaces writes a line to `trace.log` at launch when the saved setting is off.
 
 The bench measures it too: drawing the cursor must add under 5 ms to the median action.
 
@@ -162,7 +170,7 @@ All of them, without taking the screen:
 | 1b | The agent cursor. | Visible on the agent workspace during the probe, zero changes to the real pointer, under 5 ms added per action. |
 | 2 | The sandbox (two at most; `busy` beyond that): `sandbox up/reset/down/status`, the guest hands daemon, routing of once-per-user and untrusted work, the handoff folder, network limited to the internet. | The probe passes inside the sandbox; a sandbox job can't reach the Mac, the LAN or the tailnet (checked from inside); reset returns a clean guest in under 10 s; a malformed or oversized daemon reply is rejected; the guest can't reach the host gateway; the sandbox window never appears on your workspaces. |
 | 3 | Browsers and Electron: agent browser profiles over the debugging pipe, Safari and Firefox in the sandbox. | A page form filled and read back in Helium and Chrome (agent profiles on the host), and in Firefox, Safari and Obsidian with a scratch vault (all three in the sandbox), with zero screen-change events. |
-| 4 | Window-local pointer and per-process keys (SkyLight) for apps without a usable tree; the refusal contract. | A canvas app drawn on from behind with zero changes; every refused route returns a suggestion. |
+| 4 | Window-local pointer and per-process keys (SkyLight) for apps without a usable tree; the refusal contract. See "Phase 4: keys and pointer" below. | A canvas app drawn on from behind with zero changes; every refused route returns a suggestion. `scripts/agent-keys-probe.swift`: TextEdit keys (⌘A, ⌘B, Return, menu-free keys) with another app in front, the bench tasks marked phase 4 that the routes can run, and a canvas stroke checked by pixels; 50 ms sampler on the front app, workspace, real pointer and key window; zero changes. Plus `swift test`. |
 | 5 | Head-to-head (`bench/`): the same 30 tasks through BaneySpaces, agent-desktop and ChatGPT's computer use, each run in the same place (all on the agent workspace where the task allows it, all in the sandbox otherwise), scored on success, screen changes, time and turns. Cua's driver is a column only inside the sandbox. Fleet routing switches to BaneySpaces' MCP. | BaneySpaces is best or tied on every column; the numbers and the tool versions are committed under `bench/results/`, and the ratchet blocks any regression. |
 
 ## Every platform
@@ -196,6 +204,88 @@ key). Each platform runs the hands probe and the bench in the same shape.
 
 Nightly: one workflow builds all three every night from `main` into a `nightly` prerelease (signed
 where the platform has signing), and each app's updater offers the nightly channel.
+
+## Phase 4: keys and pointer
+
+Verbs: `press <ref> <keys>` (several keys separated by spaces), `click-at` and `drag` (window id and window-local
+points, from the window's top-left corner). They reach one process that is not in front. They never activate,
+raise, switch a Space, move the real pointer or post to the session or a HID tap. Source tests read the one file
+that makes events (`BackgroundPoster.swift`) and fail if it names any of those.
+
+| Order | Route | Used for | Needs |
+| --- | --- | --- | --- |
+| 1 | Semantic accessibility (`click`, `type`, `set-value`, `toggle`, `select`) | everything with an element | the tree; phase 1 |
+| 2 | Exact browser target | page content | phase 3 |
+| 3 | Window-local pointer (`click-at`, `drag`): mouse events to the pid, the window number in fields 51, 91 and 92, the pid in field 40, one gesture id, the point in window-local screen terms | surfaces with no tree (a canvas) | the pid is the agent's; the window is not minimized or hidden; the point is inside it; a verifier (the tree or the window's pixels) |
+| 4 | Per-process keys (`press`): key down and up with exactly the chord's flags, to the pid | shortcuts and keys no element exposes | the pid is the agent's; no other window of that process could take the key; the app's focused window and focused element are this window; the tree is readable |
+| 5 | SkyLight per-process posting | the transport under 3 and 4 | `SLEventPostToPid` found by name at run time; if the name does not resolve the public `CGEventPostToPid` carries the event, and with neither the route is unavailable (a refusal, never a crash) |
+| 6 | Per-process AX enablement for Electron | Electron apps | phase 3 |
+
+One transport per action, chosen before the post; there is no second route after a post whose proof failed.
+
+Who receives events, checked at execution time on the process's queue, not when the request is parsed:
+a window on the agent workspace of a process BaneySpaces started (pid and start time, so a reused pid
+fails), or a window Donovan lent, and only while he is not using the app. The window server must still say
+the window belongs to that pid. Any other pid is never posted to.
+
+One action per process at a time: the whole action (readings before, the post, the readings after) is one
+transaction on the target process's queue, the one the engine's calls use, so another action's change can
+never prove this one. The engine's reads inside it are inline calls that refuse to run off the queue.
+
+Balanced events: a stop (the caller gave up, the front app changed, an event could not be made) means "post
+nothing new", and every key-down and mouse-down already posted gets its matching up, newest first, before the
+action returns. A release is never subject to the stop. `EventRunner` does this for keys and the pointer alike,
+and its tests stop a chord, a click and a drag at every step.
+
+Delivery proof: the same window is read before and after (the window's tree twice before, a moment apart; an
+element that changes by itself between them, found by its place in the tree and not by its text, is noise for good,
+whatever it reads later). A key press is proved step by step: consecutive printable keys are one typed segment whose
+own text must appear in the element it was typed into, and every other chord is a step of its own. Each step passes
+only when what it predicts changed, in the target window: typed text changes the value of the targeted or focused
+element, a movement or select-all changes its selected range, Tab moves focus, cmd+b changes the text's attributes
+(compared as normalized runs of font and color components, never object descriptions), Return changes the value or
+the window, a save changes the window (title, edited flag, sheet), and in an app with no text element in focus
+(Calculator) the window's content changes beyond the noise. The first step that shows nothing stops the press and the
+answer says how many landed (`unverified`, "2 of 3 steps landed"); the steps after it are not sent. An unrelated
+change does not count. A reading from another window of the same process never counts. Pixels never
+prove keys. A pointer is proved by a change on an element of the target window, or, for a surface that exposes
+nothing, by pixels: the pointer arrives first (a move), the picture before is taken after that, the pixels around
+the start point are left out of a drag, and the stroke needs changed pixels in proportion to its length (never
+under 24) while at most 2% of the rest of the window changes. No proof is `unverified` with retry `never`: the
+events may have landed.
+
+Guards while posting: every app the workspace activates is recorded (`didActivateApplicationNotification`) from
+planning until a second after the last post, and the front app is looked at synchronously before every step; either
+seeing a change stops posting (releases still balanced). Any activation in the span, the target's or another's, fails
+the action. If the target came forward and a hardware event was heard in the span it was Donovan (`user_activated`,
+`in_use`): the action stops and the route is not blamed. If a tap was listening and heard no hardware, the app is shut
+out of the route for the run; if nothing was listening, only that process is. BaneySpaces does not follow any of
+them. A front app that cannot be read is not a pass. The real pointer is Donovan's: a listen-only session tap runs
+during the action, and the check fails only when the pointer ends where an event was aimed, or moved with no hardware
+event to explain it, or one of BaneySpaces' own events reached the session. His hand moving the mouse is ignored
+(`pointer: user_moved`). The tap is made only when Input Monitoring is already granted (checked without asking);
+otherwise the pointer's own position and the system's idle clock stand in, and the result says `pointer_check:
+idle_fallback`. BaneySpaces never puts a permission prompt on the screen for an agent action.
+
+Refusals, each with a suggestion: not our process (`needs_lend`), window moved to another process
+(`stale_ref`), Donovan is in the app (`in_use`), minimized or hidden window, a sheet or file panel, other windows
+in the process (windows accessibility cannot map count too), window is not where the app's keys go, a focused element
+that cannot be placed in any window, no accessibility window for it, no transport, a pointer recipe with any setter missing, a point outside the window or
+in its title bar, nothing readable to prove it (all `not_supported` except as named). Coordinates start at the
+window's top-left corner, title bar included.
+
+The probe's test app ships inside the bundle (Resources/probe), signed with the app's own identity, with its code
+hash recorded in the sealed Resources at build time. BaneySpaces starts it for an agent only from there and only
+when the signature is valid, the team matches (when there is one) and the hash matches.
+
+Ported from cua-driver (MIT, trycua/cua, attributed in NOTICE): the event field recipe for background mouse
+events, key events with explicit flags posted without an authentication envelope (the path AppKit's menu key
+equivalents see), the dlsym-with-fallback shape of the SkyLight bridge, and the rule that a key can only be
+proved against the target window, never the process's focused element. Not ported: the in-app key-window
+records (`SLPSPostEventRecordTo`) and no-raise activation, because they change which window is key or front;
+here a window that is not already where the app's keys go is refused.
+
+Not proved live yet: see the pull request. The unit tests prove the decisions; only the probe proves events land.
 
 ## Rules that do not bend
 
