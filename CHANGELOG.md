@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Themes, 22 palettes and a dock switch.** Settings › Appearance has a theme (**BaneySpaces**, the
+  look it has always had; **Omarchy**, square corners, 2 px borders, monospace and numbered blocks;
+  **Minimal**) and a palette (**Auto** or one of Omarchy's 22), shared with the other platforms from
+  `spec/themes.json` and `spec/palettes.json`. The dock, the "+N" list and strip, ⌘Tab, the launcher, the
+  overview, the HUD, the menu bar number and Settings all draw from the theme and apply at once. The
+  BaneySpaces theme renders pixel for pixel what it did (every product shot compares equal).
+  `baneyspaces set|get appearance.theme|appearance.palette|dock.enabled` from a terminal. The dock
+  switch (Settings › Dock, now also in the menu bar item's menu) takes the dock down completely: no
+  panel, no edge watcher, no "+N" list and no bottom drag, while the top drag and everything else
+  stay. Settings › Appearance loses the small dock strip; each theme's card is its preview.
 - **BaneySpaces' overview replaces macOS's Mission Control.** The trackpad swipe up with three or four
   fingers (as your trackpad settings have it), a hot corner set to Mission Control, the Mission Control
   key and ⌃↑ all open the overview, and a swipe down closes it. macOS's own "Desktop" view is switched

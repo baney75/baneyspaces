@@ -28,6 +28,10 @@ enum Render {
         ]
         // Product shots always show the default look, whatever this Mac has picked.
         Appearance.shared.useDefaultLookWithoutSaving()
+        // BANEYSPACES_RENDER_THEME=omarchy|minimal draws the same shots in that theme (a check, saved nowhere).
+        if let t = ProcessInfo.processInfo.environment["BANEYSPACES_RENDER_THEME"], let id = ThemeID(rawValue: t) {
+            Appearance.shared.settings.theme = id
+        }
         let model = ViewerModel()
         model.current = 1
         var id: WindowID = 100

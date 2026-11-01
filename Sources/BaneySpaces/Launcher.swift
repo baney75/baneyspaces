@@ -1549,7 +1549,7 @@ struct LauncherView: View {
 
     private func badge(_ text: String, strong: Bool) -> some View {
         Text(text)
-            .font(.system(size: 11, weight: .semibold, design: text.count <= 5 ? .rounded : .default))
+            .font(Chrome.font(11, .semibold, rounded: text.count <= 5))
             .foregroundStyle(Chrome.wash(strong ? 0.95 : 0.6))
             .padding(.horizontal, 8).padding(.vertical, 3)
             .background(Chrome.pill().fill(text == "Install" && strong ? Chrome.accent : Chrome.wash(0.1)))

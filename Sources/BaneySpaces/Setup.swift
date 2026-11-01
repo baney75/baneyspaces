@@ -734,8 +734,6 @@ struct SetupView: View {
     // MARK: Appearance
 
     @ViewBuilder private var appearanceTab: some View {
-        appearancePreview
-
         section("Theme") {
             HStack(spacing: 10) {
                 ForEach(ThemeID.allCases, id: \.self) { t in
@@ -862,33 +860,6 @@ struct SetupView: View {
             let palette = PaletteCatalog.shared.named(name) ?? Palette.auto(accent: appearance.accentRGB)
             Label { Text(title) } icon: { Image(nsImage: PaletteSwatch.image(palette)) }
         }
-    }
-
-    /// A small dock in the current look, so changes show without opening the real one.
-    private var appearancePreview: some View {
-        let k = CGFloat(appearance.settings.dockSize.scale)
-        return HStack(spacing: 8) {
-            ForEach(1...3, id: \.self) { n in
-                let current = n == 2
-                let tint = Chrome.workspace(n)
-                VStack(spacing: 3) {
-                    Chrome.shape(.settingsTile)
-                        .fill(current ? Chrome.lit(tint, 0.26) : Chrome.cell(0.06))
-                        .overlay(Chrome.shape(.settingsTile)
-                            .strokeBorder(current ? Chrome.accent : Chrome.edge(0.08), lineWidth: Chrome.width(.settingsTile, focused: current)))
-                        .overlay(Image(systemName: "app.fill").font(.system(size: 18 * k)).foregroundStyle(Chrome.wash(0.35)))
-                        .frame(width: 44 * k, height: 44 * k)
-                    WorkspaceBadge(n: n, size: 16)
-                }
-            }
-        }
-        .padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 8)
-        .background(Chrome.panelBackground(.settingsPanel))
-        .environment(\.colorScheme, .dark)
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 4)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Preview of the Workspace Dock")
     }
 
     private func swatch(_ color: Color, selected: Bool, name: String, _ action: @escaping () -> Void) -> some View {
