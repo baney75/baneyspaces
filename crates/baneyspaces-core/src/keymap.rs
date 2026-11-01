@@ -77,7 +77,9 @@ pub fn render_hypr_lua(binary: &str) -> String {
     s
 }
 
-/// The Linux window classes of device apps that float, as one case-insensitive regex per app.
+/// The Linux window classes of device apps that float, as one case-insensitive regex per app. Only
+/// classes: a title can say "Android Emulator" in any browser tab. An emulator whose class is not
+/// listed is floated by the daemon when it opens (R-D10), which knows its command line.
 pub fn float_classes() -> Vec<(String, String)> {
     crate::devices::Table::builtin()
         .apps
@@ -142,7 +144,8 @@ mod tests {
     fn the_emulator_floats_and_a_terminal_does_not() {
         let lua = render_hypr_lua("baneyspaces");
         assert!(lua.contains("float = true"));
-        assert!(lua.contains("(?i)^(emulator|emulator64-.*|qemu-system-.*)$"));
+        assert!(lua.contains("(?i)^(emulator|emulator64-.*)$"));
+        assert!(!lua.contains("qemu-system"), "a plain QEMU window must not float");
         assert!(!lua.contains("virt-manager"));
     }
 

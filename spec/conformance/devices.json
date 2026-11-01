@@ -198,7 +198,20 @@
     "window": "bar",
     "pid": 100,
     "app": "emulator",
-    "role": "companion"
+    "role": "companion",
+    "effects": [],
+    "expect": {
+     "workspaces": {
+      "1": []
+     },
+     "active": null,
+     "windows": {
+      "bar": {
+       "role": "companion",
+       "home": "1"
+      }
+     }
+    }
    }
   ]
  },
@@ -712,6 +725,185 @@
        "home": "agent"
       }
      }
+    }
+   }
+  ]
+ },
+ {
+  "name": "a main window that opens untitled is a window once its title arrives, not a toolbar",
+  "rules": [
+   "R-D1",
+   "R-D2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w",
+    "pid": 100,
+    "app": "emulator",
+    "role": "companion"
+   },
+   {
+    "do": "reclassify",
+    "window": "w",
+    "role": "main",
+    "effects": [],
+    "expect": {
+     "workspaces": {
+      "1": [
+       "w"
+      ]
+     },
+     "windows": {
+      "w": {
+       "role": "main"
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "a window that turns out to be a toolbar joins its main window",
+  "rules": [
+   "R-D1",
+   "R-D2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "main",
+    "pid": 100,
+    "app": "emulator"
+   },
+   {
+    "do": "switch",
+    "n": 3
+   },
+   {
+    "do": "open",
+    "window": "x",
+    "pid": 100,
+    "app": "emulator",
+    "role": "main"
+   },
+   {
+    "do": "reclassify",
+    "window": "x",
+    "role": "companion",
+    "effects": [
+     {
+      "do": "move_window",
+      "window": "x",
+      "to": "1"
+     }
+    ],
+    "expect": {
+     "workspaces": {
+      "1": [
+       "main"
+      ]
+     },
+     "windows": {
+      "x": {
+       "role": "companion",
+       "home": "1"
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "a companion that opens while the agent workspace is shown stays with its window, which stays put",
+  "rules": [
+   "R-D2",
+   "R-D4"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "switch",
+    "n": 3
+   },
+   {
+    "do": "open",
+    "window": "main",
+    "pid": 100,
+    "app": "emulator"
+   },
+   {
+    "do": "agent_show"
+   },
+   {
+    "do": "open",
+    "window": "dlg",
+    "pid": 100,
+    "app": "emulator",
+    "role": "companion",
+    "effects": [
+     {
+      "do": "move_window",
+      "window": "dlg",
+      "to": "3"
+     }
+    ],
+    "expect": {
+     "workspaces": {
+      "3": [
+       "main"
+      ]
+     },
+     "windows": {
+      "dlg": {
+       "home": "3"
+      },
+      "main": {
+       "home": "3"
+      }
+     },
+     "agent": {
+      "windows": []
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "a plain QEMU window (no marker) is an ordinary window the model counts",
+  "rules": [
+   "R-D1",
+   "R-D3"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "vm",
+    "pid": 500,
+    "app": "qemu-system-x86_64",
+    "role": "main",
+    "expect": {
+     "workspaces": {
+      "1": [
+       "vm"
+      ]
+     },
+     "active": "vm"
     }
    }
   ]

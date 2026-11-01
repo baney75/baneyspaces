@@ -99,6 +99,12 @@ pub enum Event {
     Close {
         window: WindowId,
     },
+    /// A window's title arrived or changed and the device table now says another role (R-D1): an
+    /// emulator window opens untitled and is called "Android Emulator - ..." a moment later.
+    Reclassify {
+        window: WindowId,
+        role: Role,
+    },
     Switch {
         n: u8,
     },
@@ -439,6 +445,7 @@ impl Model {
                 role,
             } => self.observe_window(window, pid, start, app, workspace, role),
             Event::Close { window } => Ok(self.close(&window)),
+            Event::Reclassify { window, role } => Ok(self.reclassify(&window, role)),
             Event::Switch { n } => self.switch(n),
             Event::Move { n, window, follow } => self.move_window(n, window, follow),
             Event::Activate { window, cause } => Ok(self.activate(window, cause)),
@@ -759,6 +766,43 @@ impl Model {
             };
         }
         vec![]
+    }
+
+    /// R-D1, R-D2: the role changed after the window opened.
+    fn reclassify(&mut self, window: &str, role: Role) -> Vec<Effect> {
+        let Some(old) = self.windows.get(window).map(|w| w.role) else {
+            return vec![];
+        };
+        if old == role {
+            return vec![];
+        }
+        if role == Role::Ignore {
+            return self.close(window);
+        }
+        let mut effects = vec![];
+        self.windows.get_mut(window).unwrap().role = role;
+        if role == Role::Main {
+            // It counts as a window now; its own companions come to it.
+            if self.active.is_none() {
+                self.active = self.candidate();
+            }
+            self.gather_companions(window, &mut effects);
+        } else if let Some(main) = self.main_of(window) {
+            let was_active = self.active.as_deref() == Some(window);
+            self.forget_focus(window);
+            let home = self.windows[&main].home.clone();
+            if self.windows[window].home != home {
+                self.windows.get_mut(window).unwrap().home = home.clone();
+                effects.push(Effect::MoveWindow { window: window.to_string(), to: home.label() });
+            }
+            if was_active {
+                self.active = self.candidate();
+            }
+        } else {
+            // No window to follow: it stays a window.
+            self.windows.get_mut(window).unwrap().role = Role::Main;
+        }
+        effects
     }
 
     fn hide_agent_first(&mut self, effects: &mut Vec<Effect>) {

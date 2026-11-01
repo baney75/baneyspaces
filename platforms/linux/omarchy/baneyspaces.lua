@@ -70,4 +70,4 @@ hl.bind("SUPER + TAB", hl.dsp.exec_cmd("baneyspaces overview"), { description = 
 hl.bind("SUPER + GRAVE", hl.dsp.exec_cmd("baneyspaces agent-workspace toggle"), { description = "BaneySpaces: show or hide the agent workspace", dont_inhibit = true })
 
 -- Device windows with a fixed aspect ratio float (spec/devices.md R-D10).
-hl.window_rule({ name = "baneyspaces-android-emulator", match = { class = "(?i)^(emulator|emulator64-.*|qemu-system-.*)$" }, float = true })
+hl.window_rule({ name = "baneyspaces-android-emulator", match = { class = "(?i)^(emulator|emulator64-.*)$" }, float = true })

@@ -21,7 +21,10 @@ class App(Gtk.Application):
         self.count = 0
 
     def do_activate(self):
-        win = Gtk.ApplicationWindow(application=self, title=os.environ.get("TEST_APP_TITLE", "BaneySpaces Test App"))
+        late = os.environ.get("TEST_APP_LATE_TITLE")  # opens untitled, gets this title 0.8 s later
+        win = Gtk.ApplicationWindow(application=self, title="" if late else os.environ.get("TEST_APP_TITLE", "BaneySpaces Test App"))
+        if late:
+            GLib.timeout_add(800, lambda: (win.set_title(late), False)[1])
         win.set_default_size(420, 240)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_top=12, margin_bottom=12, margin_start=12, margin_end=12)
         self.entry = Gtk.Entry(placeholder_text="name")

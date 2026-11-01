@@ -42,6 +42,10 @@ pub enum HyprEvent {
     CloseWindow {
         addr: String,
     },
+    /// A window's title changed (Hyprland's `windowtitlev2`).
+    WindowTitle {
+        addr: String,
+    },
     /// None when nothing is focused.
     ActiveWindow {
         addr: Option<String>,
@@ -91,6 +95,7 @@ pub fn parse_event(line: &str) -> HyprEvent {
     match name {
         "openwindow" => HyprEvent::OpenWindow { addr: addr(get(0)) },
         "closewindow" => HyprEvent::CloseWindow { addr: addr(get(0)) },
+        "windowtitlev2" => HyprEvent::WindowTitle { addr: addr(get(0)) },
         "activewindowv2" => HyprEvent::ActiveWindow {
             addr: if get(0).trim().is_empty() || get(0).trim() == "," {
                 None

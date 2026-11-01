@@ -57,7 +57,11 @@
    "platform": "macos",
    "title": "Android Emulator - Pixel_9_API_35:5554",
    "standard": true,
-   "process": "qemu-system-aarch64"
+   "process": "qemu-system-aarch64",
+   "args": [
+    "-avd",
+    "Pixel_9_API_35"
+   ]
   },
   "expect": {
    "app": "android-emulator",
@@ -75,7 +79,11 @@
    "platform": "macos",
    "title": "",
    "standard": false,
-   "process": "qemu-system-aarch64"
+   "process": "qemu-system-aarch64",
+   "args": [
+    "-avd",
+    "Pixel_9_API_35"
+   ]
   },
   "expect": {
    "app": "android-emulator",
@@ -91,7 +99,11 @@
    "platform": "macos",
    "title": "Extended Controls - Pixel_9_API_35:5554",
    "standard": true,
-   "process": "qemu-system-aarch64"
+   "process": "qemu-system-aarch64",
+   "args": [
+    "-avd",
+    "Pixel_9_API_35"
+   ]
   },
   "expect": {
    "app": "android-emulator",
@@ -141,7 +153,7 @@
    "platform": "windows",
    "title": "Android Emulator - Pixel_9:5554",
    "standard": true,
-   "exe": "qemu-system-x86_64.exe"
+   "exe": "emulator.exe"
   },
   "expect": {
    "app": "android-emulator",
@@ -341,6 +353,156 @@
   },
   "expect": {
    "app": null
+  }
+ },
+ {
+  "name": "a plain QEMU Cocoa VM is an ordinary window (macOS)",
+  "rules": [
+   "R-D1"
+  ],
+  "facts": {
+   "platform": "macos",
+   "title": "QEMU",
+   "standard": true,
+   "process": "qemu-system-x86_64",
+   "args": [
+    "-display",
+    "cocoa",
+    "-m",
+    "2048"
+   ]
+  },
+  "expect": {
+   "app": null,
+   "role": "main",
+   "float": false
+  }
+ },
+ {
+  "name": "a plain QEMU GTK window on Linux is an ordinary window and does not float",
+  "rules": [
+   "R-D1",
+   "R-D10"
+  ],
+  "facts": {
+   "platform": "linux",
+   "title": "QEMU (vm)",
+   "standard": true,
+   "class": "qemu-system-x86_64",
+   "process": "qemu-system-x86_64",
+   "args": [
+    "-display",
+    "gtk"
+   ]
+  },
+  "expect": {
+   "app": null,
+   "role": "main",
+   "float": false
+  }
+ },
+ {
+  "name": "an emulator window with a title the table does not know, in the emulator's process, is a normal window",
+  "rules": [
+   "R-D1"
+  ],
+  "facts": {
+   "platform": "macos",
+   "title": "Crash report",
+   "standard": true,
+   "process": "qemu-system-aarch64",
+   "args": [
+    "-avd",
+    "Pixel_9_API_35"
+   ]
+  },
+  "expect": {
+   "app": "android-emulator",
+   "role": "main"
+  }
+ },
+ {
+  "name": "the emulator is found by its title when its command line is unknown",
+  "rules": [
+   "R-D1"
+  ],
+  "facts": {
+   "platform": "macos",
+   "title": "Android Emulator - Pixel_9:5554",
+   "standard": true,
+   "process": "qemu-system-aarch64"
+  },
+  "expect": {
+   "app": "android-emulator",
+   "role": "main"
+  }
+ },
+ {
+  "name": "a window titled Android Emulator in an app that is not the emulator is nobody's business",
+  "rules": [
+   "R-D1"
+  ],
+  "facts": {
+   "platform": "macos",
+   "title": "Android Emulator - docs",
+   "standard": true,
+   "bundle": "com.google.Chrome",
+   "process": "Google Chrome"
+  },
+  "expect": {
+   "app": null,
+   "role": "main"
+  }
+ },
+ {
+  "name": "the emulator's launcher process is the emulator",
+  "rules": [
+   "R-D1"
+  ],
+  "facts": {
+   "platform": "macos",
+   "title": "",
+   "standard": false,
+   "process": "emulator"
+  },
+  "expect": {
+   "app": "android-emulator",
+   "role": "companion"
+  }
+ },
+ {
+  "name": "on Linux an untitled emulator window is a companion until its title says otherwise",
+  "rules": [
+   "R-D1"
+  ],
+  "facts": {
+   "platform": "linux",
+   "title": "",
+   "standard": true,
+   "class": "emulator"
+  },
+  "expect": {
+   "app": "android-emulator",
+   "role": "companion"
+  }
+ },
+ {
+  "name": "the sandbox view's rule is for the sandbox's own process only",
+  "rules": [
+   "R-D1",
+   "R-D9"
+  ],
+  "facts": {
+   "platform": "macos",
+   "title": "bsx-s-ba0365d2",
+   "standard": true,
+   "process": "tart"
+  },
+  "expect": {
+   "app": "tart",
+   "role": "main",
+   "agent_home": true,
+   "sandbox_only": true
   }
  }
 ]

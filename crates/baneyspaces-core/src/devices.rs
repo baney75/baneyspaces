@@ -37,6 +37,13 @@ pub struct Match {
     pub class: Vec<String>,
     #[serde(default)]
     pub exe: Vec<String>,
+    /// A process name pattern that counts only when its command line has this argument: the Android
+    /// emulator's `qemu-system-*` is started with `-avd`, a plain QEMU never is.
+    #[serde(default)]
+    pub process_arg: BTreeMap<String, String>,
+    /// A process name pattern that counts only for a window whose title starts with this.
+    #[serde(default)]
+    pub process_title: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -49,6 +56,15 @@ pub struct WindowRule {
     pub title_is: Option<String>,
     #[serde(default)]
     pub title_empty: Option<bool>,
+    /// Only for a standard (`true`) or a non-standard (`false`) window.
+    #[serde(default)]
+    pub standard: Option<bool>,
+    /// Only on this platform.
+    #[serde(default)]
+    pub platform: Option<String>,
+    /// `"sandbox_process"`: the platform applies `home` only to a process BaneySpaces' sandbox started.
+    #[serde(default)]
+    pub only_if: Option<String>,
     pub role: Role,
     /// `"agent"`: the window lives on the agent workspace (the sandbox view).
     #[serde(default)]
@@ -103,6 +119,8 @@ pub struct Facts<'a> {
     pub class: &'a str,
     /// Windows executable name.
     pub exe: &'a str,
+    /// The process's command line arguments (empty when unknown).
+    pub args: &'a [&'a str],
     pub title: &'a str,
     /// A standard application window (macOS: subrole AXStandardWindow). Compositor windows are.
     pub standard: bool,
@@ -117,6 +135,8 @@ pub struct Decision {
     pub agent_home: bool,
     pub resizes_itself: bool,
     pub float: bool,
+    /// `agent_home` applies only to a process the sandbox started (R-D9).
+    pub sandbox_only: bool,
 }
 
 impl Decision {
@@ -131,6 +151,7 @@ impl Decision {
             agent_home: false,
             resizes_itself: false,
             float: false,
+            sandbox_only: false,
         }
     }
 }
@@ -155,12 +176,24 @@ impl Match {
             || self.process.iter().any(|p| name_matches(p, f.process))
             || self.class.iter().any(|p| name_matches(p, f.class))
             || self.exe.iter().any(|p| name_matches(p, f.exe))
+            || self
+                .process_arg
+                .iter()
+                .any(|(p, arg)| name_matches(p, f.process) && f.args.iter().any(|a| a == arg))
+            || self.process_title.iter().any(|(p, t)| {
+                (name_matches(p, f.process) || name_matches(p, f.exe))
+                    && f.title.starts_with(t.as_str())
+            })
     }
 }
 
 impl WindowRule {
-    fn hits(&self, title: &str) -> bool {
-        self.title_prefix
+    fn hits(&self, f: &Facts) -> bool {
+        let title = f.title;
+        self.platform.as_deref().map_or(true, |p| p == f.platform)
+            && self.standard.map_or(true, |s| s == f.standard)
+            && self
+            .title_prefix
             .as_deref()
             .map_or(true, |p| title.starts_with(p))
             && self
@@ -203,7 +236,7 @@ impl Table {
         let Some(app) = self.app_of(f) else {
             return Decision::plain(f);
         };
-        let rule = app.windows.iter().find(|r| r.hits(f.title));
+        let rule = app.windows.iter().find(|r| r.hits(f));
         let mut role = rule.map_or(if f.standard { Role::Main } else { Role::Ignore }, |r| {
             r.role
         });
@@ -216,6 +249,7 @@ impl Table {
             agent_home: role == Role::Main && rule.and_then(|r| r.home.as_deref()) == Some("agent"),
             resizes_itself: app.resizes_itself,
             float: app.float,
+            sandbox_only: rule.is_some_and(|r| r.only_if.as_deref() == Some("sandbox_process")),
         }
     }
 }
@@ -273,12 +307,20 @@ pub fn run_classify_case(case: &Value) -> Result<(), String> {
         s("title"),
     );
     let standard = case["facts"]["standard"].as_bool().unwrap_or(true);
+    let args: Vec<String> = case["facts"]["args"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|a| a.as_str().map(String::from))
+        .collect();
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let d = classify(&Facts {
         platform: &platform,
         bundle: &bundle,
         process: &process,
         class: &class,
         exe: &exe,
+        args: &arg_refs,
         title: &title,
         standard,
     });
@@ -302,6 +344,7 @@ pub fn run_classify_case(case: &Value) -> Result<(), String> {
         ("agent_home", d.agent_home),
         ("resizes_itself", d.resizes_itself),
         ("float", d.float),
+        ("sandbox_only", d.sandbox_only),
     ] {
         if let Some(want) = e.get(key).and_then(Value::as_bool) {
             if want != got {
@@ -359,7 +402,9 @@ mod tests {
         let mut f = facts("macos", "tart", "anything");
         f.standard = false;
         assert_eq!(classify(&f).role, Role::Ignore);
-        let mut e = facts("macos", "qemu-system-aarch64", "Extended Controls");
+        let args = ["-avd", "Pixel_9"];
+        let mut e = facts("macos", "qemu-system-aarch64", "");
+        e.args = &args;
         e.standard = false;
         assert_eq!(
             classify(&e).role,
