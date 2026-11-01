@@ -171,6 +171,7 @@ points = [0.23, 1, 0.32, 1]        # bezier control points
 [behavior]
 follow_focus = true                # switch to a window's workspace when you activate it yourself
 new_window = "current"             # current | app (where the app's other windows are)
+fullscreen = "baneyspaces"         # baneyspaces | native
 workspace_names = { 1 = "Main", 2 = "School" }
 workspace_tints = { 1 = "#7aa2f7" }
 
@@ -198,6 +199,30 @@ float = false
 on_switch = "~/.config/baneyspaces/hooks/switch.sh"
 on_window_open = ""
 ```
+
+**Full screen** (`behavior.fullscreen`, set live with `baneyspaces set behavior.fullscreen <value>`).
+Donovan, 2026-11-01: windows disappear in macOS full screen, which puts a window on a desktop of its
+own that no workspace manager can hide or show. So by default there is no such desktop:
+
+- `baneyspaces` (default): the window's full-screen action (the green button, a plain click) and the
+  platform's full-screen key (⌃⌘F on macOS) make the window fill the usable area of its screen, inside
+  its own workspace. The same action puts it back to the frame it had. Switching away hides or parks it
+  like any window; switching back shows it, still filled. Nothing slides between desktops. Option-click
+  on the green button still asks macOS for its own full screen. The menu bar and Dock stay as they are,
+  because auto-hiding them for one workspace needs a system setting that BaneySpaces does not change, so
+  filling means the visible frame. A display change refits filled windows. The frame to put back is kept
+  across restarts. At start, a window already in macOS full screen is moved into this once, on its
+  workspace, and the move is written to the trace log.
+- `native`: macOS full screen. A switch asks a window on the workspace it leaves to leave full screen
+  first, never while macOS is changing desktop, and one that will not leave (a web video) comes along to
+  the workspace you go to instead of being hidden. Nothing about windows on the workspace you stay on is
+  touched. Every request to leave is in the trace log with its reason.
+
+This key is macOS only. On Linux and Windows the compositor's full screen already belongs to the workspace, so
+those platforms do not define the key (a setting for it is refused there as unknown, until a platform that needs it adds it
+to this file). The trace log, on macOS, names every full-screen
+decision with the app and window number: `fullscreen check`, `ask`, `left`, `refused`, `carried`,
+`flatten`, `audit` and `desktop missing from the model` lines.
 
 Hooks run with your user's rights. An agent that sets a hook is shown in Settings › Hooks, and
 the change is recorded in `history/`, so nothing runs that you can't see.

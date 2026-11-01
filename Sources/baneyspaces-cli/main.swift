@@ -33,8 +33,9 @@ usage: \(me) <command>
   sandbox up|down|reset|status|view|guest   a throwaway macOS VM for agent work (sandbox help)
   phone ls|ui|shot|tap|swipe|type|key|shell|mirror   phones for agents (phone help)
   set <setting> <value>       appearance.theme omarchy|baneyspaces|minimal, appearance.palette auto|<name>,
-                              dock.enabled true|false; applies at once, no restart
-  get [setting]               read one setting, or all three
+                              dock.enabled true|false, behavior.fullscreen baneyspaces|native;
+                              applies at once, no restart
+  get [setting]               read one setting, or all four
   remote on|off|status|token  let your other machines (tailnet only) send agent work here
   --on HOST <command>         run ls or agent status|open|run on another machine
   hook claude|grok            for agent hooks: reads the hook JSON on stdin

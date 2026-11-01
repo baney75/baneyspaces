@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Full screen that never loses a window.** The green button and ⌃⌘F now fill the window's own
+  workspace (`behavior.fullscreen = baneyspaces`, the default), never a macOS desktop of its own: switching
+  workspaces or apps never slides and never leaves a window behind. The same press puts it back; an
+  Option-click on the green button keeps macOS full screen, and `baneyspaces set behavior.fullscreen native`
+  (or Settings › Keys › Full screen) makes macOS full screen the rule. Windows already in macOS full screen when
+  this version starts move into it, once, on their workspaces. In macOS full screen, a window is now found
+  by the window server's own list of full-screen desktops, not by its size and an app's answer, so Split View
+  windows and busy apps are no longer hidden on their desktops; one that will not leave comes along instead of
+  being hidden; nothing is asked to leave while macOS slides between desktops; and an audit after every
+  switch and every change of desktop puts a stranded window right. `trace.log` records every full-screen
+  decision with the app and window number (`fullscreen check|ask|left|refused|carried|audit`). A window in macOS
+  full screen, and the windows of an app whose Accessibility doesn't answer, stay in the dock, the overview and ⌘Tab
+  (a ⤢ or ◌ badge; activating one goes to its workspace).
 - **Agent hands, phase 4: keys and a pointer for windows that are not in front.** `agent press` now sends keys (several,
   separated by spaces) to the one process, and `agent click-at` and `agent drag` post window-local mouse events to it,
   without activating, raising, switching a Space, moving the real pointer, or posting to the session. Only to a process

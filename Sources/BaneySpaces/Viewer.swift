@@ -274,6 +274,7 @@ struct ViewerView: View {
              + Text(e.title.isEmpty || e.title == e.app ? "" : "  \(e.title)").font(Chrome.font(12)).foregroundColor(.secondary))
                 .lineLimit(1)
                 .truncationMode(.middle)
+                .opacity(e.why == .notResponding ? 0.5 : 1)
             Spacer(minLength: 0)
         }
         .padding(.vertical, 6)

@@ -30,7 +30,18 @@ struct Window {
 
     var isMinimized: Bool { Windows.isResponsive(pid) && element.bool(kAXMinimizedAttribute) }
     var title: String { Windows.isResponsive(pid) ? element.string(kAXTitleAttribute) ?? "" : "" }
-    var isFullScreen: Bool { Windows.isResponsive(pid) && element.bool("AXFullScreen") }
+    /// What the app says about `AXFullScreen`. An app that doesn't answer (busy with the full-screen
+    /// transition, hung, or marked unresponsive) is `.unknown`, never `.no`: the old `isFullScreen`
+    /// read that as "not in full screen", and a window that was got hidden on its own desktop.
+    var fullScreenAnswer: Answer {
+        guard Windows.isResponsive(pid) else { return .unknown }
+        var raw: CFTypeRef?
+        let r = AXUIElementCopyAttributeValue(element, "AXFullScreen" as CFString, &raw)
+        if r == .success, let n = raw as? NSNumber { return n.boolValue ? .yes : .no }
+        element.checked(r)
+        // A window with no such attribute (a panel, a window that can't go full screen) says no.
+        return r == .attributeUnsupported || r == .noValue ? .no : .unknown
+    }
 
     func setOrigin(_ p: CGPoint) {
         guard Windows.isResponsive(pid) else { return }
@@ -82,13 +93,18 @@ struct Window {
         AXUIElementSetAttributeValue(element, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
     }
 
-    func exitFullScreen() {
+    /// Asks the window to leave full screen; the answer is what the app said to the request.
+    @discardableResult
+    func exitFullScreen() -> AXError {
         AXUIElementSetAttributeValue(element, "AXFullScreen" as CFString, kCFBooleanFalse)
     }
 
-    func pressFullScreenButton() {
-        guard let button: AXUIElement = element.value(kAXFullScreenButtonAttribute) else { return }
-        AXUIElementPerformAction(button, kAXPressAction as CFString)
+    /// Presses the green button; false when the window has none (a Chromium video in full screen
+    /// has no title bar to hold it) or the press failed.
+    @discardableResult
+    func pressFullScreenButton() -> Bool {
+        guard let button: AXUIElement = element.value(kAXFullScreenButtonAttribute) else { return false }
+        return AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
     }
 
     /// Raises the window and brings its app forward; whether the raise took. An app busy coming
@@ -225,19 +241,36 @@ enum Windows {
     /// `offscreen` holds the app windows the window server isn't drawing (a hidden app's,
     /// minimized ones, ones on another macOS desktop, and ones the app closed but kept), by owner;
     /// `onScreen` the rest.
-    static func snapshot(apps: Set<pid_t>) -> (alive: Set<WindowID>, appWindows: Set<WindowID>, owners: Set<pid_t>, offscreen: [WindowID: pid_t], onScreen: [WindowID: pid_t]) {
+    static func snapshot(apps: Set<pid_t>) -> (alive: Set<WindowID>, appWindows: Set<WindowID>, owners: Set<pid_t>, offscreen: [WindowID: pid_t], onScreen: [WindowID: pid_t], zones: ClickZones, info: [ServerWindowInfo]) {
         let info = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
         var alive = Set<WindowID>(), appWindows = Set<WindowID>(), owners = Set<pid_t>(), offscreen: [WindowID: pid_t] = [:], onScreen: [WindowID: pid_t] = [:]
+        // The on-screen app windows, front to back: what the green-button tap tests a click against, in memory.
+        var front: [ClickZones.Entry] = []
+        var infos: [ServerWindowInfo] = []
         for w in info {
             guard let id = (w[kCGWindowNumber as String] as? NSNumber)?.uint32Value else { continue }
             alive.insert(id)
-            guard (w[kCGWindowLayer as String] as? Int) == 0,
+            let layer = w[kCGWindowLayer as String] as? Int ?? -1
+            // Everything drawn on screen, front to back, what the green-button tap tests a click against: the thing
+            // that covers a window's traffic lights (an overview, a Spotlight panel, a popover) must be in the list.
+            if (w[kCGWindowIsOnscreen as String] as? Bool) == true, layer >= 0,
+               ((w[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1) > 0.1,
+               let b = (w[kCGWindowBounds as String] as? NSDictionary).flatMap({ CGRect(dictionaryRepresentation: $0) }), b.width > 1, b.height > 1 {
+                let owner = (w[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value ?? 0
+                front.append(ClickZones.Entry(id: id, pid: owner, frame: b, regular: layer == 0 && apps.contains(owner)))
+            }
+            guard layer == 0,
                   let pid = (w[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value, apps.contains(pid) else { continue }
             appWindows.insert(id)
             owners.insert(pid)
+            // All the window server has to say about a window whose app can't be asked (or whose desktop isn't shown).
+            infos.append(ServerWindowInfo(id: id, pid: pid, app: w[kCGWindowOwnerName as String] as? String ?? "App",
+                                          title: w[kCGWindowName as String] as? String ?? "",
+                                          bounds: (w[kCGWindowBounds as String] as? NSDictionary).flatMap { CGRect(dictionaryRepresentation: $0) } ?? .zero,
+                                          onScreen: (w[kCGWindowIsOnscreen as String] as? Bool) == true))
             if (w[kCGWindowIsOnscreen as String] as? Bool) != true { offscreen[id] = pid } else { onScreen[id] = pid }
         }
-        return (alive, appWindows, owners, offscreen, onScreen)
+        return (alive, appWindows, owners, offscreen, onScreen, ClickZones(front), infos)
     }
 
     /// Whether a window is on no macOS desktop at all, or on one a display is showing. A window
@@ -322,6 +355,12 @@ enum Windows {
         return result
     }
 
+    /// One window's frame from the window server (Accessibility coordinates), which answers when the app doesn't.
+    static func bounds(of id: WindowID) -> CGRect? {
+        let info = CGWindowListCopyWindowInfo(.optionIncludingWindow, CGWindowID(id)) as? [[String: Any]] ?? []
+        return (info.first?[kCGWindowBounds as String] as? NSDictionary).flatMap { CGRect(dictionaryRepresentation: $0) }
+    }
+
     /// Whether the window in front is in full screen, on its own macOS Space.
     static func frontIsFullScreen() -> Bool {
         guard let pid = focusedPid() else { return false }
@@ -338,9 +377,39 @@ enum Windows {
         return windows.first { $0.id == id }
     }
 
+    /// The full-screen desktops the window server lists, one per window in full screen (Split View
+    /// adds windows to the same desktop). A cheap read, so a switch with none asks nothing else.
+    /// Nil when the window server doesn't answer in the shape `FullScreenSpaces.parse` was written against: the
+    /// caller then stops acting on full-screen desktops and falls back to what the apps say.
+    static func fullScreenDesktops() -> [FullScreenSpace]? {
+        guard let displays = CGSCopyManagedDisplaySpaces(CGSMainConnectionID()) as? [[String: Any]] else { return nil }
+        return FullScreenSpaces.parse(displays)
+    }
+
+    /// The macOS desktops (Space numbers) a window is on; nil when the window server wouldn't say.
+    static func desktops(of id: WindowID) -> [Int]? {
+        (CGSCopySpacesForWindows(CGSMainConnectionID(), 0x7, [id] as CFArray)?.takeRetainedValue() as? [NSNumber])?.map(\.intValue)
+    }
+
+    /// Everything known about whether `w` is in full screen: the window server, the app, and the
+    /// window's size. `desktops` and `sizes` are read once per switch and passed in.
+    static func fullScreenEvidence(for w: Window, desktops: [FullScreenSpace]?, bounds: CGRect?, sizes: [CGRect], readAttribute: Bool = true) -> FullScreenEvidence {
+        let desktop: Answer
+        if let desktops {
+            // No full-screen desktop anywhere: nothing can be in full screen, and the window need not be asked.
+            desktop = desktops.isEmpty ? .no : FullScreenSpaces.contains(Windows.desktops(of: w.id), window: w.id, in: desktops)
+        } else {
+            desktop = .unknown
+        }
+        let sized: Answer = bounds.map { b in
+            sizes.contains { abs($0.minX - b.minX) < 1 && abs($0.minY - b.minY) < 1 && abs($0.width - b.width) < 1 && abs($0.height - b.height) < 1 } ? .yes : .no
+        } ?? .unknown
+        return FullScreenEvidence(desktop: desktop, attribute: readAttribute ? w.fullScreenAnswer : .unknown, screenSized: sized)
+    }
+
     /// The frames a full-screen window can have, in Accessibility coordinates: the whole screen,
     /// and on a display with a camera notch, the screen below it (where macOS puts full screen
-    /// by default).
+    /// by default). Only a hint now: see `FullScreenEvidence.screenSized`.
     static func fullScreenFrames() -> [CGRect] {
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
         return NSScreen.screens.flatMap { screen -> [CGRect] in

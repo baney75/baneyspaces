@@ -4,7 +4,7 @@ import XCTest
 /// `baneyspaces set appearance.theme omarchy`, `set appearance.palette nord`, `set dock.enabled false`.
 final class SettingKeyTests: XCTestCase {
     func testTheThreeSettingsHaveTheSpecNames() {
-        XCTAssertEqual(SettingKey.allCases.map(\.rawValue), ["appearance.theme", "appearance.palette", "dock.enabled"])
+        XCTAssertEqual(SettingKey.allCases.map(\.rawValue), ["appearance.theme", "appearance.palette", "dock.enabled", "behavior.fullscreen"])
     }
 
     func testThemesPalettesAndTheDockSwitchTakeTheirValues() {
@@ -15,11 +15,14 @@ final class SettingKeyTests: XCTestCase {
         XCTAssertEqual(SettingKey.ask(target: "dock.enabled", text: "false"), .set(.dockEnabled, "false"))
         XCTAssertEqual(SettingKey.ask(target: "dock.enabled", text: "on"), .set(.dockEnabled, "true"))
         XCTAssertEqual(SettingKey.ask(target: "dock.enabled", text: nil), .get(.dockEnabled))
+        XCTAssertEqual(SettingKey.ask(target: "behavior.fullscreen", text: "Native"), .set(.fullscreen, "native"))
+        XCTAssertEqual(SettingKey.ask(target: "behavior.fullscreen", text: "baneyspaces"), .set(.fullscreen, "baneyspaces"))
+        XCTAssertEqual(SettingKey.ask(target: "behavior.fullscreen", text: nil), .get(.fullscreen))
         XCTAssertEqual(SettingKey.ask(target: nil, text: nil), .list)
     }
 
     func testAWrongValueOrNameIsRefusedWithWhatWouldWork() {
-        for (k, v) in [("appearance.theme", "vaporwave"), ("appearance.palette", "nope"), ("dock.enabled", "maybe"), ("nothing", "x")] {
+        for (k, v) in [("appearance.theme", "vaporwave"), ("appearance.palette", "nope"), ("dock.enabled", "maybe"), ("behavior.fullscreen", "zoom"), ("nothing", "x")] {
             guard case .refused(let why) = SettingKey.ask(target: k, text: v) else { return XCTFail("\(k) \(v)") }
             XCTAssertFalse(why.isEmpty)
         }

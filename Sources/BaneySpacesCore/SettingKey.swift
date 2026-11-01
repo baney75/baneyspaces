@@ -6,6 +6,7 @@ public enum SettingKey: String, CaseIterable, Sendable {
     case theme = "appearance.theme"
     case palette = "appearance.palette"
     case dockEnabled = "dock.enabled"
+    case fullscreen = "behavior.fullscreen"
 
     public init?(name: String) { self.init(rawValue: name.trimmingCharacters(in: .whitespaces).lowercased()) }
 
@@ -14,6 +15,7 @@ public enum SettingKey: String, CaseIterable, Sendable {
         case .theme: "\(rawValue) \(ThemeID.allCases.map(\.rawValue).joined(separator: "|"))"
         case .palette: "\(rawValue) auto|\(PaletteCatalog.shared.names.joined(separator: "|"))"
         case .dockEnabled: "\(rawValue) true|false"
+        case .fullscreen: "\(rawValue) \(FullScreenMode.usage)"
         }
     }
 
@@ -27,6 +29,7 @@ public enum SettingKey: String, CaseIterable, Sendable {
             if ["true", "on", "yes", "1"].contains(v) { return "true" }
             if ["false", "off", "no", "0"].contains(v) { return "false" }
             return nil
+        case .fullscreen: return FullScreenMode(setting: v)?.rawValue
         }
     }
 
