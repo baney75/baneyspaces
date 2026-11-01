@@ -106,7 +106,7 @@ enum Render {
 
         // Typing to find: "exc" lights Excel (or the first app of the sample) and dims the rest to a quarter.
         let findable = model.tiles.values.flatMap { $0 }.first { $0.app.localizedCaseInsensitiveContains("exc") } ?? mover
-        model.query = String(findable.app.prefix(3)).lowercased()
+        model.query = findable.app.localizedCaseInsensitiveContains("exc") ? "exc" : String(findable.app.prefix(3)).lowercased()
         guard save(ViewerView(model: model, stillBackdrop: true), "overview-find.png", size) else { return 1 }
         model.query = ""
 

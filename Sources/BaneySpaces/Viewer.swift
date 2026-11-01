@@ -509,7 +509,10 @@ struct ViewerView: View {
     /// The lifted card follows the cursor.
     @ViewBuilder private var liftedCard: some View {
         if let drag = model.drag {
-            let size = model.lastLayout?.card(drag.entry.id)?.card.frame.size ?? CGSize(width: 220, height: 140)
+            // As big as its card, but never so big it hides the tile it is going to.
+            let full = model.lastLayout?.card(drag.entry.id)?.card.frame.size ?? CGSize(width: 220, height: 140)
+            let shrink = min(1, 200 / max(full.width, 1))
+            let size = CGSize(width: full.width * shrink, height: full.height * shrink)
             card(drag.entry, size: size, selected: false, lifted: true)
                 .position(drag.location)
                 .allowsHitTesting(false)
