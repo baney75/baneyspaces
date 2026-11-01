@@ -31,3 +31,18 @@ not a public issue.
   preferences.
 - **Signing.** The installer builds the app on your Mac and signs it with a local certificate
   kept in its own keychain, never the login keychain. It is not trusted for anything else.
+
+## Local secret scan
+
+`.githooks/pre-commit` runs `scripts/secret-scan.py` on what you staged. The script
+flags token prefixes, PEM headers, basic-auth URLs and a short list of other shapes,
+and prints the file, line number and pattern name (never the matched value). Enable it
+once per checkout:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+Remote tokens stay in the 0600 file under Application Support; do not paste one into a
+commit. Assemble any test look-alike at runtime, or end the line with
+`secret-scan: allow`.
