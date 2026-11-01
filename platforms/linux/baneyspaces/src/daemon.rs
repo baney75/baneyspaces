@@ -257,16 +257,22 @@ impl Core {
         // and commands are refused until they can. Switching workspaces is instant by default, which is Omarchy's own choice
         // (`workspaces` is off in its looknfeel), so on Omarchy this changes nothing; `animation.workspace.style = fade | slide`
         // turns Hyprland's animation on. Omarchy's other animations (windows, layers, the scratchpad's slide) are not touched.
-        let anim = match self.shell.cfg.get_str("motion.workspace_style").as_str() {
-            style @ ("fade" | "slide") => format!("hl.animation({{ leaf = \"workspaces\", enabled = true, speed = 4, bezier = \"easeOutQuint\", style = \"{style}\" }})"),
+        let style = self.shell.cfg.get_str("motion.workspace_style");
+        let leaf = |bezier: &str| match style.as_str() {
+            s @ ("fade" | "slide") => format!("hl.animation({{ leaf = \"workspaces\", enabled = true, speed = 4, bezier = \"{bezier}\", style = \"{s}\" }})"),
             _ => "hl.animation({ leaf = \"workspaces\", enabled = false })".to_string(),
         };
         let mut ok = true;
-        for lua in [anim.as_str(), "hl.config({ misc = { focus_on_activate = false } })"] {
-            if let Err(e) = self.hypr.eval(lua) {
-                self.log(&format!("could not apply {lua}: {e}"));
+        // Omarchy's own curve when it is defined (its looknfeel defines easeOutQuint), else Hyprland's built-in one.
+        if self.hypr.eval(&leaf("easeOutQuint")).is_err() {
+            if let Err(e) = self.hypr.eval(&leaf("default")) {
+                self.log(&format!("could not apply the workspace animation: {e}"));
                 ok = false;
             }
+        }
+        if let Err(e) = self.hypr.eval("hl.config({ misc = { focus_on_activate = false } })") {
+            self.log(&format!("could not apply focus_on_activate: {e}"));
+            ok = false;
         }
         self.adopt_monitors(new) && ok
     }
