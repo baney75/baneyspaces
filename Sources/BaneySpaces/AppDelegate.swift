@@ -183,6 +183,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         c.model.onUninstall = { [weak self] in self?.uninstall() }
         c.model.onBringBack = { [weak self] in self?.bringBack() }
         c.model.onAbout = { [weak self] in self?.about() }
+        c.model.isStarted = { [weak self] in self?.started ?? false }
         c.model.parkedApps = { [weak self] in self?.parkedRows() ?? [] }
         c.model.onToggleParked = { [weak self] id in self?.toggleParked(id) }
         c.model.updateInfo = { [weak self] in self?.updateInfo() ?? .init() }

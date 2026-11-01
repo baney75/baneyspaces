@@ -18,4 +18,19 @@ public enum DockDrop {
     private static func distance(_ p: CGPoint, _ r: CGRect) -> CGFloat {
         hypot(p.x - r.midX, p.y - r.midY)
     }
+
+    /// The windows of a drag that are still on the workspace it began on. A window closed, an app
+    /// quit, or a window moved elsewhere mid-drag is gone from `alive`, and is never moved.
+    public static func survivors(of ids: [WindowID], alive: [WindowID]) -> [WindowID] {
+        let live = Set(alive)
+        return ids.filter { live.contains($0) }
+    }
+
+    /// Whether a drag in flight has lost what it carries and should end without moving anything:
+    /// none of its windows are left where it began, or the row it was started from (`rowShown` is
+    /// nil for a drag that began on a tile's icon, which outlives a refresh) went away, and with it
+    /// the gesture, so its end would never come.
+    public static func isOrphaned(ids: [WindowID], alive: [WindowID], rowShown: Bool?) -> Bool {
+        survivors(of: ids, alive: alive).isEmpty || rowShown == false
+    }
 }
