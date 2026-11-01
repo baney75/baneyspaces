@@ -69,9 +69,12 @@ final class HandsEngine {
     }
 
     /// A read lane per process for the cursor's bounds reads, beside the process queue, so an action never waits behind one.
-    /// The engine's adapter is already called from several process queues at once; a read here only asks the app for
-    /// an element's frame, which the Accessibility API serves to any thread. A hung app clogs only its own lane, and
-    /// reads that can't start within their deadline are dropped.
+    /// The pinned engine documents this: "Adapters are safe to call from multiple host threads. Native element handles are
+    /// thread-affine ... Desktop mutations are serialized by the adapter's cross-process interaction lease"
+    /// (agent-desktop 5261b52, crates/ffi/src/lib.rs "Thread safety"; the same words are in include/agent_desktop.h and
+    /// crates/ffi/README.md "Thread Safety (macOS)"). `ad_get_ref` resolves and frees its element inside the one call on
+    /// the lane's thread, and a read is no mutation. A hung app clogs only its own lane, and reads that can't start
+    /// within their deadline are dropped.
     private var lanes: [Int32: DispatchQueue] = [:]
     private func lane(for pid: Int32) -> DispatchQueue {
         initLock.lock(); defer { initLock.unlock() }
@@ -227,10 +230,12 @@ final class HandsEngine {
     /// focus-guard mark as every other call; it only reads.
     func measureBounds(window w: HandsWindow, ref: String, within: TimeInterval, check: @escaping Check, completion: @escaping (CGRect?) -> Void) {
         let queued = ProcessInfo.processInfo.systemUptime
-        let token = AgentActivity.shared.begin(pid: w.pid, window: w.id)
         lane(for: w.pid).async { [self] in
+            // The mark is held while the read runs, not while it waits in the lane.
+            guard ProcessInfo.processInfo.systemUptime - queued <= within else { return completion(nil) }
+            let token = AgentActivity.shared.begin(pid: w.pid, window: w.id)
             defer { AgentActivity.shared.end(token) }
-            guard ProcessInfo.processInfo.systemUptime - queued <= within, check() == nil, ready() == nil, let adapter else { return completion(nil) }
+            guard check() == nil, ready() == nil, let adapter else { return completion(nil) }
             var out: UnsafeMutablePointer<CChar>?
             let code = ref.withCString { r in "bounds".withCString { p in ad_get_ref(adapter, r, p, &out) } }
             if case .ok(let v) = finish(code, out) { completion(HandsEvents.frame(ofBounds: v["value"])) } else { completion(nil) }

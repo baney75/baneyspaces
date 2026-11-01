@@ -19,16 +19,16 @@ final class CursorController: ObservableObject {
     private var director: CursorDirector?
     private var timer: Timer?
     private var observers: [NSObjectProtocol] = []
-    private var current: () -> Int = { 1 }
+    private var shownWorkspaces: () -> Set<Int> = { [1] }
     private var agentWorkspace: () -> Int? = { nil }
 
     init() { settings = saved.applying(file) }
 
     /// Called once the app and the Deck are up. `agent` is the Deck's name and status for an agent session.
-    func start(current: @escaping () -> Int, agentWorkspace: @escaping () -> Int?,
+    func start(shown: @escaping () -> Set<Int>, agentWorkspace: @escaping () -> Int?,
                agent: @escaping (String) -> (name: String, status: DockAgent.State), windowFrame: @escaping (UInt32) -> CGRect?) {
         guard director == nil else { return }
-        self.current = current; self.agentWorkspace = agentWorkspace
+        self.shownWorkspaces = shown; self.agentWorkspace = agentWorkspace
         let surface = OverlaySurface(displays: CursorDisplaySpec.screens())
         var host = CursorDirector.Host()
         host.agent = agent
@@ -37,6 +37,9 @@ final class CursorController: ObservableObject {
         let director = CursorDirector(surface: surface, queue: .main, host: host)
         self.surface = surface; self.director = director
         HandsEvents.setListener(director)
+        // An off state in the saved settings is visible in the log: Settings is the only thing here that writes it, but
+        // the defaults file is the user's and any process of the user can edit it.
+        if !saved.enabled { Trace.log("agent cursor is off in the saved settings (turned off in Settings, or the defaults were edited)") }
         pushEnvironment()
         let nc = NotificationCenter.default
         observers.append(nc.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
@@ -58,7 +61,7 @@ final class CursorController: ObservableObject {
         guard let director, let surface else { return }
         var e = CursorEnvironment()
         e.settings = settings
-        e.current = current()
+        e.shownWorkspaces = shownWorkspaces()
         e.agentWorkspace = agentWorkspace()
         e.reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         e.displays = surface.frames

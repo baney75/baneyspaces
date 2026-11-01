@@ -3,17 +3,25 @@
 //   swift run -c release cursor-probe              100 glides on the main display, as if on the agent workspace
 //   swift run -c release cursor-probe --glides 40  fewer glides
 //
-// It drives the real director (registered with HandsEvents, as the app does) and the real overlay (Core Animation
-// layers in a click-through panel), the way the hands do, and records CADisplayLink frame times while 100 glides run
-// (every fifth one is cut short by a new target). The overlay is ON the display, because a panel outside every
-// display gets no display link and is never composited: the cursor is visible while it runs, which is why it needs
-// Donovan away. A run that drew nothing fails: it needs the cursor's presentation layer to have moved, once per glide
-// at least, and one overlay update per action. Passing means: at most 1 frame in 200 over 1.5x the display's frame interval and none over 2x; the
-// real pointer never moved (CGEvent location sampled at 1 kHz, zero changes); the overlay never became key or
-// main and the front app never changed. It also reports how far the drawn cursor strays from the planned glide.
+// It drives the real director (registered with HandsEvents, and fed the way the router feeds it: an action with
+// `frameComing`, then the measured frame a few milliseconds later from another queue) and the real overlay (Core
+// Animation layers in a click-through panel), and records CADisplayLink frame times while 100 glides run (every fifth
+// is cut short by a new target). The overlay is ON the display, because a panel outside every display gets no display
+// link and is never composited: the cursor is visible while it runs, which is why it needs Donovan away.
 //
-// It runs only when Donovan has been idle 10 minutes (HIDIdleTime >= 600 s, the same number `ioreg -c IOHIDSystem`
-// shows), and stops, reporting "not run" or "interrupted", the moment he is back. Exit 0 pass, 1 fail, 2 not run.
+// Passing needs all of these:
+//   - frame time: at most 1 frame in 200 over 1.5x the display's frame interval and none over 2x;
+//   - something was drawn: one overlay update per action, and the cursor layer moved through at least one distinct
+//     position per glide;
+//   - the drawn path matches the plan: at every frame during a glide the cursor layer's presentation position is
+//     within 3 pt + one frame of travel at the planned speed of where the plan says it is (the allowance is for the
+//     frame the display link reports lagging the layer tree by up to one frame); at most 1 frame in 200 may be outside;
+//     and after the last glide it stands on its target to 1.5 pt;
+//   - the real pointer: sampled every millisecond throughout, at least 1000 samples, zero changes;
+//   - the overlay never became key or main, and the front app never changed.
+//
+// It runs only when Donovan has been idle 10 minutes (HIDIdleTime >= 600 s, the number `ioreg -c IOHIDSystem`
+// shows), and stops, reporting "not run", the moment he is back. Exit 0 pass, 1 fail, 2 not run.
 import AppKit
 import BaneySpacesCore
 import BaneySpacesCursor
@@ -24,6 +32,8 @@ final class TimedSurface: CursorSurface {
     let inner: OverlaySurface
     var applySeconds: [Double] = []
     var lastMotion: CursorMotion?
+    /// Counts the glides handed to the overlay, so each frame is compared with the right one.
+    var motionIndex = 0
     private var pending = 0.0
     init(_ inner: OverlaySurface) { self.inner = inner }
     private func timed(_ f: () -> Void) {
@@ -31,7 +41,7 @@ final class TimedSurface: CursorSurface {
     }
     func configure(_ agent: String, look: CursorLook) { timed { inner.configure(agent, look: look) } }
     func appear(_ agent: String, at point: CGPoint) { timed { inner.appear(agent, at: point) } }
-    func move(_ agent: String, motion: CursorMotion) { lastMotion = motion; timed { inner.move(agent, motion: motion) } }
+    func move(_ agent: String, motion: CursorMotion) { lastMotion = motion; motionIndex += 1; timed { inner.move(agent, motion: motion) } }
     func jump(_ agent: String, to point: CGPoint) { timed { inner.jump(agent, to: point) } }
     func act(_ agent: String, effect: CursorEffect, point: CGPoint, frame: CGRect, delay: TimeInterval) {
         timed { inner.act(agent, effect: effect, point: point, frame: frame, delay: delay) }
@@ -39,6 +49,18 @@ final class TimedSurface: CursorSurface {
     }
     func hide(_ agent: String) { timed { inner.hide(agent) } }
     func remove(_ agent: String) { timed { inner.remove(agent) } }
+}
+
+/// What the pointer sampler (a background queue) and the main thread both touch.
+final class SharedState {
+    private let lock = NSLock()
+    private var _samples = 0, _moves = 0, _interrupted = false
+    func sampled(moved: Bool, interrupted: Bool) {
+        lock.lock(); _samples += 1; if moved { _moves += 1 }; if interrupted { _interrupted = true }; lock.unlock()
+    }
+    var samples: Int { lock.lock(); defer { lock.unlock() }; return _samples }
+    var moves: Int { lock.lock(); defer { lock.unlock() }; return _moves }
+    var interrupted: Bool { lock.lock(); defer { lock.unlock() }; return _interrupted }
 }
 
 @main
@@ -57,21 +79,24 @@ final class CursorProbe: NSObject {
     var surface: TimedSurface!
     var director: CursorDirector!
     var link: AnyObject?
+    /// Kept for the whole run: a dispatch source nobody holds is cancelled, and the probe would sample nothing.
+    var sampler: DispatchSourceTimer?
+    let shared = SharedState()
     var stamps: [Double] = []
     var intervals: [Double] = []
-    var errors: [Double] = []
     struct Position: Hashable { var x: Int, y: Int }
-    /// Where the cursor layer was drawn, frame by frame: a run that drew nothing leaves this empty.
-    var drawnPositions = Set<Position>()
+    /// Per glide: frames compared with the plan, frames outside the tolerance, distinct drawn positions.
+    var perGlide: [Int: (compared: Int, bad: Int, positions: Set<Position>)] = [:]
+    var errors: [Double] = []
     var pointerStart = CGPoint.zero
-    var pointerMoves = 0
-    var interrupted = false
     var idleAtStart = 0.0
     var frontStart: pid_t = 0
     var frontChanges = 0
     var keyOrMain = 0
     var done = false
     var running = false
+    var lastTarget = CGPoint.zero
+    var lateFrames = 0
 
     func idle() -> Double {
         CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: CGEventType(rawValue: ~0)!)
@@ -101,7 +126,7 @@ final class CursorProbe: NSObject {
         host.agent = { _ in ("Probe", .working) }
         director = CursorDirector(surface: surface, queue: .main, host: host, idleAfter: 30)
         var env = CursorEnvironment()
-        env.current = 9; env.agentWorkspace = 9; env.displays = [spec.globalFrame]
+        env.shownWorkspaces = [9]; env.agentWorkspace = 9; env.displays = [spec.globalFrame]
         director.setEnvironment(env)
         // The hands report through HandsEvents; without this nothing would ever reach the director.
         HandsEvents.setListener(director)
@@ -113,14 +138,20 @@ final class CursorProbe: NSObject {
         dl.add(to: .main, forMode: .common)
         link = dl
         // The real pointer, sampled every millisecond off the main thread, so a stall can't hide a move.
-        let sampler = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "pointer", qos: .userInteractive))
-        sampler.schedule(deadline: .now(), repeating: .milliseconds(1))
-        sampler.setEventHandler { [weak self] in
-            guard let self, self.running, let p = self.pointer() else { return }
-            if p != self.pointerStart { self.pointerMoves += 1; self.pointerStart = p }
-            if self.idle() < self.idleAtStart - 5 { self.interrupted = true }
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "pointer", qos: .userInteractive))
+        timer.schedule(deadline: .now(), repeating: .milliseconds(1))
+        var last = pointerStart
+        let startIdle = idleAtStart
+        let shared = self.shared
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            let p = self.pointer() ?? last
+            let moved = p != last
+            last = p
+            shared.sampled(moved: moved, interrupted: self.idle() < startIdle - 5)
         }
-        sampler.resume()
+        sampler = timer
+        timer.resume()
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { self.begin() }
     }
 
@@ -132,9 +163,10 @@ final class CursorProbe: NSObject {
         step()
     }
 
-    /// One action: a new target at least 300 points away. Every fifth is sent 60 ms after the last, mid-glide.
+    /// One action, fed as the router does: announced with `frameComing`, its measured frame a few milliseconds later
+    /// from another queue. A new target at least 300 points away; every fifth is sent 60 ms after the last, mid-glide.
     func step() {
-        guard index < glides, !interrupted else { return finish() }
+        guard index < glides, !shared.interrupted else { return finish() }
         let size = NSScreen.main!.frame.size
         let kinds = ["click", "type", "scroll", "click"]
         let dirs = ["down", "up", "left", "right"]
@@ -143,11 +175,15 @@ final class CursorProbe: NSObject {
             p = CGPoint(x: CGFloat.random(in: 80...(size.width - 80), using: &rng), y: CGFloat.random(in: 80...(size.height - 80), using: &rng))
         } while far(p) == false
         last = p
+        lastTarget = p
         let kind = kinds[index % kinds.count]
-        let e = HandsActionEvent(kind: kind, ref: "@s1:e\(index)", window: 1, pid: 1, app: "Probe", point: p,
-                                 frame: CGRect(x: p.x - 40, y: p.y - 12, width: 80, height: 24), session: agentID, scope: "agent_workspace", workspace: 9,
-                                 direction: kind == "scroll" ? dirs[(index / 4) % 4] : nil)
-        HandsEvents.willAct(e)
+        let id = HandsEvents.newActionID()
+        let frame = CGRect(x: p.x - 40, y: p.y - 12, width: 80, height: 24)
+        HandsEvents.willAct(HandsActionEvent(kind: kind, ref: "@s1:e\(index)", window: 1, pid: 1, app: "Probe", point: nil, frame: nil, session: agentID,
+                                             scope: "agent_workspace", workspace: 9, direction: kind == "scroll" ? dirs[(index / 4) % 4] : nil,
+                                             id: id, frameComing: true))
+        let delay = Double.random(in: 0.002...0.030, using: &rng)
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + delay) { HandsEvents.frameMeasured(actionID: id, frame: frame) }
         index += 1
         let cut = index % 5 == 0
         DispatchQueue.main.asyncAfter(deadline: .now() + (cut ? 0.06 : 0.42)) { self.step() }
@@ -155,24 +191,37 @@ final class CursorProbe: NSObject {
     var last: CGPoint?
     func far(_ p: CGPoint) -> Bool { last.map { hypot(p.x - $0.x, p.y - $0.y) >= 300 } ?? true }
 
+    /// Where the plan puts the cursor `t` seconds into a glide, and how fast it is going (points per second).
+    func planned(_ m: CursorMotion, at t: Double) -> (point: CGPoint, speed: Double) {
+        let f = max(0, t) / m.step
+        let i = min(m.points.count - 1, Int(f))
+        let j = min(m.points.count - 1, i + 1)
+        let frac = CGFloat(min(1, f - Double(i)))
+        let a = m.points[i], b = m.points[j]
+        return (CGPoint(x: a.x + (b.x - a.x) * frac, y: a.y + (b.y - a.y) * frac), Double(hypot(b.x - a.x, b.y - a.y)) / m.step)
+    }
+
     @available(macOS 14, *)
     @objc func tick(_ link: CADisplayLink) {
         guard running, !done else { return }
         stamps.append(link.timestamp)
-        intervals.append(link.targetTimestamp - link.timestamp)
+        let interval = link.targetTimestamp - link.timestamp
+        intervals.append(interval)
         if NSApp.keyWindow != nil || NSApp.mainWindow != nil || surface.inner.panels.contains(where: { $0.isKeyWindow || $0.isMainWindow || $0.canBecomeKey || $0.canBecomeMain }) { keyOrMain += 1 }
         if NSWorkspace.shared.frontmostApplication?.processIdentifier != frontStart { frontChanges += 1; frontStart = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0 }
-        // How far the drawn cursor is from the planned glide right now.
-        if let drawn = surface.inner.presentedPoint(agentID) {
-            drawnPositions.insert(Position(x: Int(drawn.x.rounded()), y: Int(drawn.y.rounded())))
+        // How far the drawn cursor is from the planned glide right now, glide by glide.
+        guard let m = surface.lastMotion, let drawn = surface.inner.presentedPoint(agentID) else { return }
+        let t = ProcessInfo.processInfo.systemUptime - m.start
+        var g = perGlide[surface.motionIndex] ?? (0, 0, [])
+        g.positions.insert(Position(x: Int(drawn.x.rounded()), y: Int(drawn.y.rounded())))
+        if t >= 0, t <= m.duration {
+            let (want, speed) = planned(m, at: t)
+            let err = Double(hypot(drawn.x - want.x, drawn.y - want.y))
+            errors.append(err)
+            g.compared += 1
+            if err > 3 + speed * interval { g.bad += 1 }
         }
-        if let m = surface.lastMotion, let drawn = surface.inner.presentedPoint(agentID) {
-            let t = CACurrentMediaTime() - (m.start + (CACurrentMediaTime() - ProcessInfo.processInfo.systemUptime)) // seconds into the glide
-            if t >= 0, t <= m.duration {
-                let i = min(m.points.count - 1, max(0, Int((t / m.step).rounded())))
-                errors.append(hypot(drawn.x - m.points[i].x, drawn.y - m.points[i].y))
-            }
-        }
+        perGlide[surface.motionIndex] = g
     }
 
     func finish() {
@@ -187,6 +236,8 @@ final class CursorProbe: NSObject {
 
     func report() {
         running = false; done = true
+        sampler?.cancel()
+        sampler = nil
         let deltas = zip(stamps, stamps.dropFirst()).map { $1 - $0 }
         let nominal = percentile(intervals, 0.5)
         let over15 = deltas.filter { $0 > nominal * 1.5 }.count
@@ -198,14 +249,25 @@ final class CursorProbe: NSObject {
         print("  frames over 1.5x the interval: \(over15) of \(frames) (limit 1 in 200 = \(frames / 200)); over 2x: \(over2) (limit 0)")
         let apply = surface.applySeconds
         print("  main thread, per action: median \(ms(percentile(apply, 0.5))) ms, max \(ms(apply.max() ?? 0)) ms (director + layers, off the hands' thread)")
-        print("  drawn vs planned position: median \(String(format: "%.2f", percentile(errors, 0.5))) pt, p95 \(String(format: "%.2f", percentile(errors, 0.95))) pt, max \(String(format: "%.2f", errors.max() ?? 0)) pt over \(errors.count) frames")
-        print("  real pointer: \(pointerMoves) changes (limit 0); overlay key/main frames: \(keyOrMain) (limit 0); front app changes: \(frontChanges) (limit 0)")
-        print("  drawn: \(drawnPositions.count) distinct positions of the cursor layer, \(apply.count) overlay updates for \(index) actions")
-        if interrupted { print("cursor-probe: interrupted (input arrived; Donovan is back). Result discarded: not run"); exit(2) }
-        // A run that drew nothing cannot pass: every action reached the overlay, and the cursor layer moved.
-        let drew = apply.count == index && drawnPositions.count >= index && errors.count >= index
-        if !drew { print("  nothing (or not enough) was drawn: expected \(index) overlay updates and at least \(index) distinct drawn positions, saw \(apply.count) and \(drawnPositions.count); \(errors.count) frames compared with the plan") }
-        let ok = drew && over15 <= frames / 200 && over2 == 0 && pointerMoves == 0 && keyOrMain == 0 && frontChanges == 0 && frames >= 100
+        let compared = perGlide.values.map(\.compared).reduce(0, +)
+        let bad = perGlide.values.map(\.bad).reduce(0, +)
+        let withFrames = perGlide.values.filter { $0.compared >= 1 }.count
+        let moving = perGlide.values.filter { $0.positions.count >= 2 }.count
+        print("  drawn vs planned (tolerance 3 pt + one frame of travel): median \(String(format: "%.2f", percentile(errors, 0.5))) pt, p95 \(String(format: "%.2f", percentile(errors, 0.95))) pt, max \(String(format: "%.2f", errors.max() ?? 0)) pt; \(bad) of \(compared) frames outside (limit 1 in 200)")
+        print("  drawn: \(perGlide.count) glides seen, \(withFrames) compared with the plan, \(moving) moved the cursor layer; \(apply.count) overlay updates for \(index) actions")
+        var endError = Double.infinity
+        if let end = surface.inner.presentedPoint(agentID) { endError = Double(hypot(end.x - lastTarget.x, end.y - lastTarget.y)) }
+        print("  after the last glide the cursor stands \(String(format: "%.2f", endError)) pt from its target (limit 1.5)")
+        print("  real pointer: \(shared.moves) changes in \(shared.samples) samples (limit 0 changes; at least 1000 samples); overlay key/main frames: \(keyOrMain) (limit 0); front app changes: \(frontChanges) (limit 0)")
+        if shared.interrupted { print("cursor-probe: interrupted (input arrived; Donovan is back). Result discarded: not run"); exit(2) }
+        // A run that drew nothing, or sampled nothing, cannot pass.
+        let drew = apply.count == index && perGlide.count >= index * 8 / 10 && withFrames >= perGlide.count * 9 / 10 && moving >= perGlide.count * 9 / 10
+        let sampled = shared.samples >= 1000
+        let onPlan = compared > 0 && bad <= compared / 200 && endError <= 1.5
+        if !drew { print("  FAIL: not enough was drawn: expected \(index) overlay updates and a moving, compared glide for nearly every action") }
+        if !sampled { print("  FAIL: the pointer was sampled \(shared.samples) times; at least 1000 are needed to say it did not move") }
+        if !onPlan { print("  FAIL: the drawn path left the plan, or the cursor did not end on its target") }
+        let ok = drew && sampled && onPlan && over15 <= frames / 200 && over2 == 0 && shared.moves == 0 && keyOrMain == 0 && frontChanges == 0 && frames >= 100
         print(ok ? "cursor-probe: pass" : "cursor-probe: FAIL")
         exit(ok ? 0 : 1)
     }

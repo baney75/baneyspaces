@@ -64,7 +64,13 @@ public protocol CursorSurface: AnyObject {
 /// What the director needs to know about the world; the app updates it on the main thread.
 public struct CursorEnvironment: Equatable, Sendable {
     public var settings = CursorSettings()
-    public var current = 1
+    /// Every workspace a display is showing (one per display).
+    public var shownWorkspaces: Set<Int> = [1]
+    /// With one display: the workspace you are on.
+    public var current: Int {
+        get { shownWorkspaces.min() ?? 1 }
+        set { shownWorkspaces = [newValue] }
+    }
     public var agentWorkspace: Int?
     public var reduceMotion = false
     /// The displays' frames in the hands' coordinates (global, y down).
@@ -107,6 +113,8 @@ public final class CursorDirector: HandsEventListener {
         var look: CursorLook?
         var scope = ""
         var workspace: Int?
+        /// The window the cursor last acted in.
+        var window: UInt32 = 0
     }
 
     public static let maxNameLength = 18
@@ -150,7 +158,7 @@ public final class CursorDirector: HandsEventListener {
 
     public func handsWantsFrame(scope: String, workspace: Int?) -> Bool {
         let e = environment()
-        return CursorVisibility.wantsFrame(enabled: e.settings.enabled, scope: scope, windowWorkspace: workspace, current: e.current, agent: e.agentWorkspace)
+        return CursorVisibility.wantsFrame(enabled: e.settings.enabled, scope: scope, windowWorkspace: workspace, shown: e.shownWorkspaces, agent: e.agentWorkspace)
     }
 
     /// On the hands' thread, before the action is sent. It only queues the event: the action never waits for the glide.
@@ -170,7 +178,9 @@ public final class CursorDirector: HandsEventListener {
     public func handsFrame(actionID: UInt64, frame: CGRect?) {
         queue.async { [self] in
             guard var ev = pending.removeValue(forKey: actionID) else { return }
-            ev.frame = frame; ev.point = frame.map { CGPoint(x: $0.midX, y: $0.midY) }; ev.frameComing = false
+            // No frame (the engine had none, or the read couldn't start in time) is the same as a late one.
+            guard let frame else { return processLate(ev) }
+            ev.frame = frame; ev.point = CGPoint(x: frame.midX, y: frame.midY); ev.frameComing = false
             process(ev)
         }
     }
@@ -188,36 +198,36 @@ public final class CursorDirector: HandsEventListener {
         return t.rest.map { GlideState(position: $0) }
     }
 
-    /// The frame didn't arrive in time: the effect happens where the cursor already stands, with no glide and no focus box.
+    /// The frame didn't arrive in time (or there was none). The cursor never disappears and never forgets where it
+    /// stood, and nothing is drawn at a point the action never targeted: no ripple, mark or focus box, and no mark
+    /// kept for `agent shot --cursor`. In the window it was last in, it stays put. In another window it glides to that
+    /// window's center (the window list gives that cheaply). Either way it counts as activity, so it doesn't fade mid-session.
     private func processLate(_ ev: HandsActionEvent) {
-        guard let rest = tracks[ev.session]?.rest, tracks[ev.session]?.shown == true else { return }
-        var late = ev
-        late.frame = CGRect(origin: rest, size: .zero); late.point = rest; late.frameComing = false
-        process(late)
-    }
-
-    private func process(_ ev: HandsActionEvent) {
-        let env = environment()
         let agent = ev.session
-        let decision = CursorVisibility.decide(enabled: env.settings.enabled, scope: ev.scope, windowWorkspace: ev.workspace, current: env.current,
-                                               agent: env.agentWorkspace, frame: ev.frame, displays: env.displays)
-        guard decision.shown, let frame = ev.frame else {
+        guard var t = tracks[agent], t.shown else { return }
+        let env = environment()
+        guard CursorVisibility.wantsFrame(enabled: env.settings.enabled, scope: ev.scope, windowWorkspace: ev.workspace, shown: env.shownWorkspaces, agent: env.agentWorkspace) else {
             hide(agent, forget: true)
             return
         }
-        guard let effect = CursorEffect.of(kind: ev.kind, direction: ev.direction) else { return }
         let now = host.now()
-        var t = tracks[agent] ?? Track()
-        let look = look(for: agent, env)
-        if t.look != look { surface.configure(agent, look: look); t.look = look }
-        let target = CGPoint(x: frame.midX, y: frame.midY)
+        if ev.window != t.window, let wf = host.windowFrame(ev.window) {
+            let center = CGPoint(x: wf.midX, y: wf.midY)
+            if env.displays.contains(where: { $0.contains(center) }) {
+                glide(&t, agent, to: center, env, now)
+                t.window = ev.window; t.scope = ev.scope; t.workspace = ev.workspace
+            }
+        }
+        t.stamp += 1
+        tracks[agent] = t
+        scheduleIdle(agent, t.stamp)
+    }
+
+    /// Moves the cursor from where it is to `target`: a glide, or a jump under Reduce Motion. Returns when it arrives.
+    @discardableResult
+    private func glide(_ t: inout Track, _ agent: String, to target: CGPoint, _ env: CursorEnvironment, _ now: TimeInterval) -> TimeInterval {
         let skip = env.settings.skipsGlide(reduceMotion: env.reduceMotion)
         let from = t.shown ? current(t, now) : t.rest.map { GlideState(position: $0) }
-        if !t.shown {
-            // It comes back where it stood, and glides from there.
-            surface.appear(agent, at: skip ? target : (from?.position ?? target))
-            t.shown = true
-        }
         var delay = 0.0
         if let from, !skip {
             let plan = GlidePlan(from: from, target: target, spring: env.settings.spring)
@@ -230,16 +240,10 @@ public final class CursorDirector: HandsEventListener {
             }
         } else { surface.jump(agent, to: target); t.plan = nil }
         t.rest = target
-        surface.act(agent, effect: effect, point: target, frame: frame, delay: delay)
-        t.stamp += 1; t.scope = ev.scope; t.workspace = ev.workspace
-        tracks[agent] = t
-        // The window server round trip happens before the lock, so the hands' thread never waits behind it.
-        let windowFrame = host.windowFrame(ev.window)
-        lock.lock()
-        marks[ev.window] = CursorMark(look: look, point: target, windowFrame: windowFrame, at: now)
-        if marks.count > 64, let old = marks.min(by: { $0.value.at < $1.value.at })?.key { marks[old] = nil }
-        lock.unlock()
-        let stamp = t.stamp
+        return delay
+    }
+
+    private func scheduleIdle(_ agent: String, _ stamp: Int) {
         queue.asyncAfter(deadline: .now() + idleAfter) { [self] in
             guard tracks[agent]?.stamp == stamp else { return }
             hide(agent, forget: false)
@@ -250,6 +254,41 @@ public final class CursorDirector: HandsEventListener {
                 surface.remove(agent)
             }
         }
+    }
+
+    private func process(_ ev: HandsActionEvent) {
+        let env = environment()
+        let agent = ev.session
+        let decision = CursorVisibility.decide(enabled: env.settings.enabled, scope: ev.scope, windowWorkspace: ev.workspace, shown: env.shownWorkspaces,
+                                               agent: env.agentWorkspace, frame: ev.frame, displays: env.displays)
+        guard decision.shown, let frame = ev.frame else {
+            hide(agent, forget: true)
+            return
+        }
+        guard let effect = CursorEffect.of(kind: ev.kind, direction: ev.direction) else { return }
+        let now = host.now()
+        var t = tracks[agent] ?? Track()
+        let look = look(for: agent, env)
+        if t.look != look { surface.configure(agent, look: look); t.look = look }
+        let target = CGPoint(x: frame.midX, y: frame.midY)
+        let skip = env.settings.skipsGlide(reduceMotion: env.reduceMotion)
+        if !t.shown {
+            // It comes back where it stood, and glides from there.
+            let from = t.rest.map { GlideState(position: $0) }
+            surface.appear(agent, at: skip ? target : (from?.position ?? target))
+            t.shown = true
+        }
+        let delay = glide(&t, agent, to: target, env, now)
+        surface.act(agent, effect: effect, point: target, frame: frame, delay: delay)
+        t.stamp += 1; t.scope = ev.scope; t.workspace = ev.workspace; t.window = ev.window
+        tracks[agent] = t
+        // The window server round trip happens before the lock, so the hands' thread never waits behind it.
+        let windowFrame = host.windowFrame(ev.window)
+        lock.lock()
+        marks[ev.window] = CursorMark(look: look, point: target, windowFrame: windowFrame, at: now)
+        if marks.count > 64, let old = marks.min(by: { $0.value.at < $1.value.at })?.key { marks[old] = nil }
+        lock.unlock()
+        scheduleIdle(agent, t.stamp)
     }
 
     /// `forget`: it left because you are not looking (or it was turned off), so where it stood is no use later.
@@ -273,7 +312,7 @@ public final class CursorDirector: HandsEventListener {
                 t.look = nil
                 if t.shown {
                     t.shown = false; t.plan = nil
-                    if let pos, env.displays.contains(where: { $0.contains(pos) }), CursorVisibility.wantsFrame(enabled: env.settings.enabled, scope: t.scope, windowWorkspace: t.workspace, current: env.current, agent: env.agentWorkspace) {
+                    if let pos, env.displays.contains(where: { $0.contains(pos) }), CursorVisibility.wantsFrame(enabled: env.settings.enabled, scope: t.scope, windowWorkspace: t.workspace, shown: env.shownWorkspaces, agent: env.agentWorkspace) {
                         let l = look(for: agent, env)
                         surface.configure(agent, look: l)
                         surface.appear(agent, at: pos)
@@ -284,7 +323,7 @@ public final class CursorDirector: HandsEventListener {
             }
         }
         for (agent, t) in tracks {
-            if !CursorVisibility.wantsFrame(enabled: env.settings.enabled, scope: t.scope, windowWorkspace: t.workspace, current: env.current, agent: env.agentWorkspace) {
+            if !CursorVisibility.wantsFrame(enabled: env.settings.enabled, scope: t.scope, windowWorkspace: t.workspace, shown: env.shownWorkspaces, agent: env.agentWorkspace) {
                 // Not watchable any more: hide it, and forget where it stood (idle ones too: the windows were parked).
                 hide(agent, forget: true)
                 continue

@@ -132,7 +132,7 @@ final class CursorVisibilityTests: XCTestCase {
     let frame = CGRect(x: 100, y: 100, width: 80, height: 24)
 
     func decide(enabled: Bool = true, scope: String, window: Int?, current: Int, agent: Int? = 9, frame: CGRect = CGRect(x: 100, y: 100, width: 80, height: 24)) -> CursorVisibility.Decision {
-        CursorVisibility.decide(enabled: enabled, scope: scope, windowWorkspace: window, current: current, agent: agent,
+        CursorVisibility.decide(enabled: enabled, scope: scope, windowWorkspace: window, shown: [current], agent: agent,
                                 frame: frame, displays: [screen])
     }
 
@@ -165,14 +165,24 @@ final class CursorVisibilityTests: XCTestCase {
     }
 
     func testAFrameThatIsMissingOrOffEveryDisplayIsHidden() {
-        XCTAssertEqual(CursorVisibility.decide(enabled: true, scope: "agent_workspace", windowWorkspace: 9, current: 9, agent: 9, frame: nil, displays: [screen]), .hidden(.noFrame))
+        XCTAssertEqual(CursorVisibility.decide(enabled: true, scope: "agent_workspace", windowWorkspace: 9, shown: [9], agent: 9, frame: nil, displays: [screen]), .hidden(.noFrame))
         XCTAssertEqual(decide(scope: "agent_workspace", window: 9, current: 9, frame: CGRect(x: 5000, y: 4000, width: 50, height: 20)), .hidden(.offscreen), "a parked window's frame")
     }
 
+    func testTheAgentWorkspaceOnAnyDisplayCountsAsLookedAt() {
+        // Two displays: the focused one shows workspace 2, the other shows the agent workspace.
+        XCTAssertEqual(CursorVisibility.decide(enabled: true, scope: "agent_workspace", windowWorkspace: 9, shown: [2, 9], agent: 9, frame: frame, displays: [screen]), .show)
+        XCTAssertTrue(CursorVisibility.wantsFrame(enabled: true, scope: "agent_workspace", windowWorkspace: 9, shown: [2, 9], agent: 9))
+        XCTAssertFalse(CursorVisibility.wantsFrame(enabled: true, scope: "agent_workspace", windowWorkspace: 9, shown: [2, 3], agent: 9))
+        // A lent window on the other display's workspace.
+        XCTAssertTrue(CursorVisibility.wantsFrame(enabled: true, scope: "lent", windowWorkspace: 3, shown: [2, 3], agent: 9))
+        XCTAssertFalse(CursorVisibility.wantsFrame(enabled: true, scope: "lent", windowWorkspace: 5, shown: [2, 3], agent: 9))
+    }
+
     func testTheHandsMeasureTheTargetOnlyWhenItWouldBeDrawn() {
-        XCTAssertTrue(CursorVisibility.wantsFrame(enabled: true, scope: "agent_workspace", windowWorkspace: 9, current: 9, agent: 9))
-        XCTAssertFalse(CursorVisibility.wantsFrame(enabled: true, scope: "agent_workspace", windowWorkspace: 9, current: 2, agent: 9), "no engine call while you are elsewhere")
-        XCTAssertFalse(CursorVisibility.wantsFrame(enabled: false, scope: "agent_workspace", windowWorkspace: 9, current: 9, agent: 9))
+        XCTAssertTrue(CursorVisibility.wantsFrame(enabled: true, scope: "agent_workspace", windowWorkspace: 9, shown: [9], agent: 9))
+        XCTAssertFalse(CursorVisibility.wantsFrame(enabled: true, scope: "agent_workspace", windowWorkspace: 9, shown: [2], agent: 9), "no engine call while you are elsewhere")
+        XCTAssertFalse(CursorVisibility.wantsFrame(enabled: false, scope: "agent_workspace", windowWorkspace: 9, shown: [9], agent: 9))
     }
 }
 
@@ -541,29 +551,78 @@ final class CursorDirectorTests: XCTestCase {
         XCTAssertTrue(s.calls.contains(.appear("a", CGPoint(x: 650, y: 420))))
     }
 
-    func testALateFrameLeavesTheCursorWhereItStoodAndDrawsTheEffectThere() {
+    func lateEvent(id: UInt64, window: UInt32) -> HandsActionEvent {
+        var e = event(at: .zero, window: window)
+        e.frame = nil; e.point = nil; e.id = id; e.frameComing = true
+        return e
+    }
+
+    func testALateFrameInTheSameWindowLeavesTheCursorAloneAndDrawsNothing() {
         let (d, s) = make()
-        d.handsWillAct(event(at: CGPoint(x: 200, y: 200))); drain()
+        d.handsWillAct(event(at: CGPoint(x: 200, y: 200), window: 7)); drain()
         let before = s.calls.count
-        var e = event(at: .zero, window: 7)
-        e.frame = nil; e.point = nil; e.id = 6; e.frameComing = true
-        d.handsWillAct(e)
+        d.handsWillAct(lateEvent(id: 6, window: 7))
         Thread.sleep(forTimeInterval: CursorDirector.frameWait + 0.15); drain()
-        let after = Array(s.calls[before...])
-        XCTAssertEqual(after.count, 1, "no glide: \(after)")
-        guard case .act("a", .click, let p, 0)? = after.first else { return XCTFail("\(after)") }
-        XCTAssertEqual(p, CGPoint(x: 200, y: 200), "at the last known point")
+        XCTAssertEqual(s.calls.count, before, "nothing is drawn at a point the action never targeted: \(s.calls)")
+        XCTAssertFalse(s.calls.contains(.hide("a")), "and it does not disappear")
         d.handsFrame(actionID: 6, frame: CGRect(x: 900, y: 500, width: 10, height: 10)); drain()
-        XCTAssertEqual(s.calls.count, before + 1, "a frame that comes after the wait is dropped")
+        XCTAssertEqual(s.calls.count, before, "a frame that comes after the wait is dropped")
+        // Where it stood is kept: the next action glides from there.
+        clock += 1
+        d.handsWillAct(event(at: CGPoint(x: 700, y: 400), window: 7)); drain()
+        XCTAssertEqual(s.motions.last?.points.first, CGPoint(x: 200, y: 200))
+    }
+
+    func testANilFrameIsTheSameAsALateOne() {
+        var host = CursorDirector.Host()
+        host.now = { [unowned self] in self.clock }
+        let s = FakeSurface()
+        let d = CursorDirector(surface: s, queue: queue, host: host)
+        var env = CursorEnvironment(); env.current = 9; env.agentWorkspace = 9; env.displays = [screen]
+        d.setEnvironment(env)
+        d.handsWillAct(event(at: CGPoint(x: 200, y: 200), window: 7)); drain()
+        let before = s.calls.count
+        d.handsWillAct(lateEvent(id: 8, window: 7)); drain()
+        d.handsFrame(actionID: 8, frame: nil); drain()
+        XCTAssertEqual(s.calls.count, before, "no hide, no act: \(Array(s.calls[before...]))")
+        // And still shown at its last point: an action elsewhere glides from there.
+        clock += 1
+        d.handsWillAct(event(at: CGPoint(x: 700, y: 400), window: 7)); drain()
+        XCTAssertEqual(s.motions.last?.points.first, CGPoint(x: 200, y: 200))
+    }
+
+    func testALateFrameInAnotherWindowGlidesToThatWindowsCenterWithoutAnEffect() {
+        var host = CursorDirector.Host()
+        host.now = { [unowned self] in self.clock }
+        host.windowFrame = { id in id == 12 ? CGRect(x: 800, y: 400, width: 400, height: 300) : nil }
+        let s = FakeSurface()
+        let d = CursorDirector(surface: s, queue: queue, host: host)
+        var env = CursorEnvironment(); env.current = 9; env.agentWorkspace = 9; env.displays = [screen]
+        d.setEnvironment(env)
+        d.handsWillAct(event(at: CGPoint(x: 200, y: 200), window: 7)); drain()
+        clock += 1
+        d.handsWillAct(lateEvent(id: 9, window: 12)); drain()
+        d.handsFrame(actionID: 9, frame: nil); drain()
+        XCTAssertTrue(s.calls.contains(.move("a", CGPoint(x: 1000, y: 550))), "to window 12's center: \(s.calls)")
+        XCTAssertEqual(s.calls.filter { if case .act = $0 { return true } else { return false } }.count, 1, "only the first action drew an effect")
+        XCTAssertNil(d.lastMark(window: 12), "no evidence mark for a point the action never targeted")
+        XCTAssertFalse(s.calls.contains(.hide("a")))
     }
 
     func testALateFrameWithNothingKnownDrawsNothing() {
         let (d, s) = make()
-        var e = event(at: .zero)
-        e.frame = nil; e.point = nil; e.id = 7; e.frameComing = true
-        d.handsWillAct(e)
+        d.handsWillAct(lateEvent(id: 7, window: 7))
         Thread.sleep(forTimeInterval: CursorDirector.frameWait + 0.15); drain()
         XCTAssertTrue(s.calls.isEmpty)
+    }
+
+    func testTheAgentWorkspaceOnASecondDisplayShowsTheCursor() {
+        let (d, s) = make()
+        var env = CursorEnvironment(); env.shownWorkspaces = [2, 9]; env.agentWorkspace = 9; env.displays = [screen]
+        d.setEnvironment(env)
+        XCTAssertTrue(d.handsWantsFrame(scope: "agent_workspace", workspace: 9))
+        d.handsWillAct(event(at: CGPoint(x: 300, y: 300))); drain()
+        XCTAssertTrue(s.calls.contains(.appear("a", CGPoint(x: 300, y: 300))))
     }
 
     func testLeavingAndComingBackForgetsWhereAnIdleCursorStood() {
@@ -807,8 +866,13 @@ final class CursorSourceTests: XCTestCase {
         let probe = try Self.code("scripts/cursor-probe.swift")
         XCTAssertTrue(probe.contains("HandsEvents.setListener(director)"), "the events reach the director")
         XCTAssertTrue(probe.contains("let drew ="), "a run that drew nothing fails")
-        XCTAssertTrue(probe.contains("drawnPositions.count >= index"))
         XCTAssertTrue(probe.contains("apply.count == index"))
+        XCTAssertTrue(probe.contains("var sampler: DispatchSourceTimer?"), "the pointer sampler is held for the whole run")
+        XCTAssertTrue(probe.contains("sampler = timer"))
+        XCTAssertTrue(probe.contains("shared.samples >= 1000"), "a run that sampled nothing fails")
+        XCTAssertTrue(probe.contains("let onPlan ="), "the drawn path is held to the plan")
+        XCTAssertTrue(probe.contains("err > 3 + speed * interval"), "tolerance: 3 pt plus one frame of travel")
+        XCTAssertTrue(probe.contains("frameComing: true") && probe.contains("HandsEvents.frameMeasured"), "fed the way the router feeds it")
         XCTAssertFalse(probe.contains("--onscreen"), "it always runs on the display: an offscreen panel gets no display link")
         XCTAssertFalse(probe.contains("let far ="))
     }
