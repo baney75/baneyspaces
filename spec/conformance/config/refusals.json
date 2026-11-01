@@ -900,5 +900,35 @@
         "file": "[animation]\nspeed = 0.5\n"
       }
     ]
+  },
+  {
+    "name": "a custom palette in use must be complete",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "theme": {
+            "palette": "bad"
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "themes.bad.palette.accent",
+              "code": "required"
+            }
+          ]
+        }
+      }
+    ],
+    "themes": {
+      "bad": {
+        "extends": "omarchy",
+        "palette": {
+          "background": "#111111"
+        }
+      }
+    }
   }
 ]

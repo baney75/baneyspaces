@@ -243,6 +243,16 @@ fn list(paths: &[String]) -> String {
     )
 }
 
+/// Whether the pending entry is the setting at `asked`, or inside it. Chord names under `keys` compare as chords.
+fn pending_under(e: &Pending, asked: &[String], modifier: &str) -> bool {
+    if asked.len() > e.segments.len() {
+        return false;
+    }
+    e.segments.iter().zip(asked).enumerate().all(|(i, (a, b))| {
+        a == b || (i >= 2 && e.segments[0] == "keys" && matches!((crate::chord::parse(a, modifier), crate::chord::parse(b, modifier)), (Ok(x), Ok(y)) if x == y))
+    })
+}
+
 fn parse_value_text(s: &str) -> Value {
     serde_json::from_str::<Value>(s).unwrap_or_else(|_| Value::String(s.to_string()))
 }
@@ -453,6 +463,8 @@ impl Service {
         let (_, mut r, l) = self.current();
         let configured = l.validated.effective.clone().expect("the running state is valid");
         r["pending"] = Value::Array(self.pending_json(&self.activate(&configured).1));
+        // Everything approved, with the ones not made by the Settings handler marked for Settings to show.
+        r["approved"] = Value::Array(self.approvals.as_deref().map(approvals::list).unwrap_or_default());
         r["status"] = json!({
             "valid": l.file_issues.is_empty(),
             "source": match l.source { Source::File => json!("file"), Source::LastGood(v) => json!({ "history": v }), Source::Defaults => json!("defaults") },
@@ -481,6 +493,9 @@ impl Service {
     fn write_files(&self, new: &State, removed: &[String]) -> Result<(), Envelope> {
         let tdir = self.themes_dir();
         for (n, t) in &new.theme_texts {
+            if new.unreadable.contains(n) {
+                continue; // a file we could not read is the person's: never written over
+            }
             history::write_atomic(&tdir.join(format!("{n}.toml")), t.as_bytes())
                 .map_err(|e| io_err("cannot write a theme", e))?;
         }
@@ -562,6 +577,9 @@ impl Service {
         f: impl FnOnce(&State) -> Result<(State, String), Envelope>,
     ) -> Result<Applied, Envelope> {
         let _lock = self.lock()?;
+        // Record a hand edit the watcher has not noticed yet, before building on the files: it must
+        // not be folded into this caller's version.
+        let _ = self.observe_locked();
         let l = self.load();
         if strict && !l.file_issues.is_empty() {
             return Err(invalid(&l.file_issues, &[], "config.toml has errors and was not changed; the last good config is running").with_data(json!({
@@ -570,6 +588,14 @@ impl Service {
             })));
         }
         let (mut new, summary) = f(&l.good)?;
+        new.unreadable = l.state.unreadable.clone();
+        // A theme file that exists but cannot be read is never overwritten, whatever asks to write one.
+        if let Some(n) = new.theme_texts.iter().find(|(n, t)| new.unreadable.contains(*n) && l.good.theme_texts.get(*n) != Some(*t)).map(|(n, _)| n.clone()) {
+            return Err(bad_args(
+                format!("themes/{n}.toml exists but cannot be read (not UTF-8, over 1 MiB, or unreadable), so it was not overwritten"),
+                "Move it aside or fix it, then try again.",
+            ));
+        }
         // Check the document as it was asked for, before anything is rendered or pruned, so a
         // setting that does not exist is refused whatever it holds (an empty table included).
         config::normalize_nulls(&mut new.user);
@@ -643,6 +669,11 @@ impl Service {
             Ok(l) => l,
             Err(_) => return Ok(None),
         };
+        self.observe_locked()
+    }
+
+    /// [`Service::observe`] with the lock already held.
+    fn observe_locked(&self) -> Result<Option<Applied>, Vec<Issue>> {
         let st = self.read_state();
         let h = self.history();
         let latest = h.latest();
@@ -709,7 +740,8 @@ impl Service {
             "config_get" => {
                 let (_, _, l) = self.current();
                 let eff = l.validated.effective.clone().expect("the running state is valid");
-                let pending = self.pending_json(&self.activate(&eff).1);
+                let all_pending = self.activate(&eff).1;
+                let pending = self.pending_json(&all_pending);
                 let note = if l.file_issues.is_empty() {
                     Value::Null
                 } else {
@@ -731,7 +763,9 @@ impl Service {
                         };
                         match config::get_path(&eff.doc, &path) {
                             Some(v) => {
-                                let mine: Vec<&Value> = pending.iter().filter(|e| e["path"].as_str().is_some_and(|q| q == p || q.starts_with(&format!("{p}.")))).collect();
+                                // By segments, not text: `keys.bindings.mod+e` and `keys.bindings."mod+e"` (and a
+                                // chord spelled another way) are the same entry.
+                                let mine: Vec<&Value> = all_pending.iter().zip(&pending).filter(|(e, _)| pending_under(e, &path, &eff.modifier)).map(|(_, j)| j).collect();
                                 Outcome::only(Envelope::ok(json!({ "path": p, "value": v, "note": note, "pending": mine })))
                             }
                             None => Outcome::only(not_found(format!("{p} has no value"), "`baneyspaces config get` lists every setting; `baneyspaces config schema` says what each may be.")),
@@ -1031,9 +1065,13 @@ impl Service {
             Ok(l) => l,
             Err(e) => return Outcome::only(e),
         };
+        // A hand edit not yet noticed by the watcher is recorded first, as the user's, so an undo can never
+        // write over it unrecorded (and an agent's undo then sees it on top and is refused).
+        let _ = self.observe_locked();
         let h = self.history();
         let all = h.all();
-        let stack = History::live_stack(&all);
+        // The live versions that are still in history, oldest first.
+        let stack: Vec<&Version> = History::live_seqs(&all).into_iter().filter_map(|q| all.iter().find(|v| v.seq == q)).collect();
         let n_us = n.min(usize::MAX as u64) as usize;
         if stack.len() < 2 {
             return Outcome::only(not_found("there is nothing to undo", "`baneyspaces config history` lists the versions."));
@@ -1041,8 +1079,8 @@ impl Service {
         if n_us >= stack.len() {
             return Outcome::only(bad_args(format!("only {} version(s) can be undone", stack.len() - 1), "baneyspaces config undo [n]"));
         }
-        let popped: Vec<&Version> = stack[stack.len() - n_us..].iter().map(|i| &all[*i]).collect();
-        let target = &all[stack[stack.len() - 1 - n_us]];
+        let popped: Vec<&Version> = stack[stack.len() - n_us..].to_vec();
+        let target = stack[stack.len() - 1 - n_us];
         if caller.starts_with("agent:") {
             if let Some(other) = popped.iter().find(|v| v.caller != caller) {
                 return Outcome::only(Envelope::err(
@@ -1916,6 +1954,100 @@ mod tests {
         let o = run(&s, "config_undo", json!({}), "u");
         assert!(o.env.ok, "{:?}", o.env);
         assert!(fs::read_dir(&d.0).unwrap().flatten().any(|e| e.file_name().to_string_lossy().starts_with("config.toml.invalid-")));
+    }
+
+    #[test]
+    fn config_get_shows_a_pending_entry_however_its_path_is_spelled() {
+        let d = Dir::new("getpend");
+        let s = svc(&d);
+        run(&s, "config_set", json!({ "path": "keys.bindings.\"mod+e\"", "value_text": "exec foot" }), "agent:x");
+        for p in ["keys.bindings.mod+e", "keys.bindings.\"mod+e\"", "keys.bindings", "keys"] {
+            let g = run(&s, "config_get", json!({ "path": p }), "u");
+            let data = g.env.data.unwrap_or_default();
+            assert_eq!(data["pending"].as_array().map_or(0, Vec::len), 1, "{p}: {data}");
+        }
+        let g = run(&s, "config_get", json!({ "path": "keys.bindings.mod+1" }), "u").env.data.unwrap();
+        assert!(g["pending"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_custom_palette_in_use_must_be_complete() {
+        let d = Dir::new("palette");
+        let s = svc(&d);
+        fs::create_dir_all(d.0.join("themes")).unwrap();
+        fs::write(d.0.join("themes/bad.toml"), "extends = \"omarchy\"\n[palette]\nbackground = \"#111111\"\n").unwrap();
+        // Not in use: only a warning.
+        assert!(run(&s, "config_set", json!({ "path": "animation.speed", "value_text": "0.5" }), "u").env.ok);
+        // Selected as the palette: refused, and nothing reaches config.json.
+        let o = run(&s, "config_set", json!({ "path": "theme.palette", "value_text": "bad" }), "agent:x");
+        assert_eq!(code(&o), "config_invalid", "{:?}", o.env);
+        let issues = o.env.error.unwrap().data.unwrap()["issues"].clone();
+        assert!(issues.as_array().unwrap().iter().any(|i| i["path"].as_str().is_some_and(|p| p.starts_with("themes.bad.palette"))), "{issues}");
+        assert_eq!(s.runtime_json()["resolved"]["theme"]["palette"]["name"].as_str().unwrap_or(""), "catppuccin", "the palette did not change");
+    }
+
+    #[test]
+    fn theme_create_never_overwrites_a_file_it_cannot_read() {
+        let d = Dir::new("create-unreadable");
+        let s = svc(&d);
+        fs::create_dir_all(d.0.join("themes")).unwrap();
+        fs::write(d.0.join("themes/mine.toml"), b"# caf\xe9\nextends = \"omarchy\"\n").unwrap();
+        let o = run(&s, "theme_create", json!({ "name": "mine", "extends": "minimal" }), "agent:x");
+        assert_eq!(code(&o), "invalid_args", "{:?}", o.env);
+        assert_eq!(fs::read(d.0.join("themes/mine.toml")).unwrap(), b"# caf\xe9\nextends = \"omarchy\"\n");
+        // Nor does an undo write a historical copy over it.
+        assert!(run(&s, "theme_create", json!({ "name": "other", "extends": "minimal" }), "u").env.ok);
+        assert!(run(&s, "config_set", json!({ "path": "animation.speed", "value_text": "0.5" }), "u").env.ok);
+        // Pretend "mine" had been created and recorded earlier, then the person edited it badly (Latin-1).
+        let h = s.history();
+        let latest = h.latest().unwrap();
+        let mut themes = latest.themes.clone();
+        themes.insert("mine".into(), "extends = \"omarchy\"\n".into());
+        h.record(&history::now_rfc3339(), "u", "set mine", &latest.config, &themes).unwrap();
+        assert!(run(&s, "config_undo", json!({}), "u").env.ok);
+        assert_eq!(fs::read(d.0.join("themes/mine.toml")).unwrap(), b"# caf\xe9\nextends = \"omarchy\"\n", "undo left it alone");
+    }
+
+    #[test]
+    fn undoing_back_to_the_baseline_keeps_it_and_a_later_edit_can_be_undone() {
+        let d = Dir::new("baseline");
+        let s = svc(&d);
+        for i in 0..(history::KEEP - 1) {
+            assert!(run(&s, "config_set", json!({ "path": "behavior.dock.hide_ms", "value_text": (100 + i).to_string() }), "user").env.ok);
+        }
+        assert_eq!(s.history().all().len(), history::KEEP);
+        let o = run(&s, "config_undo", json!({ "n": history::KEEP - 2 }), "user");
+        assert!(o.env.ok, "{:?}", o.env);
+        assert!(s.history().all().iter().any(|v| v.seq == 1), "the baseline is still in history");
+        assert!(run(&s, "config_set", json!({ "path": "behavior.dock.edge", "value_text": "left" }), "user").env.ok);
+        let o = run(&s, "config_undo", json!({}), "user");
+        assert!(o.env.ok, "the new edit can be undone: {:?}", o.env);
+        assert_eq!(s.current().0.doc["behavior"]["dock"]["edge"], "bottom");
+    }
+
+    #[test]
+    fn an_undo_does_not_write_over_a_hand_edit_the_watcher_has_not_seen() {
+        let d = Dir::new("race");
+        let s = svc(&d);
+        run(&s, "config_set", json!({ "path": "animation.speed", "value_text": "0.5" }), "agent:x");
+        // The person saves a valid edit; no observe() has run.
+        fs::write(d.0.join("config.toml"), "[animation]\nspeed = 0.5\n[[rules]]\napp = \"foot\"\nworkspace = 3\n").unwrap();
+        // The agent undoes its own last change: refused, because the person's edit is on top now.
+        let o = run(&s, "config_undo", json!({}), "agent:x");
+        assert_eq!(code(&o), "not_in_scope", "{:?}", o.env);
+        assert!(fs::read_to_string(d.0.join("config.toml")).unwrap().contains("workspace = 3"));
+        let top = run(&s, "config_history", json!({}), "u").env.data.unwrap()["versions"][0].clone();
+        assert_eq!(top["caller"], "user", "the edit was recorded as the user's");
+        // And a set from an agent no longer folds the person's edit into its own version.
+        fs::write(d.0.join("config.toml"), "[animation]\nspeed = 0.5\n[[rules]]\napp = \"foot\"\nworkspace = 4\n").unwrap();
+        run(&s, "config_set", json!({ "path": "behavior.follow_focus", "value_text": "false" }), "agent:y");
+        let h = run(&s, "config_history", json!({}), "u").env.data.unwrap()["versions"].clone();
+        assert_eq!(h[0]["caller"], "agent:y");
+        assert_eq!(h[1]["caller"], "user");
+        assert!(h[1]["summary"].as_str().unwrap().contains("rules"));
+        // The person's edit survives the undo of the agent's own change.
+        assert!(run(&s, "config_undo", json!({}), "agent:y").env.ok);
+        assert!(fs::read_to_string(d.0.join("config.toml")).unwrap().contains("workspace = 4"));
     }
 
     #[test]

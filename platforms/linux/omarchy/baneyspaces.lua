@@ -71,9 +71,11 @@ function __baneyspaces_recovery(bindfn)
 end
 __baneyspaces_recovery(function(keys, dsp, desc) hl.bind(keys, dsp, { description = desc }) end)
 
+local state = (os.getenv("XDG_STATE_HOME") or ((os.getenv("HOME") or "") .. "/.local/state")) .. "/baneyspaces"
+
 -- The default keys: they keep every workspace key working until the daemon has written yours, with no
--- daemon, and when your keys file fails.
-local function bind_defaults()
+-- daemon, and whenever your keys cannot all be installed.
+function __baneyspaces_bind_defaults()
   pcall(hl.unbind, "SUPER + code:10")
   pcall(hl.unbind, "SUPER + code:11")
   pcall(hl.unbind, "SUPER + code:12")
@@ -134,23 +136,83 @@ local function bind_defaults()
   hl.bind("SUPER + GRAVE", hl.dsp.exec_cmd("baneyspaces agent-workspace toggle"), { description = "BaneySpaces: show or hide the agent workspace" })
 end
 
--- Your keys: the daemon writes them from config.toml (baneyspaces config set keys.bindings...). A file that
--- fails to run falls back to the defaults, and says why in keys-error.txt next to it.
-local state = (os.getenv("XDG_STATE_HOME") or ((os.getenv("HOME") or "") .. "/.local/state")) .. "/baneyspaces"
+local DEFAULT_KEYS = { "SUPER + code:10", "SUPER + code:11", "SUPER + code:12", "SUPER + code:13", "SUPER + code:14", "SUPER + code:15", "SUPER + code:16", "SUPER + code:17", "SUPER + code:18", "SUPER + SHIFT + code:10", "SUPER + SHIFT + code:11", "SUPER + SHIFT + code:12", "SUPER + SHIFT + code:13", "SUPER + SHIFT + code:14", "SUPER + SHIFT + code:15", "SUPER + SHIFT + code:16", "SUPER + SHIFT + code:17", "SUPER + SHIFT + code:18", "SUPER + SHIFT + ALT + code:10", "SUPER + SHIFT + ALT + code:11", "SUPER + SHIFT + ALT + code:12", "SUPER + SHIFT + ALT + code:13", "SUPER + SHIFT + ALT + code:14", "SUPER + SHIFT + ALT + code:15", "SUPER + SHIFT + ALT + code:16", "SUPER + SHIFT + ALT + code:17", "SUPER + SHIFT + ALT + code:18", "SUPER + TAB", "SUPER + GRAVE", }
+
+__baneyspaces_keys, __baneyspaces_mode_binds, __baneyspaces_loaded = {}, {}, false
+
+function __baneyspaces_note_failure(msg)
+  if __baneyspaces_notified then return end
+  __baneyspaces_notified = true
+  local ef = io.open(state .. "/keys-error.txt", "w")
+  if ef then ef:write(msg, "\n") ef:close() end
+  hl.exec_cmd("notify-send -a BaneySpaces 'BaneySpaces: your keys could not be installed' 'The default keys are on. See keys-error.txt in the BaneySpaces state folder.'")
+end
+
+function __baneyspaces_install(spec)
+  __baneyspaces_notified = false
+  -- Leave a mode this config no longer has: its binds are about to be disabled, and Hyprland applies only a
+  -- submap's own binds while one is active.
+  local names = {}
+  for _, m in ipairs(spec.modes or {}) do names[m.name] = true end
+  local okc, cur = pcall(hl.get_current_submap)
+  if okc and cur and cur ~= "" and cur ~= "reset" and cur ~= "default" and not names[cur] then
+    pcall(hl.dispatch, hl.dsp.submap("reset"))
+  end
+  -- Hyprland 0.56.2 crashes when more than one bind is removed through its handle: global binds come out by
+  -- key (hl.unbind) and mode binds are disabled.
+  for _, k in ipairs(__baneyspaces_keys) do pcall(hl.unbind, k) end
+  for _, b in ipairs(__baneyspaces_mode_binds) do pcall(function() b:set_enabled(false) end) end
+  for _, k in ipairs(DEFAULT_KEYS) do pcall(hl.unbind, k) end
+  for _, k in ipairs(spec.steal or {}) do pcall(hl.unbind, k) end
+  local keys, mode_binds, failed = {}, {}, {}
+  local in_mode = false
+  local function bind(chord, dsp, desc)
+    local ok, b = pcall(hl.bind, chord, dsp, { description = desc })
+    if not (ok and b) then
+      failed[#failed + 1] = tostring(chord)
+    elseif in_mode then
+      table.insert(mode_binds, b)
+    else
+      table.insert(keys, chord)
+    end
+  end
+  for _, e in ipairs(spec.keys or {}) do bind(e[1], e[2], e[3]) end
+  for _, m in ipairs(spec.modes or {}) do
+    local ok = pcall(hl.define_submap, m.name, "reset", function()
+      in_mode = true
+      for _, e in ipairs(m.binds) do bind(e[1], e[2], e[3]) end
+      if __baneyspaces_recovery then __baneyspaces_recovery(bind) end
+    end)
+    in_mode = false
+    if not ok then failed[#failed + 1] = "mode " .. tostring(m.name) end
+  end
+  if #failed > 0 then
+    -- Take out what was just bound and put the defaults back.
+    for _, k in ipairs(keys) do pcall(hl.unbind, k) end
+    for _, b in ipairs(mode_binds) do pcall(function() b:set_enabled(false) end) end
+    __baneyspaces_keys, __baneyspaces_mode_binds, __baneyspaces_loaded = {}, {}, false
+    __baneyspaces_bind_defaults()
+    local msg = "keys not installed: " .. #failed .. " bind(s) failed (" .. table.concat(failed, ", ") .. "); the default keys are on"
+    __baneyspaces_note_failure(msg)
+    error(msg, 0)
+  end
+  __baneyspaces_keys, __baneyspaces_mode_binds, __baneyspaces_loaded = keys, mode_binds, true
+end
+
+-- Your keys: the daemon writes them from config.toml (baneyspaces config set keys.bindings...) as a table handed
+-- to __baneyspaces_install. A file that fails to run, or whose keys cannot all be bound, leaves the defaults on
+-- and says why in keys-error.txt next to it.
 local generated = state .. "/hyprland-keys.lua"
 local gf = io.open(generated, "r")
-local loaded = false
 if gf then
   gf:close()
+  __baneyspaces_notified = false
   local ok, err = pcall(dofile, generated)
-  if ok then
-    loaded = true
-  else
-    local ef = io.open(state .. "/keys-error.txt", "w")
-    if ef then ef:write(tostring(err), "\n") ef:close() end
-    hl.exec_cmd("notify-send -a BaneySpaces 'BaneySpaces: your keys file failed' 'The default keys are on. See keys-error.txt in the BaneySpaces state folder.'")
+  if not ok then
+    __baneyspaces_note_failure(tostring(err))
+    __baneyspaces_loaded = false
   end
 end
-if not loaded then
-  bind_defaults()
+if not __baneyspaces_loaded then
+  __baneyspaces_bind_defaults()
 end

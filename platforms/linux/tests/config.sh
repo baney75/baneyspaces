@@ -110,6 +110,21 @@ eq "any change to the value makes it pending again, and unbound" "$(has_bind 'Ba
 baneyspaces config unset 'keys.bindings."mod+e"' >/dev/null
 eq "Remove is an unset: free for anyone" "$(baneyspaces config get | jq -r '.data.pending|length')" "0"
 
+eq "stop, lend and the like are pending too, not bound" "$(baneyspaces config set 'keys.bindings."mod+z"' 'stop' | jq -r '.data.pending[0].kind')" "privileged binding"
+eq "(not bound)" "$(has_bind 'BaneySpaces: stop' && echo bound || echo inert)" "inert"
+baneyspaces config unset 'keys.bindings."mod+z"' >/dev/null
+# An approval written some other way still counts, is logged, and shows as made outside Settings.
+OUTHOOK="echo outside"
+baneyspaces config set hooks.on_switch "$OUTHOOK" >/dev/null
+OID="$(printf 'hooks.on_switch\0%s' "$OUTHOOK" | sha256sum | cut -d' ' -f1)"
+jq -n --arg id "$OID" --arg v "$OUTHOOK" '{format:1,approved:{($id):{path:"hooks.on_switch",value:$v,time:"2026-11-01T00:00:00Z"}}}' > "$XDG_STATE_HOME/baneyspaces/approvals.json"
+check "(the daemon notices the file)" wait_for 5 sh -c "[ \"\$(jq -r '.approved[0].outside_settings' '$RTJ')\" = true ]"
+eq "config.json marks it as approved outside Settings" "$(jq -r '.approved[]|select(.id=="'$OID'")|.outside_settings' "$RTJ")" "true"
+check "the log says it did not come through the Settings handler" sh -c "grep '\"op\":\"approval\"' '$XDG_STATE_HOME/baneyspaces/config.log' | grep -q '\"outside_settings\":true'"
+eq "the entry the Settings handler writes is marked as from Settings" "$(ctl '{"op":"test_settings_approve","args":{"path":"hooks.on_window_open","value":"x"}}' >/dev/null; jq -r '[.approved[]|select(.path=="hooks.on_window_open")|.outside_settings][0]' "$RTJ")" "false"
+baneyspaces config reset hooks >/dev/null
+rm -f "$XDG_STATE_HOME/baneyspaces/approvals.json"
+
 # --- the recovery chord cannot be rebound or removed
 eq "binding the recovery chord is refused" "$(jq -r '.error.data.issues[0].code' "$TMP/agent-rebind.json")" "reserved_chord"
 eq "so is removing it" "$(jq -r '.error.data.issues[0].code' "$TMP/agent-unbind.json")" "reserved_chord"
@@ -147,6 +162,27 @@ eq "removing every workspace switch is refused" "$(baneyspaces config apply "$TM
 check "no workspace key was lost to the refusal" sh -c "hyprctl -j binds | jq -e '[.[]|select(.description==\"BaneySpaces: workspace 4\")]|length == 1' >/dev/null"
 baneyspaces config reset keys >/dev/null
 eq "reset keys restores the defaults in Hyprland" "$(bs_binds)" "$BASE_BINDS"
+
+# --- a keys file whose binds cannot all be made installs nothing and leaves the defaults on
+baneyspaces config set 'keys.bindings."mod+h"' 'agent-workspace hide' >/dev/null
+check "(setup) a custom key is bound" has_bind 'BaneySpaces: agent-workspace hide'
+cp "$KEYS_LUA" "$TMP/good-keys.lua"
+sed 's|^  keys = {$|  keys = {\n    { "SUPER + nosuchkeysym", hl.dsp.exec_cmd("true"), "BaneySpaces: a bind Hyprland cannot make" },|' "$TMP/good-keys.lua" > "$TMP/bad-keys.lua"
+check "(setup) the bad file has the failing bind" grep -q nosuchkeysym "$TMP/bad-keys.lua"
+rm -f "$XDG_STATE_HOME/baneyspaces/keys-error.txt"
+R="$(hyprctl eval "dofile(\"$TMP/bad-keys.lua\")")"
+check "installing it is an error, not a success" test "$R" != ok
+eq "the workspace keys are all still bound (the defaults went back on)" "$(bs_binds)" "$BASE_BINDS"
+eq "the custom key was not installed" "$(has_bind 'BaneySpaces: agent-workspace hide' && echo yes || echo no)" "no"
+eq "nothing of the bad file is bound" "$(has_bind 'BaneySpaces: a bind Hyprland cannot make' && echo yes || echo no)" "no"
+eq "workspace 4's key is bound exactly once" "$(H binds | jq '[.[]|select(.description=="BaneySpaces: workspace 4")]|length')" "1"
+eq "the recovery chord is still bound" "$(has_bind 'BaneySpaces: recovery (hold 2 s)' && echo yes)" "yes"
+check "the failure is written down" sh -c "grep -q 'nosuchkeysym' '$XDG_STATE_HOME/baneyspaces/keys-error.txt'"
+eq "a failing mode is the same: nothing installed" "$(hyprctl eval '__baneyspaces_install({ keys = { { "SUPER + code:12", hl.dsp.exec_cmd("true"), "BaneySpaces: should not stay" } }, modes = { { name = "m", binds = { { "NOPE + x", hl.dsp.exec_cmd("true"), "bad" } } } } })' | head -c 40 | grep -c ok)" "0"
+eq "(and the key it was going to bind is not bound)" "$(has_bind 'BaneySpaces: should not stay' && echo yes || echo no)" "no"
+eq "a good config installs again afterwards" "$(baneyspaces config set animation.speed 0.9 | jq -r '.data.live.keys')" "applied"
+check "(and the custom key is back)" has_bind 'BaneySpaces: agent-workspace hide'
+baneyspaces config reset >/dev/null
 
 # --- the recovery chord's commands put the defaults back (what the hold runs)
 baneyspaces config set 'keys.bindings."mod+h"' 'agent-workspace hide' >/dev/null
@@ -230,6 +266,19 @@ baneyspaces config unset keys.modes.resize >/dev/null; sleep 0.5
 eq "removing the mode you are in leaves it" "$(hyprctl submap)" "default"
 hyprctl eval 'hl.is_key_down = REAL_IS_KEY_DOWN' >/dev/null
 baneyspaces config reset >/dev/null
+
+# --- a reset waits for a slow daemon and never writes the files behind it
+baneyspaces config set 'keys.bindings."mod+h"' 'agent-workspace hide' >/dev/null
+SDP="$(ctl '{"op":"ping"}' | jq -r .data.pid)"; rm -f "$TMP/slow.json"
+kill -STOP "$SDP"
+( baneyspaces config reset keys > "$TMP/slow.json" 2>&1 & )
+sleep 7
+eq "after 7 s of a stopped daemon the reset has not written the files itself" "$(grep -c 'mod+h' "$CFG/config.toml")" "1"
+check "and has printed nothing" test ! -s "$TMP/slow.json"
+kill -CONT "$SDP"
+check "once the daemon runs, it does the reset" wait_for 15 test -s "$TMP/slow.json"
+eq "through the daemon" "$(jq -r '.ok, (.data.via // "daemon")' "$TMP/slow.json" | tr '\n' ' ')" "true daemon "
+eq "the keys are the defaults in Hyprland" "$(has_bind 'BaneySpaces: agent-workspace hide' && echo custom || echo default)" "default"
 
 # --- recovery works with the daemon down
 DP="$(ctl '{"op":"ping"}' | jq -r .data.pid)"

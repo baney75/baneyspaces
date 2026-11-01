@@ -412,9 +412,30 @@ fn config_call(paths: &paths::Paths, req: &Value, declared: Option<&str>) -> Env
     if matches!(op, "config_validate" | "config_schema") {
         return cfg::local_service(true).dispatch(op, &req["args"], &caller()).env;
     }
-    let wait = if op == "config_reset" { std::time::Duration::from_secs(5) } else { std::time::Duration::from_secs(daemon::CLIENT_TIMEOUT_SECS) };
-    let env = daemon::call_timeout(paths, req, wait);
-    let unreachable = env.error.as_ref().is_some_and(|e| e.code == "daemon_down" || (op == "config_reset" && e.code == "timeout"));
+    // Reset is what the recovery chord runs and it must always work, but never by writing the files behind a
+    // daemon that is alive: the daemon would not know, and keeps running the old keys and hooks. While a daemon
+    // lives, wait for it (retrying; a reset is the same reset twice). Only when none is running does the CLI do it.
+    let (env, unreachable) = if op == "config_reset" {
+        let started = std::time::Instant::now();
+        loop {
+            let env = daemon::call_timeout(paths, req, std::time::Duration::from_secs(5));
+            let code = env.error.as_ref().map(|e| e.code.as_str());
+            let down_or_slow = matches!(code, Some("daemon_down" | "timeout"));
+            if !down_or_slow {
+                break (env, false);
+            }
+            if !daemon::daemon_alive(paths) {
+                break (env, true);
+            }
+            if started.elapsed() > std::time::Duration::from_secs(daemon::CLIENT_TIMEOUT_SECS) {
+                break (Envelope::err("timeout", "the daemon is running but did not answer in 90 s, and the reset was not made behind its back", Retry::Never, "Stop the daemon (`baneyspaces stop`, or kill it), then run the reset again: with no daemon it works on its own."), false);
+            }
+        }
+    } else {
+        let env = daemon::call_timeout(paths, req, std::time::Duration::from_secs(daemon::CLIENT_TIMEOUT_SECS));
+        let down = env.error.as_ref().is_some_and(|e| e.code == "daemon_down");
+        (env, down)
+    };
     if op == "config_reset" && unreachable {
         let svc = cfg::local_service(false);
         let out = svc.dispatch(op, &req["args"], &caller());

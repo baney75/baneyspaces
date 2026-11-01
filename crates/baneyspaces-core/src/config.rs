@@ -846,9 +846,16 @@ pub fn validate(user: &Value, env: &Env, themes: &Themes) -> Validated {
     let tname = user_str(user, &["theme", "name"])
         .unwrap_or_else(|| defaults["theme"]["name"].as_str().unwrap_or("baneyspaces"))
         .to_string();
-    let active: Vec<String> = theme_chain(&tname, themes)
+    let mut active: Vec<String> = theme_chain(&tname, themes)
         .map(|c| c.chain)
         .unwrap_or_else(|_| vec![tname.clone()]);
+    // A custom theme that supplies the palette in use is part of the config too: a bad palette is an
+    // error, not a warning.
+    if let Some(p) = user_str(user, &["theme", "palette"]) {
+        if themes.contains_key(p) && !active.iter().any(|a| a == p) {
+            active.push(p.to_string());
+        }
+    }
     for (name, t) in themes {
         for i in validate_theme_file(name, t, themes) {
             if active.contains(name) {

@@ -196,6 +196,342 @@
     ]
   },
   {
+    "name": "undoing back to the first version keeps it, and a later edit can still be undone",
+    "steps": [
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 100,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 101,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 102,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 103,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 104,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 105,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 106,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 107,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 108,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 109,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 110,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 111,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 112,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 113,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 114,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 115,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 116,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 117,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 118,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 119,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 120,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 121,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 122,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 123,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 124,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 125,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 126,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 127,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 128,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 129,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 130,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 131,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 132,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 133,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 134,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 135,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 136,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 137,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 138,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 139,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 140,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 141,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 142,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 143,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 144,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 145,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 146,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 147,
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.hide_ms",
+        "value": 148,
+        "expect": "ok"
+      },
+      {
+        "do": "check",
+        "history": {
+          "len": 50
+        }
+      },
+      {
+        "do": "undo",
+        "n": 49,
+        "expect": "ok",
+        "effective": {
+          "behavior.dock.hide_ms": 400
+        },
+        "file": ""
+      },
+      {
+        "do": "set",
+        "path": "behavior.dock.edge",
+        "value": "left",
+        "expect": "ok",
+        "effective": {
+          "behavior.dock.edge": "left"
+        }
+      },
+      {
+        "do": "undo",
+        "expect": "ok",
+        "effective": {
+          "behavior.dock.edge": "bottom"
+        }
+      },
+      {
+        "do": "undo",
+        "expect": {
+          "error": "not_found"
+        }
+      }
+    ]
+  },
+  {
     "name": "nothing to undo",
     "steps": [
       {

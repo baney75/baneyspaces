@@ -1533,6 +1533,16 @@ pub fn take_lock(paths: &Paths) -> Result<std::fs::File, String> {
     Ok(f)
 }
 
+/// Whether a daemon is running: it holds the lock for the life of the process.
+pub fn daemon_alive(paths: &Paths) -> bool {
+    use std::os::unix::io::AsRawFd;
+    let Ok(f) = std::fs::OpenOptions::new().read(true).write(true).open(paths.run.join("daemon.lock")) else { return false };
+    // SAFETY: a valid fd from the file just opened.
+    let got = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
+    // Released when `f` closes.
+    !got
+}
+
 /// How long the CLI and MCP client wait for the daemon. The daemon's own budget for one hands call
 /// (`hands::BUDGET_SECS`) is well under this, so a reply always comes first unless something is wrong.
 pub const CLIENT_TIMEOUT_SECS: u64 = 90;

@@ -52,7 +52,21 @@ default it would have replaced stays bound. The rules:
    configured values, which still show the pending entries; `config.json` (`pending`) carries the same for Settings. `written_by_hint` is
    the caller of the version that last set the value in the kept history, and is a hint only: a hand edit reads `user`, and a value older than
    the 50 kept versions has no writer. Approval never depends on it.
-4. **A hook that is approved runs as the user**, with no agent token. An approved binding runs when its key is pressed.
+4. **A hook that is approved runs as the user**, with no agent token. An approved binding runs when its key is pressed. Approval covers the
+   command text only: if an approved command runs a script, the script is whatever it is when it runs, so Settings shows the command and
+   nothing it refers to.
+5. **What is executable is an allowlist.** The plain actions are `switch`, `move`, `focus-monitor`, `overview`, `launcher`, `switcher`,
+   `window`, `agent-workspace`, `keys`, `ls`, `state`, `doctor`, `agent status|windows|log`, `mode ...` and `none`. Anything else waits for a
+   click, including `exec`, `agent run`, `agent lend`, `agent return`, `agent press|key|pointer`, `stop`, `config`, `theme`, `set`, and any
+   command the CLI gains later.
+6. **The limit of this gate.** `approvals.json` is a file of the same user, as is `config.toml`. A process of yours, an agent's shell
+   included, can write either one, or run a command directly, without any of this. The click keeps a configuration an agent wrote from running
+   by itself, and an honest tool from approving by accident; it is not a boundary against a determined process of the same user, the same
+   host threat model as the agent launch token for `switch` and `move` (see `docs/agent-computer-use.md` for the Mac). Two cheap
+   checks are built in: the daemon logs every change to `approvals.json` (`config.log`, `op: approval`) with whether it carries the Settings
+   handler's mark (`via: settings`), and Settings lists an approval without that mark as **approved outside Settings** (`approved[].outside_settings`
+   in `config.json`). The caller names `settings` and `agent:<name>` in a request are self-declared and not authenticated; only the launch token
+   is read from the peer.
 
 Three things stay out of reach of every edit, so nobody gets locked out of their own machine:
 

@@ -314,6 +314,67 @@
     ]
   },
   {
+    "name": "privileged commands wait for a click too: stop, lend, return, keys and pointer",
+    "steps": [
+      {
+        "do": "apply",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "mod+z": "stop",
+              "mod+q": "agent lend @sa:e1",
+              "mod+w": "agent return @sa:e1",
+              "mod+p": "agent press @sa:e1 Return"
+            }
+          }
+        },
+        "caller": "agent:x",
+        "expect": "ok",
+        "pending": [
+          "keys.bindings.\"mod+z\"",
+          "keys.bindings.\"mod+q\"",
+          "keys.bindings.\"mod+w\"",
+          "keys.bindings.\"mod+p\""
+        ],
+        "absent": [
+          "keys.bindings.mod+z",
+          "keys.bindings.mod+q",
+          "keys.bindings.mod+w",
+          "keys.bindings.mod+p"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "the plain actions are an allowlist: moving around and showing things stay free",
+    "steps": [
+      {
+        "do": "apply",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "mod+a": "switch 2",
+              "mod+b": "move 3 --stay",
+              "mod+c": "focus-monitor DP-1",
+              "mod+d": "overview",
+              "mod+e": "launcher",
+              "mod+f": "switcher apps",
+              "mod+g": "window resize 10 0",
+              "mod+i": "agent-workspace toggle",
+              "mod+j": "agent status",
+              "mod+k": "agent log",
+              "mod+l": "ls",
+              "mod+n": "keys"
+            }
+          }
+        },
+        "caller": "agent:x",
+        "expect": "ok",
+        "pending": []
+      }
+    ]
+  },
+  {
     "name": "a pending binding that replaces a default leaves the default bound",
     "steps": [
       {

@@ -29,6 +29,10 @@ pub struct Version {
     /// 0 for a change. For an undo, how many live versions it stepped back over: the state it
     /// holds is that of the version `undo` steps below the top of the live stack.
     pub undo: u64,
+    /// The live versions after this one, oldest first (the newest [`KEEP`] at most): what an undo can step
+    /// back over. Kept in the version itself so pruning can never evict a state the live stack still
+    /// needs, such as the baseline an undo went back to.
+    pub live: Vec<u64>,
 }
 
 impl Version {
@@ -37,6 +41,7 @@ impl Version {
         if self.undo > 0 {
             v["undo"] = json!(self.undo);
         }
+        v["live"] = json!(self.live);
         v
     }
 
@@ -56,6 +61,7 @@ impl Version {
                 .filter_map(|(k, t)| Some((k.clone(), t.as_str()?.to_string())))
                 .collect(),
             undo: v["undo"].as_u64().unwrap_or(0),
+            live: v["live"].as_array().map(|a| a.iter().filter_map(Value::as_u64).collect()).unwrap_or_default(),
         })
     }
 
@@ -241,6 +247,20 @@ impl History {
             .chars()
             .take(300)
             .collect();
+        let mut live = match self.latest() {
+            Some(prev) => Self::live_seqs(&self.all_with(&prev)),
+            None => vec![],
+        };
+        if undo > 0 {
+            for _ in 0..undo {
+                live.pop();
+            }
+        } else {
+            live.push(seq);
+            if live.len() > KEEP {
+                live.drain(..live.len() - KEEP);
+            }
+        }
         let v = Version {
             seq,
             time: time.to_string(),
@@ -249,6 +269,7 @@ impl History {
             config: config.to_string(),
             themes: themes.clone(),
             undo,
+            live: live.clone(),
         };
         write_atomic(
             &self.file(seq),
@@ -256,29 +277,47 @@ impl History {
                 .unwrap_or_default()
                 .as_bytes(),
         )?;
+        // Keep the newest KEEP versions, and every version the live stack still points at.
         let seqs = self.seqs();
         if seqs.len() > KEEP {
             for old in &seqs[..seqs.len() - KEEP] {
-                let _ = fs::remove_file(self.file(*old));
+                if !live.contains(old) {
+                    let _ = fs::remove_file(self.file(*old));
+                }
             }
         }
         Ok(seq)
     }
 
-    /// The versions an undo can step back over, oldest first: every change, minus the ones later
-    /// undos stepped back over. History itself is never shortened by an undo.
-    pub fn live_stack(all: &[Version]) -> Vec<usize> {
-        let mut stack: Vec<usize> = vec![];
-        for (i, v) in all.iter().enumerate() {
+    /// The versions an undo can step back over, oldest first, as version numbers: the newest version
+    /// records them. For versions written before that was recorded, the changes minus the ones later
+    /// undos stepped over. History itself is never shortened by an undo.
+    pub fn live_seqs(all: &[Version]) -> Vec<u64> {
+        if let Some(last) = all.last() {
+            if !last.live.is_empty() {
+                return last.live.clone();
+            }
+        }
+        let mut stack: Vec<u64> = vec![];
+        for v in all {
             if v.undo > 0 {
                 for _ in 0..v.undo {
                     stack.pop();
                 }
             } else {
-                stack.push(i);
+                stack.push(v.seq);
             }
         }
         stack
+    }
+
+    /// The versions to replay for the live stack when `last` is the newest.
+    fn all_with(&self, last: &Version) -> Vec<Version> {
+        if last.live.is_empty() {
+            self.all()
+        } else {
+            vec![last.clone()]
+        }
     }
 }
 
@@ -371,11 +410,37 @@ mod tests {
         h.record_with("t", "user", "undo 2", "", &none, 2).unwrap();
         let all = h.all();
         assert_eq!(all.len(), 5, "an undo adds a version");
-        assert_eq!(History::live_stack(&all), vec![0, 1]);
+        assert_eq!(History::live_seqs(&all), vec![1, 2]);
         h.record("t", "user", "again", "", &none).unwrap();
         h.record_with("t", "user", "undo 1", "", &none, 1).unwrap();
-        assert_eq!(History::live_stack(&h.all()), vec![0, 1]);
+        assert_eq!(History::live_seqs(&h.all()), vec![1, 2]);
         assert_eq!(h.record("t", "user", "x", "", &none).unwrap(), 8);
+        assert_eq!(History::live_seqs(&h.all()), vec![1, 2, 8]);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn pruning_never_evicts_a_version_the_live_stack_needs() {
+        let d = tmp("anchor");
+        let h = History::new(&d);
+        let none = BTreeMap::new();
+        for i in 0..KEEP {
+            h.record("t", "user", &format!("v{i}"), "", &none).unwrap();
+        }
+        assert_eq!(h.all().len(), KEEP);
+        // Undo all the way back to the baseline: recording it would push version 1 out of the newest 50.
+        h.record_with("t", "user", "undo", "", &none, (KEEP - 1) as u64).unwrap();
+        let all = h.all();
+        assert!(all.iter().any(|v| v.seq == 1), "the baseline the live stack points at is kept");
+        assert_eq!(History::live_seqs(&all), vec![1]);
+        // A later edit can still be undone.
+        let n = h.record("t", "user", "edit", "", &none).unwrap();
+        assert_eq!(History::live_seqs(&h.all()), vec![1, n]);
+        // Plain history stays bounded at 50 once the stack no longer reaches back.
+        for i in 0..80 {
+            h.record("t", "user", &format!("w{i}"), "", &none).unwrap();
+        }
+        assert!(h.all().len() <= KEEP + KEEP, "bounded: {}", h.all().len());
         let _ = fs::remove_dir_all(&d);
     }
 

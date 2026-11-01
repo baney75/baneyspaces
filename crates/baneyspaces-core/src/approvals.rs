@@ -23,7 +23,7 @@ pub struct Pending {
     pub path: String,
     pub segments: Vec<String>,
     pub value: String,
-    /// `hook`, `exec binding` or `config binding`.
+    /// `hook`, `exec binding`, `config binding` or `privileged binding` (lending, stopping, keys and pointer, ...).
     pub kind: &'static str,
 }
 
@@ -108,16 +108,29 @@ pub fn entry_id(path: &str, value: &str) -> String {
     sha256_hex(format!("{path}\0{value}").as_bytes()).to_string()
 }
 
-/// Whether an action changes the machine or the configuration, and so needs a click.
+/// The plain actions: they move you around or show something, and nothing else. An allowlist: anything
+/// not on it (a command, a change to the configuration, lending, stopping the daemon, a command added
+/// to the CLI later) waits for a click.
+fn plain_cli(w: &[String]) -> bool {
+    match (w[0].as_str(), w.get(1).map(String::as_str)) {
+        ("switch" | "move" | "focus-monitor" | "overview" | "launcher" | "switcher" | "window" | "agent-workspace" | "keys" | "ls" | "state" | "doctor", _) => true,
+        // Read-only views of the agent workspace.
+        ("agent", Some("status" | "windows" | "log")) => true,
+        _ => false,
+    }
+}
+
+/// Whether an action needs a click, and what to call it.
 pub fn action_kind(a: &Action) -> Option<&'static str> {
     match a {
+        Action::None | Action::Mode(_) => None,
         Action::Exec(_) => Some("exec binding"),
+        Action::Cli(w) if plain_cli(w) => None,
         Action::Cli(w) => match (w[0].as_str(), w.get(1).map(String::as_str)) {
             ("config" | "theme" | "set", _) => Some("config binding"),
             ("agent", Some("run")) => Some("exec binding"),
-            _ => None,
+            _ => Some("privileged binding"),
         },
-        _ => None,
     }
 }
 
@@ -239,6 +252,20 @@ pub fn load(path: &Path) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
+/// Every approval in the file, for Settings to show. `outside_settings` is true for one that does not
+/// carry the Settings handler's mark (written by hand, or by a tool): Settings says so.
+pub fn list(path: &Path) -> Vec<Value> {
+    let doc: Value = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_else(|| json!({}));
+    let mut out: Vec<Value> = doc["approved"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(id, e)| json!({ "id": id, "path": e["path"], "value": e["value"], "time": e["time"], "via": e["via"], "outside_settings": e["via"] != "settings" }))
+        .collect();
+    out.sort_by_key(|e| e["time"].as_str().unwrap_or("").to_string());
+    out
+}
+
 /// Records an approval. This is the Settings UI's write (and the test-only Settings operation's):
 /// nothing in the CLI, MCP or control socket calls it.
 pub fn approve(path: &Path, entry_path: &str, value: &str, time: &str) -> std::io::Result<String> {
@@ -250,7 +277,9 @@ pub fn approve(path: &Path, entry_path: &str, value: &str, time: &str) -> std::i
     if !doc["approved"].is_object() {
         doc["approved"] = json!({});
     }
-    doc["approved"][&id] = json!({ "path": entry_path, "value": value, "time": time });
+    // `via: settings` marks a write made by the Settings handler; an entry without it was written some
+    // other way and shows as "approved outside Settings".
+    doc["approved"][&id] = json!({ "path": entry_path, "value": value, "time": time, "via": "settings" });
     // Keep the newest 500.
     if let Some(o) = doc["approved"].as_object_mut() {
         if o.len() > 500 {
@@ -324,7 +353,7 @@ mod tests {
     #[test]
     fn only_executable_entries_are_pending() {
         let e = eff(json!({
-            "keys": { "bindings": { "mod+h": "exec foot", "mod+j": "move 2", "mod+k": "config set theme.name minimal", "mod+l": "theme set minimal", "mod+y": "agent run -- sh -c 'x'", "mod+u": "overview", "mod+n": "mode m" }, "modes": { "m": { "x": "exec true", "y": "switch 2" } } },
+            "keys": { "bindings": { "mod+h": "exec foot", "mod+j": "move 2", "mod+k": "config set theme.name minimal", "mod+l": "theme set minimal", "mod+y": "agent run -- sh -c 'x'", "mod+u": "overview", "mod+n": "mode m", "mod+z": "stop", "mod+q": "agent lend @sa:e1" }, "modes": { "m": { "x": "exec true", "y": "switch 2" } } },
             "hooks": { "on_switch": "echo hi", "on_window_open": "" },
             "animation": { "speed": 0.5 }, "theme": { "name": "minimal" }
         }));
@@ -340,7 +369,7 @@ mod tests {
         ] {
             assert!(paths.contains(&p), "{p} missing from {paths:?}");
         }
-        assert_eq!(waiting.len(), 6, "{paths:?}");
+        assert_eq!(waiting.len(), 8, "{paths:?}");
         // They are inert; everything else runs.
         assert_eq!(active.doc["hooks"]["on_switch"], "");
         assert!(active
@@ -393,6 +422,12 @@ mod tests {
         assert!(load(&f).is_empty());
         let id = approve(&f, "hooks.on_switch", "echo a", "2026-11-01T00:00:00Z").unwrap();
         assert!(load(&f).contains(&id));
+        assert_eq!(list(&f)[0]["outside_settings"], false);
+        // An entry without the Settings handler's mark is "approved outside Settings".
+        std::fs::write(&f, format!("{{\"approved\":{{\"{id}\":{{\"path\":\"hooks.on_switch\",\"value\":\"echo a\",\"time\":\"t\"}}}}}}")).unwrap();
+        assert_eq!(list(&f)[0]["outside_settings"], true);
+        assert!(load(&f).contains(&id), "it still approves");
+        approve(&f, "hooks.on_switch", "echo a", "2026-11-01T00:00:00Z").unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
