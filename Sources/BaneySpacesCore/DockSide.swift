@@ -59,9 +59,16 @@ public enum DockSide {
 }
 
 extension DockSide {
+    /// Where `grow` (in the layer's own coordinates) lies from the layer's anchor point, which is
+    /// where a layer transform is applied about: `anchorPoint` is in unit coordinates, (0.5, 0.5) at
+    /// the center and (0, 0) for a layer AppKit made for a view.
+    public static func growOffset(grow: CGPoint, anchorPoint: CGPoint, size: CGSize) -> CGPoint {
+        CGPoint(x: grow.x - anchorPoint.x * size.width, y: grow.y - anchorPoint.y * size.height)
+    }
+
     /// The transform that scales a layer by `scale` about `point`, where `point` is measured from the
-    /// layer's center (the layer's own anchor), so a list grows from the tile it belongs to and
-    /// that point stays where it is.
+    /// layer's anchor (`growOffset`), so a list grows from the tile it belongs to and that point
+    /// stays where it is.
     public static func growTransform(about point: CGPoint, scale: CGFloat) -> CGAffineTransform {
         CGAffineTransform(translationX: point.x, y: point.y)
             .scaledBy(x: scale, y: scale)

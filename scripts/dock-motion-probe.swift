@@ -11,6 +11,11 @@
 //   - the longest gap between two states, and the frames dropped (gaps over 1.5 frames at 60 Hz),
 // and fails if the dock panel's frame changes at all while the list opens or closes.
 //
+// The dock is pinned (`dock/show`), so this is the pinned path the tick takes; a list `dock/more` opens
+// is held until `dock/lessmore`, since the probe never moves the pointer and the 250 ms grace would
+// otherwise close it at once. The grace itself (and Esc, and a click outside) need a pointer and
+// are covered by unit tests and the steps in the PR.
+//
 // It needs `defaults write com.baney.baneyspaces dockURLCommands -bool true` (the checks switch the
 // other dock probes use) and a workspace with more than four apps, so a tile shows "+N". The dock
 // is on screen for about four seconds, so it runs only when the Mac has been idle 10 minutes

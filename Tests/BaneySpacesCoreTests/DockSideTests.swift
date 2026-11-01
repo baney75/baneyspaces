@@ -42,17 +42,21 @@ final class DockSideTests: XCTestCase {
         XCTAssertEqual(wide.midX, b.midX, accuracy: 0.5, "wider than the bar: centered on it")
     }
 
-    /// The bar doesn't move for a list: the list's frame is a function of the bar, never the other
-    /// way round, and the dock panel's frame comes from its own size alone (`DockEdge.frame`).
-    func testTheBarsFrameDoesNotDependOnTheList() {
-        let visible = CGRect(x: 0, y: 0, width: 1512, height: 949)
-        for edge in DockEdge.allCases {
-            let b = bar(edge)
-            let closed = edge.frame(size: CGSize(width: 480, height: 120), screen: screen, visible: visible)
-            _ = DockSide.frame(size: CGSize(width: 320, height: 330), anchor: b, bar: b, edge: edge, screen: screen)
-            let open = edge.frame(size: CGSize(width: 480, height: 120), screen: screen, visible: visible)
-            XCTAssertEqual(open, closed, "\(edge): opening a list leaves the dock panel exactly where it was")
-            XCTAssertEqual(b, bar(edge))
+    func testTheGrowPointIsMeasuredFromTheLayersOwnAnchor() {
+        // A layer AppKit makes for a view is anchored at (0, 0); a hosting layer's default is the center.
+        let size = CGSize(width: 240, height: 150)
+        let grow = CGPoint(x: 132, y: 0)
+        XCTAssertEqual(DockSide.growOffset(grow: grow, anchorPoint: CGPoint(x: 0.5, y: 0.5), size: size), CGPoint(x: 12, y: -75))
+        XCTAssertEqual(DockSide.growOffset(grow: grow, anchorPoint: .zero, size: size), grow)
+        // Scaling about that offset leaves the grow point itself where it is, whichever the anchor.
+        for anchor in [CGPoint(x: 0.5, y: 0.5), .zero, CGPoint(x: 0, y: 1)] {
+            let about = DockSide.growOffset(grow: grow, anchorPoint: anchor, size: size)
+            let t = DockSide.growTransform(about: about, scale: 0.96)
+            let anchorPt = CGPoint(x: anchor.x * size.width, y: anchor.y * size.height)
+            // The layer transform maps v (from the anchor) to t(v); the grow point's v is `about`.
+            let moved = about.applying(t)
+            XCTAssertEqual(moved.x + anchorPt.x, grow.x, accuracy: 1e-9)
+            XCTAssertEqual(moved.y + anchorPt.y, grow.y, accuracy: 1e-9)
         }
     }
 

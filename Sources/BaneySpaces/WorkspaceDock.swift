@@ -588,11 +588,19 @@ final class WorkspaceDock {
     /// `baneyspaces://dock/more` and `dock/lessmore`, for checks: the first tile's "+N" list, open or closed.
     func openMoreForCheck() -> Bool {
         guard isShown, let t = model.tiles.first(where: { $0.apps.count > DockModel.iconsShown + 1 }) else { return false }
+        // The probe never moves the pointer, so without this the grace would close the list 250 ms in.
+        sideHeldForCheck = true
         model.more = t.id
         return true
     }
 
-    func closeMoreForCheck() { model.more = nil }
+    func closeMoreForCheck() {
+        sideHeldForCheck = false
+        model.more = nil
+    }
+
+    /// A list a check opened stays until the check closes it.
+    private var sideHeldForCheck = false
 
     /// `baneyspaces://dock/show`: for scripts and checks. It stays until `dock/hide`.
     func pin(_ on: Bool) {
@@ -604,7 +612,9 @@ final class WorkspaceDock {
     private func show(on screen: NSScreen, retried: Bool = false) {
         tickState.edgeSince = nil
         tickState.awaySince = nil
+        dismissSide()
         model.reset()
+        model.forgetSide()
         model.shown = true
         let edge = WorkspaceDock.edge
         model.maxLength = (edge.isVertical ? screen.visibleFrame.height : screen.frame.width) - 32
@@ -648,7 +658,7 @@ final class WorkspaceDock {
             p.alphaValue = 0
             p.orderFrontRegardless()
             NSAnimationContext.runAnimationGroup({ ctx in
-                ctx.duration = DockMotion.dockIn
+                ctx.duration = DockMotion.duration(DockMotion.dockIn, reduceMotion: reduceMotion)
                 ctx.timingFunction = DockMotion.arrive
                 p.animator().setFrame(up, display: true)
                 p.animator().alphaValue = 1
@@ -676,17 +686,28 @@ final class WorkspaceDock {
         shownPoint = nil
         hiddenAt = ProcessInfo.processInfo.systemUptime
         model.reset()
-        dismissSide()
         let away = WorkspaceDock.edge.away
         let down = p.frame.offsetBy(dx: away.dx, dy: away.dy)
-        guard animated, !reduceMotion else { p.orderOut(nil); return }
+        // An open list fades with the dock rather than vanishing before it.
+        let fadeSide = animated && !reduceMotion && (sidePanel?.isVisible ?? false)
+        guard animated, !reduceMotion else { dismissSide(); p.orderOut(nil); return }
+        if fadeSide {
+            removeSideMonitors()
+            sideGrace.reset()
+            sideHeldForCheck = false
+            sideClosing = true
+        } else {
+            dismissSide()
+        }
         NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = DockMotion.dockOut
+            ctx.duration = DockMotion.duration(DockMotion.dockOut, reduceMotion: reduceMotion)
             ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
             p.animator().setFrame(down, display: true)
             p.animator().alphaValue = 0
+            if fadeSide { sidePanel?.animator().alphaValue = 0 }
         }, completionHandler: { [weak self] in
             guard let self, !self.isShown else { return }
+            self.dismissSide()
             p.orderOut(nil)
         })
     }
@@ -753,8 +774,14 @@ final class WorkspaceDock {
         let host = FirstClickHostingView(rootView: AnyView(DockView(model: model, mode: .side).environment(\.colorScheme, .dark)))
         host.sizingOptions = [.intrinsicContentSize]
         host.onSizeChange = { [weak self] in DispatchQueue.main.async { self?.syncSide() } }
-        host.wantsLayer = true
-        sp.contentView = host
+        // A plain container of its own, so the layer the growth animates has an anchor this code
+        // knows (`animateSideGrowth` reads it) rather than whatever the hosting view's layer has.
+        let container = NSView()
+        container.wantsLayer = true
+        host.frame = container.bounds
+        host.autoresizingMask = [.width, .height]
+        container.addSubview(host)
+        sp.contentView = container
         sideHost = host
         sidePanel = sp
         return sp
@@ -762,11 +789,13 @@ final class WorkspaceDock {
 
     /// Puts the side panel where the open list or strip belongs, opening or closing it to match the model.
     func syncSide() {
-        guard isShown, let p = panel, let side = model.liveSide,
-              let barFrame = model.frames[DockView.barKey], let anchor = sideAnchor() else {
+        // Close only when nothing is open. A pass in which the frames aren't reported yet (the
+        // bar unmeasured, a tile mid-layout) waits: the list stays where it last was.
+        guard isShown, let p = panel, let side = model.liveSide else {
             closeSidePanel()
             return
         }
+        guard let barFrame = model.frames[DockView.barKey], let anchor = sideAnchor() else { return }
         let sp = sidePanel ?? makeSidePanel()
         guard let host = sideHost else { return }
         host.layoutSubtreeIfNeeded()
@@ -781,7 +810,9 @@ final class WorkspaceDock {
         let screenFrame = (shownOn ?? p.screen)?.frame ?? p.frame
         let bar = DockEdge.screenRect(barFrame, panel: p.frame, origin: model.origin)
         let frame = DockSide.frame(size: size, anchor: anchor, bar: bar, edge: WorkspaceDock.edge, screen: screenFrame)
-        let opening = !sp.isVisible || sideClosing
+        // Opening, or open again: it was closing (or faded out by a close that came to nothing)
+        // and something is open.
+        let opening = !sp.isVisible || sideClosing || sp.alphaValue < 1
         sideClosing = false
         sideAnchorRect = anchor
         if sp.frame != frame { sp.setFrame(frame, display: true) }
@@ -797,7 +828,7 @@ final class WorkspaceDock {
         guard !reduceMotion else { return }
         animateSideGrowth(sp, grow: grow, from: DockMotion.listScale, to: 1, duration: DockMotion.listIn, timing: DockMotion.arrive)
         NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = DockMotion.listIn
+            ctx.duration = DockMotion.duration(DockMotion.listIn, reduceMotion: reduceMotion)
             ctx.timingFunction = DockMotion.arrive
             sp.animator().alphaValue = 1
         }
@@ -806,8 +837,8 @@ final class WorkspaceDock {
     /// The layer's scale about the point at its tile, from one value to another.
     private func animateSideGrowth(_ sp: DockPanel, grow: CGPoint, from: CGFloat, to: CGFloat, duration: TimeInterval, timing: CAMediaTimingFunction) {
         guard let layer = sp.contentView?.layer else { return }
-        let center = CGPoint(x: sp.frame.width / 2, y: sp.frame.height / 2)
-        let about = CGPoint(x: grow.x - center.x, y: grow.y - center.y)
+        // About `grow`, measured from the layer's own anchor point, wherever AppKit put it.
+        let about = DockSide.growOffset(grow: grow, anchorPoint: layer.anchorPoint, size: layer.bounds.size)
         let a = CABasicAnimation(keyPath: "transform")
         a.fromValue = CATransform3DMakeAffineTransform(DockSide.growTransform(about: about, scale: from))
         a.toValue = CATransform3DMakeAffineTransform(DockSide.growTransform(about: about, scale: to))
@@ -824,7 +855,8 @@ final class WorkspaceDock {
         let finish = { [weak self, weak sp] in
             guard let self, let sp, self.sideClosing || !sp.isVisible else { return }
             self.sideClosing = false
-            guard self.model.liveSide == nil else { return }
+            // Something opened again meanwhile: leave it open, and keep it closable.
+            guard self.model.liveSide == nil else { self.syncSide(); return }
             sp.parent?.removeChildWindow(sp)
             sp.orderOut(nil)
             sp.alphaValue = 1
@@ -836,7 +868,7 @@ final class WorkspaceDock {
         animateSideGrowth(sp, grow: DockSide.growPoint(panel: sp.frame, anchor: anchor, edge: WorkspaceDock.edge),
                           from: 1, to: DockMotion.listScale, duration: DockMotion.listOut, timing: CAMediaTimingFunction(name: .easeIn))
         NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = DockMotion.listOut
+            ctx.duration = DockMotion.duration(DockMotion.listOut, reduceMotion: reduceMotion)
             ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
             sp.animator().alphaValue = 0
         }, completionHandler: finish)
@@ -857,6 +889,7 @@ final class WorkspaceDock {
     /// Closes the open list or strip now, and says why in trace.log, as the dock's own lines do.
     private func closeSideNow(_ reason: String) {
         guard model.liveSide != nil else { return }
+        sideHeldForCheck = false
         let kind = model.moreApps != nil ? "more" : "strip"
         Trace.log("dock list closed (\(kind)): \(reason)")
         model.strip = nil
@@ -871,6 +904,7 @@ final class WorkspaceDock {
             sideGrace.reset()
             return
         }
+        if sideHeldForCheck { sideGrace.reset(); return }
         let mouse = NSEvent.mouseLocation
         let inside = DockSide.pointerWithList(mouse, list: sp.frame, anchor: sideAnchor())
         if sideGrace.step(now: now, inside: inside) {
@@ -890,6 +924,12 @@ final class WorkspaceDock {
             guard e.keyCode == 53 else { return }
             DispatchQueue.main.async {
                 guard let self, self.model.liveSide != nil else { return }
+                // A drag from the list has no row to end it once the list goes: end it first, so the
+                // cursor comes back and no hold or target is left.
+                if self.model.drag != nil {
+                    Trace.log("dock drag cancelled: Esc")
+                    self.model.cancelDrag()
+                }
                 self.closeSideNow("Esc")
                 if !self.pinned { self.hide() }
             }
@@ -1086,6 +1126,9 @@ final class DockModel: ObservableObject {
     /// A tile shows up to four icons; past that, three and a "+N".
     static let iconsShown = 3
     @Published var drag: Drag?
+    /// The icon of a drag just let go, settling away where it was dropped.
+    struct Settling { let icon: NSImage; let location: CGPoint }
+    @Published var settling: Settling?
     @Published var fileDrag: FileDrag? {
         didSet {
             guard fileDrag != oldValue else { return }
@@ -1285,12 +1328,13 @@ final class DockModel: ObservableObject {
         // A window that closed mid-drag is not moved; a drag with none left moves nothing.
         let alive = DockDrop.survivors(of: drag.ids, alive: liveWindows(drag.from, true))
         let to = alive.isEmpty ? nil : dropTarget
-        // The lifted icon settles away rather than vanishing (`DockMotion.settle`); only the
-        // dragged icon and the label change with it, and Reduce Motion makes it instant.
-        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-            self.drag = nil
-        } else {
-            withAnimation(.easeOut(duration: DockMotion.settle)) { self.drag = nil }
+        // Nothing else animates with the drop: the dragged icon settles away in a view of its own
+        // (`SettleIcon`), while the drag, the rows' dimming and the label change at once.
+        let reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if !reduce { settling = Settling(icon: drag.icon, location: drag.location) }
+        self.drag = nil
+        if !reduce {
+            DispatchQueue.main.asyncAfter(deadline: .now() + DockMotion.settle + 0.05) { [weak self] in self?.settling = nil }
         }
         dragEnded = Date()
         if let to {
@@ -1332,8 +1376,11 @@ final class DockModel: ObservableObject {
         onStrip = false
         strip = nil
         more = nil
-        lastSide = nil
+        // lastSide stays: the dock fades out with the list on it (`WorkspaceDock.hide`), and the next
+        // `show` forgets it.
     }
+
+    func forgetSide() { lastSide = nil }
 
     func setHover(_ h: Hover, _ inside: Bool) {
         if inside { hover = h } else if hover == h { hover = nil }
@@ -1374,6 +1421,24 @@ private struct HoverScale: ViewModifier {
     }
 }
 
+/// The lifted icon after a drop: it shrinks a little and fades in 120 ms. The animation belongs to this
+/// view alone, so nothing else in the dock animates with the drop. Under Reduce Motion it never appears.
+private struct SettleIcon: View {
+    let icon: NSImage
+    let size: CGFloat
+    @State private var gone = false
+
+    var body: some View {
+        let reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        Image(nsImage: icon).resizable().interpolation(.high).frame(width: size, height: size)
+            .scaleEffect(gone ? 0.92 : DockMotion.lift)
+            .shadow(color: .black.opacity(gone ? 0 : 0.45), radius: 8, y: 3)
+            .opacity(gone ? 0 : 1)
+            .onAppear { gone = true }
+            .animation(reduce ? nil : .easeOut(duration: DockMotion.duration(DockMotion.settle, reduceMotion: reduce)), value: gone)
+    }
+}
+
 /// A row's highlight, fading in and out in 80 ms. The animation is on the fill alone, never on a row
 /// or a tile: an animation on a parent also moved things the parent re-laid out (the tiles that slid
 /// sideways over each other, 2026-10-19). Reduce Motion makes it instant.
@@ -1384,7 +1449,8 @@ private struct RowHighlight: View {
     var body: some View {
         RoundedRectangle(cornerRadius: 7, style: .continuous)
             .fill(on ? tint.opacity(0.85) : .clear)
-            .animation(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? nil : .easeOut(duration: DockMotion.rowHover), value: on)
+            .animation(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? nil
+                       : .easeOut(duration: DockMotion.duration(DockMotion.rowHover, reduceMotion: false)), value: on)
     }
 }
 
@@ -1472,7 +1538,8 @@ struct DockView: View {
                     .shadow(color: .black.opacity(0.45), radius: 8, y: 3)
                     .position(drag.location)
                     .allowsHitTesting(false)
-                    .transition(.opacity.combined(with: .scale(scale: 0.92)))
+            } else if let s = model.settling {
+                SettleIcon(icon: s.icon, size: 36 * k).position(s.location).allowsHitTesting(false)
             }
         }
         // Where the "dock" space starts in the panel, to place a pointer the panel never hears.
@@ -1537,16 +1604,24 @@ struct DockView: View {
     }
 
     /// What the pointer is on, lined up with it. The window strip and the "+N" list are not here:
-    /// they are a panel of their own (`mode == .side`), so this row never changes size for them.
+    /// they are a panel of their own (`mode == .side`), so this slot never changes size for them.
     @ViewBuilder private var side: some View {
-        if model.edge.isVertical {
+        let vertical = model.edge.isVertical
+        if model.liveSide != nil {
+            // A list or strip is open: it says its own thing and covers this slot. The slot keeps the
+            // size the label had, so opening or closing the list leaves the dock panel exactly as it
+            // was (a label's own width changes with what's hovered, as it always did).
+            Color.clear.frame(width: vertical ? max(sideSize.width, 1) : max(sideSize.width, 1), height: vertical ? nil : 24)
+        } else if vertical {
             // As wide as the label, and nothing when there's none, so the panel (and the area that
             // keeps the dock up) never reaches far into the screen. The panel resizes with it, and
             // the bar stays put because the panel is pinned to its edge.
             label.modifier(SizeReport(size: $sideSize))
-                .offset(sideOffset(hoverKey))
+                .offset(sideOffset(labelKey))
         } else {
             label.frame(height: 24)
+                .modifier(SizeReport(size: $sideSize))
+                .offset(sideOffset(labelKey))
         }
     }
 
@@ -1615,8 +1690,6 @@ struct DockView: View {
     }
 
     private var labelText: String? {
-        // A list or strip says its own thing (and, mid-drag, where the drag lands).
-        if mode == .bar, model.liveSide != nil { return nil }
         if let file = model.fileDrag {
             switch file.target {
             case .app(let n, let id):
