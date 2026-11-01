@@ -429,6 +429,10 @@ impl Model {
 
     /// R-M2: what a display without a workspace gets: the one it showed last if nobody shows it,
     /// else the first empty workspace nobody shows, else the first nobody shows.
+    pub fn pick_for(&self, id: &str) -> u8 {
+        self.pick(id)
+    }
+
     fn pick(&self, id: &str) -> u8 {
         let taken: BTreeSet<u8> = self
             .monitors
@@ -877,8 +881,10 @@ impl Model {
                 format!("no monitor {monitor}"),
             ));
         }
-        if self.focused_monitor.as_deref() != Some(monitor) {
-            self.focused_monitor = Some(monitor.to_string());
+        let changed = self.focused_monitor.as_deref() != Some(monitor);
+        self.focused_monitor = Some(monitor.to_string());
+        // Nothing in front yet (a model just rebuilt, its windows now known): take the display's own.
+        if changed || self.active.is_none() {
             self.active = self.candidate();
         }
         Ok(vec![])

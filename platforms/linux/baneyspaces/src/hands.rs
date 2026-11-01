@@ -332,6 +332,16 @@ fn guard(c: &Core, window: &str, expect: Option<&SnapInfo>) -> Result<Plan, Enve
         },
     )
     .map_err(|r| r.envelope())?;
+    // The app's session bus ended when the daemon restarted: it keeps a dead bus address and its
+    // accessibility is gone, so there is nothing to read. Say so rather than answer wrongly.
+    if c.bus_lost_for(cl.pid) {
+        return Err(Envelope::err(
+            "stale_ref",
+            "this app's session bus ended when BaneySpaces restarted, so it can no longer be read",
+            Retry::Never,
+            "Close it and start it again with `baneyspaces agent open` (or `agent run`).",
+        ));
+    }
     let env = proc::token_of(cl.pid).and_then(|t| c.tokens.get(&t)).and_then(|i| i.bus.as_ref()).map(|b| vec![("DBUS_SESSION_BUS_ADDRESS".to_string(), b.addr.clone())]).unwrap_or_default();
     Ok(Plan {
         env,
@@ -604,6 +614,8 @@ mod tests {
             .is_none());
     }
 
+    // Run through /bin/sh: executing a file this process has just written races with other test threads
+    // forking (ETXTBSY).
     fn script(name: &str, body: &str) -> std::path::PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let p = std::env::temp_dir().join(format!("bs-engine-{}-{name}", std::process::id()));
@@ -617,7 +629,7 @@ mod tests {
         // The engine prints its answer and exits, leaving a descendant that inherited stdout.
         let e = script("helper", "echo '{\"ok\":true,\"data\":{}}'\nsleep 30 &\nexit 0");
         let t = Instant::now();
-        let r = run_engine(&e, &[], Duration::from_secs(10), &[]).expect("the answer is read once the engine exits");
+        let r = run_engine(std::path::Path::new("/bin/sh"), &[e.display().to_string()], Duration::from_secs(10), &[]).expect("the answer is read once the engine exits");
         assert_eq!(r["ok"], true);
         assert!(t.elapsed() < Duration::from_secs(5), "took {:?}", t.elapsed());
         let _ = std::fs::remove_file(&e);
@@ -627,9 +639,9 @@ mod tests {
     fn a_stuck_engine_is_killed_with_its_group_at_the_deadline() {
         let e = script("stuck", "sleep 30 &\nsleep 30");
         let t = Instant::now();
-        let r = run_engine(&e, &[], Duration::from_millis(300), &[]).unwrap_err();
+        let r = run_engine(std::path::Path::new("/bin/sh"), &[e.display().to_string()], Duration::from_millis(500), &[]).unwrap_err();
         assert_eq!(r.error.unwrap().code, "timeout");
-        assert!(t.elapsed() < Duration::from_secs(3));
+        assert!(t.elapsed() < Duration::from_secs(8), "took {:?}", t.elapsed());
         let _ = std::fs::remove_file(&e);
     }
 

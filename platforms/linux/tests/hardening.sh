@@ -53,6 +53,9 @@ echo "== a restart keeps what it knew about an agent's terminal"
 RT="$(baneyspaces agent run -- sh -c 'sleep 4; foot -T afterrestart sleep 600; sleep 600')"; RTPID="$(echo "$RT" | jq -r '.data.pid // empty')"
 check "agent run opened a terminal" test -n "$RTPID"
 eq "the issued tokens are kept private (0600)" "$(stat -c %a "$XDG_STATE_HOME/baneyspaces/tokens.json")" "600"
+GA3="$(test_open /usr/bin/python3 "$HERE/gtk_test_app.py")"; GW3="$(echo "$GA3" | jq -r '.data.window // empty')"; sleep 1.5
+eq "(setup) a GTK app on its own bus can be read before the restart" "$(baneyspaces agent snapshot --window "$GW3" -i | jq -r .ok)" "true"
+RTW="$(echo "$RT" | jq -r '.data.window // empty')"
 baneyspaces stop >/dev/null; check "the daemon stopped" wait_for 4 daemon_down
 # With no daemon, an agent's shell still must not be able to switch your workspaces through the CLI fallback.
 FWS="$(mon_ws $(H monitors | jq -r '.[]|select(.focused)|.name'))"
@@ -73,7 +76,15 @@ check "the agent's shell opens a window after the restart" wait_for 12 sh -c "hy
 sleep 1
 ARW="$(H clients | jq -r '.[]|select(.title=="afterrestart")|.address')"
 eq "that window is on the agent workspace" "$(client_ws ${ARW:-x})" "special:agent"
-eq "and drivable: the new daemon still knew the token" "$(baneyspaces agent status | jq -r ".data.windows[]|select(.window==\"$ARW\")|.drivable")" "true"
+eq "and not drivable: its launch's session bus ended with the old daemon" "$(baneyspaces agent status | jq -r ".data.windows[]|select(.window==\"$ARW\")|.drivable")" "false"
+# A restart ends the session buses it started. A GApplication quits when its bus goes; an app that keeps
+# running (the agent's terminal) has a dead bus address, so it cannot be read: the answer says so
+# instead of returning something wrong.
+eq "a GTK app whose bus ended with the old daemon is gone, not half alive" "$(baneyspaces agent snapshot --window "$GW3" -i | jq -r .error.code)" "not_found"
+SNAP="$(baneyspaces agent snapshot --window "$RTW" -i)"
+eq "a window that survived the restart is refused, clearly" "$(echo "$SNAP" | jq -r '.error.code + " " + .error.retry')" "stale_ref never"
+eq "and says why" "$(echo "$SNAP" | jq -r '.error.message | test("session bus ended")')" "true"
+eq "agent status marks it not drivable" "$(baneyspaces agent status | jq -r ".data.windows[]|select(.window==\"$RTW\")|.drivable")" "false"
 # (A window opened later by a process inside an agent's shell is not under an exec rule, so Hyprland
 # shows it for a moment before the daemon moves it; Hyprland warps the pointer to it. Documented limit.)
 same_screen "after a daemon restart and a window from an agent's shell" nopointer
@@ -151,6 +162,39 @@ hyprctl eval 'hl.config({ misc = { focus_on_activate = true } })' >/dev/null
 eq "(test) someone turns it on" "$(hyprctl getoption misc:focus_on_activate | head -1)" "bool: true"
 check "the daemon turns it off again" wait_for 8 sh -c "[ \"\$(hyprctl getoption misc:focus_on_activate | head -1)\" = 'bool: false' ]"
 
+echo "== your keys never wait for an agent launch"
+baneyspaces focus-monitor $M1 >/dev/null; sleep 0.2
+LN="$(free_ws)"
+( baneyspaces agent run -- sleep 20 >/dev/null ) & LP=$!
+sleep 0.1
+T0=$(date +%s%N); baneyspaces switch $LN >/dev/null; T1=$(date +%s%N)
+MS=$(( (T1-T0)/1000000 ))
+check "a switch while an agent app is being launched took ${MS} ms (under 100)" test "$MS" -lt 100
+wait $LP
+eq "and it switched" "$(mon_ws $M1)" "$LN"
+rebase
+
+echo "== an agent's shell cannot drive Hyprland through hyprctl"
+HCN="$(free_ws)"
+HOUT="$TMP/hyprctl-from-agent.out"; rm -f "$HOUT"
+baneyspaces agent run -- sh -c "hyprctl dispatch 'hl.dsp.focus({ workspace = \"$HCN\" })' > $HOUT 2>&1; echo done >> $HOUT; sleep 600" >/dev/null
+wait_for 6 grep -q '^done$' "$HOUT"
+eq "hyprctl from an agent's shell has no instance to talk to" "$(grep -c 'HYPRLAND_INSTANCE_SIGNATURE\|not set' "$HOUT")" "1"
+eq "and your workspace did not change" "$(mon_ws $M1)" "$LN"
+same_screen "after hyprctl from an agent's shell" nopointer
+USER_CURSOR="$(cursor)"
+
+echo "== portals and notifications cannot be reached from an agent's session bus"
+baneyspaces agent run -- sleep 60 >/dev/null; sleep 1
+PADDR="$(jq -r '[.[]|select(.bus != null)|.bus.addr]|last' "$XDG_STATE_HOME/baneyspaces/tokens.json")"
+check "(setup) there is a private bus address" test -n "$PADDR" -a "$PADDR" != null
+PERR="$(busctl --address="$PADDR" call org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop org.freedesktop.DBus.Peer Ping 2>&1)"
+eq "a call to the portal is refused (AccessDenied), not activated" "$(echo "$PERR" | grep -c 'AccessDenied\|denied')" "1"
+NERR="$(busctl --address="$PADDR" call org.freedesktop.Notifications /org/freedesktop/Notifications org.freedesktop.DBus.Peer Ping 2>&1)"
+eq "so is a call to a notification daemon (denied, or nothing there to activate)" "$(echo "$NERR" | grep -c 'denied\|not provided by any')" "1"
+sleep 0.5
+eq "and no portal process was started for the launch" "$(/usr/bin/python3 -I "$HERE/procs-under.py" "$XDG_RUNTIME_DIR/baneyspaces/rt-" scan | grep -c 'xdg-desktop-portal\|xdg-document-portal')" "0"
+
 echo "== deny by default: an app that is not on the allowlist is never started for an agent"
 APP="$HERE/gtk_test_app.py"
 ln -sf "$APP" "$TMP/linked_app.py"
@@ -206,8 +250,12 @@ eq "an unlisted app is still needs_sandbox, with a file" "$(baneyspaces agent op
 sleep 0.5
 eq "none of them started anything" "$(addrs | wc -l)" "$BEFORE"
 printf '#!/bin/sh\nsleep 600\n' > "$HO/hold.sh"; chmod +x "$HO/hold.sh"
-FO="$(baneyspaces agent open foot "$HO/hold.sh")"
-eq "foot with a file from the handoff folder starts, on the agent workspace" "$(echo "$FO" | jq -r '.ok')" "true"
+eq "a terminal takes no file at all (it would run it): bad_arguments" "$(baneyspaces agent open foot "$HO/hold.sh" | jq -r .error.code)" "bad_arguments"
+eq "the answer says to use agent run" "$(baneyspaces agent open foot "$HO/hold.sh" | jq -r '.error.message | test("agent run")')" "true"
+sleep 0.5
+eq "nothing was started" "$(addrs | wc -l)" "$BEFORE"
+FO="$(baneyspaces agent open foot)"
+eq "foot by name starts, on the agent workspace" "$(echo "$FO" | jq -r '.ok')" "true"
 FOW="$(echo "$FO" | jq -r '.data.window // empty')"
 eq "(it is on special:agent)" "$(client_ws ${FOW:-x})" "special:agent"
 FOPID="$(echo "$FO" | jq -r '.data.pid')"
@@ -247,7 +295,9 @@ kill "$UPID" "$AGPID" 2>/dev/null; sleep 1; rebase
 baneyspaces agent run -- sh -c 'sleep 2' >/dev/null; sleep 4
 NB_BEFORE="$(ls "$XDG_RUNTIME_DIR"/baneyspaces/bus-* 2>/dev/null | wc -l)"
 ctl '{"op":"test_reap","args":{}}' >/dev/null
-sleep 1
+# The stack is taken down after the lock is released, by the upkeep thread (within a couple of seconds).
+fewer() { [ "$(ls "$XDG_RUNTIME_DIR"/baneyspaces/bus-* 2>/dev/null | wc -l)" -lt "$NB_BEFORE" ]; }
+wait_for 8 fewer
 NB_AFTER="$(ls "$XDG_RUNTIME_DIR"/baneyspaces/bus-* 2>/dev/null | wc -l)"
 check "a token's bus is torn down when its processes are gone (sockets $NB_BEFORE -> $NB_AFTER)" test "$NB_AFTER" -lt "$NB_BEFORE"
 kill "$FOPID" 2>/dev/null

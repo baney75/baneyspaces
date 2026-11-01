@@ -53,8 +53,10 @@ isolation line, drawn by process:
   BaneySpaces' own folder; Ghostty with `--gtk-single-instance=false`), never a path (`/` is
   `bad_arguments`). The name is resolved through PATH and its realpath must equal the system binary
   of that name (`/usr/bin`, `/bin`, `/usr/local/bin`), so a wrapper script or a symlink earlier on PATH
-  or in a project does not pass. The only arguments are files, and every one must resolve (realpath)
-  inside the handoff folder (`$XDG_STATE_HOME/baneyspaces/handoff`); a flag, a URL, `..` or a symlink
+  or in a project does not pass. A terminal (foot, kitty, alacritty, xterm, ghostty) and the dialog
+  tools take **no file at all**: a terminal would run the file as a command, and `agent run` is the
+  way to run one. Only viewers (mpv, imv, swayimg) and browsers take files, and every one must resolve
+  (realpath) inside the handoff folder (`$XDG_STATE_HOME/baneyspaces/handoff`); a flag, a URL, `..` or a symlink
   out of the folder is `bad_arguments`. The isolation flags are the only flags, and BaneySpaces
   adds them. Anything off the list, such as nautilus or a GApplication, is `needs_sandbox` before
   launch, whether or not you run a copy;
@@ -67,11 +69,21 @@ isolation line, drawn by process:
   over the socket of *your* accessibility bus. The hands engine is pointed at the launch's session
   bus when it works on that launch's windows. The stack is a process group, a child of the daemon:
   it is torn down when the token's last process exits, when the daemon exits (`stop`, `SIGTERM`,
-  `SIGINT`, `SIGHUP`, the include being removed), and, if the daemon is killed outright or crashes,
-  by `PR_SET_PDEATHSIG`; the next daemon also sweeps any stack whose directory is gone or which no
-  live token owns. What does not carry over: your notification daemon, tray and portal backends.
-  xdg-desktop-portal starts a second instance on the private bus, so file choosers and capture
-  portals may not open; the clipboard and display are Wayland and untouched; GSettings reads work.
+  `SIGINT`, `SIGHUP`, the include being removed). If the daemon is killed outright or crashes, the
+  kernel kills the three processes it started (`PR_SET_PDEATHSIG`); what those started in turn (the
+  accessibility bus daemon, an activated service) is swept by the next daemon, which also removes any
+  stack whose directory is gone or which no live token owns. What does not carry over: your notification daemon, tray and portal backends. The
+  private bus is configured to **refuse** (AccessDenied) any call to xdg-desktop-portal, its
+  backends, the document portal and notification daemons, so none is activated there: a dialog such
+  a portal would raise carries no launch token and would open on *your* workspace. GTK and Qt fall
+  back to their own dialogs. The clipboard and display are Wayland and untouched; GSettings reads
+  work. **A daemon restart ends these buses.** A GApplication quits when its bus goes; an app that
+  keeps running (an agent's terminal) holds a dead bus address and has no accessibility, so `agent
+  snapshot` on it answers `stale_ref` ("this app's session bus ended") and `agent status` marks it
+  not drivable until it is started again. The daemon does not kill the agent's processes. The agent's
+  environment also lacks `HYPRLAND_INSTANCE_SIGNATURE` and `HYPRLAND_CMD`, so `hyprctl` from an
+  agent's shell has no instance to talk to (accident-proofing: the socket under
+  `$XDG_RUNTIME_DIR/hypr/` can still be found by a process that looks for it)
   `agent run` is a shell with your uid, so this is accident-proofing, not a boundary (the host threat
   model; a process of yours can still find your bus address);
 - an app that is on the list but forwards anyway (the allowlist does not see every wrapper) or a
@@ -127,6 +139,12 @@ cleanly before anything moved; a timeout, or a failure after an earlier step wen
 connection failure is `daemon_down` (safe); silence after the request was sent is `timeout` with
 retry `never`.
 
+The daemon holds no lock while an agent app is being launched (starting its bus takes a second or
+two) or taken down, so your keys never wait for one; `nested.sh` times a switch during a launch.
+If Hyprland refuses the settings the daemon relies on (instant switching, the focus rule), the model
+stays dirty and commands are refused (`compositor_error`, retry `after`) until they can be applied.
+`move` with no window named acts on the window Hyprland says is in front right now: an empty desktop
+is `not_found`, a failed query `compositor_error`, and a window the model remembers is never used.
 If the daemon cannot re-read Hyprland after a failure, it does not act on a guess: the next command
 is refused `compositor_error` with retry `after` until it can. The daemon connects to Hyprland's
 event socket before it reads the state, so a window that opens during start-up is replayed, not lost,

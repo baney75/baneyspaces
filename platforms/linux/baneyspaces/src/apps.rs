@@ -32,6 +32,13 @@ pub fn allowed() -> Vec<&'static str> {
     [SEPARATE, GHOSTTY, CHROMIUM, FIREFOX].concat()
 }
 
+/// Only viewers and browsers take files. A terminal treats an argument as the command to run, so a
+/// file there would be code execution: terminals take none (`agent run` is for commands).
+pub fn takes_files(app: &str) -> bool {
+    let name = basename(app);
+    ["mpv", "imv", "swayimg"].contains(&name) || CHROMIUM.contains(&name) || FIREFOX.contains(&name)
+}
+
 /// The allowlist. `profile` is a fresh directory under BaneySpaces' own agent folder, never yours.
 pub fn known(app: &str, profile: &Path) -> Option<Launch> {
     let name = basename(app);
@@ -193,6 +200,16 @@ mod tests {
         assert_eq!(prune_profiles(&st, later, 7 * 86_400, &live), 2);
         assert!(prof.join("bbbbbbbb").exists() && !prof.join("aaaaaaaa").exists());
         let _ = std::fs::remove_dir_all(&st);
+    }
+
+    #[test]
+    fn terminals_and_dialogs_take_no_files() {
+        for t in ["foot", "kitty", "alacritty", "xterm", "ghostty", "st", "urxvt", "weston-terminal", "zenity", "yad"] {
+            assert!(!takes_files(t), "{t}");
+        }
+        for v in ["mpv", "imv", "swayimg", "chromium", "firefox"] {
+            assert!(takes_files(v), "{v}");
+        }
     }
 
     #[test]

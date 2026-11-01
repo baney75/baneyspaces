@@ -55,6 +55,35 @@ pub fn rt_dir(run: &Path, token: &str) -> PathBuf {
     run.join(format!("rt-{}", tag(token)))
 }
 
+/// Services nobody on the private bus may reach. Their D-Bus activation files would start a second
+/// portal or notification daemon on the private bus, whose windows (a file chooser) carry no launch
+/// token and would open on YOUR workspace. A message to them is refused (AccessDenied) before
+/// anything is activated; GTK and Qt then fall back to their own dialogs.
+const DENIED: &[&str] = &[
+    "org.freedesktop.portal.Desktop",
+    "org.freedesktop.portal.Documents",
+    "org.freedesktop.portal.Flatpak",
+    "org.freedesktop.impl.portal.PermissionStore",
+    "org.freedesktop.impl.portal.desktop.gtk",
+    "org.freedesktop.impl.portal.desktop.gnome",
+    "org.freedesktop.impl.portal.desktop.kde",
+    "org.freedesktop.impl.portal.desktop.hyprland",
+    "org.freedesktop.impl.portal.desktop.wlr",
+    "org.freedesktop.Notifications",
+    "org.freedesktop.FileManager1",
+    "org.kde.StatusNotifierWatcher",
+];
+
+/// The private bus's configuration: the system session defaults, then the denials above.
+pub fn session_conf() -> String {
+    let mut c = String::from("<!DOCTYPE busconfig PUBLIC \"-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN\" \"http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd\">\n<busconfig>\n  <include>/usr/share/dbus-1/session.conf</include>\n  <policy context=\"default\">\n");
+    for d in DENIED {
+        c.push_str(&format!("    <deny send_destination=\"{d}\"/>\n    <deny own=\"{d}\"/>\n"));
+    }
+    c.push_str("  </policy>\n</busconfig>\n");
+    c
+}
+
 fn spawn(cmd: &mut Command, group: u32) -> Result<Child, String> {
     use std::os::unix::process::CommandExt;
     // SAFETY: only async-signal-safe calls between fork and exec (one prctl). If the daemon dies,
@@ -69,7 +98,7 @@ fn spawn(cmd: &mut Command, group: u32) -> Result<Child, String> {
     cmd.spawn().map_err(|e| format!("cannot start {:?}: {e}", cmd.get_program()))
 }
 
-fn wait_for(deadline: Duration, ready: impl Fn() -> bool) -> bool {
+fn wait_for(deadline: Duration, mut ready: impl FnMut() -> bool) -> bool {
     let end = Instant::now() + deadline;
     while Instant::now() < end {
         if ready() {
@@ -211,7 +240,9 @@ fn start_here(run: &Path, token: &str) -> Result<(Vec<Child>, BusInfo), String> 
     let mut daemon = Command::new("/usr/bin/dbus-daemon");
     // Its own runtime directory too: everything the bus activates (a portal, the document portal's
     // FUSE mount, gvfs) lands there and never on top of yours.
-    daemon.args(["--session", "--nofork", "--nopidfile", &format!("--address={addr}")]).env("XDG_RUNTIME_DIR", &rt);
+    let conf = rt.join("session.conf");
+    std::fs::write(&conf, session_conf()).map_err(|e| format!("cannot write {}: {e}", conf.display()))?;
+    daemon.arg(format!("--config-file={}", conf.display())).args(["--nofork", "--nopidfile", &format!("--address={addr}")]).env("XDG_RUNTIME_DIR", &rt);
     let leader = spawn(&mut daemon, 0).map_err(|e| format!("{e} (is dbus installed?)"))?;
     let group = leader.id();
     register(group);
@@ -261,23 +292,46 @@ fn unmount_all(rt: &Path) {
     }
 }
 
-/// Stops the stack: SIGTERM to the whole process group so portals and gvfs unmount, a short wait,
-/// SIGKILL for what is left, then the sockets, the mounts and the private runtime directory.
-pub fn stop(run: &Path, token: &str, kids: Option<&mut Vec<Child>>, info: Option<&BusInfo>) {
+/// Everything needed to take a stack down. It is separate from the Core lock on purpose: stopping
+/// waits for processes to exit, and the daemon must not hold up your keys for that.
+pub struct StopJob {
+    pub run: PathBuf,
+    pub token: String,
+    pub kids: Option<Vec<Child>>,
+    pub info: Option<BusInfo>,
+}
+
+impl StopJob {
+    pub fn run(mut self) {
+        stop(&self.run, &self.token, self.kids.as_mut(), self.info.as_ref());
+    }
+}
+
+/// Stops the stack: SIGTERM to the whole process group so portals and gvfs unmount, a short wait in
+/// which the children are reaped (a zombie keeps its group looking alive), SIGKILL for what is left,
+/// then the sockets, the mounts and the private runtime directory.
+pub fn stop(run: &Path, token: &str, mut kids: Option<&mut Vec<Child>>, info: Option<&BusInfo>) {
     if let Some(i) = info {
         unregister(i.pid);
         if i.pid > 1 && crate::proc::start_time(i.pid) == Some(i.start) {
             // SAFETY: a signal to the group this module created; its leader's identity was just checked.
             unsafe { libc::kill(-(i.pid as i32), libc::SIGTERM) };
-            let gone = || unsafe { libc::kill(-(i.pid as i32), 0) } != 0;
-            wait_for(Duration::from_millis(800), gone);
+            wait_for(Duration::from_millis(800), || {
+                let mut all_reaped = true;
+                if let Some(k) = kids.as_mut() {
+                    for c in k.iter_mut() {
+                        all_reaped &= c.try_wait().map(|s| s.is_some()).unwrap_or(true);
+                    }
+                }
+                all_reaped && unsafe { libc::kill(-(i.pid as i32), 0) } != 0
+            });
             unsafe { libc::kill(-(i.pid as i32), libc::SIGKILL) };
         }
     }
-    if let Some(kids) = kids {
-        for k in kids.iter_mut() {
-            let _ = k.kill();
-            let _ = k.wait();
+    if let Some(k) = kids {
+        for c in k.iter_mut() {
+            let _ = c.kill();
+            let _ = c.wait();
         }
     }
     let rt = rt_dir(run, token);
@@ -306,6 +360,17 @@ pub fn sweep_dirs(run: &Path, live_tags: &HashSet<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_private_bus_refuses_portals_and_notifications() {
+        let c = session_conf();
+        assert!(c.contains("<include>/usr/share/dbus-1/session.conf</include>"));
+        for d in ["org.freedesktop.portal.Desktop", "org.freedesktop.Notifications", "org.freedesktop.impl.portal.desktop.gtk"] {
+            assert!(c.contains(&format!("<deny send_destination=\"{d}\"/>")), "{d}");
+        }
+        // The denials come after the include, so they win.
+        assert!(c.find("<include>").unwrap() < c.find("<deny").unwrap());
+    }
 
     #[test]
     fn stack_paths_are_found_in_command_lines_and_environments() {
