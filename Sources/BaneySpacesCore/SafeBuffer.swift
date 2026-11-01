@@ -21,6 +21,8 @@ public enum SafeBuffer {
                 mach_vm_region(mach_task_self_, &address, &size, VM_REGION_BASIC_INFO_64, info, &count, &object)
             }
         }
+        // The call can hand back a port for the region's memory object; every one is let go.
+        if object != 0 { mach_port_deallocate(mach_task_self_, object) }
         // The call finds the next region at or after the address; one that starts later isn't ours.
         guard result == KERN_SUCCESS, address <= start, info.protection & VM_PROT_READ != 0 else { return 0 }
         return Int(address + size - start)

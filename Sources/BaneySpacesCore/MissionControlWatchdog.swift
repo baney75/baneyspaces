@@ -91,27 +91,54 @@ public struct WatchdogInstaller {
     private var target: String { "gui/\(uid)/\(MissionControlWatchdog.label)" }
     private func file(_ name: String) -> URL { folder.appendingPathComponent(name) }
 
+    /// Test seam: called with a replacement file that is complete but not yet in place; false
+    /// stops there, as a crash would.
+    public var beforeReplace: ((URL) -> Bool)?
+
+    /// Puts `data` at `url` all at once: a complete temporary file beside it, then rename(2). The
+    /// file that is there stays whole until the new one replaces it, and nothing is unchanged
+    /// needlessly. A loaded agent runs these files, so one is never deleted first.
+    private func replace(_ url: URL, with data: Data) throws -> Bool {
+        if (try? Data(contentsOf: url)) == data { return true }
+        let temp = url.appendingPathExtension("tmp")
+        try data.write(to: temp)
+        if let beforeReplace, !beforeReplace(temp) { return false }
+        guard rename(temp.path, url.path) == 0 else {
+            unlink(temp.path)
+            throw CocoaError(.fileWriteUnknown)
+        }
+        return true
+    }
+
     /// Writes the files, loads the agent and checks it is loaded. nil when Mission Control can
-    /// safely be switched off; otherwise the reason, in words for Settings.
+    /// safely be switched off; otherwise the reason, in words for Settings. When it can't be
+    /// armed the agent is taken down again, so nothing half-installed is left.
     public func install(pid: Int32) -> String? {
+        let reason = installFiles(pid: pid)
+        if reason != nil { remove() }
+        return reason
+    }
+
+    private func installFiles(pid: Int32) -> String? {
         let fm = FileManager.default
-        guard let source = restoreSource, fm.fileExists(atPath: source.path) else {
+        guard let source = restoreSource, let restore = try? Data(contentsOf: source) else {
             return "BaneySpaces' uninstaller is missing from the app, and it is what puts Mission Control back if BaneySpaces stops."
         }
         do {
             try fm.createDirectory(at: folder, withIntermediateDirectories: true)
             try? fm.removeItem(at: file(MissionControlWatchdog.updating))
             try beatNow(pid: pid)
-            try? fm.removeItem(at: file(MissionControlWatchdog.restoreName))
-            try fm.copyItem(at: source, to: file(MissionControlWatchdog.restoreName))
-            try MissionControlWatchdog.script.write(to: file(MissionControlWatchdog.scriptName), atomically: true, encoding: .utf8)
+            guard try replace(file(MissionControlWatchdog.restoreName), with: restore),
+                  try replace(file(MissionControlWatchdog.scriptName), with: Data(MissionControlWatchdog.script.utf8)) else {
+                return "BaneySpaces stopped before the files that put Mission Control back were in place."
+            }
             let escaped = folder.path.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;")
             let plist = MissionControlWatchdog.plist(folder: escaped)
             let old = try? String(contentsOf: agentPlist, encoding: .utf8)
             try fm.createDirectory(at: agentPlist.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try plist.write(to: agentPlist, atomically: true, encoding: .utf8)
+            guard try replace(agentPlist, with: Data(plist.utf8)) else { return "BaneySpaces stopped before the launch agent was in place." }
             // A changed agent is loaded again.
-            if old != plist { _ = launchctl(["bootout", target]) }
+            if old != nil, old != plist { _ = launchctl(["bootout", target]) }
         } catch {
             return "BaneySpaces couldn't write the files that put Mission Control back if it stops (\(error.localizedDescription))."
         }
@@ -133,7 +160,8 @@ public struct WatchdogInstaller {
 
     /// Proof that BaneySpaces, this process, is alive, and that it is a build that holds Mission Control off.
     public func beatNow(pid: Int32) throws {
-        try Data("\(pid)\n\(MissionControlWatchdog.capability)\n".utf8).write(to: file(MissionControlWatchdog.heartbeat))
+        // Atomic, so the agent reads the old heartbeat or the new one, never half of one.
+        try Data("\(pid)\n\(MissionControlWatchdog.capability)\n".utf8).write(to: file(MissionControlWatchdog.heartbeat), options: .atomic)
     }
 
     /// Whether the agent is still there: its plist and script are in place and launchd has it

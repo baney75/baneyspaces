@@ -119,6 +119,14 @@ final class FingerSwipeTests: XCTestCase {
         XCTAssertEqual(fired, [])
     }
 
+    /// System Settings › Trackpad › Mission Control unticked: the vertical swipe stays on for App
+    /// Exposé, but the Dock's own switch says Mission Control isn't on it.
+    func testNoSwipeWhenTheTrackpadSettingsKeepMissionControlOff() {
+        XCTAssertEqual(FingerSwipe.fingerCounts(threeFingers: 2, fourFingers: 2, threeFingerDrag: false, missionControlGesture: false), [])
+        XCTAssertEqual(FingerSwipe.fingerCounts(threeFingers: 2, fourFingers: 2, threeFingerDrag: false, missionControlGesture: true), [3, 4])
+        XCTAssertEqual(FingerSwipe.fingerCounts(threeFingers: nil, fourFingers: nil, threeFingerDrag: false), [4], "missing means on")
+    }
+
     func testFingerCountsFollowTheTrackpadSettings() {
         XCTAssertEqual(FingerSwipe.fingerCounts(threeFingers: 2, fourFingers: 2, threeFingerDrag: false), [3, 4])
         XCTAssertEqual(FingerSwipe.fingerCounts(threeFingers: 0, fourFingers: 2, threeFingerDrag: false), [4])

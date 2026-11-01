@@ -310,4 +310,63 @@ final class MissionControlWatchdogTests: XCTestCase {
         XCTAssertNil(i.install(pid: 1))
         XCTAssertTrue(i.isArmed())
     }
+
+    // MARK: Replacing the loaded agent's files (series 2, round 2)
+
+    /// The loaded agent runs mc-restore.sh. A crash while a newer one is put in place must leave
+    /// the old one whole: the replacement is complete beside it before it is renamed over it.
+    func testACrashWhileReplacingTheRestoreScriptLeavesTheWorkingOne() throws {
+        let restore = folder.appendingPathComponent(MissionControlWatchdog.restoreName)
+        let before = try Data(contentsOf: restore)
+        let newer = home.appendingPathComponent("newer-uninstall.sh")
+        try (before + Data("\n# newer build\n".utf8)).write(to: newer)
+        var i = WatchdogInstaller(folder: folder, agentPlist: home.appendingPathComponent("replace-agents/\(MissionControlWatchdog.plistName)"),
+                                  restoreSource: newer, uid: 501, launchctl: { _ in true })
+        var atTheCrash: (inPlace: Data?, beside: Data?)?
+        i.beforeReplace = { temp in
+            atTheCrash = (try? Data(contentsOf: restore), try? Data(contentsOf: temp))
+            return false   // the app dies here
+        }
+        XCTAssertNotNil(i.install(pid: 1))
+        XCTAssertEqual(atTheCrash?.inPlace, before, "the old script is whole at the moment of the crash")
+        XCTAssertEqual(atTheCrash?.beside, before + Data("\n# newer build\n".utf8), "and the new one is complete beside it")
+        XCTAssertEqual(try Data(contentsOf: restore), before)
+        // The agent that is still loaded restores with it.
+        try beat(age: 600)
+        XCTAssertTrue(try tick().contains("killall Dock"))
+        // The next install finishes the job and leaves no temporary file.
+        i.beforeReplace = nil
+        XCTAssertNil(i.install(pid: 1))
+        XCTAssertEqual(try Data(contentsOf: restore), before + Data("\n# newer build\n".utf8))
+        XCTAssertFalse(fm.fileExists(atPath: restore.appendingPathExtension("tmp").path))
+    }
+
+    func testNeverDeletedBeforeItsReplacementIsReady() throws {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Sources/BaneySpacesCore/MissionControlWatchdog.swift"), encoding: .utf8)
+        let install = try XCTUnwrap(source.range(of: "private func installFiles").map { String(source[$0.lowerBound...].prefix(2200)) })
+        XCTAssertFalse(install.contains("removeItem(at: file(MissionControlWatchdog.restoreName))"))
+        XCTAssertFalse(install.contains("copyItem"))
+        XCTAssertTrue(source.contains("rename(temp.path, url.path)"))
+        XCTAssertTrue(source.contains("options: .atomic"), "the heartbeat is replaced whole too")
+    }
+
+    func testFilesThatAlreadyMatchAreLeftAlone() throws {
+        let i = installer { _ in true }
+        XCTAssertNil(i.install(pid: 1))
+        let restore = i.folder.appendingPathComponent(MissionControlWatchdog.restoreName)
+        let long = Date(timeIntervalSince1970: 1_000_000)
+        try fm.setAttributes([.modificationDate: long], ofItemAtPath: restore.path)
+        try fm.setAttributes([.modificationDate: long], ofItemAtPath: i.agentPlist.path)
+        XCTAssertNil(i.install(pid: 1))
+        XCTAssertEqual(try fm.attributesOfItem(atPath: restore.path)[.modificationDate] as? Date, long, "not rewritten")
+        XCTAssertEqual(try fm.attributesOfItem(atPath: i.agentPlist.path)[.modificationDate] as? Date, long, "so macOS sees no new item")
+    }
+
+    func testAFailedArmingLeavesNothingBehind() {
+        let i = installer { args in args.first != "bootstrap" && args.first != "print" }
+        XCTAssertNotNil(i.install(pid: 1))
+        XCTAssertFalse(fm.fileExists(atPath: i.agentPlist.path))
+        XCTAssertFalse(fm.fileExists(atPath: i.folder.appendingPathComponent(MissionControlWatchdog.heartbeat).path))
+    }
 }

@@ -24,11 +24,11 @@ final class MissionControlGuardTests: XCTestCase {
     /// paths the Dock and the top drag use: switch off, Accessibility lost, `--restore-dock`.
     func testItIsTakenOnStartAndGivenBackOnTheRestorePaths() throws {
         let app = try source("Sources/BaneySpaces/AppDelegate.swift")
-        XCTAssertTrue(app.contains("SystemMissionControl.takeOver()"))
+        XCTAssertTrue(app.contains("SystemMissionControl.takeOver(stillWanted:"))
         XCTAssertTrue(app.contains("MissionControlKeys.enabled"))
         // start(), then the Accessibility paths and the restore-dock command each give it back.
         XCTAssertGreaterThanOrEqual(app.components(separatedBy: "SystemMissionControl.restore(").count - 1, 5,
-                                    "syncMissionControl, quit, startWhenTrusted, stillTrusted and --restore-dock")
+                                    "giveMissionControlBack, quit, startWhenTrusted, stillTrusted and --restore-dock")
         let restoreDock = try XCTUnwrap(app.range(of: "\"--restore-dock\""))
         XCTAssertTrue(app[restoreDock.upperBound...].prefix(400).contains("SystemMissionControl.restore()"))
         XCTAssertNotNil(app.range(of: "missionControlKeys.start()\n        syncMissionControl()"), "start() syncs it right after the key watcher")
@@ -37,7 +37,7 @@ final class MissionControlGuardTests: XCTestCase {
     /// The swipe and the corners are behind the same switch and open the overview, not toggle it blindly.
     func testTheSwipeAndTheCornersOpenTheOverview() throws {
         let app = try source("Sources/BaneySpaces/AppDelegate.swift")
-        let sync = try XCTUnwrap(app.range(of: "private func syncMissionControl()").map { app[$0.lowerBound...].prefix(700) })
+        let sync = try XCTUnwrap(app.range(of: "private func syncMissionControl()").map { app[$0.lowerBound...].prefix(1800) })
         XCTAssertTrue(sync.contains("trackpadSwipe.start()") && sync.contains("hotCorners.set("))
         XCTAssertTrue(sync.contains("trackpadSwipe.stop()") && sync.contains("hotCorners.stop()"))
         XCTAssertTrue(app.contains("case .up: if !self.viewer.isOpen { self.viewer.open() }"))
@@ -70,7 +70,7 @@ final class MissionControlGuardTests: XCTestCase {
         XCTAssertTrue(quit.contains("SystemMissionControl.restore()"))
         XCTAssertTrue(quit.contains("updatingTo") && quit.contains("SystemMissionControl.leaveForUpdate()"))
         let over = try source("Sources/BaneySpaces/MissionControlOverride.swift")
-        XCTAssertTrue(over.contains("MissionControlSetup.takeOver(takeover, arm: { installer.install(pid: getpid()) })"), "nothing is switched off before the launch agent is armed")
+        XCTAssertTrue(over.contains("let reason = installer.install(pid: getpid())") && over.contains("MissionControlSetup.takeOver(takeover, arm: { reason })"), "nothing is switched off before the launch agent is armed")
         XCTAssertTrue(over.contains("installer.remove()"), "giving back removes it")
         let stop = try XCTUnwrap(quit.range(of: "trackpadSwipe.stop()")).lowerBound
         for earlier in ["SystemMissionControl.restore()", "spaces.restoreAll()", "restoreSpotlight()", "spaces.flushWrites()"] {
@@ -88,7 +88,7 @@ final class MissionControlGuardTests: XCTestCase {
     /// Nothing takes Mission Control off before something answers its key.
     func testItIsOnlyTakenWhileTheKeyWatcherRuns() throws {
         let app = try source("Sources/BaneySpaces/AppDelegate.swift")
-        XCTAssertTrue(app.contains("if started, MissionControlKeys.enabled, missionControlKeys.isActive, SystemMissionControl.takeOver() {"))
+        XCTAssertTrue(app.contains("private var missionControlWanted: Bool { started && MissionControlKeys.enabled && missionControlKeys.isActive }"))
         XCTAssertTrue(app.contains("self.missionControlKeys.isActive,\n                          SystemMissionControl.problem == nil"), "an unarmed or taken-back state is tried again")
         XCTAssertTrue(app.contains("if self.missionControlKeys.isActive { self.syncMissionControl() }"), "retried watcher takes over")
     }
@@ -128,5 +128,36 @@ final class MissionControlGuardTests: XCTestCase {
         let over = try source("Sources/BaneySpaces/MissionControlOverride.swift")
         XCTAssertTrue(over.contains("done.wait(timeout: .now() + 3)"), "launchctl can't hold the app up")
         XCTAssertTrue(over.contains("DurableRecord.write(record, to: file)") && over.contains("CFPreferencesAppSynchronize(kCFPreferencesCurrentApplication)"))
+    }
+
+    /// The launch agent is set up off the main thread, one attempt at a time, and a swipe queued
+    /// before a stop is dropped.
+    func testArmingIsOffTheMainThreadAndALateSwipeIsDropped() throws {
+        let over = try source("Sources/BaneySpaces/MissionControlOverride.swift")
+        let take = try XCTUnwrap(over.range(of: "static func takeOver(stillWanted").map { String(over[$0.lowerBound...].prefix(600)) })
+        XCTAssertTrue(take.contains("DispatchQueue.global") && take.contains("installer.install(pid: getpid())") && take.contains("DispatchQueue.main.async"))
+        XCTAssertTrue(take.contains("guard stillWanted()"), "a switch turned off meanwhile changes nothing")
+        let app = try source("Sources/BaneySpaces/AppDelegate.swift")
+        XCTAssertTrue(app.contains("guard !armingMissionControl else { return }"))
+        XCTAssertTrue(over.contains("self.generation == session"), "a swipe from an earlier session is dropped")
+        XCTAssertTrue(over.contains("showMissionControlGestureEnabled"))
+    }
+
+    /// Nothing answers the key once the watcher is gone, so Mission Control comes back.
+    func testTheHeldCheckGivesMissionControlBackWhenTheKeyWatcherStops() throws {
+        let app = try source("Sources/BaneySpaces/AppDelegate.swift")
+        let check = try XCTUnwrap(app.range(of: "private func checkMissionControlHeld()").map { String(app[$0.lowerBound...].prefix(500)) })
+        XCTAssertTrue(check.contains("guard missionControlKeys.isActive else"))
+    }
+
+    func testTheMachPortOfAMemoryRegionIsLetGo() throws {
+        let buffer = try source("Sources/BaneySpacesCore/SafeBuffer.swift")
+        XCTAssertTrue(buffer.contains("mach_port_deallocate(mach_task_self_, object)"))
+        // And a long run of lookups neither fails nor grows the process's ports without end.
+        var block = [UInt8](repeating: 0, count: 64)
+        block.withUnsafeMutableBytes { raw in
+            let inside = UnsafeRawPointer(raw.baseAddress!)
+            for _ in 0..<2000 { XCTAssertGreaterThan(SafeBuffer.length(of: inside), 0) }
+        }
     }
 }

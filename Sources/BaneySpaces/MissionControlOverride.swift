@@ -74,23 +74,34 @@ enum SystemMissionControl {
     }
 
     /// Switches Mission Control off, but only once the launch agent that puts it back is written,
-    /// loaded and checked. True when it is off; false when it couldn't be armed, in which case
-    /// Mission Control is left on (or given back) and `problem` says why.
-    @discardableResult
-    static func takeOver() -> Bool {
-        switch MissionControlSetup.takeOver(takeover, arm: { installer.install(pid: getpid()) }) {
-        case .taken(let changed):
-            problem = nil
-            if changed {
-                Trace.log("mission control: off at the Dock (corners answered: \(answeredCorners().map(\.corner.rawValue)))")
-                restartDock()
+    /// loaded and checked. The agent is set up off the main thread (it runs up to four launchctl
+    /// calls); `completion` runs on the main thread with true when Mission Control is off, or false
+    /// when it couldn't be armed, in which case it is left on (or given back) and `problem` says
+    /// why. `stillWanted` is asked on the main thread once the agent is ready: if the switch went
+    /// off meanwhile, nothing is changed.
+    static func takeOver(stillWanted: @escaping () -> Bool, completion: @escaping (Bool) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let reason = installer.install(pid: getpid())
+            DispatchQueue.main.async {
+                guard stillWanted() else {
+                    if !takeover.isTakenByUs { installer.remove() }
+                    return completion(false)
+                }
+                switch MissionControlSetup.takeOver(takeover, arm: { reason }) {
+                case .taken(let changed):
+                    problem = nil
+                    if changed {
+                        Trace.log("mission control: off at the Dock (corners answered: \(answeredCorners().map(\.corner.rawValue)))")
+                        restartDock()
+                    }
+                    completion(true)
+                case .notArmed(let reason, let restored):
+                    if problem != reason { Trace.log("mission control: left on, \(reason)") }
+                    problem = reason
+                    if restored { restartDock() }
+                    completion(false)
+                }
             }
-            return true
-        case .notArmed(let reason, let restored):
-            if problem != reason { Trace.log("mission control: left on, \(reason)") }
-            problem = reason
-            if restored { restartDock() }
-            return false
         }
     }
 
@@ -292,6 +303,9 @@ final class TrackpadSwipe {
 
     private var registry: TrackpadRegistry<MultitouchAdapter>?
     private let stateLock = NSLock()
+    /// Counts the times the swipe was started or stopped. A swipe queued for the main thread just
+    /// before a stop belongs to a session that is over, and is dropped.
+    private var generation = 0
     private var loadFailed = false
     private var running = false
     private var wake: NSObjectProtocol?
@@ -316,7 +330,7 @@ final class TrackpadSwipe {
     func start() {
         guard !running else { return }
         TrackpadSwipe.shared = self
-        stateLock.lock(); running = true; loadFailed = false; stateLock.unlock()
+        stateLock.lock(); running = true; loadFailed = false; generation += 1; stateLock.unlock()
         guard let adapter = MultitouchAdapter(callback: TrackpadSwipe.callback) else {
             stateLock.lock(); loadFailed = true; stateLock.unlock()
             return Trace.log("trackpad swipe: MultitouchSupport didn't load")
@@ -344,7 +358,7 @@ final class TrackpadSwipe {
         if let wake { NSWorkspace.shared.notificationCenter.removeObserver(wake) }
         wake = nil
         registry?.detach()
-        stateLock.lock(); running = false; registry = nil; stateLock.unlock()
+        stateLock.lock(); running = false; registry = nil; generation += 1; stateLock.unlock()
     }
 
     /// The finger counts follow System Settings; called now and then, it only reads preferences.
@@ -388,7 +402,7 @@ final class TrackpadSwipe {
 
     /// Runs on the framework's thread for each frame of touches.
     private func frame(_ device: UnsafeMutableRawPointer, _ data: UnsafeRawPointer?, _ count: Int) {
-        stateLock.lock(); let registry = self.registry; stateLock.unlock()
+        stateLock.lock(); let registry = self.registry; let session = generation; stateLock.unlock()
         let available = data.map { count > 0 ? SafeBuffer.length(of: $0) : 0 } ?? 0
         guard let outcome = registry?.frame(device, data: data, count: count, available: available) else { return }
         if let layout = outcome.layout {
@@ -396,8 +410,11 @@ final class TrackpadSwipe {
         }
         if let direction = outcome.direction {
             DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.stateLock.lock(); let current = self.running && self.generation == session; self.stateLock.unlock()
+                guard current else { return }
                 Trace.log("trackpad swipe \(direction == .up ? "up" : "down") with \(outcome.fingers) fingers")
-                self?.onSwipe(direction)
+                self.onSwipe(direction)
             }
         }
     }
@@ -408,8 +425,12 @@ final class TrackpadSwipe {
         let domain = TrackpadDevice.preferenceDomain(builtIn: builtIn)
         CFPreferencesAppSynchronize(domain as CFString)
         func read(_ key: String) -> Int? { (CFPreferencesCopyAppValue(key as CFString, domain as CFString) as? NSNumber)?.intValue }
+        // Mission Control's own gesture switch in System Settings › Trackpad is kept by the Dock.
+        CFPreferencesAppSynchronize("com.apple.dock" as CFString)
+        let gesture = (CFPreferencesCopyAppValue("showMissionControlGestureEnabled" as CFString, "com.apple.dock" as CFString) as? NSNumber)?.boolValue ?? true
         return FingerSwipe.fingerCounts(threeFingers: read("TrackpadThreeFingerVertSwipeGesture"),
                                         fourFingers: read("TrackpadFourFingerVertSwipeGesture"),
-                                        threeFingerDrag: (read("TrackpadThreeFingerDrag") ?? 0) != 0)
+                                        threeFingerDrag: (read("TrackpadThreeFingerDrag") ?? 0) != 0,
+                                        missionControlGesture: gesture)
     }
 }

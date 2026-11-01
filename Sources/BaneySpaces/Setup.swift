@@ -572,7 +572,7 @@ struct SetupView: View {
                     .font(.callout).foregroundStyle(.secondary)
             }
             if let problem = model.missionControlFailed {
-                Text("macOS's Mission Control is still on. \(problem) BaneySpaces tries again every minute.")
+                Text("macOS's Mission Control is still on. \(problem) BaneySpaces tries again every few minutes.")
                     .font(.callout).foregroundStyle(.orange)
             }
             if let problem = model.trackpadFailed {

@@ -253,6 +253,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Background Item notice). Neither may leave BaneySpaces answering beside macOS's view, or
     /// holding it off with no way back.
     private func checkMissionControlHeld() {
+        // The key watcher can stop while Accessibility is still granted; then nothing answers the key.
+        guard missionControlKeys.isActive else {
+            Trace.log("mission control: the key watcher stopped; giving Mission Control back")
+            return syncMissionControl()
+        }
         if SystemMissionControl.isOffAtDock {
             mcBackAtDock = 0
         } else {
@@ -284,14 +289,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// swipe and its hot corners; switched off, without Accessibility, or while macOS won't let the
     /// key watcher run (nothing would answer the key), all of it goes back.
     private func syncMissionControl() {
-        if started, MissionControlKeys.enabled, missionControlKeys.isActive, SystemMissionControl.takeOver() {
-            trackpadSwipe.start()
-            hotCorners.set(corners: SystemMissionControl.answeredCorners())
-            return
+        guard missionControlWanted else { return giveMissionControlBack() }
+        // The launch agent is set up off the main thread; one attempt at a time.
+        guard !armingMissionControl else { return }
+        armingMissionControl = true
+        SystemMissionControl.takeOver(stillWanted: { [weak self] in self?.missionControlWanted ?? false }) { [weak self] taken in
+            guard let self else { return }
+            self.armingMissionControl = false
+            guard taken else { return self.giveMissionControlBack() }
+            self.trackpadSwipe.start()
+            self.hotCorners.set(corners: SystemMissionControl.answeredCorners())
         }
-        // Not wanted, or not safe: without the launch agent that puts it back, Mission Control stays
-        // on (and the swipe and corners stay quiet, since it would open beside the overview).
-        let why = started && MissionControlKeys.enabled && missionControlKeys.isActive ? SystemMissionControl.problem : nil
+    }
+
+    private var armingMissionControl = false
+
+    /// Accessibility granted, the switch on, and the key watcher running: something answers the keys.
+    private var missionControlWanted: Bool { started && MissionControlKeys.enabled && missionControlKeys.isActive }
+
+    /// Not wanted, or not safe: without the launch agent that puts it back, Mission Control stays
+    /// on (and the swipe and corners stay quiet, since it would open beside the overview).
+    private func giveMissionControlBack() {
+        let why = missionControlWanted ? SystemMissionControl.problem : nil
         trackpadSwipe.stop()
         hotCorners.stop()
         SystemMissionControl.restore(keeping: why)
@@ -548,9 +567,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.hotCorners.set(corners: SystemMissionControl.answeredCorners())
                     self.checkMissionControlHeld()
                 } else if self.started, MissionControlKeys.enabled, self.missionControlKeys.isActive,
-                          SystemMissionControl.problem == nil || self.missionControlTicks % 30 == 0 {
+                          SystemMissionControl.problem == nil || self.missionControlTicks % 150 == 0 {
                     // Taken back by the launch agent while this ran, or not armed yet: try again
-                    // (once a minute when the safety net failed).
+                    // (every five minutes when the safety net failed, so macOS isn't asked again and again).
                     self.syncMissionControl()
                 }
             }

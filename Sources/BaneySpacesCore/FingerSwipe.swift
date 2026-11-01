@@ -44,7 +44,12 @@ public struct FingerSwipe: Sendable {
     /// The finger counts macOS sends to Mission Control, from the trackpad settings. A missing
     /// setting is macOS's default: four fingers on, three off. Three fingers dragging windows
     /// isn't a swipe.
-    public static func fingerCounts(threeFingers: Int?, fourFingers: Int?, threeFingerDrag: Bool) -> Set<Int> {
+    ///
+    /// The vertical-swipe settings are shared with App Exposé, so they stay on when only Mission
+    /// Control's gesture is switched off (the Dock's `showMissionControlGestureEnabled`, true when
+    /// missing): then no swipe opens it.
+    public static func fingerCounts(threeFingers: Int?, fourFingers: Int?, threeFingerDrag: Bool, missionControlGesture: Bool = true) -> Set<Int> {
+        guard missionControlGesture else { return [] }
         var set = Set<Int>()
         if (threeFingers ?? 0) == 2, !threeFingerDrag { set.insert(3) }
         if (fourFingers ?? 2) == 2 { set.insert(4) }
