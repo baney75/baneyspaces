@@ -20,6 +20,8 @@ final class SetupModel: ObservableObject {
     var onCmdTabChange: ((MissionControlKeys.CmdTabMode) -> Void)?
     @Published var workspaceDock = WorkspaceDock.enabled
     var onWorkspaceDockChange: ((Bool) -> Void)?
+    @Published var fullScreenMode = FullScreenKeys.mode
+    var onFullScreenModeChange: ((FullScreenMode) -> Void)?
     @Published var dockEdge = WorkspaceDock.edge
     var onDockEdgeChange: ((DockEdge) -> Void)?
     @Published var dockAgentStatus = WorkspaceDock.agentStatus
@@ -304,6 +306,11 @@ final class SetupModel: ObservableObject {
         onWorkspaceDockChange?(on)
     }
 
+    func setFullScreenMode(_ mode: FullScreenMode) {
+        fullScreenMode = mode
+        onFullScreenModeChange?(mode)
+    }
+
     func setDockAgentStatus(_ on: Bool) {
         dockAgentStatus = on
         onDockAgentStatusChange?(on)
@@ -420,7 +427,7 @@ struct SetupView: View {
             HStack {
                 // About the app as a whole, so only under General; on another tab it read like a stray note.
                 if model.tab == .general {
-                    Text("Full screen works as usual; switching workspaces takes a window out of it first. Change anything later with Settings… in the menu bar icon's menu (⌘,).")
+                    Text("The green button and ⌃⌘F fill the window's own workspace, so nothing is lost to a macOS desktop of its own (Option-click keeps macOS full screen; change it under Keys). Change anything later with Settings… in the menu bar icon's menu (⌘,).")
                         .font(Chrome.font(10)).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -553,6 +560,20 @@ struct SetupView: View {
                     Button(model.freeing ? "Working…" : "Turn Them Back On", action: model.restoreShortcuts).disabled(model.freeing)
                 }
             }
+        }
+
+        section("Full screen") {
+            Picker("", selection: Binding(get: { model.fullScreenMode }, set: { model.setFullScreenMode($0) })) {
+                Text("Fill the workspace").tag(FullScreenMode.baneyspaces)
+                Text("macOS full screen").tag(FullScreenMode.native)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 320)
+            Text(model.fullScreenMode == .baneyspaces
+                 ? "The green button and ⌃⌘F fill the window's own workspace, never a macOS desktop, so switching workspaces and apps never loses a window or slides. The same press puts it back. Option-click the green button for macOS full screen."
+                 : "macOS full screen, one desktop per window. Switching workspaces takes a window out of it first, and a video that won't leave comes along.")
+                .font(Chrome.font(12)).foregroundStyle(.secondary)
         }
 
         section("See every workspace at once") {

@@ -291,4 +291,38 @@ final class FullScreenTests: XCTestCase {
         XCTAssertEqual(FilledWindows.load(from: url), f)
         XCTAssertEqual(FilledWindows.load(from: url.appendingPathExtension("missing")), FilledWindows())
     }
+
+    // MARK: Migration and desktop slides
+
+    private func fsSpace(_ w: WindowID, current: Bool = false) -> FullScreenSpace {
+        FullScreenSpace(space: Int(w) + 1000, display: "A", window: w, pid: 1, isCurrent: current)
+    }
+
+    /// Word, Helium and Obsidian, all in native full screen: the one on the desktop in front is asked
+    /// where it is; the other two are visited, one at a time.
+    func testMigrationVisitsTheDesktopsAccessibilityCannotSee() {
+        let p = FullScreenMigration.plan(mode: .baneyspaces, desktops: [fsSpace(1), fsSpace(2, current: true), fsSpace(3)], listed: [2, 9])
+        XCTAssertEqual(p.now, [2])
+        XCTAssertEqual(p.visit.map(\.window), [1, 3])
+    }
+
+    func testNativeModeMigratesNothing() {
+        let p = FullScreenMigration.plan(mode: .native, desktops: [fsSpace(1, current: true)], listed: [1])
+        XCTAssertEqual(p, FullScreenMigration.Plan(now: [], visit: []))
+    }
+
+    func testNoFullScreenDesktopMeansNothingToMigrate() {
+        XCTAssertEqual(FullScreenMigration.plan(mode: .baneyspaces, desktops: [], listed: [1]).now, [])
+    }
+
+    func testNothingIsAskedWhileMacOSSlidesBetweenDesktops() {
+        var t = SpaceTransition()
+        let t0 = Date(timeIntervalSince1970: 100)
+        XCTAssertEqual(t.wait(now: t0), 0, "nothing in flight")
+        t.changed(at: t0)
+        XCTAssertEqual(t.wait(now: t0.addingTimeInterval(0.2)), 0.8, accuracy: 0.001)
+        XCTAssertEqual(t.wait(now: t0.addingTimeInterval(1.01)), 0)
+        t.changed(at: t0.addingTimeInterval(0.9))
+        XCTAssertGreaterThan(t.wait(now: t0.addingTimeInterval(1.5)), 0.3, "a second change extends it")
+    }
 }

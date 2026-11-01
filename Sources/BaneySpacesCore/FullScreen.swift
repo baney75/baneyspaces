@@ -147,7 +147,7 @@ public enum FullScreenDecision {
         if e.attribute == .yes { return .inFullScreen("the app says AXFullScreen is true") }
         if e.desktop == .no {
             return .notInFullScreen(e.attribute == .no ? "on no full-screen desktop and AXFullScreen is false"
-                                                       : "on no full-screen desktop (the app didn't answer AXFullScreen)")
+                                                       : "on no full-screen desktop (AXFullScreen unread or unanswered)")
         }
         // The window server didn't say.
         if e.attribute == .no { return .notInFullScreen("AXFullScreen is false") }
@@ -404,4 +404,44 @@ public struct FilledWindows: Codable, Equatable {
         guard let data = try? JSONEncoder().encode(self) else { return }
         try? data.write(to: url, options: .atomic)
     }
+}
+
+/// Windows already in macOS full screen when the fixed build starts move into BaneySpaces full screen
+/// (Donovan, 2026-11-01: Word, Helium and Obsidian full screen on workspace 1, every click on the dock
+/// tile playing macOS's sideways slide). Only in `baneyspaces` mode.
+public enum FullScreenMigration {
+    public struct Plan: Equatable {
+        /// On the desktop being shown: Accessibility lists them, so they are asked to leave now.
+        public var now: [WindowID]
+        /// On desktops no scan can see: the app is brought forward, which shows its desktop, then asked. In order.
+        public var visit: [FullScreenSpace]
+    }
+
+    /// `listed` is what Accessibility listed. A full-screen desktop's window that it listed is asked
+    /// to leave where it is; one it did not is visited, current one first so nothing slides for it.
+    public static func plan(mode: FullScreenMode, desktops: [FullScreenSpace], listed: Set<WindowID>) -> Plan {
+        guard mode == .baneyspaces else { return Plan(now: [], visit: []) }
+        var now: [WindowID] = [], visit: [FullScreenSpace] = []
+        for d in desktops {
+            guard let w = d.window else { continue }
+            if listed.contains(w) { now.append(w) } else { visit.append(d) }
+        }
+        return Plan(now: now, visit: visit.sorted { $0.isCurrent && !$1.isCurrent })
+    }
+}
+
+/// macOS slides between desktops for about 0.7 s. A window asked to leave full screen mid-slide
+/// shrinks while another slides in over it (the recording of 2026-11-01, 11:56), so nothing is asked
+/// until the slide is over.
+public struct SpaceTransition: Equatable {
+    /// How long after the last change of desktop one is still taken to be in flight.
+    public static let duration: TimeInterval = 1.0
+    public private(set) var lastChange = Date.distantPast
+
+    public init() {}
+
+    public mutating func changed(at now: Date) { lastChange = now }
+
+    /// Seconds to wait before a window may be asked to leave full screen; 0 when none is in flight.
+    public func wait(now: Date) -> TimeInterval { max(0, lastChange.addingTimeInterval(Self.duration).timeIntervalSince(now)) }
 }

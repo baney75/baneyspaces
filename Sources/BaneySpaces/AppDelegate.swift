@@ -197,6 +197,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         keys.onCancel = { [weak self] in self?.switcher.cancel() }
         return keys
     }()
+    /// BaneySpaces full screen (`behavior.fullscreen`): the green button and ⌃⌘F fill the workspace.
+    private lazy var fullScreenKeys: FullScreenKeys = FullScreenKeys { [weak self] request in
+        guard let self, self.started else { return }
+        switch request {
+        case let .fill(element, source):
+            self.spaces.toggleFill(element, source: source) {
+                // Nothing here can fill it: the press the person made still does what it always did.
+                let window = element ?? Self.frontWindowElement()
+                if let window { Self.pressGreenButton(of: window) }
+            }
+        case let .native(button):
+            Trace.log("fullscreen: Option-click, macOS full screen")
+            AXUIElementPerformAction(button, kAXPressAction as CFString)
+        }
+    }
+
+    private static func frontWindowElement() -> AXUIElement? {
+        guard let pid = Windows.focusedPid() else { return nil }
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.25)
+        return app.value(kAXFocusedWindowAttribute)
+    }
+
+    private static func pressGreenButton(of window: AXUIElement) {
+        guard let button: AXUIElement = window.value(kAXFullScreenButtonAttribute) else { return }
+        AXUIElementPerformAction(button, kAXPressAction as CFString)
+    }
+
+    /// Starts or stops the green-button and ⌃⌘F watcher to match the mode.
+    func syncFullScreenKeys() {
+        if started, FullScreenKeys.mode == .baneyspaces { fullScreenKeys.start() } else { fullScreenKeys.stop() }
+    }
+
     private lazy var setup: SetupWindowController = {
         let c = SetupWindowController()
         c.model.onModifierChange = { [weak self] _ in self?.registerShortcuts() }
@@ -227,6 +260,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.syncMissionControl()
         }
         c.model.onWorkspaceDockChange = { [weak self] on in self?.setWorkspaceDock(on) }
+        c.model.onFullScreenModeChange = { [weak self] mode in self?.setFullScreenMode(mode) }
         c.model.onTopDragChange = { [weak self] on in self?.setTopDrag(on) }
         c.model.onDockEdgeChange = { [weak self] e in self?.setDockEdge(e) }
         c.model.onDockAgentStatusChange = { [weak self] on in self?.setDockAgentStatus(on) }
@@ -421,6 +455,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self?.spaces.appLeft(app.processIdentifier)
             }
         }
+        // A window entering or leaving macOS full screen changes desktop: that is when one can end up
+        // where nobody can get it, so it is looked at and traced (Spaces.spaceChanged).
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification,
+                                                          object: nil, queue: .main) { [weak self] _ in
+            guard let self, self.started else { return }
+            self.spaces.spaceChanged()
+        }
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification,
                                                           object: nil, queue: .main) { [weak self] note in
             guard let self, let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
@@ -549,6 +590,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         started = true
         registerShortcuts()
         missionControlKeys.start()
+        FullScreenKeys.loadMode()
+        syncFullScreenKeys()
         syncMissionControl()
         spaces.start()
         watchClicksForDisplay()
@@ -568,6 +611,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.missionControlKeys.start()
                 if self.missionControlKeys.isActive { self.syncMissionControl() }
             }
+            if FullScreenKeys.mode == .baneyspaces && !self.fullScreenKeys.isActive { self.fullScreenKeys.start() }
             // Every ten seconds: proof of life for the launch agent, and System Settings changes
             // to hot corners and trackpad gestures. Nothing here lists devices.
             self.missionControlTicks += 1
@@ -596,6 +640,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if AXIsProcessTrusted() { return true }
         watchdog?.invalidate()
         missionControlKeys.stop()
+        fullScreenKeys.stop()
         topDrag.stop()
         cancelSettling()
         // Not watching any more, so macOS answers the drag, the swipe and the corners again until BaneySpaces is back.
@@ -873,12 +918,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dock.reload()
     }
 
-    /// `dock.enabled`, `appearance.theme` and `appearance.palette` by name: what `baneyspaces get` reads.
+    /// `dock.enabled`, `appearance.theme`, `appearance.palette` and `behavior.fullscreen` by name: what `baneyspaces get` reads.
     func settingValue(_ key: SettingKey) -> String? {
         switch key {
         case .theme: Appearance.shared.settings.theme.rawValue
         case .palette: Appearance.shared.settings.colorPalette
         case .dockEnabled: WorkspaceDock.enabled ? "true" : "false"
+        case .fullscreen: FullScreenKeys.mode.rawValue
         }
     }
 
@@ -889,8 +935,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .theme: Appearance.shared.settings.theme = ThemeID(rawValue: value) ?? .macDefault
         case .palette: Appearance.shared.settings.colorPalette = value
         case .dockEnabled: setWorkspaceDock(value == "true")
+        case .fullscreen: setFullScreenMode(FullScreenMode(setting: value) ?? .default)
         }
         return true
+    }
+
+    /// `behavior.fullscreen`: BaneySpaces full screen, or macOS's own. Applied at once.
+    func setFullScreenMode(_ mode: FullScreenMode) {
+        FullScreenKeys.mode = mode
+        Trace.log("fullscreen: behavior.fullscreen is now \(mode.rawValue)")
+        if setup.model.fullScreenMode != mode { setup.model.fullScreenMode = mode }
+        syncFullScreenKeys()
     }
 
     /// Turns the Workspace Dock on or off (`dock.enabled`). Off, there is no dock window at all and
@@ -981,6 +1036,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case "viewer": run { _ in viewer.toggle() }
         // Opening it changes nothing on its own, so a web page may: every action inside needs a key press.
         case "launcher": launcher.show(scope: LauncherModel.Scope(rawValue: url.lastPathComponent) ?? .root, takeKeys: false)
+        // For `scripts/fullscreen-probe.swift`: what a click on an app's icon in the dock's tile for the workspace
+        // you're on does (`Spaces.focusApp`). Only when `dockURLCommands` says so, like the dock's own check commands.
+        case "focusapp":
+            guard UserDefaults.standard.bool(forKey: "dockURLCommands") else { NSLog("BaneySpaces: focusapp refused"); return }
+            run { s in s.focusApp(pid_t(n), on: s.model.current, announce: false) }
+        // The same, for one window: what the tile does once it has picked the window (`Spaces.focus`).
+        case "focuswindow":
+            guard UserDefaults.standard.bool(forKey: "dockURLCommands") else { NSLog("BaneySpaces: focuswindow refused"); return }
+            run { s in if let (_, ws) = s.entry(for: WindowID(n)) { s.focus(WindowID(n), on: ws, announce: false) } }
         case "dock":
             // Turning it off or hiding it is always allowed: a pinned dock must never outlive
             // its check (2026-10-14, a hide that raced the setting going off left it stuck up).

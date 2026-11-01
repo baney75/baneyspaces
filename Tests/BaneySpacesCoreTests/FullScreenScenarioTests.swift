@@ -411,6 +411,34 @@ final class FullScreenScenarioTests: XCTestCase {
         XCTAssertEqual(d.findings(), [])
     }
 
+    // MARK: The recording of 2026-11-01, 11:56: three full-screen windows on one workspace
+
+    /// With `native`, activating one full-screen window after another on the same workspace asks none of
+    /// them to leave: only windows being hidden are ever asked.
+    func testActivatingFullScreenWindowsOnOneWorkspaceTouchesNone() {
+        d.open(1, Win(app: "Word", pid: 10, fullScreen: true), on: 1)
+        d.open(2, Win(app: "Helium", pid: 20, fullScreen: true), on: 1)
+        d.open(3, Win(app: "Obsidian", pid: 30, fullScreen: true), on: 1)
+        for id: WindowID in [2, 3, 1, 2] {
+            d.model.noteFocus(id)
+            d.switchTo(1)   // what a dock click does when the workspace is already shown
+            XCTAssertEqual(d.asked, [], "activating window \(id) asked another window to leave full screen")
+        }
+        XCTAssertTrue(d.wins.values.allSatisfy(\.fullScreen))
+        XCTAssertEqual(d.findings(), [])
+    }
+
+    /// With BaneySpaces full screen nothing is on a desktop of its own: switching between them is a raise.
+    func testBaneySpacesFullScreenWindowsAreNeverOnADesktopOfTheirOwn() {
+        d.open(1, Win(app: "Word", pid: 10), on: 1)
+        d.open(2, Win(app: "Helium", pid: 20), on: 1)
+        d.open(3, Win(app: "Obsidian", pid: 30), on: 1)
+        for id: WindowID in [2, 3, 1, 2] { d.model.noteFocus(id); d.switchTo(1) }
+        XCTAssertEqual(d.asked, [])
+        XCTAssertTrue(d.wins.values.allSatisfy { !$0.fullScreen })
+        XCTAssertEqual(d.findings(), [])
+    }
+
     // MARK: (k) A screen-sized window that isn't in full screen
 
     func testAScreenSizedWindowThatIsNotFullScreenIsNeitherAskedNorCarried() {
