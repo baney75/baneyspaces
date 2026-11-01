@@ -256,7 +256,10 @@ public final class SandboxManager {
         let r = SandboxHandoff.release(slot: slot, paths: paths, limitBytes: max(handoffLimit(), 1 << 20) * 2)
         state.lock()
         if !r.skipped.isEmpty { skippedOnRelease = r.skipped }
-        if !r.complete { lastError = "the task's files are still in \(slot.lastPathComponent): \(r.failure ?? "unknown"); they will be retried" }
+        // Keep a quota-stop reason across retries: overwrite would hide why the guest was stopped.
+        if !r.complete, lastError?.hasPrefix("handoff_full:") != true {
+            lastError = "the task's files are still in \(slot.lastPathComponent): \(r.failure ?? "unknown"); they will be retried"
+        }
         state.unlock()
         return r.complete
     }
@@ -732,7 +735,9 @@ public final class SandboxManager {
 
     /// Forgets the warm clone, stops whatever builds or runs it, waits for the build thread to end, and deletes
     /// the VM and its slot. A build that finds itself dropped deletes its own VM and writes nothing.
-    private func dropWarm() {
+    /// True when any warm build thread has finished (or there was none). False if it is still running after the wait.
+    @discardableResult
+    private func dropWarm() -> Bool {
         state.lock()
         let name = warmName
         let p = warmProc
@@ -740,13 +745,18 @@ public final class SandboxManager {
         warmState = .none; warmName = nil; warmProc = nil; warmLocation = .disk; warmGroup = nil
         state.unlock()
         p?.kill()
-        if let group, group.wait(timeout: .now() + 60) == .timedOut { fail("the warm build did not stop in 60 s") }
-        guard let name else { return }
+        var buildDone = true
+        if let group, group.wait(timeout: .now() + 60) == .timedOut {
+            fail("the warm build did not stop in 60 s")
+            buildDone = false
+        }
+        guard let name else { return buildDone }
         if tart.deleteVerified(name, proc: p, force: true) {
             SandboxHandoff.removeUnboundSlot(paths.slots.appendingPathComponent(name), paths: paths)
         } else {
             state.lock(); pendingDeletes.insert(name); state.unlock()
         }
+        return buildDone
     }
 
     /// Blocks until the warm clone is ready or its build ended; true if ready. For the probe and tests.
@@ -843,8 +853,9 @@ public final class SandboxManager {
     @discardableResult
     private func teardown() -> Bool {
         destroyWorking()
-        dropWarm()
-        let gone = isOwner && tart.deleteAllOurs()
+        let buildDone = dropWarm()
+        // A clone may still run for up to an hour after warmName is cleared; do not unlock until its thread ends.
+        let gone = isOwner && buildDone && tart.deleteAllOurs()
         if gone { state.lock(); pendingDeletes = []; state.unlock(); recoverSlots() } // every `bsx-*` VM is verified gone
         set(.stopped)
         return gone

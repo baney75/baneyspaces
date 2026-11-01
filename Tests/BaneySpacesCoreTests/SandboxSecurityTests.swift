@@ -310,6 +310,10 @@ final class SandboxSecurityTests: XCTestCase {
         XCTAssertNil(r.manager.snapshot().vm)
         XCTAssertTrue(r.manager.snapshot().lastError?.contains("could not be measured") == true, r.manager.snapshot().lastError ?? "")
         XCTAssertTrue(r.tart.ours().filter { !$0.hasPrefix("bsx-s-") }.isEmpty)
+        // A later tick retries the pending release and must not replace the quota reason.
+        r.manager.tick()
+        XCTAssertTrue(r.manager.snapshot().lastError?.contains("could not be measured") == true, r.manager.snapshot().lastError ?? "")
+        XCTAssertTrue(r.manager.snapshot().lastError?.hasPrefix("handoff_full:") == true, r.manager.snapshot().lastError ?? "")
     }
 }
 

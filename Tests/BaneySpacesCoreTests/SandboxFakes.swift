@@ -50,6 +50,8 @@ final class FakeTart: ProcessRunning {
     var order: [String] = []
     var v6Addresses = 0
     var spawnImmortal = false
+    /// Called inside `clone` so a test can delay a warm build.
+    var onClone: (() -> Void)?
     var v6Leak = false
     var firewallState = "Firewall is disabled. (State = 0)"
     var stubFail: ProcessResult?
@@ -78,6 +80,10 @@ final class FakeTart: ProcessRunning {
             return ProcessResult(status: 0, stdout: vms.keys.sorted().joined(separator: "\n"))
         case "clone":
             if failClone { return ProcessResult(status: 1, stderr: "no space left") }
+            let hook = onClone
+            lock.unlock()
+            hook?()
+            lock.lock()
             imagePulled = true
             vms[args[2]] = VM()
             return ProcessResult(status: 0)
