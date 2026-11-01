@@ -398,7 +398,7 @@ pub fn handle(shared: &Shared, op: &str, args: &Value, agent: &str, peer: Option
             if from_agent {
                 let env = match &result {
                     Ok(_) => Envelope::ok(json!({ "key": key })),
-                    Err(e) => fail("invalid_args", e.clone(), ""),
+                    Err(e) => fail(e.code, e.message.clone(), ""),
                 };
                 crate::daemon::record(&c, agent, "config_set", peer, None, Some(key), "ctl", &env);
             }
@@ -410,11 +410,7 @@ pub fn handle(shared: &Shared, op: &str, args: &Value, agent: &str, peer: Option
                     c.mark_dirty();
                     Envelope::ok(json!({ "key": key, "value": stored }))
                 }
-                Err(e) => fail(
-                    "invalid_args",
-                    e,
-                    "Run `baneyspaces config` for the keys and what they take.",
-                ),
+                Err(e) => fail(e.code, e.message, "Run `baneyspaces config` for the keys and what they take."),
             }
         }
         "overview" => overview_op(shared, args),

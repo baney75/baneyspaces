@@ -120,8 +120,13 @@ pub fn coerce(key: &Key, raw: &Value) -> Result<Value, String> {
 
 /// The palettes of spec/palettes.json (the file the shell plugin reads too).
 pub fn palette_names() -> Vec<String> {
-    let v: Value = serde_json::from_str(include_str!("../../../../spec/palettes.json")).expect("spec/palettes.json is valid JSON");
-    v["palettes"].as_object().map(|m| m.keys().cloned().collect()).unwrap_or_default()
+    static NAMES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    NAMES
+        .get_or_init(|| {
+            let v: Value = serde_json::from_str(include_str!("../../../../spec/palettes.json")).expect("spec/palettes.json is valid JSON");
+            v["palettes"].as_object().map(|m| m.keys().cloned().collect()).unwrap_or_default()
+        })
+        .clone()
 }
 
 pub fn is_hex_color(s: &str) -> bool {
@@ -137,6 +142,120 @@ fn override_token(path: &str) -> Option<Value> {
         cur = cur.get(part)?;
     }
     (!cur.is_object() && !cur.is_array() && !cur.is_null()).then(|| cur.clone())
+}
+
+/// What went wrong with a change: `invalid_args` for a key or value that is not allowed, `config_invalid` for the file.
+#[derive(Debug)]
+pub struct CfgError {
+    pub code: &'static str,
+    pub message: String,
+}
+
+fn bad(m: impl Into<String>) -> CfgError {
+    CfgError { code: "invalid_args", message: m.into() }
+}
+
+fn invalid(m: impl Into<String>) -> CfgError {
+    CfgError { code: "config_invalid", message: m.into() }
+}
+
+/// The limits for a `theme.override` token, by what it is: times 0 to 1000 ms (spec/config.md), opacity 0 to 1, radius and
+/// borders and spacing and sizes in sane points, scale and lift near 1.
+fn override_range(path: &str) -> (f64, f64) {
+    let p = path.strip_prefix("theme.override.").unwrap_or(path);
+    if p.ends_with("_ms") {
+        (0.0, 1000.0)
+    } else if p.ends_with("opacity") {
+        (0.0, 1.0)
+    } else if p.starts_with("radius.") {
+        (0.0, 64.0)
+    } else if p == "border.width" || p == "border.focused_width" {
+        (0.0, 16.0)
+    } else if p == "space.tile" {
+        (16.0, 200.0)
+    } else if p.starts_with("space.") {
+        (0.0, 100.0)
+    } else if p == "font.size" {
+        (6.0, 48.0)
+    } else if p == "motion.scale_from" {
+        (0.5, 1.0)
+    } else if p == "motion.lift" {
+        (1.0, 1.5)
+    } else {
+        (-1000.0, 1000.0)
+    }
+}
+
+/// Is `value` an allowed value for the override token `path`? (`sample` is what themes.json has there.)
+fn override_check(path: &str, sample: &Value, value: &Value) -> Result<(), String> {
+    match (sample, value) {
+        (Value::Bool(_), Value::Bool(_)) => Ok(()),
+        (Value::Number(_), Value::Number(n)) => {
+            let (lo, hi) = override_range(path);
+            let f = n.as_f64().unwrap_or(f64::NAN);
+            if f.is_finite() && f >= lo && f <= hi { Ok(()) } else { Err(format!("{path} takes a number from {lo} to {hi}")) }
+        }
+        (Value::String(_), Value::String(t)) => {
+            let leaf = path.rsplit('.').next().unwrap_or("");
+            let ok = match leaf {
+                "indicator" => ["dot", "bar", "number-block"].contains(&t.as_str()),
+                "weight" => ["regular", "medium"].contains(&t.as_str()),
+                "role" | "focused_role" | "tint_role" => ["background", "surface", "sunken", "foreground", "strong", "muted", "border", "accent", "selection", "urgent", "working", "done", "light", "workspace"].contains(&t.as_str()),
+                _ => t.chars().count() <= 64 && !t.chars().any(char::is_control),
+            };
+            if ok { Ok(()) } else { Err(format!("{path} does not take {t:?}")) }
+        }
+        _ => Err(format!("{path} takes a value of the same kind as the theme's")),
+    }
+}
+
+/// The `[theme.override]` tree with everything dropped that is not a token of themes.json or is out of range.
+fn filter_override(tree: &Value, prefix: &str, errors: &mut Vec<String>) -> Value {
+    let Some(m) = tree.as_object() else { return json!({}) };
+    let mut out = Map::new();
+    for (k, v) in m {
+        let path = format!("{prefix}{k}");
+        if v.is_object() {
+            let sub = filter_override(v, &format!("{path}."), errors);
+            if sub.as_object().is_some_and(|o| !o.is_empty()) {
+                out.insert(k.clone(), sub);
+            }
+            continue;
+        }
+        match override_token(&path) {
+            Some(sample) => match override_check(&path, &sample, v) {
+                Ok(()) => {
+                    out.insert(k.clone(), v.clone());
+                }
+                Err(e) => errors.push(format!("{e} (ignored)")),
+            },
+            None => errors.push(format!("{path} is not a token of themes.json (ignored)")),
+        }
+    }
+    Value::Object(out)
+}
+
+fn insert_at(t: &mut dyn toml_edit::TableLike, parts: &[&str], value: Item, full: &str) -> Result<(), CfgError> {
+    if parts.len() == 1 {
+        // An existing key keeps its comments (the ones above it and the one after its value).
+        if let Some(old) = t.get_mut(parts[0]) {
+            let mut value = value;
+            if let (Some(o), Some(n)) = (old.as_value(), value.as_value_mut()) {
+                *n.decor_mut() = o.decor().clone();
+            }
+            *old = value;
+        } else {
+            t.insert(parts[0], value);
+        }
+        return Ok(());
+    }
+    if t.get(parts[0]).is_none() {
+        t.insert(parts[0], toml_edit::table());
+    }
+    match t.get_mut(parts[0]).and_then(|i| i.as_table_like_mut()) {
+        Some(sub) => insert_at(sub, &parts[1..], value, full),
+        None => Err(invalid(format!("{full}: {} is not a table in config.toml, so nothing was changed", parts[0]))),
+    }
 }
 
 fn item_to_json(item: &Item) -> Option<Value> {
@@ -189,6 +308,9 @@ pub struct Config {
     doc: DocumentMut,
     stamp: Option<std::time::SystemTime>,
     errors: Vec<String>,
+    /// The file on disk does not parse: `set` refuses until it does, and never writes over it.
+    broken: Option<String>,
+    cache: std::cell::RefCell<Option<Value>>,
 }
 
 pub fn config_path() -> PathBuf {
@@ -198,7 +320,7 @@ pub fn config_path() -> PathBuf {
 
 impl Config {
     pub fn load(path: &Path) -> Self {
-        let mut c = Config { path: path.to_path_buf(), doc: DocumentMut::new(), stamp: None, errors: vec![] };
+        let mut c = Config { path: path.to_path_buf(), doc: DocumentMut::new(), stamp: None, errors: vec![], broken: None, cache: std::cell::RefCell::new(None) };
         c.reload();
         c
     }
@@ -220,13 +342,28 @@ impl Config {
         let changed = stamp != self.stamp;
         self.stamp = stamp;
         self.errors.clear();
-        self.doc = match std::fs::read_to_string(&self.path) {
-            Ok(text) => text.parse::<DocumentMut>().unwrap_or_else(|e| {
-                self.errors.push(format!("config.toml: {e}"));
-                DocumentMut::new()
-            }),
-            Err(_) => DocumentMut::new(),
-        };
+        self.cache.replace(None);
+        match std::fs::read_to_string(&self.path) {
+            Ok(text) => match text.parse::<DocumentMut>() {
+                Ok(doc) => {
+                    self.doc = doc;
+                    self.broken = None;
+                }
+                Err(e) => {
+                    // The last good settings keep running; the error is shown and `set` is refused.
+                    self.errors.push(format!("config.toml: {e}"));
+                    self.broken = Some(e.to_string());
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                self.doc = DocumentMut::new();
+                self.broken = None;
+            }
+            Err(e) => {
+                self.errors.push(format!("config.toml cannot be read: {e}"));
+                self.broken = Some(e.to_string());
+            }
+        }
         changed
     }
 
@@ -240,6 +377,15 @@ impl Config {
 
     /// The effective settings: defaults, then the file, under the plugin's names.
     pub fn effective(&self) -> Value {
+        if let Some(v) = self.cache.borrow().as_ref() {
+            return v.clone();
+        }
+        let v = self.compute_effective();
+        self.cache.replace(Some(v.clone()));
+        v
+    }
+
+    fn compute_effective(&self) -> Value {
         let mut root = Map::new();
         let mut errors = self.errors.clone();
         for key in KEYS {
@@ -263,6 +409,7 @@ impl Config {
         }
         // Tokens of themes.json for this machine only: [theme.override].
         let over = self.doc.get("theme").and_then(|t| t.get("override")).and_then(item_to_json).unwrap_or_else(|| json!({}));
+        let over = filter_override(&over, "theme.override.", &mut errors);
         root.entry("appearance").or_insert_with(|| json!({})).as_object_mut().unwrap().insert("override".into(), over);
         root.insert("bangs".into(), json!(custom_bangs(&self.doc, &mut errors)));
         root.insert("errors".into(), json!(errors));
@@ -270,45 +417,62 @@ impl Config {
         Value::Object(root)
     }
 
-    /// Sets one key and writes the file. Returns the value as stored.
-    pub fn set(&mut self, path: &str, raw: &Value) -> Result<Value, String> {
-        let v = match find(path) {
-            Some(key) => coerce(key, raw)?,
+    /// The value `raw` stands for at `path`, or why not.
+    fn validate(path: &str, raw: &Value) -> Result<Value, CfgError> {
+        match find(path) {
+            Some(key) => coerce(key, raw).map_err(bad),
             None => {
-                let sample = override_token(path).ok_or_else(|| format!("unknown setting {path:?}; `baneyspaces config` lists them"))?;
+                let sample = override_token(path).ok_or_else(|| bad(format!("unknown setting {path:?}; `baneyspaces config` lists them")))?;
                 let text = raw.as_str().map(str::to_string).unwrap_or_else(|| raw.to_string());
-                match sample {
-                    Value::Bool(_) => json!(text.parse::<bool>().map_err(|_| format!("{path} takes true or false"))?),
-                    Value::Number(_) => json!(text.parse::<f64>().ok().filter(|n| n.is_finite()).ok_or_else(|| format!("{path} takes a number"))?),
-                    _ if text.chars().count() <= 64 && !text.chars().any(char::is_control) => json!(text),
-                    _ => return Err(format!("{path} takes short plain text")),
-                }
-            }
-        };
-        let parts: Vec<&str> = path.split('.').collect();
-        let mut item = self.doc.as_item_mut();
-        for (i, part) in parts.iter().enumerate() {
-            if i + 1 == parts.len() {
-                item[*part] = match &v {
-                    Value::Bool(b) => tv(*b),
-                    Value::Number(n) if n.is_i64() => tv(n.as_i64().unwrap()),
-                    Value::Number(n) => tv((n.as_f64().unwrap() * 1000.0).round() / 1000.0),
-                    Value::String(s) => tv(s.as_str()),
-                    _ => return Err("unsupported value".into()),
+                let value = match sample {
+                    Value::Bool(_) => json!(text.parse::<bool>().map_err(|_| bad(format!("{path} takes true or false")))?),
+                    Value::Number(_) => json!(text.parse::<f64>().ok().filter(|n| n.is_finite()).ok_or_else(|| bad(format!("{path} takes a number")))?),
+                    _ => json!(text),
                 };
-            } else {
-                if item.get(*part).is_none() {
-                    item[*part] = toml_edit::table();
-                }
-                item = &mut item[*part];
+                override_check(path, &sample, &value).map_err(bad)?;
+                Ok(value)
             }
         }
-        let dir = self.path.parent().ok_or("no config directory")?;
-        std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-        let tmp = self.path.with_extension("toml.tmp");
-        std::fs::write(&tmp, self.doc.to_string()).map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
-        std::fs::rename(&tmp, &self.path).map_err(|e| format!("cannot write {}: {e}", self.path.display()))?;
+    }
+
+    /// Sets one key. The file on disk is read again under a lock right before the write (a hand edit since the last read is
+    /// kept), a file that does not parse is never overwritten, a path through a value that is not a table is refused, and
+    /// the write is a temporary file renamed into place next to the real file (a symlinked config keeps its link).
+    pub fn set(&mut self, path: &str, raw: &Value) -> Result<Value, CfgError> {
+        use std::os::fd::AsRawFd;
+        let v = Self::validate(path, raw)?;
+        let target = std::fs::canonicalize(&self.path).unwrap_or_else(|_| self.path.clone());
+        let dir = target.parent().ok_or_else(|| invalid("no config directory"))?.to_path_buf();
+        std::fs::create_dir_all(&dir).map_err(|e| invalid(format!("cannot create {}: {e}", dir.display())))?;
+        let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(".config.toml.lock")).map_err(|e| invalid(format!("cannot lock {}: {e}", dir.display())))?;
+        // SAFETY: a valid open file descriptor; the lock is released when `lock` is dropped.
+        unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) };
+        let text = match std::fs::read_to_string(&target) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(invalid(format!("cannot read {}: {e}; nothing was changed", target.display()))),
+        };
+        let mut doc = text.parse::<DocumentMut>().map_err(|e| invalid(format!("{} has a syntax error, so nothing was changed: {e}", target.display())))?;
+        let item = match &v {
+            Value::Bool(b) => tv(*b),
+            Value::Number(n) if n.is_i64() => tv(n.as_i64().unwrap()),
+            Value::Number(n) => tv((n.as_f64().unwrap() * 1000.0).round() / 1000.0),
+            Value::String(s) => tv(s.as_str()),
+            _ => return Err(bad("unsupported value")),
+        };
+        let parts: Vec<&str> = path.split('.').collect();
+        insert_at(doc.as_table_mut(), &parts, item, path)?;
+        let tmp = dir.join(format!(".config.toml.tmp-{}", std::process::id()));
+        std::fs::write(&tmp, doc.to_string()).map_err(|e| invalid(format!("cannot write {}: {e}", tmp.display())))?;
+        std::fs::rename(&tmp, &target).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            invalid(format!("cannot write {}: {e}", target.display()))
+        })?;
+        self.doc = doc;
+        self.broken = None;
+        self.errors.retain(|e| !e.starts_with("config.toml"));
         self.stamp = self.mtime();
+        self.cache.replace(None);
         Ok(v)
     }
 
@@ -504,5 +668,79 @@ mod tests {
             }
         }
         assert_eq!(palette_names().len(), 22);
+    }
+
+    #[test]
+    fn set_keeps_a_hand_edit_made_since_the_last_read() {
+        let p = tmp("handedit");
+        let mut c = Config::load(&p);
+        c.set("behavior.dock.size", &json!("large")).unwrap();
+        // a person edits the file; the daemon has not looked yet
+        std::fs::write(&p, "# mine\n[behavior.dock]\nsize = \"large\"\nbadges = false\n").unwrap();
+        c.set("behavior.launcher.files", &json!("false")).unwrap();
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(text.contains("# mine") && text.contains("badges = false") && text.contains("files = false"), "{text}");
+    }
+
+    #[test]
+    fn a_file_with_a_syntax_error_is_never_overwritten() {
+        let p = tmp("syntax");
+        let broken = "[behavior.dock\nsize = \"large\n# my notes\n";
+        std::fs::write(&p, broken).unwrap();
+        let mut c = Config::load(&p);
+        let e = c.set("behavior.dock.size", &json!("small")).unwrap_err();
+        assert_eq!(e.code, "config_invalid");
+        assert!(e.message.contains("syntax error") && e.message.contains("line"), "{}", e.message);
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), broken, "the file is as the person left it");
+        assert_eq!(c.effective()["dock"]["enabled"], json!(true), "the last good settings keep running");
+        std::fs::write(&p, "[behavior.dock]\nsize = \"large\"\n").unwrap();
+        assert!(c.set("behavior.dock.size", &json!("small")).is_ok(), "once it parses, set works again");
+    }
+
+    #[test]
+    fn a_value_where_a_table_belongs_is_a_typed_error_not_a_panic() {
+        for (text, key, val) in [("behavior = false\n", "behavior.dock.enabled", "true"), ("[behavior]\ndock = true\n", "behavior.dock.size", "large"), ("animation = \"off\"\n", "animation.preset", "snappy"), ("theme = \"omarchy\"\n", "theme.palette", "nord")] {
+            let p = tmp("scalar");
+            std::fs::write(&p, text).unwrap();
+            let mut c = Config::load(&p);
+            let e = c.set(key, &json!(val)).unwrap_err();
+            assert_eq!(e.code, "config_invalid", "{key}: {}", e.message);
+            assert!(e.message.contains("not a table"), "{}", e.message);
+            assert_eq!(std::fs::read_to_string(&p).unwrap(), text, "the file is untouched");
+        }
+    }
+
+    #[test]
+    fn a_symlinked_config_stays_a_symlink() {
+        let p = tmp("link");
+        let real = p.parent().unwrap().join("dotfiles-config.toml");
+        std::fs::write(&real, "# in my dotfiles\n").unwrap();
+        std::os::unix::fs::symlink(&real, &p).unwrap();
+        let mut c = Config::load(&p);
+        c.set("behavior.dock.size", &json!("large")).unwrap();
+        assert!(std::fs::symlink_metadata(&p).unwrap().file_type().is_symlink());
+        let text = std::fs::read_to_string(&real).unwrap();
+        assert!(text.contains("# in my dotfiles") && text.contains("size = \"large\""), "{text}");
+    }
+
+    #[test]
+    fn override_tokens_have_the_limits_of_what_they_are() {
+        let p = tmp("limits");
+        let mut c = Config::load(&p);
+        for (k, v) in [("theme.override.motion.in_ms", "100000000"), ("theme.override.motion.in_ms", "-1"), ("theme.override.fill.opacity", "-5"), ("theme.override.fill.opacity", "1.5"), ("theme.override.radius.bar", "1e9"), ("theme.override.radius.tile", "65"), ("theme.override.space.tile", "4"), ("theme.override.font.size", "400"), ("theme.override.motion.scale_from", "0"), ("theme.override.indicator", "sparkle"), ("theme.override.border.role", "nonsense")] {
+            assert!(c.set(k, &json!(v)).is_err(), "{k} = {v} should be refused");
+        }
+        for (k, v) in [("theme.override.motion.in_ms", "1000"), ("theme.override.fill.opacity", "0.5"), ("theme.override.radius.bar", "64"), ("theme.override.indicator", "dot"), ("theme.override.border.role", "accent")] {
+            assert!(c.set(k, &json!(v)).is_ok(), "{k} = {v} should be accepted");
+        }
+    }
+
+    #[test]
+    fn a_hand_written_override_that_is_not_a_token_is_dropped_and_reported() {
+        let p = tmp("badover");
+        std::fs::write(&p, "[theme.override]\nradius = 4\n\n[theme.override.fill]\nopacity = 9\nnope = 1\n\n[theme.override.space]\ntile = 70\n").unwrap();
+        let e = Config::load(&p).effective();
+        assert_eq!(e["appearance"]["override"], json!({ "space": { "tile": 70 } }), "radius = 4 would erase every radius");
+        assert_eq!(e["errors"].as_array().unwrap().len(), 3);
     }
 }
