@@ -32,7 +32,7 @@ norm_dev_ino() {
 
 # Running text-segment identity (normalized dev:inode).
 txt_dev_ino() {
-  local pid=$1 out="" raw=""
+  local pid=$1 raw=""
   raw=$(lsof -a -p "$pid" -d txt -F Di 2>/dev/null | awk '
     /^D/ { d=substr($0,2) }
     /^i/ { i=substr($0,2); if (d!="") { print d ":" i; exit } }
