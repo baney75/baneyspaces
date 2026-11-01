@@ -218,7 +218,7 @@ check "…in config.toml" grep -q 'size = "large"' "$CFG"
 sleep 0.5
 eq "…and the dock changed at once (tiles are bigger)" "$(baneyspaces dock show >/dev/null; sleep 0.6; D state | jq '.tiles[0].h > 69')" "true"
 baneyspaces config set behavior.dock.size medium >/dev/null; baneyspaces dock hide >/dev/null
-echo '# hand edit' >> "$CFG"; printf '[behavior.switcher]\nmode = "apps"\n' >> "$CFG"; sleep 1.6
+printf '# hand edit\n[behavior.switcher]\nmode = "apps"\n' > "$CFG"; sleep 1.6   # a whole file, so no table is defined twice
 eq "a hand edit of the file is picked up" "$(baneyspaces config | jq -r .data.settings.switcher.items)" "apps"
 eq "…and keeps your comment" "$(grep -c '# hand edit' "$CFG")" "1"
 baneyspaces config set behavior.switcher.mode windows >/dev/null
@@ -343,6 +343,7 @@ baneyspaces focus-monitor $M1 >/dev/null; baneyspaces switch 1 >/dev/null; sleep
 layer_up() { H layers | grep -c 'baneyspaces-switcher\|baneyspaces-overview'; }
 watch_layers() { # watch_layers <seconds> <outfile>: the overlay layers present, sampled every 20 ms
   ( end=$(( $(date +%s%N) + $(awk "BEGIN{printf \"%d\", $1*1000000000}") )); : > "$2"; while [ "$(date +%s%N)" -lt "$end" ]; do layer_up >> "$2"; sleep 0.02; done ) &
+  WLP=$!
 }
 expected_target() { baneyspaces switcher next >/dev/null; baneyspaces ui | jq -r '.data.switcher.items[1].window'; baneyspaces switcher cancel >/dev/null; }
 tap() { # tap <ms>: Alt+Tab pressed and let go after <ms>
@@ -350,7 +351,7 @@ tap() { # tap <ms>: Alt+Tab pressed and let go after <ms>
 }
 for ms in 30 120; do
   sleep 0.4; WANT="$(expected_target)"; sleep 0.3
-  watch_layers 1.2 "$TMP/layers.txt"; tap $ms; sleep 0.7; wait
+  watch_layers 1.2 "$TMP/layers.txt"; tap $ms; sleep 0.7; wait $WLP
   eq "a ${ms} ms tap of Alt+Tab goes to the window you used before" "$(active)" "$WANT"
   eq "…with no overlay on screen at any moment" "$(sort -u "$TMP/layers.txt" | tr -d '\n')" "0"
   eq "…and nothing left open" "$(baneyspaces ui | jq -r .data.switcher.open)" "false"
@@ -367,8 +368,8 @@ baneyspaces switcher commit >/dev/null; baneyspaces switcher next >/dev/null; sl
 eq "a release that overtook its press (two processes) still lands on the window" "$(active)" "$WANT"
 hyprctl eval 'baneyspaces_release("alt", "switcher commit")' >/dev/null; sleep 0.2
 eq "a release with no press of ours does nothing" "$(baneyspaces ui | jq -r .data.switcher.open)" "false"
-baneyspaces switch 1 >/dev/null; sleep 0.4
-watch_layers 1.0 "$TMP/layers.txt"; hyprctl eval 'baneyspaces_press("super", "overview next")' >/dev/null; sleep 0.04; hyprctl eval 'baneyspaces_release("super", "overview go")' >/dev/null; sleep 0.6; wait
+goto $M2 8; goto $M1 1   # the second display shows 8, so 2 and 3 are free to go to on this one
+watch_layers 1.0 "$TMP/layers.txt"; hyprctl eval 'baneyspaces_press("super", "overview next")' >/dev/null; sleep 0.04; hyprctl eval 'baneyspaces_release("super", "overview go")' >/dev/null; sleep 0.6; wait $WLP
 eq "a 40 ms tap of Super+Tab goes to the next workspace, as Omarchy's did" "$(mon_ws $M1)" "2"
 eq "…with no overview drawn" "$(sort -u "$TMP/layers.txt" | tr -d '\n')" "0"
 baneyspaces switch 1 >/dev/null; sleep 0.4
@@ -404,7 +405,7 @@ baneyspaces focus-monitor $M1 >/dev/null; baneyspaces switch 1 >/dev/null; sleep
 
 echo "== config.toml: a hand edit is kept, a broken file is never overwritten, a hand edit applies live"
 CFG="$XDG_CONFIG_HOME/baneyspaces/config.toml"
-printf '\n# my edit\n[behavior.launcher]\nfiles = false\n' >> "$CFG"
+printf '# my config\n[behavior.launcher]\n# my edit\nfiles = false\n' > "$CFG"; sleep 1.3
 baneyspaces set behavior.dock.size small >/dev/null
 eq "set right after a hand edit keeps the edit" "$(baneyspaces config | jq -r '[.data.settings.launcher.files,.data.settings.dock.size]|map(tostring)|join(",")')" "false,small"
 check "…and its comment" grep -q '# my edit' "$CFG"
@@ -466,6 +467,7 @@ eq "an app with a single window has that window moved here" "$(client_ws $SING)"
 eq "…and you stay on the target" "$(mon_ws $M1)" "8"
 run_app "BS Multi" bs-multi >/dev/null; sleep 0.8
 eq "an app that already has a window here just brings it forward (no second one)" "$(nwin bs-multi 8)" "1"
+hyprctl dispatch "hl.dsp.window.close({ window = \"address:$SING\" })" >/dev/null; sleep 0.5   # one window of the app is left, so "where it already is" is not a choice
 goto $M1 2; mkwin bs-single singlewin2; SING2="$(addr_of singlewin2)"; goto $M1 7
 run_app "BS Single" bs-single --alt >/dev/null; sleep 1.0
 eq "the modifier goes to where the app already is" "$(mon_ws $M1)" "2"
@@ -474,7 +476,7 @@ run_app "BS Single" bs-single >/dev/null; sleep 1.0
 eq "with behavior.launcher.open = go the plain key goes there" "$(mon_ws $M1)" "2"
 goto $M1 7; run_app "BS Single" bs-single --alt >/dev/null; sleep 2.0
 eq "…and the modifier then opens here" "$(nwin bs-single 7)" "1"
-baneyspaces set behavior.launcher.open here >/dev/null
+baneyspaces set behavior.launcher.open here >/dev/null; sleep 1.3
 check "a dry run says what would happen (a new window here)" test "$(baneyspaces launcher search 'BS Multi' --mode apps >/dev/null; baneyspaces launcher run app:bs-multi --dry-run | jq -r '.data.would_run|join(" ")')" = "foot -a bs-multi -T multinew sleep 600"
 rm -f "$APPS"/bs-*.desktop
 goto $M1 1

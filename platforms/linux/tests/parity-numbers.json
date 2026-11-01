@@ -2,47 +2,47 @@
   "frame_probe": {
     "dock": {
       "surface": "dock",
-      "frames": 366,
-      "intervals": 354,
+      "frames": 364,
+      "intervals": 352,
       "median_ms": 17,
-      "late_1_5x": 0,
+      "late_1_5x": 1,
       "late_2x": 0,
-      "late_per_200": 0
+      "late_per_200": 0.6
     },
     "overview": {
       "surface": "overview",
-      "frames": 201,
-      "intervals": 177,
+      "frames": 138,
+      "intervals": 108,
       "median_ms": 16,
-      "late_1_5x": 0,
-      "late_2x": 0,
-      "late_per_200": 0
+      "late_1_5x": 8,
+      "late_2x": 4,
+      "late_per_200": 14.8
     },
     "launcher": {
       "surface": "launcher",
-      "frames": 204,
-      "intervals": 180,
-      "median_ms": 16,
-      "late_1_5x": 1,
+      "frames": 231,
+      "intervals": 209,
+      "median_ms": 17,
+      "late_1_5x": 2,
       "late_2x": 0,
-      "late_per_200": 1.1
+      "late_per_200": 1.9
     },
     "switcher": {
       "surface": "switcher",
-      "frames": 196,
-      "intervals": 172,
+      "frames": 216,
+      "intervals": 204,
       "median_ms": 16,
-      "late_1_5x": 0,
-      "late_2x": 0,
-      "late_per_200": 0
+      "late_1_5x": 15,
+      "late_2x": 12,
+      "late_per_200": 14.7
     }
   },
   "bindings": {
     "before": 228,
-    "after": 227,
+    "after": 235,
     "untouched": 194,
     "replaced": 34,
-    "added": 33
+    "added": 41
   },
   "animation": {
     "workspaces": "instant by default (Omarchy turns it off too)",
@@ -62,21 +62,21 @@
   },
   "switch_latency_ms": {
     "native": {
-      "p50": 0.38,
-      "p90": 0.43,
-      "max": 0.82,
+      "p50": 0.31,
+      "p90": 0.39,
+      "max": 0.81,
       "n": 40
     },
     "ours": {
-      "p50": 0.37,
-      "p90": 0.44,
-      "max": 0.7,
+      "p50": 0.34,
+      "p90": 0.42,
+      "max": 0.48,
       "n": 40
     },
     "ours_daemon": {
-      "p50": 6.94,
-      "p90": 7.67,
-      "max": 8.27,
+      "p50": 6.38,
+      "p90": 7.19,
+      "max": 7.66,
       "n": 40
     },
     "samples": 40
@@ -94,5 +94,10 @@
       "mrr": 0.946
     },
     "misses": []
+  },
+  "launcher_timing": {
+    "open_to_ready_ms": 1,
+    "type_to_first_result_ms": 18,
+    "cli_search_ms": 1
   }
 }

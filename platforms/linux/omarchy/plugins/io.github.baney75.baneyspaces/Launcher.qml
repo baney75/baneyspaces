@@ -45,8 +45,6 @@ Item {
   }
   // the one dim line under the results; everything else is in the ? help view
   readonly property string hint: "↵ open   ·   ⇥ actions   ·   ? help"
-  property var listRef: null
-  function listItem(i) { return listRef ? listRef.itemAtIndex(i) : null }
   function rowIndexOf(flat) {
     var rows = Logic.sectionRows(results)
     for (var i = 0; i < rows.length; i++) if (rows[i].index === flat) return i
@@ -84,6 +82,16 @@ Item {
       WlrLayershell.layer: WlrLayer.Overlay
       WlrLayershell.keyboardFocus: wanted ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
       Connections { target: scrim.Window.window; function onFrameSwapped() { root.bs.probeTick("launcher") } }
+      // what each row now drawn shows for its icon: a glyph, an image or a letter (the test that none is a missing image)
+      function iconStates() {
+        var out = []
+        for (var i = 0; i < 40; i++) {
+          var it = list.itemAtIndex(i)
+          if (it === null) break
+          if (it.iconState !== "header") out.push({ title: it.modelData.title, icon: it.modelData.icon || "", state: it.iconState })
+        }
+        return out
+      }
       function framesUsed() { return [{ surface: "launcher", frame: card.used }] }
       onWantedChanged: if (wanted) { root.reset(); input.forceActiveFocus() }
 
@@ -196,7 +204,6 @@ Item {
 
             ListView {
               id: list
-              Component.onCompleted: root.listRef = list
               Connections { target: root; function onScrollRequest(row) { list.positionViewAtIndex(row, ListView.Contain) } }
               width: parent.width
               height: root.results.length === 0 ? 0 : Math.min(root.rowsHeight, scrim.height * 0.5)
@@ -223,6 +230,7 @@ Item {
                   font.letterSpacing: 1
                 }
                 PanelFrame {
+                  id: sel
                   visible: row.modelData.header === undefined
                   th: win.th
                   kind: "row"
@@ -235,7 +243,7 @@ Item {
                   focused: on && style === "pill"
                   framed: on && style === "pill"
                   fillColor: on ? (style === "pill" ? Logic.alpha(win.th.accent, 0.26) : (style === "text" ? win.th.raisedHot : "transparent")) : (rowArea.containsMouse ? win.th.raised : "transparent")
-                  Rectangle { visible: parent.on && parent.style === "line"; x: 0; y: 4; width: win.th.tok.border.width + 1; height: parent.height - 8; color: win.th.accent }
+                  Rectangle { visible: sel.on && sel.style === "line"; x: 0; y: 4; width: win.th.tok.border.width + 1; height: parent.height - 8; color: win.th.accent }
                   Text {
                     id: glyph
                     visible: row.glyph !== ""
@@ -243,7 +251,7 @@ Item {
                     width: 28
                     horizontalAlignment: Text.AlignHCenter
                     text: row.glyph
-                    color: parent.on ? win.th.accent : win.th.fg
+                    color: sel.on ? win.th.accent : win.th.fg
                     font.family: win.th.glyphFont
                     font.pixelSize: win.th.fs(20)
                   }
@@ -328,9 +336,8 @@ Item {
     // the icon of every row now drawn: glyph, image or letter (never a missing image)
     function style(): string { return JSON.stringify({ select: root.bs.theme.selectStyle, chips: root.bs.theme.chipStyle, footer: root.hint }) }
     function icons(): string {
-      var out = []
-      for (var i = 0; i < 40; i++) { var it = root.listItem(i); if (it === null) break; if (it.iconState !== undefined && it.iconState !== "header") out.push({ title: it.modelData.title, icon: it.modelData.icon || "", state: it.iconState }) }
-      return JSON.stringify(out)
+      for (var k = 0; k < vs.instances.length; k++) if (vs.instances[k].wanted) return JSON.stringify(vs.instances[k].iconStates())
+      return "[]"
     }
     function timing(): string { return JSON.stringify({ open_to_ready_ms: root.tReady - root.tOpen, type_to_first_result_ms: root.tTyped > 0 ? root.tTyped - root.tType : -1 }) }
     function mode(m: string): string { root.setMode(m); return "ok" }
