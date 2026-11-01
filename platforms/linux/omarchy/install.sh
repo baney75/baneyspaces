@@ -58,7 +58,7 @@ fi
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP="$STATE/backup/$STAMP"
-say "keys replaced: $(grep -c '^hl.unbind' "$HERE/baneyspaces.lua") unbinds, $(grep -c '^hl.bind' "$HERE/baneyspaces.lua") bindings (see $HERE/baneyspaces.lua)"
+say "keys replaced: $(grep -c '^hl.unbind' "$HERE/baneyspaces.lua") unbinds, $(grep -c 'hl.bind(' "$HERE/baneyspaces.lua") bindings (see $HERE/baneyspaces.lua)"
 if [ "$ALREADY" = 0 ]; then
   # Only the first install backs up: a later one would copy a file that already has the block.
   say "backup of $MAIN -> $BACKUP/hyprland.lua"

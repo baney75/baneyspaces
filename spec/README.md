@@ -7,6 +7,7 @@ not written here does not ship on one platform alone.
 | --- | --- |
 | [workspaces.md](workspaces.md) | The workspace rules, each with an id (`R-S1`, ...) |
 | [keys.json](keys.json) | The key map per platform, and what Linux replaces in Omarchy |
+| [config.md](config.md) | The configuration: keys, themes, animations, behavior. [config.schema.json](config.schema.json) and [animation-presets.json](animation-presets.json) are generated from the Rust core |
 | [envelope.md](envelope.md) | The JSON envelope every CLI and MCP result uses, and the error codes |
 | [cli.md](cli.md) | The command family and which commands exist on which platform |
 | [mcp-tools.json](mcp-tools.json) | The MCP tools, as `tools/list` returns them (generated from the Rust core) |

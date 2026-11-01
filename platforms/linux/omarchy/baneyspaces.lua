@@ -38,32 +38,181 @@ hl.animation({ leaf = "specialWorkspace", enabled = false })
 -- Apps may ask for focus; only you take it. The daemon guards the agent workspace as well.
 hl.config({ misc = { focus_on_activate = false } })
 
-hl.bind("SUPER + code:10", hl.dsp.exec_cmd("baneyspaces switch 1"), { description = "BaneySpaces: workspace 1" })
-hl.bind("SUPER + code:11", hl.dsp.exec_cmd("baneyspaces switch 2"), { description = "BaneySpaces: workspace 2" })
-hl.bind("SUPER + code:12", hl.dsp.exec_cmd("baneyspaces switch 3"), { description = "BaneySpaces: workspace 3" })
-hl.bind("SUPER + code:13", hl.dsp.exec_cmd("baneyspaces switch 4"), { description = "BaneySpaces: workspace 4" })
-hl.bind("SUPER + code:14", hl.dsp.exec_cmd("baneyspaces switch 5"), { description = "BaneySpaces: workspace 5" })
-hl.bind("SUPER + code:15", hl.dsp.exec_cmd("baneyspaces switch 6"), { description = "BaneySpaces: workspace 6" })
-hl.bind("SUPER + code:16", hl.dsp.exec_cmd("baneyspaces switch 7"), { description = "BaneySpaces: workspace 7" })
-hl.bind("SUPER + code:17", hl.dsp.exec_cmd("baneyspaces switch 8"), { description = "BaneySpaces: workspace 8" })
-hl.bind("SUPER + code:18", hl.dsp.exec_cmd("baneyspaces switch 9"), { description = "BaneySpaces: workspace 9" })
-hl.bind("SUPER + SHIFT + code:10", hl.dsp.exec_cmd("baneyspaces move 1"), { description = "BaneySpaces: send window to workspace 1" })
-hl.bind("SUPER + SHIFT + code:11", hl.dsp.exec_cmd("baneyspaces move 2"), { description = "BaneySpaces: send window to workspace 2" })
-hl.bind("SUPER + SHIFT + code:12", hl.dsp.exec_cmd("baneyspaces move 3"), { description = "BaneySpaces: send window to workspace 3" })
-hl.bind("SUPER + SHIFT + code:13", hl.dsp.exec_cmd("baneyspaces move 4"), { description = "BaneySpaces: send window to workspace 4" })
-hl.bind("SUPER + SHIFT + code:14", hl.dsp.exec_cmd("baneyspaces move 5"), { description = "BaneySpaces: send window to workspace 5" })
-hl.bind("SUPER + SHIFT + code:15", hl.dsp.exec_cmd("baneyspaces move 6"), { description = "BaneySpaces: send window to workspace 6" })
-hl.bind("SUPER + SHIFT + code:16", hl.dsp.exec_cmd("baneyspaces move 7"), { description = "BaneySpaces: send window to workspace 7" })
-hl.bind("SUPER + SHIFT + code:17", hl.dsp.exec_cmd("baneyspaces move 8"), { description = "BaneySpaces: send window to workspace 8" })
-hl.bind("SUPER + SHIFT + code:18", hl.dsp.exec_cmd("baneyspaces move 9"), { description = "BaneySpaces: send window to workspace 9" })
-hl.bind("SUPER + SHIFT + ALT + code:10", hl.dsp.exec_cmd("baneyspaces move 1 --stay"), { description = "BaneySpaces: send window to workspace 1, stay here" })
-hl.bind("SUPER + SHIFT + ALT + code:11", hl.dsp.exec_cmd("baneyspaces move 2 --stay"), { description = "BaneySpaces: send window to workspace 2, stay here" })
-hl.bind("SUPER + SHIFT + ALT + code:12", hl.dsp.exec_cmd("baneyspaces move 3 --stay"), { description = "BaneySpaces: send window to workspace 3, stay here" })
-hl.bind("SUPER + SHIFT + ALT + code:13", hl.dsp.exec_cmd("baneyspaces move 4 --stay"), { description = "BaneySpaces: send window to workspace 4, stay here" })
-hl.bind("SUPER + SHIFT + ALT + code:14", hl.dsp.exec_cmd("baneyspaces move 5 --stay"), { description = "BaneySpaces: send window to workspace 5, stay here" })
-hl.bind("SUPER + SHIFT + ALT + code:15", hl.dsp.exec_cmd("baneyspaces move 6 --stay"), { description = "BaneySpaces: send window to workspace 6, stay here" })
-hl.bind("SUPER + SHIFT + ALT + code:16", hl.dsp.exec_cmd("baneyspaces move 7 --stay"), { description = "BaneySpaces: send window to workspace 7, stay here" })
-hl.bind("SUPER + SHIFT + ALT + code:17", hl.dsp.exec_cmd("baneyspaces move 8 --stay"), { description = "BaneySpaces: send window to workspace 8, stay here" })
-hl.bind("SUPER + SHIFT + ALT + code:18", hl.dsp.exec_cmd("baneyspaces move 9 --stay"), { description = "BaneySpaces: send window to workspace 9, stay here" })
-hl.bind("SUPER + TAB", hl.dsp.exec_cmd("baneyspaces overview"), { description = "BaneySpaces: overview" })
-hl.bind("SUPER + GRAVE", hl.dsp.exec_cmd("baneyspaces agent-workspace toggle"), { description = "BaneySpaces: show or hide the agent workspace" })
+-- The recovery chord: hold Super+Shift+Escape for two seconds to put the default keys and theme back.
+-- Bound here, always, and again inside every mode. Config can neither bind nor remove it (spec/config.md).
+-- A hold is continuous: every 100 ms all three keys must still be down, any release cancels it, and a newer
+-- press makes an older one void. (hl.is_key_down takes keysym names; an unknown name answers nil.)
+__baneyspaces_hold_gen = 0
+local function key_down(left, right) return hl.is_key_down(left) or (right ~= nil and hl.is_key_down(right)) end
+local function chord_held()
+  return key_down("Super_L", "Super_R") and key_down("Shift_L", "Shift_R") and key_down("Escape")
+end
+function __baneyspaces_recovery_fire()
+  pcall(hl.dispatch, hl.dsp.submap("reset"))
+  hl.exec_cmd("baneyspaces config reset keys --notify")
+  hl.exec_cmd("baneyspaces config reset theme --notify")
+end
+function __baneyspaces_recovery_press()
+  __baneyspaces_hold_gen = __baneyspaces_hold_gen + 1
+  local gen, waited = __baneyspaces_hold_gen, 0
+  local function tick()
+    if gen ~= __baneyspaces_hold_gen or not chord_held() then return end
+    waited = waited + 100
+    if waited >= 2000 then
+      __baneyspaces_recovery_fire()
+    else
+      hl.timer(tick, { timeout = 100, type = "oneshot" })
+    end
+  end
+  hl.timer(tick, { timeout = 100, type = "oneshot" })
+end
+function __baneyspaces_recovery(bindfn)
+  bindfn("SUPER + SHIFT + Escape", function() __baneyspaces_recovery_press() end, "BaneySpaces: recovery (hold 2 s)")
+end
+__baneyspaces_recovery(function(keys, dsp, desc) hl.bind(keys, dsp, { description = desc }) end)
+
+local state = (os.getenv("XDG_STATE_HOME") or ((os.getenv("HOME") or "") .. "/.local/state")) .. "/baneyspaces"
+
+-- The default keys: they keep every workspace key working until the daemon has written yours, with no
+-- daemon, and whenever your keys cannot all be installed.
+function __baneyspaces_bind_defaults()
+  pcall(hl.unbind, "SUPER + code:10")
+  pcall(hl.unbind, "SUPER + code:11")
+  pcall(hl.unbind, "SUPER + code:12")
+  pcall(hl.unbind, "SUPER + code:13")
+  pcall(hl.unbind, "SUPER + code:14")
+  pcall(hl.unbind, "SUPER + code:15")
+  pcall(hl.unbind, "SUPER + code:16")
+  pcall(hl.unbind, "SUPER + code:17")
+  pcall(hl.unbind, "SUPER + code:18")
+  pcall(hl.unbind, "SUPER + SHIFT + code:10")
+  pcall(hl.unbind, "SUPER + SHIFT + code:11")
+  pcall(hl.unbind, "SUPER + SHIFT + code:12")
+  pcall(hl.unbind, "SUPER + SHIFT + code:13")
+  pcall(hl.unbind, "SUPER + SHIFT + code:14")
+  pcall(hl.unbind, "SUPER + SHIFT + code:15")
+  pcall(hl.unbind, "SUPER + SHIFT + code:16")
+  pcall(hl.unbind, "SUPER + SHIFT + code:17")
+  pcall(hl.unbind, "SUPER + SHIFT + code:18")
+  pcall(hl.unbind, "SUPER + SHIFT + ALT + code:10")
+  pcall(hl.unbind, "SUPER + SHIFT + ALT + code:11")
+  pcall(hl.unbind, "SUPER + SHIFT + ALT + code:12")
+  pcall(hl.unbind, "SUPER + SHIFT + ALT + code:13")
+  pcall(hl.unbind, "SUPER + SHIFT + ALT + code:14")
+  pcall(hl.unbind, "SUPER + SHIFT + ALT + code:15")
+  pcall(hl.unbind, "SUPER + SHIFT + ALT + code:16")
+  pcall(hl.unbind, "SUPER + SHIFT + ALT + code:17")
+  pcall(hl.unbind, "SUPER + SHIFT + ALT + code:18")
+  pcall(hl.unbind, "SUPER + TAB")
+  pcall(hl.unbind, "SUPER + GRAVE")
+  hl.bind("SUPER + code:10", hl.dsp.exec_cmd("baneyspaces switch 1"), { description = "BaneySpaces: workspace 1" })
+  hl.bind("SUPER + code:11", hl.dsp.exec_cmd("baneyspaces switch 2"), { description = "BaneySpaces: workspace 2" })
+  hl.bind("SUPER + code:12", hl.dsp.exec_cmd("baneyspaces switch 3"), { description = "BaneySpaces: workspace 3" })
+  hl.bind("SUPER + code:13", hl.dsp.exec_cmd("baneyspaces switch 4"), { description = "BaneySpaces: workspace 4" })
+  hl.bind("SUPER + code:14", hl.dsp.exec_cmd("baneyspaces switch 5"), { description = "BaneySpaces: workspace 5" })
+  hl.bind("SUPER + code:15", hl.dsp.exec_cmd("baneyspaces switch 6"), { description = "BaneySpaces: workspace 6" })
+  hl.bind("SUPER + code:16", hl.dsp.exec_cmd("baneyspaces switch 7"), { description = "BaneySpaces: workspace 7" })
+  hl.bind("SUPER + code:17", hl.dsp.exec_cmd("baneyspaces switch 8"), { description = "BaneySpaces: workspace 8" })
+  hl.bind("SUPER + code:18", hl.dsp.exec_cmd("baneyspaces switch 9"), { description = "BaneySpaces: workspace 9" })
+  hl.bind("SUPER + SHIFT + code:10", hl.dsp.exec_cmd("baneyspaces move 1"), { description = "BaneySpaces: send window to workspace 1" })
+  hl.bind("SUPER + SHIFT + code:11", hl.dsp.exec_cmd("baneyspaces move 2"), { description = "BaneySpaces: send window to workspace 2" })
+  hl.bind("SUPER + SHIFT + code:12", hl.dsp.exec_cmd("baneyspaces move 3"), { description = "BaneySpaces: send window to workspace 3" })
+  hl.bind("SUPER + SHIFT + code:13", hl.dsp.exec_cmd("baneyspaces move 4"), { description = "BaneySpaces: send window to workspace 4" })
+  hl.bind("SUPER + SHIFT + code:14", hl.dsp.exec_cmd("baneyspaces move 5"), { description = "BaneySpaces: send window to workspace 5" })
+  hl.bind("SUPER + SHIFT + code:15", hl.dsp.exec_cmd("baneyspaces move 6"), { description = "BaneySpaces: send window to workspace 6" })
+  hl.bind("SUPER + SHIFT + code:16", hl.dsp.exec_cmd("baneyspaces move 7"), { description = "BaneySpaces: send window to workspace 7" })
+  hl.bind("SUPER + SHIFT + code:17", hl.dsp.exec_cmd("baneyspaces move 8"), { description = "BaneySpaces: send window to workspace 8" })
+  hl.bind("SUPER + SHIFT + code:18", hl.dsp.exec_cmd("baneyspaces move 9"), { description = "BaneySpaces: send window to workspace 9" })
+  hl.bind("SUPER + SHIFT + ALT + code:10", hl.dsp.exec_cmd("baneyspaces move 1 --stay"), { description = "BaneySpaces: send window to workspace 1, stay here" })
+  hl.bind("SUPER + SHIFT + ALT + code:11", hl.dsp.exec_cmd("baneyspaces move 2 --stay"), { description = "BaneySpaces: send window to workspace 2, stay here" })
+  hl.bind("SUPER + SHIFT + ALT + code:12", hl.dsp.exec_cmd("baneyspaces move 3 --stay"), { description = "BaneySpaces: send window to workspace 3, stay here" })
+  hl.bind("SUPER + SHIFT + ALT + code:13", hl.dsp.exec_cmd("baneyspaces move 4 --stay"), { description = "BaneySpaces: send window to workspace 4, stay here" })
+  hl.bind("SUPER + SHIFT + ALT + code:14", hl.dsp.exec_cmd("baneyspaces move 5 --stay"), { description = "BaneySpaces: send window to workspace 5, stay here" })
+  hl.bind("SUPER + SHIFT + ALT + code:15", hl.dsp.exec_cmd("baneyspaces move 6 --stay"), { description = "BaneySpaces: send window to workspace 6, stay here" })
+  hl.bind("SUPER + SHIFT + ALT + code:16", hl.dsp.exec_cmd("baneyspaces move 7 --stay"), { description = "BaneySpaces: send window to workspace 7, stay here" })
+  hl.bind("SUPER + SHIFT + ALT + code:17", hl.dsp.exec_cmd("baneyspaces move 8 --stay"), { description = "BaneySpaces: send window to workspace 8, stay here" })
+  hl.bind("SUPER + SHIFT + ALT + code:18", hl.dsp.exec_cmd("baneyspaces move 9 --stay"), { description = "BaneySpaces: send window to workspace 9, stay here" })
+  hl.bind("SUPER + TAB", hl.dsp.exec_cmd("baneyspaces overview"), { description = "BaneySpaces: overview" })
+  hl.bind("SUPER + GRAVE", hl.dsp.exec_cmd("baneyspaces agent-workspace toggle"), { description = "BaneySpaces: show or hide the agent workspace" })
+end
+
+local DEFAULT_KEYS = { "SUPER + code:10", "SUPER + code:11", "SUPER + code:12", "SUPER + code:13", "SUPER + code:14", "SUPER + code:15", "SUPER + code:16", "SUPER + code:17", "SUPER + code:18", "SUPER + SHIFT + code:10", "SUPER + SHIFT + code:11", "SUPER + SHIFT + code:12", "SUPER + SHIFT + code:13", "SUPER + SHIFT + code:14", "SUPER + SHIFT + code:15", "SUPER + SHIFT + code:16", "SUPER + SHIFT + code:17", "SUPER + SHIFT + code:18", "SUPER + SHIFT + ALT + code:10", "SUPER + SHIFT + ALT + code:11", "SUPER + SHIFT + ALT + code:12", "SUPER + SHIFT + ALT + code:13", "SUPER + SHIFT + ALT + code:14", "SUPER + SHIFT + ALT + code:15", "SUPER + SHIFT + ALT + code:16", "SUPER + SHIFT + ALT + code:17", "SUPER + SHIFT + ALT + code:18", "SUPER + TAB", "SUPER + GRAVE", }
+
+__baneyspaces_keys, __baneyspaces_mode_binds, __baneyspaces_loaded = {}, {}, false
+
+function __baneyspaces_note_failure(msg)
+  if __baneyspaces_notified then return end
+  __baneyspaces_notified = true
+  local ef = io.open(state .. "/keys-error.txt", "w")
+  if ef then ef:write(msg, "\n") ef:close() end
+  hl.exec_cmd("notify-send -a BaneySpaces 'BaneySpaces: your keys could not be installed' 'The default keys are on. See keys-error.txt in the BaneySpaces state folder.'")
+end
+
+function __baneyspaces_install(spec)
+  __baneyspaces_notified = false
+  -- Leave a mode this config no longer has: its binds are about to be disabled, and Hyprland applies only a
+  -- submap's own binds while one is active.
+  local names = {}
+  for _, m in ipairs(spec.modes or {}) do names[m.name] = true end
+  local okc, cur = pcall(hl.get_current_submap)
+  if okc and cur and cur ~= "" and cur ~= "reset" and cur ~= "default" and not names[cur] then
+    pcall(hl.dispatch, hl.dsp.submap("reset"))
+  end
+  -- Hyprland 0.56.2 crashes when more than one bind is removed through its handle: global binds come out by
+  -- key (hl.unbind) and mode binds are disabled.
+  for _, k in ipairs(__baneyspaces_keys) do pcall(hl.unbind, k) end
+  for _, b in ipairs(__baneyspaces_mode_binds) do pcall(function() b:set_enabled(false) end) end
+  for _, k in ipairs(DEFAULT_KEYS) do pcall(hl.unbind, k) end
+  for _, k in ipairs(spec.steal or {}) do pcall(hl.unbind, k) end
+  local keys, mode_binds, failed = {}, {}, {}
+  local in_mode = false
+  local function bind(chord, dsp, desc)
+    local ok, b = pcall(hl.bind, chord, dsp, { description = desc })
+    if not (ok and b) then
+      failed[#failed + 1] = tostring(chord)
+    elseif in_mode then
+      table.insert(mode_binds, b)
+    else
+      table.insert(keys, chord)
+    end
+  end
+  for _, e in ipairs(spec.keys or {}) do bind(e[1], e[2], e[3]) end
+  for _, m in ipairs(spec.modes or {}) do
+    local ok = pcall(hl.define_submap, m.name, "reset", function()
+      in_mode = true
+      for _, e in ipairs(m.binds) do bind(e[1], e[2], e[3]) end
+      if __baneyspaces_recovery then __baneyspaces_recovery(bind) end
+    end)
+    in_mode = false
+    if not ok then failed[#failed + 1] = "mode " .. tostring(m.name) end
+  end
+  if #failed > 0 then
+    -- Take out what was just bound and put the defaults back.
+    for _, k in ipairs(keys) do pcall(hl.unbind, k) end
+    for _, b in ipairs(mode_binds) do pcall(function() b:set_enabled(false) end) end
+    __baneyspaces_keys, __baneyspaces_mode_binds, __baneyspaces_loaded = {}, {}, false
+    __baneyspaces_bind_defaults()
+    local msg = "keys not installed: " .. #failed .. " bind(s) failed (" .. table.concat(failed, ", ") .. "); the default keys are on"
+    __baneyspaces_note_failure(msg)
+    error(msg, 0)
+  end
+  __baneyspaces_keys, __baneyspaces_mode_binds, __baneyspaces_loaded = keys, mode_binds, true
+end
+
+-- Your keys: the daemon writes them from config.toml (baneyspaces config set keys.bindings...) as a table handed
+-- to __baneyspaces_install. A file that fails to run, or whose keys cannot all be bound, leaves the defaults on
+-- and says why in keys-error.txt next to it.
+local generated = state .. "/hyprland-keys.lua"
+local gf = io.open(generated, "r")
+if gf then
+  gf:close()
+  __baneyspaces_notified = false
+  local ok, err = pcall(dofile, generated)
+  if not ok then
+    __baneyspaces_note_failure(tostring(err))
+    __baneyspaces_loaded = false
+  end
+end
+if not __baneyspaces_loaded then
+  __baneyspaces_bind_defaults()
+end

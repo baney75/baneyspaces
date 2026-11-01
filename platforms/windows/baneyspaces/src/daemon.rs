@@ -534,7 +534,7 @@ impl Core {
             let _ = self.apply(Event::ObserveWindow { window: id, pid: info.pid, start: info.start, app: info.app, workspace });
             return;
         }
-        let _ = self.apply(Event::Open { window: id.clone(), pid: info.pid, start: info.start, app: info.app, monitor, workspace: None });
+        let _ = self.apply(Event::Open { window: id.clone(), pid: info.pid, start: info.start, app: info.app, monitor, workspace: None, title: info.title });
         if self.is_agent_pid(info.pid) && !matches!(self.model.home(&id), Some(Home::Agent)) {
             let _ = self.apply(Event::AgentSend { window: id });
         }

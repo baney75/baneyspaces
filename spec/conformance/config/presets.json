@@ -1,0 +1,295 @@
+[
+  {
+    "name": "preset baneyspaces",
+    "steps": [
+      {
+        "do": "apply",
+        "doc": {
+          "animation": {
+            "preset": "baneyspaces"
+          }
+        },
+        "expect": "ok",
+        "effective": {
+          "animation.dock.in.curve": "spring",
+          "animation.dock.in.response": 0.18,
+          "animation.dock.out.response": 0.14,
+          "animation.list.in.response": 0.14,
+          "animation.list.out.response": 0.1,
+          "animation.row.response": 0.08,
+          "animation.workspace.style": "off"
+        }
+      }
+    ]
+  },
+  {
+    "name": "preset omarchy",
+    "steps": [
+      {
+        "do": "apply",
+        "doc": {
+          "animation": {
+            "preset": "omarchy"
+          }
+        },
+        "expect": "ok",
+        "effective": {
+          "animation.dock.in": {
+            "curve": "bezier",
+            "duration_ms": 400,
+            "points": [
+              0.23,
+              1.0,
+              0.32,
+              1.0
+            ]
+          },
+          "animation.dock.out": {
+            "curve": "linear",
+            "duration_ms": 150
+          },
+          "animation.hud.in": {
+            "curve": "bezier",
+            "duration_ms": 410,
+            "points": [
+              0.23,
+              1.0,
+              0.32,
+              1.0
+            ]
+          },
+          "animation.hud.out": {
+            "curve": "linear",
+            "duration_ms": 149
+          },
+          "animation.hover": {
+            "curve": "bezier",
+            "duration_ms": 173,
+            "points": [
+              0.5,
+              0.5,
+              0.75,
+              1.0
+            ]
+          },
+          "animation.row": {
+            "curve": "bezier",
+            "duration_ms": 146,
+            "points": [
+              0.5,
+              0.5,
+              0.75,
+              1.0
+            ]
+          },
+          "animation.border": {
+            "curve": "bezier",
+            "duration_ms": 539,
+            "points": [
+              0.23,
+              1.0,
+              0.32,
+              1.0
+            ]
+          },
+          "animation.workspace.style": "off"
+        }
+      }
+    ]
+  },
+  {
+    "name": "preset snappy",
+    "steps": [
+      {
+        "do": "apply",
+        "doc": {
+          "animation": {
+            "preset": "snappy"
+          }
+        },
+        "expect": "ok",
+        "effective": {
+          "animation.dock.in": {
+            "curve": "spring",
+            "response": 0.108,
+            "damping": 1.0
+          },
+          "animation.row.response": 0.048
+        }
+      }
+    ]
+  },
+  {
+    "name": "preset smooth",
+    "steps": [
+      {
+        "do": "apply",
+        "doc": {
+          "animation": {
+            "preset": "smooth"
+          }
+        },
+        "expect": "ok",
+        "effective": {
+          "animation.dock.in": {
+            "curve": "spring",
+            "response": 0.234,
+            "damping": 0.8
+          },
+          "animation.list.out.response": 0.13
+        }
+      }
+    ]
+  },
+  {
+    "name": "preset off",
+    "steps": [
+      {
+        "do": "apply",
+        "doc": {
+          "animation": {
+            "preset": "off"
+          }
+        },
+        "expect": "ok",
+        "effective": {
+          "animation.dock.in": {
+            "curve": "linear",
+            "duration_ms": 0
+          },
+          "animation.border.duration_ms": 0
+        }
+      }
+    ]
+  },
+  {
+    "name": "a surface's own settings lie over the preset",
+    "steps": [
+      {
+        "do": "apply",
+        "doc": {
+          "animation": {
+            "preset": "omarchy",
+            "dock": {
+              "in": {
+                "duration_ms": 90
+              }
+            },
+            "hover": {
+              "response": 0.3
+            }
+          }
+        },
+        "expect": "ok",
+        "effective": {
+          "animation.dock.in": {
+            "curve": "bezier",
+            "duration_ms": 90,
+            "points": [
+              0.23,
+              1.0,
+              0.32,
+              1.0
+            ]
+          },
+          "animation.hover": {
+            "curve": "spring",
+            "response": 0.3,
+            "damping": 1.0
+          },
+          "animation.dock.out.duration_ms": 150
+        }
+      }
+    ]
+  },
+  {
+    "name": "speed multiplies every duration and zero is off",
+    "steps": [
+      {
+        "do": "apply",
+        "doc": {
+          "animation": {
+            "preset": "omarchy",
+            "speed": 0.5
+          }
+        },
+        "expect": "ok",
+        "resolved": {
+          "/resolved/animation/dock.in/duration_ms": 200,
+          "/resolved/animation/dock.out/duration_ms": 75
+        }
+      },
+      {
+        "do": "set",
+        "path": "animation.speed",
+        "value": 0,
+        "expect": "ok",
+        "resolved": {
+          "/resolved/animation/dock.in/duration_ms": 0,
+          "/resolved/animation/dock.in/instant": true
+        }
+      }
+    ]
+  },
+  {
+    "name": "reduce motion sets every duration to 0 unless the person says otherwise",
+    "reduce_motion": true,
+    "steps": [
+      {
+        "do": "check",
+        "resolved": {
+          "/resolved/animation/dock.in/duration_ms": 0,
+          "/resolved/animation/hover/instant": true,
+          "/resolved/reduce_motion": true
+        }
+      },
+      {
+        "do": "set",
+        "path": "animation.respect_reduce_motion",
+        "value": false,
+        "expect": "ok",
+        "resolved": {
+          "/resolved/animation/dock.in/duration_ms": 180,
+          "/resolved/reduce_motion": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "workspace switches are instant by default and fade is opt-in",
+    "steps": [
+      {
+        "do": "check",
+        "effective": {
+          "animation.workspace.style": "off"
+        },
+        "resolved": {
+          "/resolved/workspace_style": "off"
+        }
+      },
+      {
+        "do": "set",
+        "path": "animation.workspace.style",
+        "value": "fade",
+        "expect": "ok",
+        "resolved": {
+          "/resolved/workspace_style": "fade"
+        }
+      },
+      {
+        "do": "set",
+        "path": "animation.workspace.style",
+        "value": "wipe",
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "animation.workspace.style",
+              "code": "value"
+            }
+          ]
+        }
+      }
+    ]
+  }
+]

@@ -381,6 +381,7 @@ impl Core {
                     }
                 }
                 Effect::RefuseFollow { .. } => Ok(()),
+                Effect::SetFloat { window, float } => d(&format!("hl.dsp.window.float({{ action = {}, window = {} }})", lua_str(if *float { "enable" } else { "disable" }), lua_str(&format!("address:{window}")))),
             };
             if let Err((err, partial)) = r {
                 self.log(&format!("effect failed: {err}"));
@@ -482,7 +483,7 @@ impl Core {
             return;
         }
         let monitor = self.monitors().into_iter().find(|m| m.id == c.monitor).map(|m| m.name);
-        let _ = self.apply(Event::Open { window: c.addr.clone(), pid: c.pid, start, app: c.class.clone(), monitor, workspace: n });
+        let _ = self.apply(Event::Open { window: c.addr.clone(), pid: c.pid, start, app: c.class.clone(), monitor, workspace: n, title: c.title.clone() });
         if on_agent && !matches!(self.model.home(&c.addr), Some(Home::Agent)) {
             let _ = self.apply(Event::AgentSend { window: c.addr.clone() });
         }
@@ -851,6 +852,14 @@ impl Core {
         proc::token_of(pid).and_then(|t| self.tokens.get(&t)).is_some_and(|i| i.bus_lost)
     }
 
+    /// The agent a control-socket peer is, if it is one: the name its launch was given.
+    pub fn peer_agent(&self, pid: u32) -> Option<String> {
+        if let Some(i) = proc::token_of(pid).and_then(|t| self.tokens.get(&t)) {
+            return Some(i.agent.clone());
+        }
+        (self.model.agent_proc(pid).is_some() && self.model.is_agent_pid(pid, proc::start_time(pid).unwrap_or(0))).then(|| "agent".to_string())
+    }
+
     /// Whether the process on the other end of the control socket is an agent.
     pub fn is_agent_peer(&self, pid: u32) -> bool {
         if proc::token_of(pid).is_some_and(|t| self.tokens.contains_key(&t)) {
@@ -881,6 +890,9 @@ pub fn handle(shared: &Shared, req: &Value, peer: Option<u32>) -> Envelope {
             return env;
         }
     }
+    if op.starts_with("config_") || op.starts_with("theme_") {
+        return crate::cfg::handle(shared, op, &args, req, peer);
+    }
     if op.starts_with("test_") && !lock(shared).test_ops {
         return Envelope::err("invalid_args", "test operations are off", Retry::Never, "");
     }
@@ -895,6 +907,9 @@ pub fn handle(shared: &Shared, req: &Value, peer: Option<u32>) -> Envelope {
             });
             Envelope::ok(json!({ "stopping": true }))
         }
+        // Test only: the Settings UI's click. It is the one thing that approves an executable setting; the
+        // real UI writes approvals.json the same way, and no CLI, MCP or socket operation does.
+        "test_settings_approve" => crate::cfg::test_approve(shared, &args),
         "test_register_pid" => {
             let mut c = lock(shared);
             let pid = args["pid"].as_u64().unwrap_or(0) as u32;
@@ -1453,7 +1468,15 @@ pub fn run(trace: bool) -> i32 {
                 let Ok(line) = line else { break };
                 let ev = parse_event(&line);
                 if ev != HyprEvent::Other {
+                    let after = ev.clone();
                     lock(&shared).on_hypr_event(ev);
+                    // Hooks and the config re-apply run with the lock released.
+                    match after {
+                        HyprEvent::Workspace { id } if (1..=9).contains(&id) => crate::cfg::fire_hook("on_switch", vec![("BANEYSPACES_WORKSPACE", id.to_string())]),
+                        HyprEvent::OpenWindow { addr } => crate::cfg::fire_hook("on_window_open", vec![("BANEYSPACES_WINDOW", addr)]),
+                        HyprEvent::ConfigReloaded => crate::cfg::reload(&shared),
+                        _ => {}
+                    }
                 }
             }
             eprintln!("baneyspaces daemon: Hyprland closed the event socket; exiting");
@@ -1489,6 +1512,7 @@ pub fn run(trace: bool) -> i32 {
           }
         });
     }
+    crate::cfg::start(&shared, &paths, Some(hypr.clone()));
     eprintln!("baneyspaces daemon: ready ({})", sock.display());
     for conn in listener.incoming().flatten() {
         let shared = shared.clone();
@@ -1507,6 +1531,16 @@ pub fn take_lock(paths: &Paths) -> Result<std::fs::File, String> {
         return Err("already running (the lock is held)".into());
     }
     Ok(f)
+}
+
+/// Whether a daemon is running: it holds the lock for the life of the process.
+pub fn daemon_alive(paths: &Paths) -> bool {
+    use std::os::unix::io::AsRawFd;
+    let Ok(f) = std::fs::OpenOptions::new().read(true).write(true).open(paths.run.join("daemon.lock")) else { return false };
+    // SAFETY: a valid fd from the file just opened.
+    let got = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
+    // Released when `f` closes.
+    !got
 }
 
 /// How long the CLI and MCP client wait for the daemon. The daemon's own budget for one hands call

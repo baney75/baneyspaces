@@ -1,0 +1,521 @@
+[
+  {
+    "name": "the recovery chord on linux is super+shift+escape, held 2000 ms",
+    "platform": "linux",
+    "steps": [
+      {
+        "do": "recovery",
+        "data": {
+          "chord": "super+shift+escape",
+          "hold_ms": 2000
+        }
+      }
+    ]
+  },
+  {
+    "name": "the recovery chord on macos is cmd+shift+escape, held 2000 ms",
+    "platform": "macos",
+    "steps": [
+      {
+        "do": "recovery",
+        "data": {
+          "chord": "cmd+shift+escape",
+          "hold_ms": 2000
+        }
+      }
+    ]
+  },
+  {
+    "name": "the recovery chord on windows is win+shift+escape, held 2000 ms",
+    "platform": "windows",
+    "steps": [
+      {
+        "do": "recovery",
+        "data": {
+          "chord": "win+shift+escape",
+          "hold_ms": 2000
+        }
+      }
+    ]
+  },
+  {
+    "name": "the recovery chord cannot be bound (super+shift+escape = exec true)",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "super+shift+escape": "exec true"
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "keys.bindings.\"super+shift+escape\"",
+              "code": "reserved_chord"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "the recovery chord cannot be bound (super+shift+escape = none)",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "super+shift+escape": "none"
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "keys.bindings.\"super+shift+escape\"",
+              "code": "reserved_chord"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "the recovery chord cannot be bound (super+shift+escape = switch 1)",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "super+shift+escape": "switch 1"
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "keys.bindings.\"super+shift+escape\"",
+              "code": "reserved_chord"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "the recovery chord cannot be bound (mod+shift+escape = exec true)",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "mod+shift+escape": "exec true"
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "keys.bindings.\"mod+shift+escape\"",
+              "code": "reserved_chord"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "the recovery chord cannot be bound (mod+shift+escape = none)",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "mod+shift+escape": "none"
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "keys.bindings.\"mod+shift+escape\"",
+              "code": "reserved_chord"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "the recovery chord cannot be bound (mod+shift+escape = switch 1)",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "mod+shift+escape": "switch 1"
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "keys.bindings.\"mod+shift+escape\"",
+              "code": "reserved_chord"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "the recovery chord cannot be bound (cmd+shift+escape = exec true)",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "cmd+shift+escape": "exec true"
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "keys.bindings.\"cmd+shift+escape\"",
+              "code": "reserved_chord"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "the recovery chord cannot be bound (cmd+shift+escape = none)",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "cmd+shift+escape": "none"
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "keys.bindings.\"cmd+shift+escape\"",
+              "code": "reserved_chord"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "the recovery chord cannot be bound (cmd+shift+escape = switch 1)",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "cmd+shift+escape": "switch 1"
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "keys.bindings.\"cmd+shift+escape\"",
+              "code": "reserved_chord"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "the recovery chord cannot be bound (win+shift+escape = exec true)",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "win+shift+escape": "exec true"
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "keys.bindings.\"win+shift+escape\"",
+              "code": "reserved_chord"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "the recovery chord cannot be bound (win+shift+escape = none)",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "win+shift+escape": "none"
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "keys.bindings.\"win+shift+escape\"",
+              "code": "reserved_chord"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "the recovery chord cannot be bound (win+shift+escape = switch 1)",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "win+shift+escape": "switch 1"
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "keys.bindings.\"win+shift+escape\"",
+              "code": "reserved_chord"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "the recovery chord cannot be bound (shift+super+escape = exec true)",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "shift+super+escape": "exec true"
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "keys.bindings.\"shift+super+escape\"",
+              "code": "reserved_chord"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "the recovery chord cannot be bound (shift+super+escape = none)",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "shift+super+escape": "none"
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "keys.bindings.\"shift+super+escape\"",
+              "code": "reserved_chord"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "the recovery chord cannot be bound (shift+super+escape = switch 1)",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "shift+super+escape": "switch 1"
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "keys.bindings.\"shift+super+escape\"",
+              "code": "reserved_chord"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "the recovery chord cannot be bound inside a mode",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "keys": {
+            "modes": {
+              "m": {
+                "super+shift+escape": "mode default"
+              }
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "keys.modes.m.\"super+shift+escape\"",
+              "code": "reserved_chord"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "the recovery chord cannot be set through the CLI path either",
+    "steps": [
+      {
+        "do": "validate",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "mod+shift+escape": "exec true"
+            }
+          }
+        },
+        "expect": {
+          "error": "config_invalid",
+          "issues": [
+            {
+              "path": "keys.bindings.\"mod+shift+escape\"",
+              "code": "reserved_chord"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "another chord with the same key is a different chord",
+    "steps": [
+      {
+        "do": "apply",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "super+shift+ctrl+escape": "exec true"
+            }
+          }
+        },
+        "expect": "ok"
+      }
+    ]
+  },
+  {
+    "name": "config reset keys and reset theme restore the defaults (what the recovery chord runs)",
+    "steps": [
+      {
+        "do": "set",
+        "path": "keys.bindings.mod+1",
+        "value": "exec true",
+        "caller": "agent:x",
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "theme.name",
+        "value": "minimal",
+        "caller": "agent:x",
+        "expect": "ok"
+      },
+      {
+        "do": "set",
+        "path": "animation.speed",
+        "value": 0.5,
+        "expect": "ok"
+      },
+      {
+        "do": "reset",
+        "section": "keys",
+        "caller": "user",
+        "expect": "ok",
+        "effective": {
+          "keys.bindings.mod+1": "switch 1"
+        }
+      },
+      {
+        "do": "reset",
+        "section": "theme",
+        "caller": "user",
+        "expect": "ok",
+        "effective": {
+          "theme.name": "baneyspaces",
+          "animation.speed": 0.5
+        },
+        "history": {
+          "callers": [
+            "user",
+            "user",
+            "user",
+            "agent:x",
+            "agent:x",
+            "system"
+          ]
+        }
+      }
+    ]
+  }
+]

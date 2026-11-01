@@ -1,0 +1,364 @@
+[
+  {
+    "name": "an empty file is every default (linux)",
+    "steps": [
+      {
+        "do": "check",
+        "effective": {
+          "keys.mod": "super",
+          "keys.bindings.mod+3": "switch 3",
+          "keys.bindings.mod+shift+9": "move 9",
+          "keys.bindings.mod+shift+alt+5": "move 5 --stay",
+          "keys.bindings.mod+tab": "overview",
+          "keys.bindings.mod+grave": "agent-workspace toggle",
+          "theme.palette": "auto",
+          "animation.preset": "baneyspaces",
+          "animation.speed": 1.0,
+          "animation.respect_reduce_motion": true,
+          "behavior.follow_focus": true,
+          "behavior.new_window": "current",
+          "behavior.dock.enabled": true,
+          "behavior.dock.edge": "bottom",
+          "behavior.dock.hide_ms": 400,
+          "behavior.overview.layout": "adaptive",
+          "behavior.switcher.mode": "windows",
+          "behavior.switcher.hold_ms": 120,
+          "hooks.on_switch": "",
+          "rules": []
+        }
+      }
+    ]
+  },
+  {
+    "name": "the default theme is omarchy on an Omarchy seat and baneyspaces elsewhere",
+    "omarchy": true,
+    "steps": [
+      {
+        "do": "check",
+        "effective": {
+          "theme.name": "omarchy"
+        }
+      }
+    ]
+  },
+  {
+    "name": "macos defaults use cmd",
+    "platform": "macos",
+    "steps": [
+      {
+        "do": "check",
+        "effective": {
+          "keys.mod": "cmd",
+          "keys.bindings.mod+1": "switch 1",
+          "keys.bindings.mod+shift+1": "move 1",
+          "keys.bindings.ctrl+up": "overview"
+        }
+      }
+    ]
+  },
+  {
+    "name": "windows defaults use the win key",
+    "platform": "windows",
+    "steps": [
+      {
+        "do": "check",
+        "effective": {
+          "keys.mod": "win",
+          "keys.bindings.mod+1": "switch 1",
+          "keys.bindings.mod+shift+1": "move 1",
+          "keys.bindings.mod+grave": "agent-workspace toggle"
+        }
+      }
+    ]
+  },
+  {
+    "name": "the spec's keys example is valid",
+    "steps": [
+      {
+        "do": "apply",
+        "doc": {
+          "keys": {
+            "mod": "super",
+            "bindings": {
+              "mod+tab": "switcher windows",
+              "mod+space": "launcher",
+              "mod+grave": "overview",
+              "mod+return": "exec ghostty",
+              "mod+r": "mode resize",
+              "mod+h": "none"
+            },
+            "modes": {
+              "resize": {
+                "h": "window resize -40 0",
+                "escape": "mode default"
+              }
+            }
+          }
+        },
+        "expect": "ok",
+        "effective": {
+          "keys.bindings.mod+r": "mode resize",
+          "keys.bindings.mod+space": "launcher",
+          "keys.modes.resize.h": "window resize -40 0"
+        }
+      }
+    ]
+  },
+  {
+    "name": "a binding replaces the default with the same chord however it is spelled",
+    "steps": [
+      {
+        "do": "apply",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "super+1": "move 3"
+            }
+          }
+        },
+        "expect": "ok",
+        "effective": {
+          "keys.bindings.super+1": "move 3"
+        }
+      }
+    ]
+  },
+  {
+    "name": "none unbinds a default",
+    "steps": [
+      {
+        "do": "apply",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "mod+tab": "none"
+            }
+          }
+        },
+        "expect": "ok"
+      }
+    ]
+  },
+  {
+    "name": "a mode gets escape to leave it",
+    "steps": [
+      {
+        "do": "apply",
+        "doc": {
+          "keys": {
+            "bindings": {
+              "mod+m": "mode nav"
+            },
+            "modes": {
+              "nav": {
+                "1": "switch 1"
+              }
+            }
+          }
+        },
+        "expect": "ok",
+        "effective": {
+          "keys.modes.nav.escape": "mode default"
+        }
+      }
+    ]
+  },
+  {
+    "name": "the spec's behavior example is valid",
+    "steps": [
+      {
+        "do": "apply",
+        "doc": {
+          "behavior": {
+            "follow_focus": true,
+            "new_window": "current",
+            "workspace_names": {
+              "1": "Main",
+              "2": "School"
+            },
+            "workspace_tints": {
+              "1": "#7aa2f7"
+            },
+            "dock": {
+              "enabled": true,
+              "edge": "bottom",
+              "reveal_ms": 0,
+              "hide_ms": 400
+            },
+            "overview": {
+              "layout": "adaptive",
+              "empty": "compact",
+              "previews": "live"
+            },
+            "switcher": {
+              "mode": "windows",
+              "hold_ms": 120
+            }
+          },
+          "rules": [
+            {
+              "app": "Ghostty",
+              "workspace": 2,
+              "float": false
+            }
+          ],
+          "hooks": {
+            "on_switch": "~/.config/baneyspaces/hooks/switch.sh",
+            "on_window_open": ""
+          }
+        },
+        "expect": "ok",
+        "effective": {
+          "behavior.workspace_names.2": "School",
+          "rules[0].app": "Ghostty"
+        }
+      }
+    ]
+  },
+  {
+    "name": "the Linux-only keys are in the schema",
+    "steps": [
+      {
+        "do": "apply",
+        "doc": {
+          "behavior": {
+            "dock": {
+              "auto_hide": false,
+              "size": "large",
+              "in_fullscreen": true,
+              "badges": false
+            },
+            "switcher": {
+              "enabled": false
+            },
+            "launcher": {
+              "enabled": true,
+              "files": false,
+              "install": false,
+              "search_engine": "ddg",
+              "agent": "claude"
+            },
+            "overview": {
+              "enabled": false
+            }
+          },
+          "bangs": [
+            {
+              "trigger": "jira",
+              "name": "Jira",
+              "url": "https://acme.atlassian.net/browse/{q}"
+            }
+          ]
+        },
+        "expect": "ok",
+        "effective": {
+          "behavior.dock.size": "large",
+          "behavior.launcher.files": false,
+          "bangs[0].trigger": "jira"
+        }
+      }
+    ]
+  },
+  {
+    "name": "a custom theme extends a built-in one and its tokens flow through",
+    "steps": [
+      {
+        "do": "apply",
+        "doc": {
+          "theme": {
+            "name": "mine",
+            "override": {
+              "radius": {
+                "bar": 9
+              }
+            }
+          }
+        },
+        "expect": "ok"
+      }
+    ],
+    "themes": {
+      "mine": {
+        "extends": "omarchy",
+        "radius": {
+          "tile": 3
+        }
+      }
+    }
+  },
+  {
+    "name": "the spec's theme example is valid",
+    "steps": [
+      {
+        "do": "apply",
+        "doc": {
+          "theme": {
+            "name": "omarchy",
+            "palette": "auto",
+            "override": {
+              "radius": {
+                "tile": 4
+              },
+              "font": {
+                "family": "monospace"
+              }
+            }
+          }
+        },
+        "expect": "ok"
+      }
+    ]
+  },
+  {
+    "name": "a shadow can be turned off with false and a fill made opaque with none",
+    "steps": [
+      {
+        "do": "apply",
+        "doc": {
+          "theme": {
+            "override": {
+              "shadow": false,
+              "fill": {
+                "material": "none"
+              }
+            }
+          }
+        },
+        "expect": "ok"
+      }
+    ]
+  },
+  {
+    "name": "a json document is accepted as well as toml",
+    "steps": [
+      {
+        "do": "apply",
+        "doc": {
+          "animation": {
+            "speed": 0.5
+          }
+        },
+        "expect": "ok",
+        "effective": {
+          "animation.speed": 0.5
+        }
+      }
+    ]
+  },
+  {
+    "name": "a toml document is accepted",
+    "steps": [
+      {
+        "do": "apply",
+        "toml": "[behavior]\nfollow_focus = false\n[keys.bindings]\n\"mod+h\" = \"exec foot\"\n",
+        "expect": "ok",
+        "effective": {
+          "behavior.follow_focus": false
+        },
+        "configured": {
+          "keys.bindings.mod+h": "exec foot"
+        }
+      }
+    ]
+  }
+]

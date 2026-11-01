@@ -37,7 +37,7 @@ chk "the block is appended" grep -qF -- '>>> baneyspaces' "$M"
 chk "your own lines are intact" grep -q 'my own line' "$M"
 chk "the include is copied" test -f "$HOME/.config/hypr/baneyspaces/baneyspaces.lua"
 chk "the autostart is copied and runs the daemon by absolute path" grep -qF "exec_cmd(\"$HOME/.local/bin/baneyspaces daemon\")" "$HOME/.config/hypr/baneyspaces/baneyspaces-autostart.lua"
-chk "every bound key runs the binary by absolute path" test "$(grep -cF "exec_cmd(\"$HOME/.local/bin/baneyspaces " "$HOME/.config/hypr/baneyspaces/baneyspaces.lua")" = 29
+chk "every bound key (29) and the recovery chord (2 commands) runs the binary by absolute path" test "$(grep -cF "exec_cmd(\"$HOME/.local/bin/baneyspaces " "$HOME/.config/hypr/baneyspaces/baneyspaces.lua")" = 31
 chk "no bare baneyspaces command is left in the include" test "$(grep -c 'exec_cmd("baneyspaces ' "$HOME/.config/hypr/baneyspaces/baneyspaces.lua")" = 0
 chk "--no-binary works once the binary is installed" "$OM/install.sh" --no-binary --src "$T/src"
 chk "the binary is installed" test -x "$HOME/.local/bin/baneyspaces"

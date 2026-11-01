@@ -91,5 +91,142 @@
       "note": "Explorer owns Win+1-9 (taskbar), so RegisterHotKey fails: the daemon swallows these chords in a WH_KEYBOARD_LL hook. Changeable. Overview has no key in part 1.",
       "agent_workspace": "cloaked, never shown unless you ask"
     }
+  },
+  "chords": {
+    "note": "How a chord is spelled in config (spec/config.md). Lowercase only, joined with +: modifiers first, then exactly one key from `keys`. `mod` is the configured keys.mod; `cmd`, `super` and `win` are the same physical key (the logo key), spelled the way each platform names it. A chord in keys.bindings needs at least one modifier; a chord in a mode may be a bare key.",
+    "modifiers": [
+      "mod",
+      "cmd",
+      "super",
+      "win",
+      "ctrl",
+      "alt",
+      "shift"
+    ],
+    "logo": [
+      "cmd",
+      "super",
+      "win"
+    ],
+    "keys": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e",
+      "f",
+      "g",
+      "h",
+      "i",
+      "j",
+      "k",
+      "l",
+      "m",
+      "n",
+      "o",
+      "p",
+      "q",
+      "r",
+      "s",
+      "t",
+      "u",
+      "v",
+      "w",
+      "x",
+      "y",
+      "z",
+      "0",
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+      "7",
+      "8",
+      "9",
+      "f1",
+      "f2",
+      "f3",
+      "f4",
+      "f5",
+      "f6",
+      "f7",
+      "f8",
+      "f9",
+      "f10",
+      "f11",
+      "f12",
+      "f13",
+      "f14",
+      "f15",
+      "f16",
+      "f17",
+      "f18",
+      "f19",
+      "f20",
+      "f21",
+      "f22",
+      "f23",
+      "f24",
+      "escape",
+      "tab",
+      "space",
+      "return",
+      "backspace",
+      "delete",
+      "insert",
+      "home",
+      "end",
+      "pageup",
+      "pagedown",
+      "up",
+      "down",
+      "left",
+      "right",
+      "grave",
+      "minus",
+      "equal",
+      "plus",
+      "bracketleft",
+      "bracketright",
+      "backslash",
+      "semicolon",
+      "apostrophe",
+      "comma",
+      "period",
+      "slash"
+    ],
+    "mod": {
+      "macos": {
+        "allowed": [
+          "cmd",
+          "ctrl",
+          "alt"
+        ],
+        "default": "cmd"
+      },
+      "linux": {
+        "allowed": [
+          "super"
+        ],
+        "default": "super"
+      },
+      "windows": {
+        "allowed": [
+          "win",
+          "ctrl",
+          "alt"
+        ],
+        "default": "win"
+      }
+    },
+    "recovery": {
+      "hold_ms": 2000,
+      "macos": "cmd+shift+escape",
+      "linux": "super+shift+escape",
+      "windows": "win+shift+escape",
+      "note": "Held for hold_ms, restores the default keys and the default theme. Config can neither bind nor remove it; it is bound by the platform layer, never from config."
+    }
   }
 }
