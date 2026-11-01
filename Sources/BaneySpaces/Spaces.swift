@@ -388,7 +388,7 @@ final class Spaces {
         }
         guard newProcess else { return }
         refresh()
-        let early = windows.values.filter { ($0.pid == pid || ProcessTree.descends(pid: $0.pid, roots: [pid: 0], startOf: { _ in nil }, parentOf: AgentOwned.parent(of:))) && model.workspace(of: $0.id) != n }.map(\.id)
+        let early = windows.values.filter { ($0.pid == pid || AgentOwned.shared.owner(of: $0.pid) == pid) && model.workspace(of: $0.id) != n }.map(\.id)
         guard !early.isEmpty else { return }
         drop(claim, of: pid)
         move(early, to: n)
@@ -411,11 +411,10 @@ final class Spaces {
     /// started. Descent only counts below a process BaneySpaces started, never below one you were using.
     private func claimant(of pid: pid_t) -> pid_t? {
         if claims[pid] != nil { return pid }
-        // Only a process an agent started can have claims descend to its children, recorded or by the chain.
-        guard AgentOwned.shared.owns(pid) else { return nil }
-        let roots = claims.keys.filter { AgentOwned.shared.pids.contains($0) }
-        return roots.first { ProcessTree.descends(pid: pid, roots: [$0: 0], startOf: { _ in nil }, parentOf: AgentOwned.parent(of:)) }
-            ?? roots.min { (claims[$0]?.first?.until ?? .distantFuture) < (claims[$1]?.first?.until ?? .distantFuture) }
+        // A process a claim reaches is one recorded under (or, not recorded yet, below by the live chain) the
+        // root the claim was made on. A process with no root gets no claim, and never another root's.
+        guard let root = AgentOwned.shared.owner(of: pid), root != pid, claims[root] != nil else { return nil }
+        return root
     }
 
     /// Claimed windows go straight to their workspace, before the next switch would show them.

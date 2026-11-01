@@ -101,7 +101,16 @@ guest never sees them. macOS: a key bridge, an event tap at the head of the HID 
 (`DeviceKeys` decides, `KeyBridgeState` holds what the tap thread and the main thread share behind one
 lock; `conformance/devices/keys.json`). The order of `CGGetEventTapList` is not documented, so the bridge
 makes its tap again only when a key-taking tap from another process appears that was not there when
-ours was made, and at most every 5 seconds. Linux: every
+ours was made, and at most every 5 seconds. The tap's thread checks a generation counter, under the
+lock, at each step of its setup; a disarmed generation tears itself down.
+
+The workspace modifier is held back from the guest while a chord is still possible. A guest that maps
+⌘ to its Win or Super key would otherwise see a lone press and release on every workspace switch (and
+open its Start menu or Activities). The modifier press is swallowed; a workspace digit then runs the
+chord and the guest sees none of it; anything else (another key, a mouse button, the modifier letting go
+alone) first replays the held modifier presses to the guest, so ⌘C, ⌘-click and a lone ⌘ tap reach it
+as they were. ⇧ joins a hold that has started (⌘⇧3). If the front app changes while a modifier is held, the
+hold is dropped and its release passes. `KeyBridgeState` decides all of it. Linux: every
 BaneySpaces bind carries `dont_inhibit`, so Hyprland ignores the viewer's keyboard-shortcuts-inhibit
 request. Windows: `windows/part1` owns it. Anything else goes to the guest. A setting turns the
 bridge off for someone who wants those chords in the guest.
@@ -115,9 +124,12 @@ app's own release chord from the table (`keys.<platform>.release`). The recovery
 
 Every process descended from a process BaneySpaces started for an agent is that agent's process. The
 emulator starts `qemu-system-*` and a Simulator host starts services: the window belongs to a
-grandchild. macOS records every descendant with its start time twice a second while its parent is alive, so a
-child that is reparented to launchd afterwards (`sh -c 'emulator ... &'` exits) stays the agent's; Linux
-uses the launch token every descendant inherits. A process that was reparented before the next
+grandchild. macOS records every descendant twice a second while its parent is alive, with the root it was found
+under (that root's pid and start time) and its own start time, and attributes its windows by that
+recorded root, never by whichever claim is open: a child that is reparented to launchd afterwards
+(`sh -c 'emulator ... &'` exits) stays that root's, and only that root's. A root whose pid another
+process now has is dropped, with everything recorded under it. A child not recorded yet is attributed by
+the live parent chain to a live root. Linux uses the launch token every descendant inherits. A process that was reparented before the next
 recording, or was never recorded, is not the agent's (`conformance/devices/placement.json` states both).
 A pid that was reused by an unrelated process is not a descendant.
 

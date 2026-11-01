@@ -1161,6 +1161,11 @@ impl Model {
     }
 
     fn agent_bring(&mut self, window: &str) -> Result<Vec<Effect>, ModelError> {
+        // R-D4: a companion is not brought alone; its window comes and takes it along.
+        let window = &match self.windows.get(window).map(|w| w.role) {
+            Some(Role::Companion) => self.main_of(window).unwrap_or_else(|| window.to_string()),
+            _ => window.to_string(),
+        };
         let w = self
             .windows
             .get(window)

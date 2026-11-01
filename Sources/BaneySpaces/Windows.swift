@@ -582,8 +582,9 @@ enum DeviceApps {
         lock.unlock()
         let p = process(pid: pid)
         let facts = DeviceFacts(bundle: NSRunningApplication(processIdentifier: pid)?.bundleIdentifier ?? "", process: p.name, args: p.args)
-        // By process, bundle and command line only: a window's title is read per window, in Windows.all.
-        let result = DeviceTable.builtin.app(of: facts) == nil ? nil : facts
+        // By process, bundle and command line, or by name alone when a marker could not be read (the title may supply it,
+        // per window, in Windows.all).
+        let result = DeviceTable.builtin.isCandidate(facts) ? facts : nil
         lock.lock()
         if known.count > 512 { known = known.filter { kill($0.key, 0) == 0 } }   // gone processes
         known[pid] = (started, result)
@@ -597,6 +598,6 @@ enum DeviceApps {
     /// Whether the app resizes its own windows (a rotated device, a guest's new resolution): R-D6.
     static func resizesItself(pid: pid_t) -> Bool {
         guard let f = facts(pid: pid) else { return false }
-        return DeviceTable.builtin.app(of: f)?.resizesItself ?? false
+        return (DeviceTable.builtin.app(of: f) ?? DeviceTable.builtin.appByName(of: f))?.resizesItself ?? false
     }
 }

@@ -54,10 +54,10 @@ final class AgentOwned {
         return info.kp_eproc.e_ppid
     }
 
-    /// Descendants of the processes started for an agent, recorded with their start times while their parent
-    /// was alive (R-D8). A grandchild whose parent exits is reparented to launchd; the record is what keeps it
-    /// the agent's. Recorded by `recordDescendants()`, about twice a second.
-    private var descendants: [Int32: Double] = [:]
+    /// Descendants of the processes started for an agent, each recorded with the root it was found under (that
+    /// root's pid and start time) while its parent chain still showed it (R-D8). A grandchild whose parent exits
+    /// is reparented to launchd; the record is what keeps it that root's, and only that root's.
+    private var descendants: [Int32: RecordedDescendant] = [:]
 
     /// Every process and its parent, from the kernel.
     static func processTable() -> [(pid: Int32, ppid: Int32)] {
@@ -75,25 +75,40 @@ final class AgentOwned {
         }
     }
 
-    /// Notes new children, grandchildren and so on of the agent's processes, and forgets ones that ended.
+    /// The roots still running as the processes started for the agent: a pid another process has now is no root.
+    private func liveRoots() -> [Int32: Double] {
+        lock.lock(); let all = set.roots; lock.unlock()
+        return ProcessTree.liveRoots(all, startOf: Self.startTime)
+    }
+
+    /// Notes new children, grandchildren and so on of the agent's live roots under the root each was found
+    /// under, and forgets entries whose process or root is gone or replaced.
     func recordDescendants() {
-        lock.lock(); let roots = Set(set.pids); lock.unlock()
-        guard !roots.isEmpty || !descendants.isEmpty else { return }
-        let table = Self.processTable()
+        let roots = liveRoots()
+        lock.lock(); let have = !descendants.isEmpty; lock.unlock()
+        guard !roots.isEmpty || have else { return }
+        let table = roots.isEmpty ? [] : Self.processTable()
         lock.lock()
-        descendants = descendants.filter { pid, started in Self.startTime(pid).map { abs($0 - started) < 0.5 } ?? false }
-        let found = ProcessTree.newDescendants(roots: roots, known: Set(descendants.keys), table: table)
-        for pid in found { if let t = Self.startTime(pid) { descendants[pid] = t } }
+        descendants = descendants.filter { pid, d in
+            Self.startTime(pid).map { abs($0 - d.started) < 0.5 } == true && roots[d.root].map { abs($0 - d.rootStarted) < 0.5 || $0 == 0 } == true
+        }
+        let found = ProcessTree.newDescendants(roots: Array(roots.keys), known: Set(descendants.keys), table: table)
+        for f in found {
+            if let t = Self.startTime(f.pid), let rs = roots[f.root] { descendants[f.pid] = RecordedDescendant(started: t, root: f.root, rootStarted: rs) }
+        }
         lock.unlock()
     }
 
-    /// R-D8: whether `pid` is a process started for an agent, a descendant recorded while its parent lived, or
-    /// (right now) a descendant by the parent chain.
-    func owns(_ pid: Int32) -> Bool {
-        lock.lock(); let all = set; let recorded = descendants[pid]; lock.unlock()
-        if let recorded, let now = Self.startTime(pid), abs(recorded - now) < 0.5 { return true }
-        return ProcessTree.descends(pid: pid, roots: all.roots, startOf: Self.startTime, parentOf: Self.parent(of:))
+    /// The agent root `pid` belongs to (a root itself, a descendant recorded under it, or a child by the live
+    /// chain not recorded yet), or nil.
+    func owner(of pid: Int32) -> Int32? {
+        let roots = liveRoots()
+        lock.lock(); let rec = descendants; lock.unlock()
+        return ProcessTree.attribute(pid: pid, roots: roots, recorded: rec, startOf: Self.startTime, parentOf: Self.parent(of:))
     }
+
+    /// R-D8: whether `pid` is a process started for an agent or below one.
+    func owns(_ pid: Int32) -> Bool { owner(of: pid) != nil }
 
     func add(_ pid: Int32) {
         guard let t = Self.startTime(pid) else { return }

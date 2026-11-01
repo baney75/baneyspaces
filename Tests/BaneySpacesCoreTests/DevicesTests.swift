@@ -63,13 +63,19 @@ final class DevicesTests: XCTestCase {
 
     func testEveryProcessTreeCaseInTheSpec() throws {
         func table(_ v: Any?) -> [Int32: Double] {
-            Dictionary(uniqueKeysWithValues: (v as! [String: NSNumber]).map { (Int32($0.key)!, $0.value.doubleValue) })
+            Dictionary(uniqueKeysWithValues: ((v as? [String: NSNumber]) ?? [:]).map { (Int32($0.key)!, $0.value.doubleValue) })
         }
         for c in try cases("placement.json") {
-            let roots = table(c["roots"]).merging(table(c["recorded"] ?? [:])) { a, _ in a }, starts = table(c["starts"]), parents = table(c["parents"])
-            let got = ProcessTree.descends(pid: Int32(truncating: c["pid"] as! NSNumber), roots: roots,
-                                           startOf: { starts[$0] }, parentOf: { parents[$0].map { Int32($0) } })
-            XCTAssertEqual(got, c["expect"] as? Bool, c["name"] as! String)
+            let roots = table(c["roots"]), starts = table(c["starts"]), parents = table(c["parents"])
+            var recorded: [Int32: RecordedDescendant] = [:]
+            for (k, v) in (c["recorded"] as? [String: [String: NSNumber]]) ?? [:] {
+                let root = Int32(truncating: v["root"]!)
+                recorded[Int32(k)!] = RecordedDescendant(started: v["start"]!.doubleValue, root: root, rootStarted: roots[root] ?? 0)
+            }
+            let got = ProcessTree.attribute(pid: Int32(truncating: c["pid"] as! NSNumber), roots: roots, recorded: recorded,
+                                            startOf: { starts[$0] }, parentOf: { parents[$0].map { Int32($0) } })
+            XCTAssertEqual(got != nil, c["expect"] as? Bool, c["name"] as! String)
+            if let want = c["expect_root"] as? NSNumber { XCTAssertEqual(got, Int32(truncating: want), c["name"] as! String) }
         }
     }
 
@@ -246,12 +252,93 @@ final class DevicesTests: XCTestCase {
 
     // MARK: R-D8, recorded descendants
 
-    func testNewDescendantsAreFoundByTheirParentAndOnlyOnce() {
-        let table: [(pid: Int32, ppid: Int32)] = [(100, 1), (200, 100), (300, 200), (400, 1), (500, 400)]
-        XCTAssertEqual(ProcessTree.newDescendants(roots: [100], known: [], table: table).sorted(), [200, 300])
-        XCTAssertEqual(ProcessTree.newDescendants(roots: [100], known: [200, 300], table: table), [])
-        XCTAssertEqual(ProcessTree.newDescendants(roots: [100], known: [300], table: [(200, 1), (300, 200)]), [], "200 already left and is nobody's")
+    func testNewDescendantsAreFoundByTheirParentUnderTheirRootAndOnlyOnce() {
+        let table: [(pid: Int32, ppid: Int32)] = [(100, 1), (200, 100), (300, 200), (400, 1), (500, 400), (150, 1), (160, 150)]
+        let found = ProcessTree.newDescendants(roots: [100, 150], known: [], table: table)
+        XCTAssertEqual(Dictionary(uniqueKeysWithValues: found.map { ($0.pid, $0.root) }), [200: 100, 300: 100, 160: 150])
+        XCTAssertTrue(ProcessTree.newDescendants(roots: [100], known: [200, 300], table: table).isEmpty)
+        XCTAssertTrue(ProcessTree.newDescendants(roots: [100], known: [300], table: [(200, 1), (300, 200)]).isEmpty, "200 left and is nobody's")
         XCTAssertTrue(ProcessTree.newDescendants(roots: [], known: [], table: table).isEmpty)
+    }
+
+    func testARootWhoseNumberAnotherProcessHasIsDropped() {
+        let live = ProcessTree.liveRoots([100: 5, 150: 6, 160: 0], startOf: { ["100": 9, "150": 6.2][String($0)] })
+        XCTAssertEqual(Set(live.keys), [150, 160], "100 was reused; 160's start time is unknown (0) and kept")
+    }
+
+    func testAProcessNamedLikeTheEmulatorsWithNoReadableArgumentsCanStillBeIdentifiedByTitle() {
+        let facts = DeviceFacts(process: "qemu-system-aarch64")
+        XCTAssertTrue(DeviceTable.builtin.isCandidate(facts))
+        XCTAssertNil(DeviceTable.builtin.app(of: facts), "no marker yet")
+        var titled = facts
+        titled.title = "Android Emulator - Pixel_9:5554"
+        XCTAssertEqual(DeviceTable.classify(titled).app, "android-emulator")
+        XCTAssertEqual(DeviceTable.builtin.appByName(of: facts)?.id, "android-emulator")
+        XCTAssertFalse(DeviceTable.builtin.isCandidate(DeviceFacts(process: "Google Chrome")))
+    }
+
+    // MARK: the modifier is held back from the guest while a workspace chord is possible
+
+    private func armed(_ app: String = "utm", mod: String = "cmd") -> KeyBridgeState {
+        let st = KeyBridgeState(); st.setFront(app, mod: mod); st.arm(); return st
+    }
+
+    func testAChordTheGuestNeverSeesAnyPartOf() {
+        let st = armed()
+        XCTAssertEqual(st.modifier(code: 55, name: "cmd", down: true), .swallow)
+        XCTAssertEqual(st.keyDown(code: 20, workspaceKey: 3, mods: ["cmd"], repeating: false), .run("switch 3"))
+        XCTAssertEqual(st.keyUp(code: 20), .swallow)
+        XCTAssertEqual(st.modifier(code: 55, name: "cmd", down: false), .swallow, "the guest saw neither press nor release")
+        XCTAssertEqual(st.modifier(code: 55, name: "cmd", down: false), .pass, "nothing is held any more")
+    }
+
+    func testTheMoveChordHoldsTheShiftThatJoinsIt() {
+        let st = armed()
+        XCTAssertEqual(st.modifier(code: 55, name: "cmd", down: true), .swallow)
+        XCTAssertEqual(st.modifier(code: 56, name: "shift", down: true), .swallow)
+        XCTAssertEqual(st.keyDown(code: 22, workspaceKey: 5, mods: ["cmd", "shift"], repeating: false), .run("move 5"))
+        XCTAssertEqual(st.keyUp(code: 22), .swallow)
+        XCTAssertEqual(st.modifier(code: 56, name: "shift", down: false), .swallow)
+        XCTAssertEqual(st.modifier(code: 55, name: "cmd", down: false), .swallow)
+    }
+
+    func testCopyReachesTheGuestWithItsModifierShownFirst() {
+        let st = armed()
+        XCTAssertEqual(st.modifier(code: 55, name: "cmd", down: true), .swallow)
+        XCTAssertEqual(st.keyDown(code: 8, workspaceKey: nil, mods: ["cmd"], repeating: false), .replay([55]))
+        XCTAssertEqual(st.modifier(code: 55, name: "cmd", down: false), .pass, "the guest has the press, so it gets the release")
+    }
+
+    func testALoneModifierTapStillReachesTheGuestAsATap() {
+        let st = armed()
+        XCTAssertEqual(st.modifier(code: 55, name: "cmd", down: true), .swallow)
+        XCTAssertEqual(st.modifier(code: 55, name: "cmd", down: false), .replay([55]), "press replayed, then the release passes")
+    }
+
+    func testAClickWithTheModifierHeldShowsTheGuestTheModifierFirst() {
+        let st = armed()
+        _ = st.modifier(code: 55, name: "cmd", down: true)
+        XCTAssertEqual(st.mouseDown(), .replay([55]))
+        XCTAssertEqual(st.mouseDown(), .pass)
+    }
+
+    func testAnOtherModifierAloneIsNeverHeldAndAShiftAloneIsNot() {
+        let st = armed()
+        XCTAssertEqual(st.modifier(code: 56, name: "shift", down: true), .pass, "capital letters in the guest")
+        XCTAssertEqual(st.modifier(code: 59, name: "ctrl", down: true), .pass)
+        let both = armed(mod: "ctrl+alt")
+        XCTAssertEqual(both.modifier(code: 59, name: "ctrl", down: true), .swallow)
+        XCTAssertEqual(both.modifier(code: 58, name: "alt", down: true), .swallow)
+        XCTAssertEqual(both.keyDown(code: 18, workspaceKey: 1, mods: ["ctrl", "alt"], repeating: false), .run("switch 1"))
+    }
+
+    func testDisarmingWhileAModifierIsHeldLetsItsReleasePassAndForgetsTheHold() {
+        let st = armed()
+        _ = st.modifier(code: 55, name: "cmd", down: true)
+        st.disarm()
+        XCTAssertEqual(st.modifier(code: 55, name: "cmd", down: false), .pass)
+        st.arm()
+        XCTAssertEqual(st.keyDown(code: 8, workspaceKey: nil, mods: ["cmd"], repeating: false), .pass)
     }
 
     func testAWindowThatWasATitlelessCompanionIsCountedOnceItIsDetached() {

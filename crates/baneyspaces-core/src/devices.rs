@@ -187,6 +187,13 @@ impl Match {
     }
 }
 
+impl Match {
+    /// Whether the process or exe name alone (ignoring the argument and title markers) is one the app uses.
+    fn names_hit(&self, f: &Facts) -> bool {
+        self.process_arg.keys().chain(self.process_title.keys()).any(|p| name_matches(p, f.process) || name_matches(p, f.exe))
+    }
+}
+
 impl WindowRule {
     fn hits(&self, f: &Facts) -> bool {
         let title = f.title;
@@ -230,6 +237,13 @@ impl Table {
             .find(|a| a.matches.get(f.platform).is_some_and(|m| m.hits(f)))
     }
 
+    /// Whether a window could ever be a device app's: it matches an app now, or its process is one whose
+    /// match needs a marker (an argument or a title) that may still be missing. Everything else never
+    /// changes role, so a title change on it is not looked at.
+    pub fn is_candidate(&self, f: &Facts) -> bool {
+        self.app_of(f).is_some() || self.apps.iter().any(|a| a.matches.get(f.platform).is_some_and(|m| m.names_hit(f)))
+    }
+
     /// R-D1: the role of one window. First rule that hits wins. A window that is not a standard
     /// application window is never `main`.
     pub fn classify(&self, f: &Facts) -> Decision {
@@ -259,41 +273,78 @@ pub fn classify(f: &Facts) -> Decision {
     Table::builtin().classify(f)
 }
 
-/// R-D8: whether `pid` is a registered agent root or descends from one. `roots` maps pid to start
-/// time; `start_of` and `parent_of` read the live process table. A root whose pid now has another
-/// start time (the pid was reused) is no root. The walk is bounded, so a parent loop ends.
-pub fn descends_from(roots: &BTreeMap<u32, u64>, pid: u32, start_of: impl Fn(u32) -> Option<u64>, parent_of: impl Fn(u32) -> Option<u32>) -> bool {
-    let mut at = pid;
-    for _ in 0..64 {
-        if let Some(&want) = roots.get(&at) {
-            if want == 0 || start_of(at) == Some(want) {
-                return true;
-            }
-        }
-        match parent_of(at) {
-            Some(p) if p > 1 && p != at => at = p,
-            _ => return false,
+/// A process found below an agent root, remembered with that root (pid and start time) at the time.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Recorded {
+    pub start: u64,
+    pub root: u32,
+}
+
+/// R-D8: the agent root `pid` belongs to, or `None`. In order: it is a root with the same start time
+/// (`start_of`); it was recorded under a root that is still that process; it descends from a root by the
+/// live parent chain right now. A process with no root has none, whatever claims are open. The walk is
+/// bounded, so a parent loop ends.
+pub fn attribute_root(
+    roots: &BTreeMap<u32, u64>,
+    recorded: &BTreeMap<u32, Recorded>,
+    pid: u32,
+    start_of: impl Fn(u32) -> Option<u64>,
+    parent_of: impl Fn(u32) -> Option<u32>,
+) -> Option<u32> {
+    let live = |p: u32| roots.get(&p).is_some_and(|&want| want == 0 || start_of(p) == Some(want));
+    if live(pid) {
+        return Some(pid);
+    }
+    if let Some(r) = recorded.get(&pid) {
+        if (r.start == 0 || start_of(pid) == Some(r.start)) && live(r.root) {
+            return Some(r.root);
         }
     }
-    false
+    let mut at = pid;
+    for _ in 0..64 {
+        match parent_of(at) {
+            Some(p) if p > 1 && p != at => {
+                if live(p) {
+                    return Some(p);
+                }
+                at = p;
+            }
+            _ => return None,
+        }
+    }
+    None
 }
 
 /// Replays one `spec/conformance/devices/placement.json` case.
 pub fn run_placement_case(case: &Value) -> Result<(), String> {
     let name = case["name"].as_str().unwrap_or("?");
     let table = |k: &str| -> BTreeMap<u32, u64> {
-        case[k].as_object().into_iter().flatten().filter_map(|(p, v)| Some((p.parse().ok()?, v.as_u64()?))).collect()
+        case[k]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter_map(|(p, v)| Some((p.parse().ok()?, v.as_u64()?)))
+            .collect()
     };
-    let (mut roots, starts) = (table("roots"), table("starts"));
-    // Descendants recorded while their parent lived count as roots of their own.
-    roots.extend(table("recorded"));
+    let (roots, starts) = (table("roots"), table("starts"));
     let parents: BTreeMap<u32, u32> = table("parents").into_iter().map(|(k, v)| (k, v as u32)).collect();
+    let recorded: BTreeMap<u32, Recorded> = case["recorded"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(p, v)| Some((p.parse().ok()?, Recorded { start: v["start"].as_u64()?, root: v["root"].as_u64()? as u32 })))
+        .collect();
     let pid = case["pid"].as_u64().unwrap_or(0) as u32;
-    let got = descends_from(&roots, pid, |p| starts.get(&p).copied(), |p| parents.get(&p).copied());
-    match case["expect"].as_bool() {
-        Some(want) if want == got => Ok(()),
-        want => Err(format!("{name}: expected {want:?}, got {got}")),
+    let got = attribute_root(&roots, &recorded, pid, |p| starts.get(&p).copied(), |p| parents.get(&p).copied());
+    if case["expect"].as_bool() != Some(got.is_some()) {
+        return Err(format!("{name}: expected {:?}, got {got:?}", case["expect"]));
     }
+    if let Some(want) = case["expect_root"].as_u64() {
+        if got != Some(want as u32) {
+            return Err(format!("{name}: expected root {want}, got {got:?}"));
+        }
+    }
+    Ok(())
 }
 
 /// Replays one `spec/conformance/devices/classify.json` case.

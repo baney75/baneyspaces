@@ -907,5 +907,69 @@
     }
    }
   ]
+ },
+ {
+  "name": "bringing a companion back from the agent workspace brings its window too",
+  "rules": [
+   "R-D2",
+   "R-D4"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "main",
+    "pid": 100,
+    "app": "emulator"
+   },
+   {
+    "do": "open",
+    "window": "bar",
+    "pid": 100,
+    "app": "emulator",
+    "role": "companion"
+   },
+   {
+    "do": "agent_send",
+    "window": "main"
+   },
+   {
+    "do": "agent_bring",
+    "window": "bar",
+    "effects": [
+     {
+      "do": "move_window",
+      "window": "main",
+      "to": "1"
+     },
+     {
+      "do": "move_window",
+      "window": "bar",
+      "to": "1"
+     }
+    ],
+    "expect": {
+     "workspaces": {
+      "1": [
+       "main"
+      ]
+     },
+     "windows": {
+      "bar": {
+       "home": "1"
+      },
+      "main": {
+       "home": "1"
+      }
+     },
+     "agent": {
+      "windows": []
+     }
+    }
+   }
+  ]
  }
 ]

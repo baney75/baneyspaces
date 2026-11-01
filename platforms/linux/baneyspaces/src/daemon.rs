@@ -73,6 +73,8 @@ pub struct Core {
     pub snaps: HashMap<String, hands::SnapInfo>,
     pub overview_shown: bool,
     pub events_seen: u64,
+    /// Windows that could be a device app's (R-D1) with when they opened and how many title changes were looked at.
+    pub device_titles: HashMap<String, (Instant, u32)>,
     pub started: u64,
     pub trace: bool,
     /// The model may disagree with the compositor (a dispatch failed and a re-read did not work).
@@ -475,6 +477,12 @@ impl Core {
         baneyspaces_core::devices::classify(&Facts { platform: "linux", class: &c.class, process: &comm, args: &arg_refs, title: &c.title, standard: true, ..Default::default() })
     }
 
+    /// Whether the window could ever change role when its title changes (R-D1).
+    fn candidate(c: &Client) -> bool {
+        let comm = proc::comm(c.pid).unwrap_or_default();
+        baneyspaces_core::devices::Table::builtin().is_candidate(&Facts { platform: "linux", class: &c.class, process: &comm, title: &c.title, standard: true, ..Default::default() })
+    }
+
     pub fn open_client(&mut self, c: &Client, existing: bool) {
         if !c.mapped || self.model.is_tracked(&c.addr) {
             return;
@@ -489,6 +497,9 @@ impl Core {
         let start = proc::start_time(c.pid).unwrap_or(0);
         // R-D1: simulators, emulators and VMs: a toolbar travels with its window.
         let decision = Self::decide(c);
+        if Self::candidate(c) {
+            self.device_titles.insert(c.addr.clone(), (Instant::now(), 0));
+        }
         if existing {
             let ev = Event::ObserveWindow { window: c.addr.clone(), pid: c.pid, start, app: c.class.clone(), workspace: n, role: decision.role };
             let _ = self.apply(ev);
@@ -717,12 +728,22 @@ impl Core {
                 }
             }
             HyprEvent::CloseWindow { addr } => {
+                self.device_titles.remove(&addr);
                 let _ = self.apply(Event::Close { window: addr });
             }
             HyprEvent::WindowTitle { addr } => {
                 // R-D1: a title often arrives after the window (an emulator opens untitled), and the
                 // table decides by title. Look again when it changes.
-                if self.model.is_tracked(&addr) {
+                // Only a window that could be a device app's, for its first 5 seconds or 3 title changes: a terminal
+                // that retitles itself on every prompt pays nothing.
+                let looks = match self.device_titles.get_mut(&addr) {
+                    Some((since, n)) if since.elapsed() <= Duration::from_secs(5) && *n < 3 => {
+                        *n += 1;
+                        true
+                    }
+                    _ => false,
+                };
+                if looks && self.model.is_tracked(&addr) {
                     if let Some(c) = self.client(&addr) {
                         let role = Self::decide(&c).role;
                         if self.model.role_of(&addr) != Some(role) {
@@ -1441,6 +1462,7 @@ pub fn run(trace: bool) -> i32 {
         snaps: HashMap::new(),
         overview_shown: false,
         events_seen: 0,
+        device_titles: HashMap::new(),
         started: now(),
         trace,
         dirty: false,
@@ -1606,6 +1628,7 @@ mod tests {
             snaps: HashMap::new(),
             overview_shown: false,
             events_seen: 0,
+            device_titles: HashMap::new(),
             started: now(),
             trace: false,
             dirty: false,

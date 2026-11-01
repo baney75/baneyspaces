@@ -11,8 +11,8 @@ Part B (agents driving devices through `simctl`, `adb` and friends) is separate.
 | Check | Where | Result |
 | --- | --- | --- |
 | Spec cases (model, classification, geometry, keys, process trees) | `cargo test --workspace --locked` | 41 core tests, 52 Linux daemon tests |
-| The same cases, the macOS window model, and the app builds | `swift test` on rectory1 (Mac, macOS 27.2) | 743 tests |
-| A two-window emulator in a nested Hyprland: toolbar follows, is not counted, comes back when dragged off, window floats, 29 binds ignore a keyboard grab | `platforms/linux/tests/nested.sh` | 374 checks, real session unchanged |
+| The same cases, the macOS window model, and the app builds | `swift test` on rectory1 (Mac, macOS 27.2) | 1050 tests |
+| A two-window emulator in a nested Hyprland: toolbar follows, is not counted, comes back when dragged off, window floats, 29 binds ignore a keyboard grab; a late title; plain QEMU and the emulator by `-avd` | `platforms/linux/tests/nested.sh` | 384 checks, real session unchanged |
 | Real apps on a real desktop | rectory1, only when Donovan has been idle 10 minutes | **Not run.** He was at the keyboard on every check (HID idle 0.3 to 0.4 s). Every row below says what is untested live and the steps. |
 
 Installed on rectory1 (read-only look, nothing installed): Xcode 27 with iOS 26.5/27.0, tvOS,
@@ -27,8 +27,9 @@ emulator.
 
 The titles and process names in the table come from each app's documentation and from what the
 Android emulator's Qt build is known to do. None of them has been read off a live window yet, which
-is why the emulator's rule list ends in a catch-all `companion` instead of naming its windows: a
-title that is different from what is listed still follows its window.
+is why the emulator is recognised by markers that do not depend on them (its `-avd` argument, the
+`emulator` launcher) and why a window the table does not name is an ordinary window, not a companion.
+The companion titles (Extended Controls, the toolbar's "Emulator") are the part still to confirm on a live window.
 
 | App | Problem | Fix | Verified how |
 | --- | --- | --- | --- |
@@ -67,7 +68,9 @@ VirtualBox its Host key, virt-viewer Control+Alt). With the pointer captured, re
 
 Live steps (needs Donovan away): with UTM or VirtualBox in front and a guest running, press ⌘3; the
 workspace must change, the guest must not see the key, and `trace.log` must say
-`device keys: watching workspace keys while utm is in front`.
+`device keys: watching workspace keys while utm is in front`. Then with a Windows or GNOME guest: ⌘3 must not
+open its Start menu or Activities (the guest must see no ⌘ press at all), ⌘C must copy in the guest, a lone ⌘ tap
+must still reach it, and ⌘-click must click with the modifier. None of this has run on a real VM.
 
 ## Full screen
 

@@ -7,7 +7,8 @@ import Carbon.HIToolbox
 /// never fires. While one of them is in front, this watches the same chords one step earlier: a tap
 /// at the head of the HID list, made again when another key-taking tap has appeared since ours was
 /// (`DeviceKeys.shouldRearm`; the list's order is not documented, so only a newcomer counts). It takes only
-/// the workspace modifier with 1-9 (switch) and with ⇧ 1-9 (move); every other key goes to the guest.
+/// the workspace modifier with 1-9 (switch) and with ⇧ 1-9 (move); every other key goes to the guest. The modifier
+/// itself is held back from the guest while a chord is possible and replayed if none follows (`KeyBridgeState`).
 /// `defaults write <bundle id> deviceKeysInVMs -bool false` turns it off.
 ///
 /// Everything the tap callback and the main thread share is in `KeyBridgeState`, behind one lock. The tap
@@ -19,6 +20,9 @@ final class DeviceKeyBridge {
     private var tap: CFMachPort?
     private var thread: Thread?
     private var runLoop: CFRunLoop?
+    /// Bumped by every arm and disarm, under `lock`. The tap's thread checks it at each step of its setup; a thread
+    /// whose generation has passed tears itself down instead of using a port that was invalidated.
+    private var generation = 0
     /// Guards `tap`, `thread` and `runLoop`, which the main thread and the tap's thread both touch.
     private let lock = NSLock()
     private var timer: Timer?
@@ -98,23 +102,33 @@ final class DeviceKeyBridge {
         lock.lock()
         guard tap == nil else { lock.unlock(); return }
         let mask = CGEventMask(1 << CGEventType.keyDown.rawValue) | CGEventMask(1 << CGEventType.keyUp.rawValue)
+            | CGEventMask(1 << CGEventType.flagsChanged.rawValue)
+            | CGEventMask(1 << CGEventType.leftMouseDown.rawValue) | CGEventMask(1 << CGEventType.rightMouseDown.rawValue)
+            | CGEventMask(1 << CGEventType.otherMouseDown.rawValue)
         guard let made = CGEvent.tapCreate(tap: .cghidEventTap, place: .headInsertEventTap, options: .defaultTap,
                                            eventsOfInterest: mask, callback: DeviceKeyBridge.callback, userInfo: nil) else {
             lock.unlock()
             return Trace.log("device keys: macOS would not give a key tap (Accessibility or Input Monitoring)")
         }
+        generation += 1
+        let mine = generation
         tap = made
         state.arm()
         let t = Thread { [weak self] in
             guard let self else { return }
             let loop = CFRunLoopGetCurrent()
+            // The run loop source is made under the lock, in the same step that checks this generation is still
+            // current: disarm() invalidates the port under the same lock, and a source made from an invalid port is nil.
             self.lock.lock()
-            // disarm() may have run before this thread got going; then there is nothing to do.
-            guard self.tap === made else { self.lock.unlock(); return }
+            guard self.generation == mine, self.tap === made, let source = CFMachPortCreateRunLoopSource(nil, made, 0) else {
+                self.lock.unlock()
+                return
+            }
             self.runLoop = loop
-            self.lock.unlock()
-            CFRunLoopAddSource(loop, CFMachPortCreateRunLoopSource(nil, made, 0), .commonModes)
+            CFRunLoopAddSource(loop, source, .commonModes)
             CGEvent.tapEnable(tap: made, enable: true)
+            self.lock.unlock()
+            // Run returns at once if disarm() invalidated the port since: the loop then has no live source.
             CFRunLoopRun()
         }
         t.name = "BaneySpaces device keys"
@@ -130,6 +144,7 @@ final class DeviceKeyBridge {
         state.disarm()
         lock.lock()
         defer { lock.unlock() }
+        generation += 1
         if let tap { CGEvent.tapEnable(tap: tap, enable: false); CFMachPortInvalidate(tap) }
         if let runLoop { CFRunLoopStop(runLoop) }
         tap = nil
@@ -137,29 +152,72 @@ final class DeviceKeyBridge {
         thread = nil
     }
 
-    private static let callback: CGEventTapCallBack = { _, type, event, _ in
+    /// Which modifier a flagsChanged key code is, and the device-dependent flag bit that says whether it is down.
+    private static let modifierKeys: [Int64: (name: String, bit: UInt64)] = [
+        55: ("cmd", 0x8), 54: ("cmd", 0x10), 59: ("ctrl", 0x1), 62: ("ctrl", 0x2000),
+        58: ("alt", 0x20), 61: ("alt", 0x40), 56: ("shift", 0x2), 60: ("shift", 0x4),
+    ]
+
+    /// Shows the guest the modifiers that were held back, in order, just ahead of the event being passed on.
+    /// `tapPostEvent` puts them in the stream for the taps after ours, which includes the VM's and never ours.
+    private static func replay(_ codes: [Int64], proxy: CGEventTapProxy, flags: CGEventFlags) {
+        var raw: UInt64 = flags.rawValue & ~(CGEventFlags.maskCommand.rawValue | CGEventFlags.maskControl.rawValue | CGEventFlags.maskAlternate.rawValue | CGEventFlags.maskShift.rawValue)
+        for code in codes {
+            guard let m = modifierKeys[code], let ev = CGEvent(source: nil) else { continue }
+            switch m.name {
+            case "cmd": raw |= CGEventFlags.maskCommand.rawValue
+            case "ctrl": raw |= CGEventFlags.maskControl.rawValue
+            case "alt": raw |= CGEventFlags.maskAlternate.rawValue
+            default: raw |= CGEventFlags.maskShift.rawValue
+            }
+            raw |= m.bit
+            ev.type = .flagsChanged
+            ev.setIntegerValueField(.keyboardEventKeycode, value: code)
+            ev.flags = CGEventFlags(rawValue: raw)
+            ev.tapPostEvent(proxy)
+        }
+    }
+
+    private static let callback: CGEventTapCallBack = { proxy, type, event, _ in
         guard let me = DeviceKeyBridge.current else { return Unmanaged.passUnretained(event) }
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             me.lock.lock(); let tap = me.tap; me.lock.unlock()
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
             return Unmanaged.passUnretained(event)
         }
-        let code = event.getIntegerValueField(.keyboardEventKeycode)
-        if type == .keyUp { return me.state.keyUp(code: code) == .swallow ? nil : Unmanaged.passUnretained(event) }
-        guard type == .keyDown else { return Unmanaged.passUnretained(event) }
-        let n = Hotkeys.digitKeyCodes.firstIndex(of: Int(code)).map { $0 + 1 }
-        let f = event.flags
-        var mods = Set<String>()
-        if f.contains(.maskCommand) { mods.insert("cmd") }
-        if f.contains(.maskControl) { mods.insert("ctrl") }
-        if f.contains(.maskAlternate) { mods.insert("alt") }
-        if f.contains(.maskShift) { mods.insert("shift") }
-        switch me.state.keyDown(code: code, workspaceKey: n, mods: mods, repeating: event.getIntegerValueField(.keyboardEventAutorepeat) != 0) {
-        case .pass: return Unmanaged.passUnretained(event)
-        case .swallow: return nil
-        case .run(let action):
-            DispatchQueue.main.async { me.run?(action) }
-            return nil
+        func answer(_ v: KeyBridgeState.Verdict) -> Unmanaged<CGEvent>? {
+            switch v {
+            case .pass: return Unmanaged.passUnretained(event)
+            case .swallow: return nil
+            case .run(let action):
+                DispatchQueue.main.async { me.run?(action) }
+                return nil
+            case .replay(let codes):
+                DeviceKeyBridge.replay(codes, proxy: proxy, flags: event.flags)
+                return Unmanaged.passUnretained(event)
+            }
+        }
+        switch type {
+        case .flagsChanged:
+            let code = event.getIntegerValueField(.keyboardEventKeycode)
+            guard let m = modifierKeys[code] else { return Unmanaged.passUnretained(event) }
+            return answer(me.state.modifier(code: code, name: m.name, down: event.flags.rawValue & m.bit != 0))
+        case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+            return answer(me.state.mouseDown())
+        case .keyUp:
+            return answer(me.state.keyUp(code: event.getIntegerValueField(.keyboardEventKeycode)))
+        case .keyDown:
+            let code = event.getIntegerValueField(.keyboardEventKeycode)
+            let n = Hotkeys.digitKeyCodes.firstIndex(of: Int(code)).map { $0 + 1 }
+            let f = event.flags
+            var mods = Set<String>()
+            if f.contains(.maskCommand) { mods.insert("cmd") }
+            if f.contains(.maskControl) { mods.insert("ctrl") }
+            if f.contains(.maskAlternate) { mods.insert("alt") }
+            if f.contains(.maskShift) { mods.insert("shift") }
+            return answer(me.state.keyDown(code: code, workspaceKey: n, mods: mods, repeating: event.getIntegerValueField(.keyboardEventAutorepeat) != 0))
+        default:
+            return Unmanaged.passUnretained(event)
         }
     }
 }

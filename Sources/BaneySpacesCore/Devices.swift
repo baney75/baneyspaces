@@ -149,6 +149,18 @@ public struct DeviceTable: Sendable {
     }()
 
     public func app(of f: DeviceFacts) -> DeviceApp? { apps.first { $0.hits(f) } }
+
+    /// The app whose process name is used with a marker (an argument or a title) that this process may still
+    /// lack: the emulator's `qemu-system-*` whose arguments could not be read.
+    public func appByName(of f: DeviceFacts) -> DeviceApp? {
+        apps.first { app in
+            (app.processArg[f.platform] ?? [:]).keys.contains { DeviceApp.name($0, matches: f.process) }
+                || (app.processTitle[f.platform] ?? [:]).keys.contains { DeviceApp.name($0, matches: f.process) || DeviceApp.name($0, matches: f.exe) }
+        }
+    }
+
+    /// Whether a process could be a device app's: it matches now, or by name with a marker still missing.
+    public func isCandidate(_ f: DeviceFacts) -> Bool { app(of: f) != nil || appByName(of: f) != nil }
     public func app(id: String) -> DeviceApp? { apps.first { $0.id == id } }
 
     /// R-D1. A window that is not a standard one is never `main`.
@@ -227,14 +239,31 @@ public enum DeviceKeys {
 
 /// The state the key bridge's tap callback and the main thread share, behind one lock. The callback does
 /// the least it can under it: read the front app and modifier, look the key up, answer. `disarm` clears
-/// the keys it took under the same lock, so a key up that arrives after is passed on, never lost or held.
+/// what it holds under the same lock, so a key up that arrives after is passed on, never lost or held.
+///
+/// The modifier is held back from the guest while a workspace chord is still possible: a guest that maps
+/// ⌘ to its Win or Super key would otherwise see a lone press and release on every workspace switch (and
+/// open its Start menu or Activities), and a switch with ⌘ down would leave it stuck. A modifier press is
+/// swallowed and remembered. If a workspace digit follows, the chord runs and the guest sees none of it. If
+/// anything else follows (a key, a click, or the modifier letting go alone), the held modifiers are replayed
+/// to the guest first (`replay`), so ⌘C, ⌘-click and a lone ⌘ tap reach it as they were.
 public final class KeyBridgeState: @unchecked Sendable {
-    public enum Verdict: Equatable, Sendable { case pass, swallow, run(String) }
+    public enum Verdict: Equatable, Sendable {
+        case pass
+        case swallow
+        case run(String)
+        /// Send these modifier presses (key codes, in order) to the guest, then pass the event on.
+        case replay([Int64])
+    }
     private let lock = NSLock()
     private var front: String?
     private var mod = "cmd"
     private var armed = false
     private var taken = Set<Int64>()
+    /// Modifiers swallowed and not yet shown to the guest, in the order pressed.
+    private var held: [(code: Int64, name: String)] = []
+    /// A chord ran while these were held: they are never shown, and their release is swallowed.
+    private var consumed = false
     private let table: DeviceTable
 
     public init(table: DeviceTable = .builtin) { self.table = table }
@@ -243,18 +272,58 @@ public final class KeyBridgeState: @unchecked Sendable {
         lock.lock(); front = app; self.mod = mod; lock.unlock()
     }
     public func arm() { lock.lock(); armed = true; lock.unlock() }
-    public func disarm() { lock.lock(); armed = false; taken.removeAll(); lock.unlock() }
+    public func disarm() { lock.lock(); armed = false; taken.removeAll(); held.removeAll(); consumed = false; lock.unlock() }
     public var isArmed: Bool { lock.lock(); defer { lock.unlock() }; return armed }
+
+    private var workspaceMods: Set<String> { Set(mod.split(separator: "+").map(String.init)) }
+
+    /// A modifier changed: `name` is cmd, ctrl, alt or shift; `down` whether it went down.
+    public func modifier(code: Int64, name: String, down: Bool) -> Verdict {
+        lock.lock(); defer { lock.unlock() }
+        guard armed, front != nil else { return .pass }
+        if down {
+            // The workspace modifier starts a hold; any other modifier joins one that has started (⇧ of ⌘⇧3).
+            guard !held.isEmpty || workspaceMods.contains(name) else { return .pass }
+            if !held.contains(where: { $0.code == code }) { held.append((code, name)) }
+            return .swallow
+        }
+        guard let i = held.firstIndex(where: { $0.code == code }) else { return .pass }
+        if consumed {
+            held.remove(at: i)
+            if held.isEmpty { consumed = false }
+            return .swallow
+        }
+        // It let go with no chord: the guest gets the press now, and the release follows.
+        let codes = held.map(\.code)
+        held.removeAll()
+        return .replay(codes)
+    }
 
     /// A key down for workspace key `n` (1-9, or nil for any other key) with these modifiers. Auto-repeat
     /// of a key already taken is swallowed; the first press runs its action.
     public func keyDown(code: Int64, workspaceKey n: Int?, mods: Set<String>, repeating: Bool) -> Verdict {
         lock.lock(); defer { lock.unlock() }
         guard armed else { return .pass }
-        if repeating { return taken.contains(code) ? .swallow : .pass }
-        guard let n, let action = DeviceKeys.action(frontApp: front, mod: mod, bridge: true, chord: ChordSpec(mods: mods, key: String(n)), table: table) else { return .pass }
-        taken.insert(code)
-        return .run(action)
+        if repeating, taken.contains(code) { return .swallow }
+        if let n, let action = DeviceKeys.action(frontApp: front, mod: mod, bridge: true, chord: ChordSpec(mods: mods, key: String(n)), table: table) {
+            taken.insert(code)
+            consumed = !held.isEmpty
+            return .run(action)
+        }
+        return replayHeld()
+    }
+
+    /// A mouse button went down while modifiers are held back: the guest must see them first.
+    public func mouseDown() -> Verdict {
+        lock.lock(); defer { lock.unlock() }
+        return armed ? replayHeld() : .pass
+    }
+
+    private func replayHeld() -> Verdict {
+        guard !held.isEmpty else { return .pass }
+        let codes = held.map(\.code)
+        held.removeAll(); consumed = false
+        return .replay(codes)
     }
 
     /// The key up of a key whose down was taken is taken too.
@@ -285,28 +354,62 @@ public enum DevicePlacement {
 
 // MARK: R-D8, a device's whole process tree belongs to the agent
 
+/// A process found below one of the agent's roots, remembered with that root (its pid and start time) at
+/// the time, while the parent chain still showed it.
+public struct RecordedDescendant: Equatable, Sendable {
+    public var started: Double
+    public var root: Int32
+    public var rootStarted: Double
+    public init(started: Double, root: Int32, rootStarted: Double) { self.started = started; self.root = root; self.rootStarted = rootStarted }
+}
+
 public enum ProcessTree {
-    /// Whether `pid` is a registered root or descends from one. `roots` maps pid to start time; a root
-    /// whose pid now has another start time was reused and is no root. The walk ends after 64 steps.
-    public static func descends(pid: Int32, roots: [Int32: Double], startOf: (Int32) -> Double?, parentOf: (Int32) -> Int32?) -> Bool {
-        var at = pid
-        for _ in 0..<64 {
-            if let want = roots[at], want == 0 || startOf(at) == want { return true }
-            guard let p = parentOf(at), p > 1, p != at else { return false }
-            at = p
-        }
-        return false
+    /// The roots whose pid still belongs to the process that was started for the agent. A pid that another
+    /// process has now is dropped, so nothing it starts is taken for the agent's.
+    public static func liveRoots(_ roots: [Int32: Double], startOf: (Int32) -> Double?) -> [Int32: Double] {
+        roots.filter { pid, started in started == 0 || startOf(pid).map { abs($0 - started) < 0.5 } == true }
     }
 
-    /// Processes in `table` (pid, parent pid) that descend from `roots` and are not in `known` yet: recorded
-    /// while their parent is alive, so they stay the agent's if the parent exits and they are reparented.
-    public static func newDescendants(roots: Set<Int32>, known: Set<Int32>, table: [(pid: Int32, ppid: Int32)]) -> [Int32] {
-        var owned = roots.union(known), found: [Int32] = []
-        var grew = true
-        while grew {
-            grew = false
-            for p in table where owned.contains(p.ppid) && !owned.contains(p.pid) && p.pid > 1 {
-                owned.insert(p.pid); found.append(p.pid); grew = true
+    /// The root `pid` belongs to, or nil. In order: it is a root (same start time); it was recorded under a
+    /// root that is still that process; it descends from a root by the live parent chain right now (a child
+    /// not recorded yet). Never "whichever root has a claim open": a process with no root has none.
+    public static func attribute(pid: Int32, roots: [Int32: Double], recorded: [Int32: RecordedDescendant],
+                                 startOf: (Int32) -> Double?, parentOf: (Int32) -> Int32?) -> Int32? {
+        func same(_ a: Double, _ b: Double?) -> Bool { a == 0 || (b.map { abs($0 - a) < 0.5 } ?? false) }
+        if let want = roots[pid], same(want, startOf(pid)) { return pid }
+        if let r = recorded[pid], same(r.started, startOf(pid)), let rs = roots[r.root], same(rs, startOf(r.root)), abs(rs - r.rootStarted) < 0.5 || rs == 0 {
+            return r.root
+        }
+        var at = pid
+        for _ in 0..<64 {
+            guard let p = parentOf(at), p > 1, p != at else { return nil }
+            if let want = roots[p], same(want, startOf(p)) { return p }
+            at = p
+        }
+        return nil
+    }
+
+    /// Whether `pid` belongs to some root (the old yes/no form).
+    public static func descends(pid: Int32, roots: [Int32: Double], startOf: (Int32) -> Double?, parentOf: (Int32) -> Int32?) -> Bool {
+        attribute(pid: pid, roots: roots, recorded: [:], startOf: startOf, parentOf: parentOf) != nil
+    }
+
+    /// Processes in `table` (pid, parent pid) below `roots` that are not in `known` yet, each with the root it
+    /// was found under (the first root whose tree holds it). Recorded while their parent is alive, so they stay
+    /// that root's if the parent exits and they are reparented.
+    public static func newDescendants(roots: [Int32], known: Set<Int32>, table: [(pid: Int32, ppid: Int32)]) -> [(pid: Int32, root: Int32)] {
+        var seen = Set(roots).union(known), found: [(pid: Int32, root: Int32)] = []
+        for root in roots {
+            var owned: Set<Int32> = [root]
+            // a recorded process is still a link in the chain for its own children
+            owned.formUnion(known)
+            var grew = true
+            while grew {
+                grew = false
+                for p in table where owned.contains(p.ppid) && !owned.contains(p.pid) && p.pid > 1 {
+                    owned.insert(p.pid); grew = true
+                    if seen.insert(p.pid).inserted { found.append((p.pid, root)) }
+                }
             }
         }
         return found
