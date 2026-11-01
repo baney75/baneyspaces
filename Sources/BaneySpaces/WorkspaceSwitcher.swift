@@ -337,8 +337,8 @@ struct SwitcherView: View {
             if let bar = model.windowBar { windowRow(bar) } else if model.mode == .apps { appRow } else { workspaceRow }
         }
         .padding(14)
-        .background(Chrome.panelBackground(cornerRadius: 26))
-        .environment(\.colorScheme, .dark)
+        .background(Chrome.panelBackground(.switcherPanel))
+        .environment(\.colorScheme, Chrome.look.palette.isDark ? .dark : .light)
     }
 
     /// Long lists wrap onto more rows instead of running off the screen. An app on two
@@ -355,21 +355,22 @@ struct SwitcherView: View {
                             Image(nsImage: app.icon).resizable().frame(width: 64, height: 64)
                             WorkspaceBadge(n: app.workspace).offset(x: 8, y: -4)
                             if app.windows > 1 {
-                                Text("×\(app.windows)").font(.system(size: 10, weight: .bold, design: .rounded)).foregroundStyle(.white)
+                                Text("×\(app.windows)").font(Chrome.font(10, .bold, rounded: true)).foregroundStyle(Chrome.wash())
                                     .padding(.horizontal, 5).frame(minHeight: 17)
-                                    .background(Capsule().fill(Color.black.opacity(0.75)))
+                                    .background(Chrome.pill().fill(Chrome.shade(0.75)))
                                     .offset(x: 8, y: 50)
                             }
                         }
-                        Text(app.name).font(.system(size: 12, weight: .medium)).foregroundStyle(.white.opacity(on ? 1 : 0.7))
+                        Text(app.name).font(Chrome.font(12, .medium)).foregroundStyle(Chrome.wash(on ? 1 : 0.7))
                             .lineLimit(1).frame(maxWidth: 92)
                     }
                     .frame(width: 104, height: 108)
                     // A split app's copies are told apart at a glance by their workspace's color.
-                    .background(RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(on ? tint.opacity(0.28) : app.isSplit ? tint.opacity(0.10) : .clear))
-                    .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .strokeBorder(on ? tint : app.isSplit ? tint.opacity(0.35) : .clear, lineWidth: on ? 2 : 1))
+                    .background(Chrome.shape(.switcherTile)
+                        .fill(on ? Chrome.lit(tint, 0.28) : app.isSplit ? tint.opacity(0.10) : .clear))
+                    .overlay(Chrome.shape(.switcherTile)
+                        .strokeBorder(on ? Chrome.focusEdge(tint) : app.isSplit ? tint.opacity(0.35) : Chrome.edge(0),
+                                      lineWidth: Chrome.width(.switcherTile, focused: on)))
                     .accessibilityLabel("\(app.name), workspace \(app.workspace), \(app.windows) windows\(on ? ", selected" : "")")
                 }
             }
@@ -377,14 +378,14 @@ struct SwitcherView: View {
                 let app = model.apps[model.selected]
                 let title = app.titles.first { !$0.isEmpty }
                 HStack(spacing: 6) {
-                    Circle().fill(Chrome.workspace(app.workspace)).frame(width: 7, height: 7)
+                    Chrome.mark().fill(Chrome.workspace(app.workspace)).frame(width: 7, height: 7)
                     Text(["Workspace \(app.workspace)", app.windows > 1 ? "\(app.windows) windows" : title].compactMap { $0 }.joined(separator: " · "))
                         .lineLimit(1)
                     if model.apps.filter({ $0.pid == app.pid }).reduce(0, { $0 + $1.windows }) > 1 {
-                        Text("Hold Tab to pick a window").foregroundStyle(.white.opacity(0.4))
+                        Text("Hold Tab to pick a window").foregroundStyle(Chrome.wash(0.4))
                     }
                 }
-                .font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.6))
+                .font(Chrome.font(11, .semibold)).foregroundStyle(Chrome.wash(0.6))
                 .frame(maxWidth: 600)
             }
         }
@@ -396,8 +397,8 @@ struct SwitcherView: View {
         return VStack(spacing: 12) {
             HStack(spacing: 8) {
                 Image(nsImage: bar.icon).resizable().frame(width: 22, height: 22)
-                Text("\(bar.name) windows").font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
-                Text("Hold Tab to go back").font(.system(size: 11, weight: .medium)).foregroundStyle(.white.opacity(0.45))
+                Text("\(bar.name) windows").font(Chrome.font(13, .semibold)).foregroundStyle(Chrome.wash())
+                Text("Hold Tab to go back").font(Chrome.font(11, .medium)).foregroundStyle(Chrome.wash(0.45))
             }
             LazyVGrid(columns: columns, spacing: 8) {
                 ForEach(Array(bar.windows.enumerated()), id: \.element.id) { i, w in
@@ -410,14 +411,15 @@ struct SwitcherView: View {
                             WorkspaceBadge(n: w.workspace)
                         }
                         Text(w.title.isEmpty ? "Untitled window" : w.title)
-                            .font(.system(size: 12, weight: .medium)).foregroundStyle(.white.opacity(on ? 1 : 0.75))
+                            .font(Chrome.font(12, .medium)).foregroundStyle(Chrome.wash(on ? 1 : 0.75))
                             .lineLimit(2).multilineTextAlignment(.leading)
                             .frame(maxWidth: .infinity, minHeight: 32, alignment: .topLeading)
                     }
                     .padding(12)
                     .frame(width: 200)
-                    .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(on ? tint.opacity(0.28) : Color.white.opacity(0.06)))
-                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(on ? tint : Color.white.opacity(0.08), lineWidth: on ? 2 : 1))
+                    .background(Chrome.shape(.switcherWindow).fill(on ? Chrome.lit(tint, 0.28) : Chrome.cell(0.06)))
+                    .overlay(Chrome.shape(.switcherWindow).strokeBorder(on ? Chrome.focusEdge(tint) : Chrome.edge(0.08),
+                                                                        lineWidth: Chrome.width(.switcherWindow, focused: on)))
                     .accessibilityLabel("\(w.title), workspace \(w.workspace)\(on ? ", selected" : "")")
                 }
             }
@@ -430,8 +432,8 @@ struct SwitcherView: View {
                 let on = i == model.selected
                 VStack(spacing: 8) {
                     Text("\(tile.n)")
-                        .font(.system(size: 34, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white)
+                        .font(Chrome.font(34, .bold, rounded: true))
+                        .foregroundStyle(Chrome.wash())
                     HStack(spacing: -6) {
                         ForEach(Array(tile.icons.prefix(4).enumerated()), id: \.offset) { _, icon in
                             Image(nsImage: icon).resizable().frame(width: 26, height: 26)
@@ -439,43 +441,28 @@ struct SwitcherView: View {
                     }
                     .frame(height: 26)
                     Text(tile.count == 0 ? "Empty" : tile.count == 1 ? "1 window" : "\(tile.count) windows")
-                        .font(.caption).foregroundStyle(.white.opacity(0.65))
+                        .font(Chrome.font(10)).foregroundStyle(Chrome.wash(0.65))
                 }
                 .frame(width: 108, height: 128)
-                .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(on ? Color.white.opacity(0.16) : Color.white.opacity(0.05)))
-                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(on ? Chrome.accent.opacity(0.9) : Color.white.opacity(0.08), lineWidth: on ? 2 : 1))
+                .background(Chrome.shape(.switcherTile).fill(on ? Chrome.cell(0.16) : Chrome.cell(0.05)))
+                .overlay(Chrome.shape(.switcherTile).strokeBorder(on ? Chrome.focusEdge(Chrome.accent.opacity(0.9)) : Chrome.edge(0.08),
+                                                                  lineWidth: Chrome.width(.switcherTile, focused: on)))
                 .accessibilityLabel("Workspace \(tile.n), \(tile.count) windows\(on ? ", selected" : "")")
             }
         }
     }
 }
 
-/// A workspace's number in its own color, the same everywhere: dock, ⌘Tab and launcher.
+/// A workspace's number in its own color, the same everywhere: dock, ⌘Tab and launcher. A dot in
+/// the BaneySpaces theme, a numbered block in Omarchy, a number over a bar in Minimal.
 struct WorkspaceBadge: View {
     let n: Int
     var size: CGFloat = 20
     /// Redraws when Settings › Appearance changes.
     @ObservedObject private var appearance = Appearance.shared
     var body: some View {
-        Text("\(n)")
-            .font(.system(size: size * 0.55, weight: .bold, design: .rounded))
-            .foregroundStyle(.white)
-            .frame(minWidth: size, minHeight: size)
-            .background(Circle().fill(Chrome.workspace(n)))
-            .overlay(Circle().strokeBorder(Color.black.opacity(0.25), lineWidth: 1))
+        WorkspaceMark(n: n, tint: Chrome.workspace(n), size: size)
     }
-}
-
-/// The look shared by the dock, the switcher and the launcher: a dark glass panel and one accent.
-/// All of it comes from `Appearance`, which Settings › Appearance changes.
-enum Chrome {
-    static var accent: Color { Appearance.shared.accent }
-
-    /// One color per workspace; by default around the color wheel so neighbors never look
-    /// alike. White text reads on all of them.
-    static func workspace(_ n: Int) -> Color { Appearance.shared.workspace(n) }
-
-    static func panelBackground(cornerRadius r: CGFloat) -> PanelBackground { PanelBackground(cornerRadius: r) }
 }
 
 extension NSWindow {

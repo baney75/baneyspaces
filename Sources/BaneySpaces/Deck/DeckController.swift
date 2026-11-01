@@ -92,6 +92,9 @@ final class DeckController {
 
     /// Set by the app delegate: the menu bar badge shows how many agents finished unseen.
     var onUnseenChange: (Int) -> Void = { _ in }
+    /// `baneyspaces get` and `set` (the theme, the palette, the dock switch): the app reads and applies them.
+    var readSetting: (SettingKey) -> String = { _ in "" }
+    var writeSetting: (SettingKey, String) -> Void = { _, _ in }
     /// Which rows are working, asking or stopped changed, so the Workspace Dock's badges can follow.
     var onWorkingChange: () -> Void = {}
     private var lastWorking: [String: String] = [:]
@@ -377,6 +380,8 @@ final class DeckController {
     }
 
     func handle(_ r: Wire.Request) -> Wire.Reply {
+        // Looks and the dock switch need no Accessibility, so they answer before the Deck has started.
+        if r.op == .setting { return setting(r) }
         guard started else { return .init(ok: false, error: "BaneySpaces hasn't finished starting (it needs Accessibility)") }
         switch r.op {
         case .ping:
@@ -391,6 +396,8 @@ final class DeckController {
         case .hands:
             // Engine calls wait on semaphores: never on the main thread. The socket sends them to handleHands.
             return .init(ok: false, error: "agent commands don't run here")
+        case .setting:
+            return setting(r)
         case .event:
             guard let e = r.event else { return .init(ok: false, error: "no event") }
             engine.apply(e)
@@ -433,6 +440,17 @@ final class DeckController {
             if let a = remote.address { info["listening"] = "\(a):\(Remote.port)" }
             else if Self.remoteEnabled { info["listening"] = "waiting for Tailscale" }
             return .init(ok: true, info: info)
+        }
+    }
+
+    private func setting(_ r: Wire.Request) -> Wire.Reply {
+        switch SettingKey.ask(target: r.target, text: r.text) {
+        case .refused(let why): return .init(ok: false, error: why)
+        case .list: return .init(ok: true, info: Dictionary(uniqueKeysWithValues: SettingKey.allCases.map { ($0.rawValue, readSetting($0)) }))
+        case .get(let key): return .init(ok: true, info: [key.rawValue: readSetting(key)])
+        case .set(let key, let value):
+            writeSetting(key, value)
+            return .init(ok: true, info: [key.rawValue: readSetting(key)])
         }
     }
 

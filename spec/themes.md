@@ -44,14 +44,23 @@ Token meanings (`themes.json`):
 - Two roles aren't palette entries: `light` is plain white, and `workspace` is the workspace's
   own tint color (each workspace has one).
 
-The BaneySpaces theme is exactly what macOS draws today. Its tokens are the shipped values, and
-macOS's conformance test holds them, so picking it changes nothing on screen.
 - `font.family`: a key into `fonts`. Use the first family that is installed.
 - `space`: gap between tiles, panel padding, and tile size.
 - `indicator`: how a workspace shows in the dock, the bar module and the overview: `dot`,
   `bar` or `number-block` (its number in a square).
-- `motion`: durations in ms. `scale_from` and `lift` of 1.0 mean no scaling. Under Reduce Motion
-  (or its platform equivalent), every duration is 0.
+- `motion`: durations in ms. `scale_from` and `lift` of 1.0 mean no scaling, and a theme whose
+  `scale_from` is 1.0 does not slide the dock in either (a fade only). Under Reduce Motion (or its
+  platform equivalent), every duration is 0.
+
+The BaneySpaces theme is exactly what macOS draws today. Its tokens are the shipped values, and
+macOS's conformance test holds them, so picking it changes nothing on screen. Where a surface
+draws text at several sizes (macOS does: 10.5 to 13 pt), `font.size` is the base size, 12: other
+sizes scale by `font.size / 12`, and a theme whose `font.weight` is `regular` draws medium and
+semibold text regular (bold stays bold).
+
+On macOS `auto` is a built-in palette over the BaneySpaces defaults: `background` is near-black
+(white 0.07), `foreground` and `light` white, `sunken` black, and `accent` is the accent chosen in
+Settings (or the system's). Its panels are dark in light mode too, as they have always been.
 
 ## Palettes
 

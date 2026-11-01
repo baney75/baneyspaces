@@ -14,10 +14,22 @@ final class Appearance: ObservableObject {
     @Published var settings: AppearanceSettings {
         didSet {
             guard settings != oldValue else { return }
+            cachedLook = nil
+            if settings.theme != oldValue.theme { ThemeCenter.use(settings.theme) }
             if persists { scheduleSave() }
+            // A theme sets the tile size, gap and padding as well as the dock's size, so it re-frames the dock too.
             NotificationCenter.default.post(name: Appearance.didChange, object: nil,
-                                            userInfo: [Appearance.dockSizeChangedKey: settings.dockSize != oldValue.dockSize])
+                                            userInfo: [Appearance.dockSizeChangedKey: settings.dockSize != oldValue.dockSize || settings.theme != oldValue.theme])
         }
+    }
+
+    /// The theme and palette every surface draws from, kept until the settings or the system accent change.
+    private var cachedLook: Look?
+    var look: Look {
+        if let cachedLook { return cachedLook }
+        let l = settings.look(systemAccent: Appearance.systemAccent)
+        cachedLook = l
+        return l
     }
 
     /// A slider drag changes the settings many times a second; they're written once it settles.
@@ -45,6 +57,7 @@ final class Appearance: ObservableObject {
 
     private init() {
         settings = AppearanceSettings.load()
+        ThemeCenter.use(settings.theme)
         quitObserver = NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification,
                                                               object: nil, queue: .main) { [weak self] _ in
             guard let self, let work = self.saveWork else { return }
@@ -57,6 +70,7 @@ final class Appearance: ObservableObject {
                                                                 object: nil, queue: .main) { [weak self] _ in
             guard let self else { return }
             // The Settings tab draws its System swatch from the live color, whatever is chosen.
+            self.cachedLook = nil
             self.objectWillChange.send()
             if case .system = self.settings.accent { NotificationCenter.default.post(name: Appearance.didChange, object: nil) }
         }
@@ -68,6 +82,7 @@ final class Appearance: ObservableObject {
         saveWork = nil
         persists = false
         settings = AppearanceSettings()
+        ThemeCenter.use(settings.theme)
     }
 
     /// macOS's accent color as RGB.
@@ -94,24 +109,27 @@ final class Appearance: ObservableObject {
     }
 }
 
-/// The dark panel behind the dock, ⌘Tab, the launcher and the HUD, in the style Settings picked.
-/// It watches `Appearance` itself, so it redraws even when its parent doesn't.
+/// The panel behind the dock, ⌘Tab, the launcher and the HUD, in the theme and palette Settings
+/// picked (and, in the BaneySpaces theme, its panel style). It watches `Appearance` itself, so it
+/// redraws even when its parent doesn't.
 struct PanelBackground: View {
-    let cornerRadius: CGFloat
+    let surface: Surface
     @ObservedObject private var appearance = Appearance.shared
 
     var body: some View {
-        let s = appearance.settings
-        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        shape.fill(.ultraThinMaterial)
-            // Dark enough that text in the windows behind never reads through.
-            .overlay(shape.fill(Color(white: 0.07).opacity(s.effectivePanelOpacity)))
+        let look = appearance.look
+        let p = PanelLook.make(surface, look: look, settings: appearance.settings, accent: appearance.accentRGB)
+        let shape = RoundedRectangle(cornerRadius: CGFloat(p.radius), style: .continuous)
+        let border = Appearance.color(p.border.color)
+        shape.fill(p.blur ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(Color.clear))
+            // Dark enough that text in the windows behind never reads through (Omarchy: fully opaque).
+            .overlay(shape.fill(Appearance.color(p.fill).opacity(p.fillOpacity)))
             .overlay {
-                if s.panelStyle == .tinted { shape.fill(appearance.accent.opacity(AppearanceSettings.tintWash)) }
+                if let wash = p.wash { shape.fill(Appearance.color(wash).opacity(p.washOpacity)) }
             }
-            // A light top edge and a faint outline, like glass catching light.
-            .overlay(shape.strokeBorder(LinearGradient(colors: [Color.white.opacity(0.22), Color.white.opacity(0.06)],
-                                                       startPoint: .top, endPoint: .bottom), lineWidth: 1))
-            .shadow(color: .black.opacity(0.45), radius: 24, y: 10)
+            // BaneySpaces: a light top edge and a faint outline, like glass catching light. Others: one solid line.
+            .overlay(shape.strokeBorder(LinearGradient(colors: [border.opacity(p.border.top), border.opacity(p.border.bottom)],
+                                                       startPoint: .top, endPoint: .bottom), lineWidth: CGFloat(p.border.width)))
+            .shadow(color: Chrome.shade(p.shadow?.opacity ?? 0), radius: CGFloat(p.shadow?.radius ?? 0), y: CGFloat(p.shadow?.y ?? 0))
     }
 }

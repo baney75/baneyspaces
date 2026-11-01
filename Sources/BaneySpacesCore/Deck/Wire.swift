@@ -32,6 +32,10 @@ public enum Wire {
             /// HandsRequest as JSON, the reply's `info["envelope"]` the JSON envelope. Local only:
             /// `Remote.allows` refuses it, so no other machine can act on this one.
             case hands
+            /// Read or change a setting (`SettingKey`): `target` is its name, `text` the new value
+            /// (none reads it). Local only: `Remote.allows` refuses it, so no other machine, and
+            /// no agent holding a remote token, can change how this Mac looks.
+            case setting
         }
         public var op: Op
         public var target: String?

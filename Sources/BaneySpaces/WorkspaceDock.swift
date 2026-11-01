@@ -122,7 +122,18 @@ final class WorkspaceDock {
     /// BaneySpaces' own windows at the menu level that aren't menus (the ⌘Tab window bar).
     var notMenus: () -> Set<Int> = { [] }
     let model = DockModel()
-    private var panel: DockPanel?
+    /// The dock's panel exists only while the dock is on (`DockSwitch`): turning it off takes it down,
+    /// and only an edge reveal builds it again.
+    private var panel: DockPanel? { dockSwitch.panel }
+    private lazy var dockSwitch = DockSwitch<DockPanel>(
+        make: { [unowned self] in self.makePanel() },
+        startWatching: { [unowned self] in self.beginWatching() },
+        stopWatching: { [unowned self] in self.endWatching() },
+        release: { [unowned self] p in self.release(p) })
+    /// Whether the dock is switched on (its edge watcher runs and a reveal may build the panel).
+    var isEnabled: Bool { dockSwitch.enabled }
+    /// Whether a window carried toward the bottom edge is the dock's business (`DockSwitch.carryActs`).
+    var takesCarry: Bool { dockSwitch.carryActs }
     private var timer: Timer?
     /// What `tick` remembers between calls (`DockTick.State`).
     private var tickState = DockTick.State()
@@ -189,8 +200,10 @@ final class WorkspaceDock {
         }
     }
 
-    func start() {
-        guard !isRunning else { return }
+    func start() { dockSwitch.set(true) }
+
+    /// The edge watcher: a timer that looks at the pointer 30 times a second. `DockSwitch` starts it.
+    private func beginWatching() {
         isRunning = true
         SystemDock.hide()
         let t = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in self?.tick() }
@@ -198,14 +211,30 @@ final class WorkspaceDock {
         timer = t
     }
 
-    /// `restoreSystemDock` puts the macOS Dock back: when the Workspace Dock is turned off, and
-    /// when BaneySpaces quits or loses its permission.
-    func stop(restoreSystemDock: Bool) {
+    /// Stops the watcher and puts a shown dock away; `DockSwitch` then takes the panel down.
+    private func endWatching() {
         timer?.invalidate()
         timer = nil
         isRunning = false
         pinned = false
         hide(animated: false)
+    }
+
+    /// No dock window is left once the dock is off: the list's panel, the dock's panel and what they hold.
+    private func release(_ p: DockPanel) {
+        dismissSide()
+        sidePanel = nil
+        sideHost = nil
+        p.orderOut(nil)
+        p.contentView = nil
+        isShown = false
+        shownOn = nil
+    }
+
+    /// `restoreSystemDock` puts the macOS Dock back: when the Workspace Dock is turned off, and
+    /// when BaneySpaces quits or loses its permission.
+    func stop(restoreSystemDock: Bool) {
+        dockSwitch.set(false)
         if restoreSystemDock { SystemDock.restore() }
     }
 
@@ -410,7 +439,7 @@ final class WorkspaceDock {
     /// Another app's window follows the pointer. The dock comes up when the pointer rests on its
     /// edge (the tick watches for that), and then the tile under the pointer lights.
     func carryMoved(_ grab: TopDrag.Grab) {
-        guard isRunning, DockCarry.accepts(WorkspaceDock.edge), !MissionControlKeys.viewerOpen,
+        guard dockSwitch.carryActs, DockCarry.accepts(WorkspaceDock.edge), !MissionControlKeys.viewerOpen,
               carryRefused != grab.window else { return }
         // A file dragged out of the window, or a switch during the drag that parked it: the window
         // "moved" without being carried. Not for the dock, all this press. A switch still running
@@ -483,6 +512,8 @@ final class WorkspaceDock {
     /// The drag ended. Let go at `p` (window-server space) over another workspace's tile: that
     /// workspace, for the window to go to. The dock goes down either way.
     func endCarry(_ grab: TopDrag.Grab, at p: CGPoint?) -> Int? {
+        // The dock is off: a window let go at the bottom edge is nobody's but its own.
+        guard dockSwitch.carryActs else { return nil }
         windowCarry = nil
         carryEntry = nil
         carryRefused = nil
@@ -619,8 +650,8 @@ final class WorkspaceDock {
         let edge = WorkspaceDock.edge
         model.maxLength = (edge.isVertical ? screen.visibleFrame.height : screen.frame.width) - 32
         model.load(from: spaces)
-        let p = panel ?? makePanel()
-        panel = p
+        // Off, the dock has no panel and a reveal builds none.
+        guard let p = dockSwitch.panelForReveal() else { return }
         isShown = true
         p.contentView?.layoutSubtreeIfNeeded()
         let size = p.contentView?.fittingSize ?? .zero
@@ -674,7 +705,7 @@ final class WorkspaceDock {
             Trace.log("dock panel not on screen; rebuilding it")
             self.dismissSide()
             p.orderOut(nil)
-            self.panel = nil
+            self.dockSwitch.forgetPanel()
             self.isShown = false
             self.show(on: screen, retried: true)
         }
@@ -1432,7 +1463,7 @@ private struct SettleIcon: View {
         let reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         Image(nsImage: icon).resizable().interpolation(.high).frame(width: size, height: size)
             .scaleEffect(gone ? 0.92 : DockMotion.lift)
-            .shadow(color: .black.opacity(gone ? 0 : 0.45), radius: 8, y: 3)
+            .shadow(color: Chrome.shade(gone ? 0 : 0.45), radius: 8, y: 3)
             .opacity(gone ? 0 : 1)
             .onAppear { gone = true }
             .animation(reduce ? nil : .easeOut(duration: DockMotion.duration(DockMotion.settle, reduceMotion: reduce)), value: gone)
@@ -1447,8 +1478,8 @@ private struct RowHighlight: View {
     let tint: Color
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 7, style: .continuous)
-            .fill(on ? tint.opacity(0.85) : .clear)
+        Chrome.shape(.dockRow)
+            .fill(on ? Chrome.lit(tint, 0.85) : .clear)
             .animation(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? nil
                        : .easeOut(duration: DockMotion.duration(DockMotion.rowHover, reduceMotion: false)), value: on)
     }
@@ -1462,10 +1493,10 @@ private struct DragLift: ViewModifier {
         let spring: Animation? = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? nil : .spring(response: 0.2, dampingFraction: 0.7)
         if #available(macOS 14, *) {
             content.animation(spring) {
-                $0.scaleEffect(lifted ? DockMotion.lift : 1).shadow(color: .black.opacity(lifted ? 0.35 : 0), radius: 6, y: 2)
+                $0.scaleEffect(lifted ? DockMotion.lift : 1).shadow(color: Chrome.shade(lifted ? 0.35 : 0), radius: 6, y: 2)
             }
         } else {
-            content.scaleEffect(lifted ? DockMotion.lift : 1).shadow(color: .black.opacity(lifted ? 0.35 : 0), radius: 6, y: 2)
+            content.scaleEffect(lifted ? DockMotion.lift : 1).shadow(color: Chrome.shade(lifted ? 0.35 : 0), radius: 6, y: 2)
         }
     }
 }
@@ -1490,8 +1521,11 @@ struct DockView: View {
     /// Redraws when Settings › Appearance changes.
     @ObservedObject private var appearance = Appearance.shared
     /// Settings › Appearance › Dock size: every tile, icon and button below scales by this.
-    private var k: CGFloat { CGFloat(appearance.settings.dockSize.scale) }
-    private var tileSize: CGFloat { 64 * k }
+    private var k: CGFloat { CGFloat(appearance.settings.dockSize.scale) * Chrome.tileScale }
+    private var tileSize: CGFloat { Chrome.tileBase * k }
+    /// The theme's gap between tiles and padding around them (`themes.json` space).
+    private var gap: CGFloat { CGFloat(Chrome.style(.dockBar).gap) }
+    private var pad: CGFloat { CGFloat(Chrome.style(.dockBar).padding) }
     /// Where each tile, app icon and button sits in the dock, so the strip and label line up with it.
     @State private var frames: [String: CGRect] = [:]
     @State private var sideSize: CGSize = .zero
@@ -1535,7 +1569,7 @@ struct DockView: View {
                 // Picked up: a touch larger with a soft shadow; let go: it settles away (`DockModel.endDrag`).
                 Image(nsImage: drag.icon).resizable().interpolation(.high).frame(width: 36 * k, height: 36 * k)
                     .scaleEffect(DockMotion.lift)
-                    .shadow(color: .black.opacity(0.45), radius: 8, y: 3)
+                    .shadow(color: Chrome.shade(0.45), radius: 8, y: 3)
                     .position(drag.location)
                     .allowsHitTesting(false)
             } else if let s = model.settling {
@@ -1581,19 +1615,19 @@ struct DockView: View {
     /// The tiles and buttons, in a row or, on a side, a column.
     private var bar: some View {
         let vertical = model.edge.isVertical
-        let layout = vertical ? AnyLayout(VStackLayout(alignment: .center, spacing: 8)) : AnyLayout(HStackLayout(alignment: .bottom, spacing: 8))
+        let layout = vertical ? AnyLayout(VStackLayout(alignment: .center, spacing: gap)) : AnyLayout(HStackLayout(alignment: .bottom, spacing: gap))
         return layout {
             ForEach(model.tiles) { tile in tileView(tile) }
             if let n = model.firstEmpty, !model.tiles.contains(where: { $0.id == n }) { newWorkspaceButton(n) }
-            Capsule().fill(Color.white.opacity(0.14))
+            Chrome.pill().fill(Chrome.edge(0.14))
                 .frame(width: vertical ? 44 * k : 1, height: vertical ? 1 : 44 * k)
                 .padding(vertical ? .vertical : .horizontal, 4).padding(.bottom, vertical ? 0 : 14)
             utilityButtons
         }
-        .padding(.horizontal, 10)
-        .padding(.top, 10)
-        .padding(.bottom, vertical ? 10 : 4)
-        .background(Chrome.panelBackground(cornerRadius: 24))
+        .padding(.horizontal, pad)
+        .padding(.top, pad)
+        .padding(.bottom, vertical ? pad : max(0, pad - 6))
+        .background(Chrome.panelBackground(.dockBar))
         .modifier(SizeReport(size: $barSize))
     }
 
@@ -1676,13 +1710,13 @@ struct DockView: View {
         if let text = labelText {
             WidthCap(max: Self.labelMaxWidth) {
                 Text(text)
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(Chrome.font(12, .semibold))
                     .lineLimit(1).truncationMode(.tail)
             }
                 .padding(.horizontal, 10).padding(.vertical, 4)
-                .background(Capsule().fill(Color.black.opacity(0.78)))
-                .overlay(Capsule().strokeBorder(Color.white.opacity(0.12)))
-                .foregroundStyle(.white)
+                .background(Chrome.pill().fill(Chrome.shade(0.78)))
+                .overlay(Chrome.pill().strokeBorder(Chrome.edge(0.12), lineWidth: Chrome.width(.dockBar)))
+                .foregroundStyle(Chrome.wash())
                 .transition(.opacity)
         } else {
             Color.clear.frame(width: 1)
@@ -1730,9 +1764,9 @@ struct DockView: View {
                 // Only a drag that began in this list: another drag's target is not this tile's number.
                 let dragHere = model.drag?.from == tile.id
                 if dragHere, let text = labelText {
-                    Text(text).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white).lineLimit(1).truncationMode(.middle)
+                    Text(text).font(Chrome.font(12, .semibold)).foregroundStyle(Chrome.wash()).lineLimit(1).truncationMode(.middle)
                 } else {
-                    Text("\(apps.count) more").font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+                    Text("\(apps.count) more").font(Chrome.font(12, .semibold)).foregroundStyle(Chrome.wash())
                 }
                 Spacer(minLength: 8)
                 WorkspaceBadge(n: (dragHere ? model.dropTarget : nil) ?? tile.id, size: 17)
@@ -1753,7 +1787,7 @@ struct DockView: View {
         }
         .padding(6).padding(.top, 4)
         .frame(width: 240)
-        .background(Chrome.panelBackground(cornerRadius: 14))
+        .background(Chrome.panelBackground(.dockList))
         .onHover { inside in model.onStrip = inside }
     }
 
@@ -1766,10 +1800,10 @@ struct DockView: View {
                 // Mid-drag the strip stays (it holds the row being dragged), so it says where
                 // the drag lands in place of the label it covers.
                 if model.drag != nil, let text = labelText {
-                    Text(text).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white).lineLimit(1).truncationMode(.middle)
+                    Text(text).font(Chrome.font(12, .semibold)).foregroundStyle(Chrome.wash()).lineLimit(1).truncationMode(.middle)
                 } else {
-                    Text(app.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
-                    Text("\(app.list.count) windows").font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
+                    Text(app.name).font(Chrome.font(12, .semibold)).foregroundStyle(Chrome.wash())
+                    Text("\(app.list.count) windows").font(Chrome.font(11)).foregroundStyle(Chrome.wash(0.45))
                 }
                 Spacer(minLength: 8)
                 WorkspaceBadge(n: model.dropTarget ?? n, size: 17)
@@ -1792,7 +1826,7 @@ struct DockView: View {
         }
         .padding(6).padding(.top, 4)
         .frame(width: 320)
-        .background(Chrome.panelBackground(cornerRadius: 14))
+        .background(Chrome.panelBackground(.dockList))
         .onHover { inside in model.onStrip = inside }
     }
 
@@ -1816,12 +1850,12 @@ struct DockView: View {
         let target = model.dropTarget == tile.id
         let hovered = isHovered(tile) || target
         let tint = Chrome.workspace(tile.id)
-        let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
+        let shape = Chrome.shape(.dockTile)
         return VStack(spacing: 5) {
             ZStack(alignment: .topLeading) {
-                shape.fill(tile.isCurrent ? tint.opacity(hovered ? 0.34 : 0.26) : Color.white.opacity(hovered ? 0.13 : 0.06))
-                    .overlay(shape.strokeBorder(tile.isCurrent || target ? tint : Color.white.opacity(hovered ? 0.18 : 0.08),
-                                                lineWidth: target ? 2.5 : tile.isCurrent ? 1.5 : 1))
+                shape.fill(tile.isCurrent ? Chrome.lit(tint, hovered ? 0.34 : 0.26) : Chrome.cell(hovered ? 0.13 : 0.06))
+                    .overlay(shape.strokeBorder(tile.isCurrent || target ? Chrome.focusEdge(tint) : Chrome.edge(hovered ? 0.18 : 0.08),
+                                                lineWidth: target ? Chrome.width(.dockTile, focused: true) + 1 : Chrome.width(.dockTile, focused: tile.isCurrent)))
                     .onHover { model.setHover(.tile(tile.id), $0) }
                     .onTapGesture { model.onPick(tile.id) }
                 icons(tile).frame(width: tileSize, height: tileSize)
@@ -1830,14 +1864,10 @@ struct DockView: View {
             .frame(width: tileSize, height: tileSize)
             .modifier(CenterReport(key: "tile:\(tile.id)"))
             // The number under the tile, lit for the workspace you're on, like the key that gets there.
-            Text("\(tile.id)")
-                .font(.system(size: 10.5, weight: .bold, design: .rounded))
-                .foregroundStyle(tile.isCurrent ? Color.white : tint.opacity(hovered ? 1 : 0.85))
-                .frame(minWidth: 18, minHeight: 15)
-                .background(Capsule().fill(tile.isCurrent ? tint : Color.clear))
+            TileNumber(n: tile.id, tint: tint, current: tile.isCurrent, hovered: hovered)
                 .allowsHitTesting(false)
         }
-        .modifier(HoverScale(scale: hovered ? 1.06 : 1, anchor: .bottom, spring: .spring(response: 0.25, dampingFraction: 0.72)))
+        .modifier(HoverScale(scale: hovered ? Chrome.grow(1.06) : 1, anchor: .bottom, spring: .spring(response: 0.25, dampingFraction: 0.72)))
         .contextMenu { tileMenu(tile) }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(title(tile, shown: .max) + (tile.isCurrent ? ", current" : ""))
@@ -1873,7 +1903,7 @@ struct DockView: View {
     @ViewBuilder private func doneBadge(_ tile: DockModel.Tile) -> some View {
         if let done = tile.agents.first(where: { $0.state == .done }) {
             Text("\(tile.agentsDone)")
-                .font(.system(size: 9.5, weight: .heavy, design: .rounded)).foregroundStyle(.white)
+                .font(Chrome.font(9.5, .heavy, rounded: true)).foregroundStyle(Chrome.light())
                 .frame(minWidth: 16, minHeight: 16).background(Circle().fill(Color.orange))
                 .contentShape(Circle())
                 .onTapGesture { if model.clickCounts { model.onFocusAgent(done, tile.id) } }
@@ -1945,7 +1975,7 @@ struct DockView: View {
     @ViewBuilder private func icons(_ tile: DockModel.Tile) -> some View {
         let apps = tile.apps
         if apps.isEmpty {
-            Image(systemName: "plus").font(.system(size: 15 * k, weight: .medium)).foregroundStyle(.white.opacity(0.3))
+            Image(systemName: "plus").font(Chrome.font(15 * k, .medium)).foregroundStyle(Chrome.wash(0.3))
                 .allowsHitTesting(false)
         } else if apps.count == 1 {
             appIcon(apps[0], in: tile, size: 42 * k)
@@ -1960,9 +1990,9 @@ struct DockView: View {
                     // Rest on it (or click it) to list the apps it stands for, each one clickable.
                     let open = model.hover == .more(tile.id) || model.more == tile.id
                     Text("+\(hidden)")
-                        .font(.system(size: 10, weight: .bold, design: .rounded)).foregroundStyle(.white.opacity(open ? 1 : 0.85))
+                        .font(Chrome.font(10, .bold, rounded: true)).foregroundStyle(Chrome.wash(open ? 1 : 0.85))
                         .frame(width: 24 * k, height: 24 * k)
-                        .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.white.opacity(open ? 0.24 : 0.12)))
+                        .background(Chrome.shape(.dockChip).fill(Chrome.cell(open ? 0.24 : 0.12)))
                         .modifier(CenterReport(key: "more:\(tile.id)"))
                         .contentShape(Rectangle())
                         .onHover { model.setHover(.more(tile.id), $0) }
@@ -1989,23 +2019,23 @@ struct DockView: View {
         let twin = !hovered && hoveredPid == app.pid
         let ring: CGFloat = hovered ? 2 : twin ? 1 : 0
         return Image(nsImage: app.icon).resizable().interpolation(.high).frame(width: size, height: size)
-            .shadow(color: .black.opacity(hovered ? 0.4 : 0.2), radius: hovered ? 4 : 2, y: 1)
+            .shadow(color: Chrome.shade(hovered ? 0.4 : 0.2), radius: hovered ? 4 : 2, y: 1)
             // The icon under the pointer is ringed in its workspace's color. The same app on
             // another workspace gets only a faint outline, so the ring never lands on the copy
             // you aren't pointing at. A macOS icon's art fills the middle 824 of its 1024 points
             // with a corner of about 185, so the ring traces that, a point outside it; around the
             // whole image it floated off the art and ran into the tile's edge.
             .overlay(RoundedRectangle(cornerRadius: size * 0.18 + ring + 1, style: .continuous)
-                .strokeBorder(hovered ? Chrome.workspace(tile.id) : Color.white.opacity(0.4), lineWidth: ring)
+                .strokeBorder(hovered ? Chrome.workspace(tile.id) : Chrome.wash(0.4), lineWidth: ring)
                 .padding(size * 100 / 1024 - ring - 1))
             // One dot per window when there's more than one; clicking again steps through them.
             .overlay(alignment: .bottom) {
                 if app.windows > 1 {
                     HStack(spacing: 2) {
-                        ForEach(0..<min(app.windows, 3), id: \.self) { _ in Circle().fill(Color.white).frame(width: 3, height: 3) }
+                        ForEach(0..<min(app.windows, 3), id: \.self) { _ in Circle().fill(Chrome.wash()).frame(width: 3, height: 3) }
                     }
                     .padding(.horizontal, 3).padding(.vertical, 2)
-                    .background(Capsule().fill(Color.black.opacity(0.6)))
+                    .background(Chrome.pill().fill(Chrome.shade(0.6)))
                     .offset(y: 5)
                 }
             }
@@ -2017,7 +2047,7 @@ struct DockView: View {
                 }
             }
             .modifier(CenterReport(key: "\(tile.id):\(app.id)"))
-            .modifier(HoverScale(scale: hovered ? 1.18 : 1, spring: .spring(response: 0.22, dampingFraction: 0.65)))
+            .modifier(HoverScale(scale: hovered ? Chrome.grow(1.18) : 1, spring: .spring(response: 0.22, dampingFraction: 0.65)))
             .opacity(dragging ? 0.3 : 1)
             .contentShape(Rectangle())
             .onHover { model.setHover(.app(tile.id, app.id), $0) }
@@ -2045,11 +2075,11 @@ struct DockView: View {
 
     private func newWorkspaceButton(_ n: Int) -> some View {
         let hovered = model.hover == .newWorkspace || model.dropTarget == n
-        let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
+        let shape = Chrome.shape(.dockTile)
         return VStack(spacing: 5) {
-            shape.strokeBorder(Color.white.opacity(hovered ? 0.35 : 0.16), style: StrokeStyle(lineWidth: 1.2, dash: [4, 4]))
-                .background(shape.fill(Color.white.opacity(hovered ? 0.08 : 0.0)))
-                .overlay(Image(systemName: "plus").font(.system(size: 16, weight: .semibold)).foregroundStyle(.white.opacity(hovered ? 0.9 : 0.45)))
+            shape.strokeBorder(Chrome.edge(hovered ? 0.35 : 0.16), style: StrokeStyle(lineWidth: Chrome.width(.dockTile) * 1.2, dash: [4, 4]))
+                .background(shape.fill(Chrome.wash(hovered ? 0.08 : 0.0)))
+                .overlay(Image(systemName: "plus").font(Chrome.font(16, .semibold)).foregroundStyle(Chrome.wash(hovered ? 0.9 : 0.45)))
                 // Slimmer along the dock, full size across it: on a side dock it lines up with the
                 // column of tiles instead of sitting narrower than them.
                 .frame(width: model.edge.isVertical ? tileSize : tileSize * 0.75,
@@ -2085,12 +2115,12 @@ struct DockView: View {
 
     private func smallButton(_ which: DockModel.Hover, _ symbol: String, _ name: String, size: CGSize, _ action: @escaping () -> Void) -> some View {
         let hovered = model.hover == which
-        return RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .fill(Color.white.opacity(hovered ? 0.16 : 0.05))
-            .overlay(Image(systemName: symbol).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white.opacity(hovered ? 0.95 : 0.6)))
+        return Chrome.shape(.dockButton)
+            .fill(Chrome.cell(hovered ? 0.16 : 0.05))
+            .overlay(Image(systemName: symbol).font(Chrome.font(13, .semibold)).foregroundStyle(Chrome.wash(hovered ? 0.95 : 0.6)))
             .frame(width: size.width, height: size.height)
             .modifier(CenterReport(key: which == .launcher ? "btn:launcher" : "btn:overview"))
-            .modifier(HoverScale(scale: hovered ? 1.06 : 1, spring: .spring(response: 0.25, dampingFraction: 0.72)))
+            .modifier(HoverScale(scale: hovered ? Chrome.grow(1.06) : 1, spring: .spring(response: 0.25, dampingFraction: 0.72)))
             .contentShape(Rectangle())
             .onHover { model.setHover(which, $0) }
             .onTapGesture(perform: action)
@@ -2161,11 +2191,11 @@ private struct MoreRow: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(nsImage: app.icon).resizable().interpolation(.high).frame(width: 18, height: 18)
-            Text(app.name).font(.system(size: 12.5, weight: hovered ? .semibold : .regular))
-                .foregroundStyle(.white.opacity(hovered ? 1 : 0.85)).lineLimit(1).truncationMode(.tail)
+            Text(app.name).font(Chrome.font(12.5, hovered ? .semibold : .regular))
+                .foregroundStyle(Chrome.wash(hovered ? 1 : 0.85)).lineLimit(1).truncationMode(.tail)
             Spacer(minLength: 6)
             if app.windows > 1 {
-                Text("\(app.windows) windows").font(.system(size: 10, weight: .medium)).foregroundStyle(.white.opacity(0.4))
+                Text("\(app.windows) windows").font(Chrome.font(10, .medium)).foregroundStyle(Chrome.wash(0.4))
             }
         }
         .padding(.horizontal, 8)
@@ -2205,15 +2235,15 @@ private struct StripRow: View {
         let title = window.title.isEmpty ? "Untitled window" : window.title
         HStack(spacing: 8) {
             Image(nsImage: icon).resizable().frame(width: 16, height: 16).opacity(hovered ? 1 : 0.85)
-            Text(title).font(.system(size: 12.5, weight: hovered ? .semibold : .regular))
-                .foregroundStyle(.white.opacity(hovered ? 1 : 0.85)).lineLimit(1).truncationMode(.tail)
+            Text(title).font(Chrome.font(12.5, hovered ? .semibold : .regular))
+                .foregroundStyle(Chrome.wash(hovered ? 1 : 0.85)).lineLimit(1).truncationMode(.tail)
             Spacer(minLength: 6)
             if let a = window.agent, a.state == .working {
                 AgentStatusBadge(state: a.state, size: 12).allowsHitTesting(false).accessibilityHidden(true)
             } else if let a = window.agent {
-                Text(a.state.word).font(.system(size: 10, weight: .semibold)).foregroundStyle(a.state.color)
+                Text(a.state.word).font(Chrome.font(10, .semibold)).foregroundStyle(a.state.color)
             } else if window.isLast {
-                Text("Last used").font(.system(size: 10, weight: .medium)).foregroundStyle(.white.opacity(0.4))
+                Text("Last used").font(Chrome.font(10, .medium)).foregroundStyle(Chrome.wash(0.4))
             }
         }
         .padding(.horizontal, 8)
@@ -2250,7 +2280,7 @@ struct AgentStatusBadge: View {
             AgentSpinner(size: size)
         } else {
             Image(systemName: state.symbol)
-                .font(.system(size: size * 0.62, weight: .heavy))
+                .font(Chrome.font(size * 0.62, .heavy))
                 .foregroundStyle(state == .asking ? Color.black.opacity(0.85) : Color.white)
                 .frame(width: size, height: size)
                 .background(Circle().fill(state.color))

@@ -9,8 +9,8 @@ public enum Remote {
 
     /// What a remote caller may do: look (ping, list, agent status) and give the agent workspace
     /// work (agent open, agent run). Never focus, type into your terminals, open URLs, move your
-    /// windows, or turn the agent workspace on or off: all of those change
-    /// what you see.
+    /// windows, change a setting (`.setting`: the theme and the dock switch change what you see),
+    /// or turn the agent workspace on or off: all of those change what you see.
     public static func allows(_ r: Wire.Request) -> Bool {
         switch r.op {
         case .ping, .list: return true

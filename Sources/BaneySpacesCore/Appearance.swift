@@ -1,7 +1,7 @@
 import Foundation
 
 /// A color as three 0...1 channels, so the look can be saved, compared and tested without AppKit.
-public struct RGB: Codable, Equatable, Hashable {
+public struct RGB: Codable, Equatable, Hashable, Sendable {
     public var r: Double
     public var g: Double
     public var b: Double
@@ -153,7 +153,13 @@ public struct AppearanceSettings: Codable, Equatable {
     /// How solid the panels' dark fill is. 0.88 is what they have always used.
     public var panelOpacity: Double = AppearanceSettings.defaultPanelOpacity
     public var dockSize: DockSize = .medium
+    /// The shape, type and motion of every surface (`appearance.theme`).
+    public var theme: ThemeID = .macDefault
+    /// The color palette (`appearance.palette`): "auto", or a name in palettes.json. Not the
+    /// workspace colors above, which are `palette`.
+    public var colorPalette: String = AppearanceSettings.autoPalette
 
+    public static let autoPalette = "auto"
     public static let defaultPanelOpacity = 0.88
     public static let panelOpacityRange: ClosedRange<Double> = 0.6...1.0
     /// How much of the accent a Tinted panel washes over its glass.
@@ -162,7 +168,7 @@ public struct AppearanceSettings: Codable, Equatable {
 
     public init() {}
 
-    private enum CodingKeys: String, CodingKey { case accent, palette, overrides, panelStyle, panelOpacity, dockSize }
+    private enum CodingKeys: String, CodingKey { case accent, palette, overrides, panelStyle, panelOpacity, dockSize, theme, colorPalette }
 
     /// Each field on its own: one missing or unreadable (a newer build's value, an older build's
     /// blob) takes its default and leaves the rest as saved.
@@ -175,6 +181,8 @@ public struct AppearanceSettings: Codable, Equatable {
         panelStyle = (try? c.decodeIfPresent(PanelStyle.self, forKey: .panelStyle)) ?? panelStyle
         panelOpacity = (try? c.decodeIfPresent(Double.self, forKey: .panelOpacity)) ?? panelOpacity
         dockSize = (try? c.decodeIfPresent(DockSize.self, forKey: .dockSize)) ?? dockSize
+        theme = (try? c.decodeIfPresent(ThemeID.self, forKey: .theme)) ?? theme
+        colorPalette = (try? c.decodeIfPresent(String.self, forKey: .colorPalette)) ?? colorPalette
     }
 
     // MARK: Saving
@@ -190,6 +198,8 @@ public struct AppearanceSettings: Codable, Equatable {
         guard let data, var s = try? JSONDecoder().decode(AppearanceSettings.self, from: data) else { return AppearanceSettings() }
         s.panelOpacity = min(panelOpacityRange.upperBound, max(panelOpacityRange.lowerBound, s.panelOpacity))
         s.overrides = s.overrides.filter { (1...9).contains($0.key) }
+        // A palette this build doesn't have (a newer build's) is Auto.
+        if s.colorPalette != autoPalette, PaletteCatalog.shared.named(s.colorPalette) == nil { s.colorPalette = autoPalette }
         return s
     }
 
@@ -232,6 +242,11 @@ public struct AppearanceSettings: Codable, Equatable {
     }
 
     public mutating func resetOverrides() { overrides = [:] }
+
+    /// The theme and palette every surface draws from.
+    public func look(systemAccent: RGB) -> Look {
+        Look(theme: theme, palette: colorPalette, accent: accentRGB(system: systemAccent))
+    }
 
     // MARK: Palettes
 

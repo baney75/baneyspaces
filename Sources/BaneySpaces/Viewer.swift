@@ -69,7 +69,7 @@ final class ViewerModel: ObservableObject {
             tiles[to, default: []].append(drag.entry)
             onMove(drag.entry.id, to)
         }
-        withAnimation(.easeOut(duration: 0.15)) { self.drag = nil }
+        withAnimation(Chrome.ease(0.15, .panelOut)) { self.drag = nil }
     }
 }
 
@@ -93,7 +93,7 @@ struct ViewerView: View {
         ZStack {
             backdrop
             // Clicking the backdrop closes the viewer, like clicking the desktop in Mission Control.
-            Color.black.opacity(appearance.settings.overviewDim).ignoresSafeArea().onTapGesture { model.onClose() }
+            Chrome.shade(appearance.settings.overviewDim).ignoresSafeArea().onTapGesture { model.onClose() }
             if appearance.settings.panelStyle == .tinted {
                 Chrome.accent.opacity(AppearanceSettings.tintWash).ignoresSafeArea().allowsHitTesting(false)
             }
@@ -105,11 +105,10 @@ struct ViewerView: View {
     }
 
     @ViewBuilder private var backdrop: some View {
-        if appearance.settings.panelStyle == .solid {
-            Color(white: 0.07).ignoresSafeArea()
+        if appearance.settings.panelStyle == .solid || (!Chrome.spec.fill.blur && !stillBackdrop) {
+            Chrome.panel().ignoresSafeArea()
         } else if stillBackdrop {
-            LinearGradient(colors: [Color(red: 0.05, green: 0.06, blue: 0.11), Color(red: 0.11, green: 0.07, blue: 0.13)],
-                           startPoint: .topLeading, endPoint: .bottomTrailing)
+            Chrome.stillBackdrop
         } else {
             Backdrop().ignoresSafeArea()
         }
@@ -151,8 +150,8 @@ struct ViewerView: View {
                      : model.carrying
                      ? "Let go over a workspace to move the window there  ·  Anywhere else leaves it here"
                      : "Drop on a workspace to move the window there")
-            .font(.callout)
-            .foregroundStyle(.white.opacity(0.7))
+            .font(Chrome.font(12))
+            .foregroundStyle(Chrome.wash(0.7))
             .frame(height: 40)
     }
 
@@ -169,12 +168,12 @@ struct ViewerView: View {
             .padding(14)
             .frame(maxWidth: .infinity, minHeight: height, maxHeight: height, alignment: .topLeading)
             .background(tileShape(isCurrent: isCurrent, isTarget: isTarget, isHovered: isHovered))
-            .scaleEffect(isTarget ? 1.02 : 1)
-            .animation(.easeOut(duration: 0.12), value: isTarget)
+            .scaleEffect(isTarget ? Chrome.grow(1.02) : 1)
+            .animation(Chrome.ease(0.12, .row), value: isTarget)
             .background(GeometryReader { g in
                 Color.clear.preference(key: TileFrames.self, value: [n: g.frame(in: .named("viewer"))])
             })
-            .contentShape(RoundedRectangle(cornerRadius: 16))
+            .contentShape(Chrome.shape(.overviewTile, continuous: false))
             .onTapGesture { model.onPick(n) }
             .onHover { inside in model.hover(n, inside) }
             .accessibilityElement(children: .combine)
@@ -185,12 +184,12 @@ struct ViewerView: View {
     private func tileHeader(_ n: Int, count: Int, isCurrent: Bool) -> some View {
         // On one baseline: centered, the small caption floats above the big number's foot.
         HStack(alignment: .firstTextBaseline) {
-            Text("\(n)").font(.system(size: 22, weight: .bold, design: .rounded))
+            Text("\(n)").font(Chrome.font(22, .bold, rounded: true))
             if count > 0 {
-                Text(count == 1 ? "1 window" : "\(count) windows").font(.caption).foregroundStyle(.secondary)
+                Text(count == 1 ? "1 window" : "\(count) windows").font(Chrome.font(10)).foregroundStyle(.secondary)
             }
             Spacer()
-            if isCurrent { Text("You're here").font(.caption.weight(.semibold)).foregroundStyle(accent) }
+            if isCurrent { Text("You're here").font(Chrome.font(10, .semibold)).foregroundStyle(accent) }
         }
     }
 
@@ -202,16 +201,16 @@ struct ViewerView: View {
         } else {
             windowList(n, entries: entries)
             if isTarget {
-                Text("Move here").font(.caption.weight(.semibold)).foregroundStyle(accent)
+                Text("Move here").font(Chrome.font(10, .semibold)).foregroundStyle(accent)
             }
         }
     }
 
     @ViewBuilder private func emptyLabel(isTarget: Bool) -> some View {
         if isTarget {
-            Text("Move here").font(.callout).foregroundStyle(accent).frame(maxWidth: .infinity)
+            Text("Move here").font(Chrome.font(12)).foregroundStyle(accent).frame(maxWidth: .infinity)
         } else {
-            Text("Empty").font(.callout).foregroundStyle(.tertiary).frame(maxWidth: .infinity)
+            Text("Empty").font(Chrome.font(12)).foregroundStyle(.tertiary).frame(maxWidth: .infinity)
         }
     }
 
@@ -228,14 +227,13 @@ struct ViewerView: View {
 
     private func tileShape(isCurrent: Bool, isTarget: Bool, isHovered: Bool) -> some View {
         let border: Color
-        if isTarget { border = accent } else if isCurrent { border = accent.opacity(0.85) }
-        else if isHovered { border = Color.white.opacity(0.6) } else { border = Color.white.opacity(0.08) }
-        let width: CGFloat = isTarget || isCurrent || isHovered ? 3 : 1
+        if isTarget { border = Chrome.focusEdge(accent) } else if isCurrent { border = Chrome.focusEdge(accent.opacity(0.85)) }
+        else if isHovered { border = Chrome.theme == .baneyspaces ? Chrome.wash(0.6) : Chrome.focusEdge(accent) } else { border = Chrome.edge(0.08) }
+        let width = Chrome.width(.overviewTile, focused: isTarget || isCurrent || isHovered)
         let dash: [CGFloat] = isTarget ? [8, 5] : []
-        let fill = isTarget ? Color(white: 0.19) : Color(white: 0.13)
-        return RoundedRectangle(cornerRadius: 16)
-            .fill(fill)
-            .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(border, style: StrokeStyle(lineWidth: width, dash: dash)))
+        return Chrome.shape(.overviewTile, continuous: false)
+            .fill(Chrome.tileFill(target: isTarget))
+            .overlay(Chrome.shape(.overviewTile, continuous: false).strokeBorder(border, style: StrokeStyle(lineWidth: width, dash: dash)))
     }
 
     private func tileLabel(_ n: Int, entries: [Spaces.Entry], isCurrent: Bool) -> String {
@@ -268,8 +266,8 @@ struct ViewerView: View {
             Image(nsImage: model.icons[e.id] ?? NSRunningApplication(processIdentifier: e.pid)?.icon ?? NSImage())
                 .resizable().frame(width: 20, height: 20)
             // One line per window: the app, then its title, trimmed in the middle if long.
-            (Text(e.app).font(.callout.weight(.medium))
-             + Text(e.title.isEmpty || e.title == e.app ? "" : "  \(e.title)").font(.callout).foregroundColor(.secondary))
+            (Text(e.app).font(Chrome.font(12, .medium))
+             + Text(e.title.isEmpty || e.title == e.app ? "" : "  \(e.title)").font(Chrome.font(12)).foregroundColor(.secondary))
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: 0)
@@ -277,10 +275,10 @@ struct ViewerView: View {
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 9).fill(lifted ? Color(white: 0.26) : Color.white.opacity(0.06)))
-        .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(Color.white.opacity(lifted ? 0.25 : 0), lineWidth: 1))
-        .shadow(color: .black.opacity(lifted ? 0.5 : 0), radius: 14, y: 6)
-        .scaleEffect(lifted ? 1.04 : 1)
+        .background(Chrome.shape(.overviewChip, continuous: false).fill(lifted ? Chrome.liftedFill : Chrome.cell(0.06)))
+        .overlay(Chrome.shape(.overviewChip, continuous: false).strokeBorder(Chrome.edge(lifted ? 0.25 : 0), lineWidth: Chrome.width(.overviewChip)))
+        .shadow(color: Chrome.shade(lifted && Chrome.spec.shadow != nil ? 0.5 : 0), radius: 14, y: 6)
+        .scaleEffect(lifted ? Chrome.grow(1.04) : 1)
     }
 }
 
@@ -361,7 +359,7 @@ final class ViewerController {
         NSApp.activate(ignoringOtherApps: true)
         p.makeKeyAndOrderFront(nil)
         NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.12
+            ctx.duration = Chrome.duration(0.12, .panelIn)
             p.animator().alphaValue = 1
         }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
@@ -412,7 +410,7 @@ final class ViewerController {
         panel.alphaValue = 0
         panel.orderFrontRegardless()
         NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.12
+            ctx.duration = Chrome.duration(0.12, .panelIn)
             panel.animator().alphaValue = 1
         }
         Trace.log("topDrag open window=\(id) from=\(from)")
@@ -449,7 +447,7 @@ final class ViewerController {
         model.reset()
         let count = openCount
         NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = 0.1
+            ctx.duration = Chrome.duration(0.1, .panelOut)
             p.animator().alphaValue = 0
         }, completionHandler: { [weak self] in
             guard let self, self.openCount == count, !self.isOpen else { return }

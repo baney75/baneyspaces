@@ -407,6 +407,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.updateIcon()
             self?.dock.reload()
         }
+        // A new theme redraws the menu bar indicator as well as the panels.
+        NotificationCenter.default.addObserver(forName: Appearance.didChange, object: nil, queue: .main) { [weak self] _ in
+            self?.updateIcon()
+        }
         for name in [NSWorkspace.didTerminateApplicationNotification, NSWorkspace.didHideApplicationNotification] {
             NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
                 guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
@@ -614,7 +618,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func syncWindowDrags() {
         guard started else { return }
         topDrag.topEnabled = TopDragWatcher.enabled
-        if TopDragWatcher.enabled || WorkspaceDock.enabled {
+        if DockSwitch<DockPanel>.windowDragsNeeded(topDrag: TopDragWatcher.enabled, dockEnabled: WorkspaceDock.enabled) {
             topDrag.start()
         } else {
             topDrag.stop()
@@ -665,8 +669,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func updateIcon() {
         let name = started ? "\(spaces.model.current).square.fill" : "exclamationmark.triangle"
-        let image = NSImage(systemSymbolName: name, accessibilityDescription: started
-            ? "BaneySpaces, workspace \(spaces.model.current)" : "BaneySpaces needs Accessibility access")
+        let description = started ? "BaneySpaces, workspace \(spaces.model.current)" : "BaneySpaces needs Accessibility access"
+        // The BaneySpaces theme keeps the numbered square it has always shown; the others draw their indicator.
+        let image = (started ? MenuBarMark.image(workspace: spaces.model.current, description: description) : nil)
+            ?? NSImage(systemSymbolName: name, accessibilityDescription: description)
         image?.isTemplate = true
         statusItem.button?.image = image
         // Agents that finished while you were elsewhere, counted beside the workspace number.
@@ -714,6 +720,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in HandsLends.shared.expire() }
         deck.onWorkingChange = { [weak self] in self?.dock.reload() }
+        deck.readSetting = { [weak self] in self?.settingValue($0) ?? "" }
+        deck.writeSetting = { [weak self] k, v in self?.applySetting(k, v) }
         // A moment after launch: setting up an observer per app costs the main thread a few
         // hundred milliseconds, which would otherwise land on your first workspace switch.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
@@ -743,7 +751,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var apps: [Int: [String]] = [:]
         for n in Workspaces.range { apps[n] = spaces.apps(on: n) }
         let entries = MenuLayout.entries(rows: MenuLayout.rows(current: spaces.model.current, apps: apps),
-                                         finished: deck.started ? deck.unseenCount : 0, update: updateNotice())
+                                         finished: deck.started ? deck.unseenCount : 0, update: updateNotice(),
+                                         dockOn: WorkspaceDock.enabled)
         for entry in entries { menu.addItem(menuItem(for: entry)) }
     }
 
@@ -764,6 +773,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let find = item("Find or Install an App…", #selector(showLauncher))
             if Launcher.onCmdSpace { find.keyEquivalent = " "; find.keyEquivalentModifierMask = [.command] }
             return find
+        case .dock(let on):
+            return item(on ? "Turn Off Workspace Dock" : "Turn On Workspace Dock", #selector(toggleDockFromMenu))
         case .settings:
             return item("Settings…", #selector(showSetup), key: ",")
         case .quit:
@@ -796,6 +807,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let r = updater.installing { return UpdateNotice(name: r.name, isNightly: r.isNightly, installing: true) }
         return updater.available.map { UpdateNotice(name: $0.name, isNightly: $0.isNightly, installing: false) }
     }
+
+    @objc private func toggleDockFromMenu() { toggleWorkspaceDock() }
 
     @objc private func offerUpdate() { if let r = updater.available { updater.offer(r) } }
 
@@ -858,7 +871,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dock.reload()
     }
 
-    /// Turns the Workspace Dock on or off; off brings the macOS Dock back as it was.
+    /// `dock.enabled`, `appearance.theme` and `appearance.palette` by name: what `baneyspaces get` reads.
+    func settingValue(_ key: SettingKey) -> String {
+        switch key {
+        case .theme: Appearance.shared.settings.theme.rawValue
+        case .palette: Appearance.shared.settings.colorPalette
+        case .dockEnabled: WorkspaceDock.enabled ? "true" : "false"
+        }
+    }
+
+    /// What `baneyspaces set` and Settings do: applied at once, no restart.
+    func applySetting(_ key: SettingKey, _ value: String) {
+        switch key {
+        case .theme: Appearance.shared.settings.theme = ThemeID(rawValue: value) ?? .macDefault
+        case .palette: Appearance.shared.settings.colorPalette = value
+        case .dockEnabled: setWorkspaceDock(value == "true")
+        }
+    }
+
+    /// Turns the Workspace Dock on or off (`dock.enabled`). Off, there is no dock window at all and
+    /// the macOS Dock comes back as it was; on, the dock returns on the next reveal at its edge.
     func setWorkspaceDock(_ on: Bool) {
         WorkspaceDock.enabled = on
         if setup.model.workspaceDock != on { setup.model.workspaceDock = on }
