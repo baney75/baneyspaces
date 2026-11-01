@@ -81,7 +81,7 @@ final class WorkspaceSwitcher {
         guard isShowing, model.mode == .apps, hold.repeated(at: time) else { return }
         holdCheck?.cancel()
         if model.windowBar != nil { return toggleWindowBar() }
-        guard windowCount(of: model.selected) > 1 else {
+        guard WindowBarGate.shouldOpen(windowCount: windowCount(of: model.selected)) else {
             Trace.log("cmdTab hold (\(source)): highlighted app has one window")
             return
         }
@@ -188,7 +188,10 @@ final class WorkspaceSwitcher {
     private func windowCount(of index: Int) -> Int {
         guard model.apps.indices.contains(index) else { return 0 }
         let pid = model.apps[index].pid
-        return model.apps.filter { $0.pid == pid }.reduce(0) { $0 + $1.windows }
+        return WindowBarGate.windowCount(
+            pid: pid,
+            tiles: model.apps.map { (pid: $0.pid, windows: $0.windows) }
+        )
     }
 
     /// The bar changed size: keep it centered.
@@ -427,7 +430,12 @@ struct SwitcherView: View {
     }
 
     private var workspaceRow: some View {
-        HStack(spacing: 12) {
+        // Wrap so nine tiles still fit a 1,024 pt display (Sol on #145).
+        let columns = Array(
+            repeating: GridItem(.fixed(108), spacing: 12),
+            count: SwitcherLayout.workspaceColumns(tileCount: model.tiles.count)
+        )
+        return LazyVGrid(columns: columns, spacing: 12) {
             ForEach(Array(model.tiles.enumerated()), id: \.element.id) { i, tile in
                 let on = i == model.selected
                 VStack(spacing: 8) {
@@ -445,16 +453,16 @@ struct SwitcherView: View {
                 }
                 .frame(width: 108, height: 128)
                 .background(Chrome.shape(.switcherTile).fill(on ? Chrome.cell(0.16) : Chrome.cell(0.05)))
-                .overlay(Chrome.shape(.switcherTile).strokeBorder(on ? Chrome.focusEdge(Chrome.accent.opacity(0.9)) : Chrome.edge(0.08),
+                .overlay(Chrome.shape(.switcherTile).strokeBorder(on ? Chrome.wash(0.55) : Chrome.edge(0),
                                                                   lineWidth: Chrome.width(.switcherTile, focused: on)))
                 .accessibilityLabel("Workspace \(tile.n), \(tile.count) windows\(on ? ", selected" : "")")
             }
         }
     }
+
+
 }
 
-/// A workspace's number in its own color, the same everywhere: dock, ⌘Tab and launcher. A dot in
-/// the BaneySpaces theme, a numbered block in Omarchy, a number over a bar in Minimal.
 struct WorkspaceBadge: View {
     let n: Int
     var size: CGFloat = 20

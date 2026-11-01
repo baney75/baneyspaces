@@ -1190,11 +1190,12 @@ final class Spaces {
     /// first, then any remaining ones in number order.
     func switcherOrder() -> [Int] {
         refresh()
-        let withWindows = Set(Workspaces.range.filter { !model.windows(on: $0).isEmpty })
-        var order = [model.current]
-        for n in recent where n != model.current && withWindows.contains(n) { order.append(n) }
-        for n in Workspaces.range where withWindows.contains(n) && !order.contains(n) { order.append(n) }
-        return order
+        // Empty workspaces stay listed so ⌘Tab in workspaces mode can land on them (F1).
+        return WorkspaceSwitcherOrder.make(
+            current: model.current,
+            recent: recent,
+            range: Array(Workspaces.range)
+        )
     }
 
     /// App names on workspace `n`, for the menu.

@@ -7,6 +7,7 @@
 ## Unreleased
 
 - **Rotating `trace.log`.** When the active file would pass 200 KB it becomes `trace.log.1` (and `.2`), instead of being deleted. `os.Logger` (subsystem `com.baney.baneyspaces`) is unchanged. Guarded by `FileTraceTests`.
+- **⌘Tab workspaces mode lists empty workspaces.** A single occupied workspace no longer makes ⌘Tab a no-op. The workspace row wraps so nine tiles still fit a 1,024 pt display. Window-bar hold eligibility is pinned by `WindowBarGateTests`.
 
 ## Unreleased
 
