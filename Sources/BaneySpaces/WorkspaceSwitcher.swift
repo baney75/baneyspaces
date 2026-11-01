@@ -461,6 +461,8 @@ struct SwitcherView: View {
     }
 
 
+}
+
 struct WorkspaceBadge: View {
     let n: Int
     var size: CGFloat = 20

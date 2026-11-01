@@ -40,9 +40,10 @@ final class SwitcherLayoutTests: XCTestCase {
     func testNineTilesFitANarrowScreenByWrapping() {
         let cols = SwitcherLayout.workspaceColumns(tileCount: 9, maxWidth: 1024)
         XCTAssertLessThanOrEqual(SwitcherLayout.rowWidth(columns: cols), 1024)
-        XCTAssertEqual(cols, 5) // 5*108 + 4*12 + 28 = 616
-        // Two rows: 5 + 4 still shows all nine.
-        XCTAssertGreaterThanOrEqual(cols * 2, 9)
+        // 8*108 + 7*12 + 28 = 976 <= 1024; 9*108 + 8*12 + 28 = 1096 would clip.
+        XCTAssertEqual(cols, 8)
+        XCTAssertLessThanOrEqual(SwitcherLayout.rowWidth(columns: 8), 1024)
+        XCTAssertGreaterThan(SwitcherLayout.rowWidth(columns: 9), 1024)
     }
 
     func testSingleTileStaysOneColumn() {
