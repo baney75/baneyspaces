@@ -24,6 +24,7 @@ jobs:
         run: BANEYSPACES_ARM64_ONLY=1 scripts/build-engine.sh
       - name: Test
         run: swift test
+      # Ad-hoc, a build check only. The app people download comes from `make release`.
       - name: Bundle the app
         run: BANEYSPACES_ADHOC=1 BANEYSPACES_ARM64_ONLY=1 scripts/bundle.sh
       - name: Write the notes
