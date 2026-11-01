@@ -69,8 +69,19 @@ final class AppSandbox: SandboxWindowHost {
 
     func agentWorkspace() -> Int? { onMain(nil) { Spaces.agentWorkspace } }
 
+    /// The VM processes this sandbox started (pid with the kernel's start time), for R-D9: a window titled like
+    /// the sandbox's is pinned to the agent workspace only when its process is one of these.
+    private let ownedLock = NSLock()
+    private var owned: [Int32: Double] = [:]
+    func ownsProcess(_ pid: Int32) -> Bool {
+        ownedLock.lock(); defer { ownedLock.unlock() }
+        guard let was = owned[pid], let now = AgentOwned.startTime(pid) else { return false }
+        return abs(was - now) < 0.5
+    }
+
     func claim(pid: Int32, workspace: Int) -> Bool {
-        onMain(false, timeout: 5) { [spacesProvider] in
+        if let t = AgentOwned.startTime(pid) { ownedLock.lock(); owned[pid] = t; ownedLock.unlock() }
+        return onMain(false, timeout: 5) { [spacesProvider] in
             guard let spaces = spacesProvider() else { return false }
             spaces.claimNextWindow(of: pid, for: workspace, within: 40, newProcess: true)
             return true

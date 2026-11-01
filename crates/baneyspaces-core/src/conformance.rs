@@ -126,12 +126,19 @@ mod tests {
 
     #[test]
     fn every_rule_in_the_spec_has_a_case() {
-        let rules = std::fs::read_to_string(spec_dir().join("workspaces.md")).unwrap();
+        let rules = ["workspaces.md", "devices.md"].iter().map(|f| std::fs::read_to_string(spec_dir().join(f)).unwrap()).collect::<Vec<_>>().join("\n");
         let ids: Vec<String> = rules.lines().filter_map(|l| l.strip_prefix("### ").and_then(|r| r.split_whitespace().next()).filter(|id| id.starts_with("R-")).map(String::from)).collect();
         assert!(ids.len() >= 20, "found {} rules", ids.len());
         let mut cases = String::new();
-        for e in std::fs::read_dir(spec_dir().join("conformance")).unwrap().flatten() {
-            cases.push_str(&std::fs::read_to_string(e.path()).unwrap());
+        let mut dirs = vec![spec_dir().join("conformance")];
+        while let Some(dir) = dirs.pop() {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                if e.path().is_dir() {
+                    dirs.push(e.path());
+                } else {
+                    cases.push_str(&std::fs::read_to_string(e.path()).unwrap());
+                }
+            }
         }
         for id in ids {
             assert!(cases.contains(&format!("\"{id}\"")), "no conformance case names rule {id}");

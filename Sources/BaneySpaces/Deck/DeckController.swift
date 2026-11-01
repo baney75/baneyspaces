@@ -45,6 +45,71 @@ final class AgentOwned {
         return Double(t.tv_sec) + Double(t.tv_usec) / 1_000_000
     }
 
+    /// The parent of a process, from the kernel's table.
+    static func parent(of pid: Int32) -> Int32? {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0 else { return nil }
+        return info.kp_eproc.e_ppid
+    }
+
+    /// Descendants of the processes started for an agent, each recorded with the root it was found under (that
+    /// root's pid and start time) while its parent chain still showed it (R-D8). A grandchild whose parent exits
+    /// is reparented to launchd; the record is what keeps it that root's, and only that root's.
+    private var descendants: [Int32: RecordedDescendant] = [:]
+
+    /// Every process and its parent, from the kernel.
+    static func processTable() -> [(pid: Int32, ppid: Int32)] {
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_ALL]
+        var size = 0
+        guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 0 else { return [] }
+        var buf = [UInt8](repeating: 0, count: size + 8 * MemoryLayout<kinfo_proc>.stride)
+        guard sysctl(&mib, 3, &buf, &size, nil, 0) == 0 else { return [] }
+        let n = size / MemoryLayout<kinfo_proc>.stride
+        return buf.withUnsafeBytes { raw in
+            (0..<n).map { i in
+                let p = raw.load(fromByteOffset: i * MemoryLayout<kinfo_proc>.stride, as: kinfo_proc.self)
+                return (p.kp_proc.p_pid, p.kp_eproc.e_ppid)
+            }
+        }
+    }
+
+    /// The roots still running as the processes started for the agent: a pid another process has now is no root.
+    private func liveRoots() -> [Int32: Double] {
+        lock.lock(); let all = set.roots; lock.unlock()
+        return ProcessTree.liveRoots(all, startOf: Self.startTime)
+    }
+
+    /// Notes new children, grandchildren and so on of the agent's live roots under the root each was found
+    /// under, and forgets entries whose process or root is gone or replaced.
+    func recordDescendants() {
+        let roots = liveRoots()
+        lock.lock(); let have = !descendants.isEmpty; lock.unlock()
+        guard !roots.isEmpty || have else { return }
+        let table = roots.isEmpty ? [] : Self.processTable()
+        lock.lock()
+        descendants = descendants.filter { pid, d in
+            Self.startTime(pid).map { abs($0 - d.started) < 0.5 } == true && roots[d.root].map { abs($0 - d.rootStarted) < 0.5 || $0 == 0 } == true
+        }
+        let found = ProcessTree.newDescendants(roots: Array(roots.keys), known: Set(descendants.keys), table: table)
+        for f in found {
+            if let t = Self.startTime(f.pid), let rs = roots[f.root] { descendants[f.pid] = RecordedDescendant(started: t, root: f.root, rootStarted: rs) }
+        }
+        lock.unlock()
+    }
+
+    /// The agent root `pid` belongs to (a root itself, a descendant recorded under it, or a child by the live
+    /// chain not recorded yet), or nil.
+    func owner(of pid: Int32) -> Int32? {
+        let roots = liveRoots()
+        lock.lock(); let rec = descendants; lock.unlock()
+        return ProcessTree.attribute(pid: pid, roots: roots, recorded: rec, startOf: Self.startTime, parentOf: Self.parent(of:))
+    }
+
+    /// R-D8: whether `pid` is a process started for an agent or below one.
+    func owns(_ pid: Int32) -> Bool { owner(of: pid) != nil }
+
     func add(_ pid: Int32) {
         guard let t = Self.startTime(pid) else { return }
         lock.lock(); set.add(pid, startedAt: t); lock.unlock()

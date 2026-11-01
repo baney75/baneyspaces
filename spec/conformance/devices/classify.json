@@ -1,0 +1,508 @@
+[
+ {
+  "name": "the Simulator's device window is a main window that resizes itself",
+  "rules": [
+   "R-D1"
+  ],
+  "facts": {
+   "platform": "macos",
+   "title": "iPhone 17 Pro \u2013 iOS 26.5",
+   "standard": true,
+   "bundle": "com.apple.iphonesimulator"
+  },
+  "expect": {
+   "app": "ios-simulator",
+   "role": "main",
+   "resizes_itself": true
+  }
+ },
+ {
+  "name": "the Simulator's iPad window",
+  "rules": [
+   "R-D1"
+  ],
+  "facts": {
+   "platform": "macos",
+   "title": "iPad Pro 13-inch (M5) \u2013 iPadOS 27.0",
+   "standard": true,
+   "bundle": "com.apple.iphonesimulator"
+  },
+  "expect": {
+   "app": "ios-simulator",
+   "role": "main"
+  }
+ },
+ {
+  "name": "a sheet or panel of the Simulator is not a window",
+  "rules": [
+   "R-D1"
+  ],
+  "facts": {
+   "platform": "macos",
+   "title": "",
+   "standard": false,
+   "bundle": "com.apple.iphonesimulator"
+  },
+  "expect": {
+   "app": "ios-simulator",
+   "role": "ignore"
+  }
+ },
+ {
+  "name": "the Android emulator's device window (macOS, by process)",
+  "rules": [
+   "R-D1"
+  ],
+  "facts": {
+   "platform": "macos",
+   "title": "Android Emulator - Pixel_9_API_35:5554",
+   "standard": true,
+   "process": "qemu-system-aarch64",
+   "args": [
+    "-avd",
+    "Pixel_9_API_35"
+   ]
+  },
+  "expect": {
+   "app": "android-emulator",
+   "role": "main",
+   "float": true,
+   "resizes_itself": true
+  }
+ },
+ {
+  "name": "the emulator's toolbar is a companion even as a panel",
+  "rules": [
+   "R-D1"
+  ],
+  "facts": {
+   "platform": "macos",
+   "title": "",
+   "standard": false,
+   "process": "qemu-system-aarch64",
+   "args": [
+    "-avd",
+    "Pixel_9_API_35"
+   ]
+  },
+  "expect": {
+   "app": "android-emulator",
+   "role": "companion"
+  }
+ },
+ {
+  "name": "the emulator's Extended controls window is a companion even when it is a standard window",
+  "rules": [
+   "R-D1"
+  ],
+  "facts": {
+   "platform": "macos",
+   "title": "Extended Controls - Pixel_9_API_35:5554",
+   "standard": true,
+   "process": "qemu-system-aarch64",
+   "args": [
+    "-avd",
+    "Pixel_9_API_35"
+   ]
+  },
+  "expect": {
+   "app": "android-emulator",
+   "role": "companion"
+  }
+ },
+ {
+  "name": "the emulator on Linux is found by its window class",
+  "rules": [
+   "R-D1"
+  ],
+  "facts": {
+   "platform": "linux",
+   "title": "Extended Controls",
+   "standard": true,
+   "class": "Emulator"
+  },
+  "expect": {
+   "app": "android-emulator",
+   "role": "companion"
+  }
+ },
+ {
+  "name": "the emulator on Linux, main window",
+  "rules": [
+   "R-D1",
+   "R-D10"
+  ],
+  "facts": {
+   "platform": "linux",
+   "title": "Android Emulator - Pixel_9:5554",
+   "standard": true,
+   "class": "emulator64-crash"
+  },
+  "expect": {
+   "app": "android-emulator",
+   "role": "main",
+   "float": true
+  }
+ },
+ {
+  "name": "the emulator on Windows is found by its executable",
+  "rules": [
+   "R-D1"
+  ],
+  "facts": {
+   "platform": "windows",
+   "title": "Android Emulator - Pixel_9:5554",
+   "standard": true,
+   "exe": "emulator.exe"
+  },
+  "expect": {
+   "app": "android-emulator",
+   "role": "main"
+  }
+ },
+ {
+  "name": "UTM's VM window",
+  "rules": [
+   "R-D1"
+  ],
+  "facts": {
+   "platform": "macos",
+   "title": "Ubuntu",
+   "standard": true,
+   "bundle": "com.utmapp.UTM"
+  },
+  "expect": {
+   "app": "utm",
+   "role": "main",
+   "resizes_itself": true
+  }
+ },
+ {
+  "name": "Parallels, VMware Fusion and VirtualBox VM windows",
+  "rules": [
+   "R-D1"
+  ],
+  "facts": {
+   "platform": "macos",
+   "title": "Windows 11",
+   "standard": true,
+   "bundle": "com.parallels.desktop.console"
+  },
+  "expect": {
+   "app": "parallels",
+   "role": "main"
+  }
+ },
+ {
+  "name": "VMware Fusion by bundle id",
+  "rules": [
+   "R-D1"
+  ],
+  "facts": {
+   "platform": "macos",
+   "title": "Windows 11",
+   "standard": true,
+   "bundle": "com.vmware.fusion"
+  },
+  "expect": {
+   "app": "vmware-fusion",
+   "role": "main"
+  }
+ },
+ {
+  "name": "VirtualBox's VM window",
+  "rules": [
+   "R-D1"
+  ],
+  "facts": {
+   "platform": "macos",
+   "title": "win11 [Running]",
+   "standard": true,
+   "bundle": "org.virtualbox.app.VirtualBoxVM"
+  },
+  "expect": {
+   "app": "virtualbox",
+   "role": "main"
+  }
+ },
+ {
+  "name": "BaneySpaces' sandbox view (a Tart window named bsx-...) is pinned to the agent workspace",
+  "rules": [
+   "R-D1",
+   "R-D9"
+  ],
+  "facts": {
+   "platform": "macos",
+   "title": "bsx-s-ba0365d2",
+   "standard": true,
+   "process": "tart"
+  },
+  "expect": {
+   "app": "tart",
+   "role": "main",
+   "agent_home": true
+  }
+ },
+ {
+  "name": "your own Tart VM window is not pinned",
+  "rules": [
+   "R-D1"
+  ],
+  "facts": {
+   "platform": "macos",
+   "title": "my-dev-vm",
+   "standard": true,
+   "process": "tart"
+  },
+  "expect": {
+   "app": "tart",
+   "role": "main",
+   "agent_home": false
+  }
+ },
+ {
+  "name": "virt-manager and virt-viewer on Linux",
+  "rules": [
+   "R-D1"
+  ],
+  "facts": {
+   "platform": "linux",
+   "title": "win11 on QEMU/KVM",
+   "standard": true,
+   "class": "virt-manager"
+  },
+  "expect": {
+   "app": "virt-viewer",
+   "role": "main"
+  }
+ },
+ {
+  "name": "GNOME Boxes",
+  "rules": [
+   "R-D1"
+  ],
+  "facts": {
+   "platform": "linux",
+   "title": "Fedora",
+   "standard": true,
+   "class": "org.gnome.Boxes"
+  },
+  "expect": {
+   "app": "gnome-boxes",
+   "role": "main"
+  }
+ },
+ {
+  "name": "Hyper-V's vmconnect",
+  "rules": [
+   "R-D1"
+  ],
+  "facts": {
+   "platform": "windows",
+   "title": "win11 on HOST - Virtual Machine Connection",
+   "standard": true,
+   "exe": "vmconnect.exe"
+  },
+  "expect": {
+   "app": "hyperv",
+   "role": "main"
+  }
+ },
+ {
+  "name": "an app that is not a device app is plain: standard is main, anything else is ignored",
+  "rules": [
+   "R-D1"
+  ],
+  "facts": {
+   "platform": "macos",
+   "title": "Untitled",
+   "standard": true,
+   "bundle": "com.apple.TextEdit"
+  },
+  "expect": {
+   "app": null,
+   "role": "main"
+  }
+ },
+ {
+  "name": "a panel of a plain app stays ignored, as it always was",
+  "rules": [
+   "R-D1"
+  ],
+  "facts": {
+   "platform": "macos",
+   "title": "Fonts",
+   "standard": false,
+   "bundle": "com.apple.TextEdit"
+  },
+  "expect": {
+   "app": null,
+   "role": "ignore"
+  }
+ },
+ {
+  "name": "a process that only starts with the same letters is not the emulator",
+  "rules": [
+   "R-D1"
+  ],
+  "facts": {
+   "platform": "macos",
+   "title": "x",
+   "standard": true,
+   "process": "emulator-helper"
+  },
+  "expect": {
+   "app": null
+  }
+ },
+ {
+  "name": "a plain QEMU Cocoa VM is an ordinary window (macOS)",
+  "rules": [
+   "R-D1"
+  ],
+  "facts": {
+   "platform": "macos",
+   "title": "QEMU",
+   "standard": true,
+   "process": "qemu-system-x86_64",
+   "args": [
+    "-display",
+    "cocoa",
+    "-m",
+    "2048"
+   ]
+  },
+  "expect": {
+   "app": null,
+   "role": "main",
+   "float": false
+  }
+ },
+ {
+  "name": "a plain QEMU GTK window on Linux is an ordinary window and does not float",
+  "rules": [
+   "R-D1",
+   "R-D10"
+  ],
+  "facts": {
+   "platform": "linux",
+   "title": "QEMU (vm)",
+   "standard": true,
+   "class": "qemu-system-x86_64",
+   "process": "qemu-system-x86_64",
+   "args": [
+    "-display",
+    "gtk"
+   ]
+  },
+  "expect": {
+   "app": null,
+   "role": "main",
+   "float": false
+  }
+ },
+ {
+  "name": "an emulator window with a title the table does not know, in the emulator's process, is a normal window",
+  "rules": [
+   "R-D1"
+  ],
+  "facts": {
+   "platform": "macos",
+   "title": "Crash report",
+   "standard": true,
+   "process": "qemu-system-aarch64",
+   "args": [
+    "-avd",
+    "Pixel_9_API_35"
+   ]
+  },
+  "expect": {
+   "app": "android-emulator",
+   "role": "main"
+  }
+ },
+ {
+  "name": "the emulator is found by its title when its command line is unknown",
+  "rules": [
+   "R-D1"
+  ],
+  "facts": {
+   "platform": "macos",
+   "title": "Android Emulator - Pixel_9:5554",
+   "standard": true,
+   "process": "qemu-system-aarch64"
+  },
+  "expect": {
+   "app": "android-emulator",
+   "role": "main"
+  }
+ },
+ {
+  "name": "a window titled Android Emulator in an app that is not the emulator is nobody's business",
+  "rules": [
+   "R-D1"
+  ],
+  "facts": {
+   "platform": "macos",
+   "title": "Android Emulator - docs",
+   "standard": true,
+   "bundle": "com.google.Chrome",
+   "process": "Google Chrome"
+  },
+  "expect": {
+   "app": null,
+   "role": "main"
+  }
+ },
+ {
+  "name": "the emulator's launcher process is the emulator",
+  "rules": [
+   "R-D1"
+  ],
+  "facts": {
+   "platform": "macos",
+   "title": "",
+   "standard": false,
+   "process": "emulator"
+  },
+  "expect": {
+   "app": "android-emulator",
+   "role": "companion"
+  }
+ },
+ {
+  "name": "on Linux an untitled emulator window is a companion until its title says otherwise",
+  "rules": [
+   "R-D1"
+  ],
+  "facts": {
+   "platform": "linux",
+   "title": "",
+   "standard": true,
+   "class": "emulator"
+  },
+  "expect": {
+   "app": "android-emulator",
+   "role": "companion"
+  }
+ },
+ {
+  "name": "the sandbox view's rule is for the sandbox's own process only",
+  "rules": [
+   "R-D1",
+   "R-D9"
+  ],
+  "facts": {
+   "platform": "macos",
+   "title": "bsx-s-ba0365d2",
+   "standard": true,
+   "process": "tart"
+  },
+  "expect": {
+   "app": "tart",
+   "role": "main",
+   "agent_home": true,
+   "sandbox_only": true
+  }
+ }
+]

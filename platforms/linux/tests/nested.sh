@@ -363,6 +363,8 @@ check "state.json exists and is the model" sh -c "jq -e '.version==1 and .platfo
 check "the daemon is still alive" kill -0 $DPID
 check "the daemon logged no panic" sh -c "! grep -q panicked '$TMP/daemon.log'"
 
+. "$HERE/devices.sh"
+
 . "$HERE/lifecycle.sh"
 
 echo

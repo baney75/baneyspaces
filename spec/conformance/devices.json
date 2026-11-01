@@ -1,0 +1,975 @@
+[
+ {
+  "name": "a companion opens where its main window is, not where you are",
+  "rules": [
+   "R-D2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "switch",
+    "n": 3
+   },
+   {
+    "do": "open",
+    "window": "main",
+    "pid": 100,
+    "app": "emulator"
+   },
+   {
+    "do": "switch",
+    "n": 5
+   },
+   {
+    "do": "open",
+    "window": "bar",
+    "pid": 100,
+    "app": "emulator",
+    "role": "companion"
+   },
+   {
+    "do": "open",
+    "window": "bar2",
+    "pid": 100,
+    "app": "emulator",
+    "role": "companion",
+    "workspace": 5,
+    "effects": [
+     {
+      "do": "move_window",
+      "window": "bar2",
+      "to": "3"
+     }
+    ],
+    "expect": {
+     "windows": {
+      "bar2": {
+       "home": "3",
+       "role": "companion"
+      }
+     },
+     "current": 5,
+     "active": null
+    }
+   }
+  ]
+ },
+ {
+  "name": "a companion that opens before its main window comes to it",
+  "rules": [
+   "R-D2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "switch",
+    "n": 2
+   },
+   {
+    "do": "open",
+    "window": "bar",
+    "pid": 100,
+    "app": "emulator",
+    "role": "companion"
+   },
+   {
+    "do": "switch",
+    "n": 6
+   },
+   {
+    "do": "open",
+    "window": "main",
+    "pid": 100,
+    "app": "emulator",
+    "effects": [
+     {
+      "do": "move_window",
+      "window": "bar",
+      "to": "6"
+     }
+    ],
+    "expect": {
+     "windows": {
+      "bar": {
+       "home": "6"
+      },
+      "main": {
+       "home": "6"
+      }
+     },
+     "workspaces": {
+      "6": [
+       "main"
+      ]
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "moving the main window moves its companions and counts one window",
+  "rules": [
+   "R-D2",
+   "R-D3"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "main",
+    "pid": 100,
+    "app": "emulator"
+   },
+   {
+    "do": "open",
+    "window": "bar",
+    "pid": 100,
+    "app": "emulator",
+    "role": "companion"
+   },
+   {
+    "do": "open",
+    "window": "ext",
+    "pid": 100,
+    "app": "emulator",
+    "role": "companion"
+   },
+   {
+    "do": "move",
+    "n": 4,
+    "window": "main",
+    "follow": false,
+    "effects": [
+     {
+      "do": "move_window",
+      "window": "main",
+      "to": "4"
+     },
+     {
+      "do": "move_window",
+      "window": "bar",
+      "to": "4"
+     },
+     {
+      "do": "move_window",
+      "window": "ext",
+      "to": "4"
+     }
+    ],
+    "expect": {
+     "workspaces": {
+      "4": [
+       "main"
+      ]
+     },
+     "windows": {
+      "bar": {
+       "home": "4"
+      },
+      "ext": {
+       "home": "4"
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "a workspace with only a companion on it is empty",
+  "rules": [
+   "R-D3"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "bar",
+    "pid": 100,
+    "app": "emulator",
+    "role": "companion",
+    "effects": [],
+    "expect": {
+     "workspaces": {
+      "1": []
+     },
+     "active": null,
+     "windows": {
+      "bar": {
+       "role": "companion",
+       "home": "1"
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "a second display picks the first empty workspace, companions do not make one busy",
+  "rules": [
+   "R-D3"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "bar",
+    "pid": 100,
+    "app": "emulator",
+    "role": "companion"
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "B",
+    "expect": {
+     "monitors": {
+      "A": {
+       "current": 1
+      },
+      "B": {
+       "current": 2
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "moving a companion moves the window it belongs to",
+  "rules": [
+   "R-D4"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "main",
+    "pid": 100,
+    "app": "emulator"
+   },
+   {
+    "do": "open",
+    "window": "bar",
+    "pid": 100,
+    "app": "emulator",
+    "role": "companion"
+   },
+   {
+    "do": "move",
+    "n": 7,
+    "window": "bar",
+    "follow": false,
+    "effects": [
+     {
+      "do": "move_window",
+      "window": "main",
+      "to": "7"
+     },
+     {
+      "do": "move_window",
+      "window": "bar",
+      "to": "7"
+     }
+    ],
+    "expect": {
+     "workspaces": {
+      "7": [
+       "main"
+      ]
+     },
+     "windows": {
+      "bar": {
+       "home": "7"
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "a companion dragged off alone is put back with its main window",
+  "rules": [
+   "R-D5"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "main",
+    "pid": 100,
+    "app": "emulator"
+   },
+   {
+    "do": "open",
+    "window": "bar",
+    "pid": 100,
+    "app": "emulator",
+    "role": "companion"
+   },
+   {
+    "do": "observe_move",
+    "window": "bar",
+    "n": 8,
+    "effects": [
+     {
+      "do": "move_window",
+      "window": "bar",
+      "to": "1"
+     }
+    ],
+    "expect": {
+     "windows": {
+      "bar": {
+       "home": "1"
+      },
+      "main": {
+       "home": "1"
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "the compositor moving the main window takes its companions along",
+  "rules": [
+   "R-D2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "main",
+    "pid": 100,
+    "app": "emulator"
+   },
+   {
+    "do": "open",
+    "window": "bar",
+    "pid": 100,
+    "app": "emulator",
+    "role": "companion"
+   },
+   {
+    "do": "observe_move",
+    "window": "main",
+    "n": 9,
+    "effects": [
+     {
+      "do": "move_window",
+      "window": "bar",
+      "to": "9"
+     }
+    ],
+    "expect": {
+     "windows": {
+      "bar": {
+       "home": "9"
+      },
+      "main": {
+       "home": "9"
+      }
+     },
+     "workspaces": {
+      "9": [
+       "main"
+      ]
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "activating a companion on a workspace out of sight brings that workspace up, like its main window",
+  "rules": [
+   "R-D3"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "main",
+    "pid": 100,
+    "app": "emulator"
+   },
+   {
+    "do": "open",
+    "window": "bar",
+    "pid": 100,
+    "app": "emulator",
+    "role": "companion"
+   },
+   {
+    "do": "switch",
+    "n": 2
+   },
+   {
+    "do": "activate",
+    "window": "bar",
+    "cause": "user",
+    "effects": [
+     {
+      "do": "show_workspace",
+      "monitor": "A",
+      "workspace": 1
+     },
+     {
+      "do": "focus_window",
+      "window": "main"
+     }
+    ],
+    "expect": {
+     "current": 1,
+     "active": "main",
+     "last_focused": {
+      "1": "main"
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "a companion activated by the app itself does not take you anywhere",
+  "rules": [
+   "R-D3",
+   "R-F2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "main",
+    "pid": 100,
+    "app": "emulator"
+   },
+   {
+    "do": "open",
+    "window": "bar",
+    "pid": 100,
+    "app": "emulator",
+    "role": "companion"
+   },
+   {
+    "do": "switch",
+    "n": 2
+   },
+   {
+    "do": "activate",
+    "window": "bar",
+    "cause": "app",
+    "effects": [
+     {
+      "do": "refuse_follow",
+      "window": "main",
+      "reason": "not_user_caused"
+     }
+    ],
+    "expect": {
+     "current": 2
+    }
+   }
+  ]
+ },
+ {
+  "name": "parking a device window on the agent workspace takes its companions",
+  "rules": [
+   "R-D2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "main",
+    "pid": 100,
+    "app": "emulator"
+   },
+   {
+    "do": "open",
+    "window": "bar",
+    "pid": 100,
+    "app": "emulator",
+    "role": "companion"
+   },
+   {
+    "do": "agent_send",
+    "window": "bar",
+    "effects": [
+     {
+      "do": "move_window",
+      "window": "main",
+      "to": "agent"
+     },
+     {
+      "do": "move_window",
+      "window": "bar",
+      "to": "agent"
+     }
+    ],
+    "expect": {
+     "agent": {
+      "windows": [
+       "main"
+      ]
+     },
+     "windows": {
+      "bar": {
+       "home": "agent"
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "the sandbox view is pinned to the agent workspace, whoever opened it",
+  "rules": [
+   "R-D9"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "vm",
+    "pid": 300,
+    "app": "tart",
+    "pin": "agent",
+    "effects": [
+     {
+      "do": "move_window",
+      "window": "vm",
+      "to": "agent"
+     }
+    ],
+    "expect": {
+     "agent": {
+      "windows": [
+       "vm"
+      ]
+     },
+     "workspaces": {
+      "1": []
+     },
+     "active": null
+    }
+   },
+   {
+    "do": "activate",
+    "window": "vm",
+    "cause": "app",
+    "effects": [
+     {
+      "do": "refuse_follow",
+      "window": "vm",
+      "reason": "agent_window"
+     }
+    ],
+    "expect": {
+     "guard": {
+      "refused": 1
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "a window the table says to ignore is not tracked",
+  "rules": [
+   "R-D1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "tip",
+    "pid": 100,
+    "app": "emulator",
+    "role": "ignore",
+    "expect": {
+     "windows": {}
+    }
+   },
+   {
+    "do": "move",
+    "n": 2,
+    "window": "tip",
+    "error": "not_found"
+   }
+  ]
+ },
+ {
+  "name": "windows that were open when the daemon started: a companion elsewhere comes back to its main",
+  "rules": [
+   "R-D2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "observe_window",
+    "window": "main",
+    "pid": 100,
+    "app": "emulator",
+    "workspace": 3
+   },
+   {
+    "do": "observe_window",
+    "window": "bar",
+    "pid": 100,
+    "app": "emulator",
+    "workspace": 1,
+    "role": "companion",
+    "effects": [
+     {
+      "do": "move_window",
+      "window": "bar",
+      "to": "3"
+     }
+    ],
+    "expect": {
+     "windows": {
+      "bar": {
+       "home": "3"
+      }
+     },
+     "workspaces": {
+      "3": [
+       "main"
+      ]
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "an agent process's companion goes to the agent workspace with its window",
+  "rules": [
+   "R-D2",
+   "R-A3"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "agent_register",
+    "pid": 200
+   },
+   {
+    "do": "open",
+    "window": "main",
+    "pid": 200,
+    "app": "emulator"
+   },
+   {
+    "do": "open",
+    "window": "bar",
+    "pid": 200,
+    "app": "emulator",
+    "role": "companion",
+    "effects": [
+     {
+      "do": "move_window",
+      "window": "bar",
+      "to": "agent"
+     }
+    ],
+    "expect": {
+     "agent": {
+      "windows": [
+       "main"
+      ]
+     },
+     "windows": {
+      "bar": {
+       "home": "agent"
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "a main window that opens untitled is a window once its title arrives, not a toolbar",
+  "rules": [
+   "R-D1",
+   "R-D2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w",
+    "pid": 100,
+    "app": "emulator",
+    "role": "companion"
+   },
+   {
+    "do": "reclassify",
+    "window": "w",
+    "role": "main",
+    "effects": [],
+    "expect": {
+     "workspaces": {
+      "1": [
+       "w"
+      ]
+     },
+     "windows": {
+      "w": {
+       "role": "main"
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "a window that turns out to be a toolbar joins its main window",
+  "rules": [
+   "R-D1",
+   "R-D2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "main",
+    "pid": 100,
+    "app": "emulator"
+   },
+   {
+    "do": "switch",
+    "n": 3
+   },
+   {
+    "do": "open",
+    "window": "x",
+    "pid": 100,
+    "app": "emulator",
+    "role": "main"
+   },
+   {
+    "do": "reclassify",
+    "window": "x",
+    "role": "companion",
+    "effects": [
+     {
+      "do": "move_window",
+      "window": "x",
+      "to": "1"
+     }
+    ],
+    "expect": {
+     "workspaces": {
+      "1": [
+       "main"
+      ]
+     },
+     "windows": {
+      "x": {
+       "role": "companion",
+       "home": "1"
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "a companion that opens while the agent workspace is shown stays with its window, which stays put",
+  "rules": [
+   "R-D2",
+   "R-D4"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "switch",
+    "n": 3
+   },
+   {
+    "do": "open",
+    "window": "main",
+    "pid": 100,
+    "app": "emulator"
+   },
+   {
+    "do": "agent_show"
+   },
+   {
+    "do": "open",
+    "window": "dlg",
+    "pid": 100,
+    "app": "emulator",
+    "role": "companion",
+    "effects": [
+     {
+      "do": "move_window",
+      "window": "dlg",
+      "to": "3"
+     }
+    ],
+    "expect": {
+     "workspaces": {
+      "3": [
+       "main"
+      ]
+     },
+     "windows": {
+      "dlg": {
+       "home": "3"
+      },
+      "main": {
+       "home": "3"
+      }
+     },
+     "agent": {
+      "windows": []
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "a plain QEMU window (no marker) is an ordinary window the model counts",
+  "rules": [
+   "R-D1",
+   "R-D3"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "vm",
+    "pid": 500,
+    "app": "qemu-system-x86_64",
+    "role": "main",
+    "expect": {
+     "workspaces": {
+      "1": [
+       "vm"
+      ]
+     },
+     "active": "vm"
+    }
+   }
+  ]
+ },
+ {
+  "name": "bringing a companion back from the agent workspace brings its window too",
+  "rules": [
+   "R-D2",
+   "R-D4"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "main",
+    "pid": 100,
+    "app": "emulator"
+   },
+   {
+    "do": "open",
+    "window": "bar",
+    "pid": 100,
+    "app": "emulator",
+    "role": "companion"
+   },
+   {
+    "do": "agent_send",
+    "window": "main"
+   },
+   {
+    "do": "agent_bring",
+    "window": "bar",
+    "effects": [
+     {
+      "do": "move_window",
+      "window": "main",
+      "to": "1"
+     },
+     {
+      "do": "move_window",
+      "window": "bar",
+      "to": "1"
+     }
+    ],
+    "expect": {
+     "workspaces": {
+      "1": [
+       "main"
+      ]
+     },
+     "windows": {
+      "bar": {
+       "home": "1"
+      },
+      "main": {
+       "home": "1"
+      }
+     },
+     "agent": {
+      "windows": []
+     }
+    }
+   }
+  ]
+ }
+]

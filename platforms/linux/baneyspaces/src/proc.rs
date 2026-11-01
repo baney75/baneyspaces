@@ -15,6 +15,18 @@ pub fn parse_start(stat: &str) -> Option<u64> {
     rest.split_whitespace().nth(19)?.parse().ok()
 }
 
+/// The process's executable name (`/proc/<pid>/comm`, at most 15 bytes), for matching device apps.
+pub fn comm(pid: u32) -> Option<String> {
+    std::fs::read_to_string(format!("/proc/{pid}/comm")).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+/// The process's command line (`/proc/<pid>/cmdline`), at most 64 arguments: device apps are told apart
+/// by it (the Android emulator's qemu is started with `-avd`, a plain QEMU never is).
+pub fn cmdline(pid: u32) -> Vec<String> {
+    let raw = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+    raw.split(|b| *b == 0).filter(|a| !a.is_empty()).take(64).map(|a| String::from_utf8_lossy(a).into_owned()).collect()
+}
+
 #[allow(dead_code)]
 pub fn alive(pid: u32) -> bool {
     start_time(pid).is_some()

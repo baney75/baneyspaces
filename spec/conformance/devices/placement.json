@@ -1,0 +1,305 @@
+[
+ {
+  "name": "a child of the process BaneySpaces started is the agent's",
+  "rules": [
+   "R-D8"
+  ],
+  "roots": {
+   "100": 5
+  },
+  "starts": {
+   "100": 5,
+   "200": 6
+  },
+  "parents": {
+   "200": 100
+  },
+  "pid": 200,
+  "expect": true
+ },
+ {
+  "name": "a grandchild too: the emulator's qemu",
+  "rules": [
+   "R-D8"
+  ],
+  "roots": {
+   "100": 5
+  },
+  "starts": {
+   "100": 5,
+   "200": 6,
+   "300": 7
+  },
+  "parents": {
+   "200": 100,
+   "300": 200
+  },
+  "pid": 300,
+  "expect": true
+ },
+ {
+  "name": "the root itself",
+  "rules": [
+   "R-D8"
+  ],
+  "roots": {
+   "100": 5
+  },
+  "starts": {
+   "100": 5
+  },
+  "parents": {},
+  "pid": 100,
+  "expect": true
+ },
+ {
+  "name": "an unrelated process is not",
+  "rules": [
+   "R-D8"
+  ],
+  "roots": {
+   "100": 5
+  },
+  "starts": {
+   "100": 5,
+   "400": 8
+  },
+  "parents": {
+   "400": 1
+  },
+  "pid": 400,
+  "expect": false
+ },
+ {
+  "name": "a pid reused by another process is not a root any more",
+  "rules": [
+   "R-D8"
+  ],
+  "roots": {
+   "100": 5
+  },
+  "starts": {
+   "100": 9,
+   "300": 10
+  },
+  "parents": {
+   "300": 100
+  },
+  "pid": 300,
+  "expect": false
+ },
+ {
+  "name": "a parent loop ends",
+  "rules": [
+   "R-D8"
+  ],
+  "roots": {
+   "100": 5
+  },
+  "starts": {
+   "100": 5,
+   "500": 6,
+   "501": 6
+  },
+  "parents": {
+   "500": 501,
+   "501": 500
+  },
+  "pid": 500,
+  "expect": false
+ },
+ {
+  "name": "launchd is never a root's parent for anyone",
+  "rules": [
+   "R-D8"
+  ],
+  "roots": {
+   "100": 5
+  },
+  "starts": {
+   "100": 5,
+   "600": 6
+  },
+  "parents": {
+   "600": 1
+  },
+  "pid": 600,
+  "expect": false
+ },
+ {
+  "name": "a grandchild recorded while its parent lived stays the agent's after the parent exits and it is reparented",
+  "rules": [
+   "R-D8"
+  ],
+  "roots": {
+   "100": 5
+  },
+  "recorded": {
+   "300": {
+    "start": 7,
+    "root": 100
+   }
+  },
+  "starts": {
+   "100": 5,
+   "300": 7
+  },
+  "parents": {
+   "300": 1
+  },
+  "pid": 300,
+  "expect": true
+ },
+ {
+  "name": "one never recorded and already reparented to launchd is not (the recording runs twice a second; the limit is stated in the spec)",
+  "rules": [
+   "R-D8"
+  ],
+  "roots": {
+   "100": 5
+  },
+  "starts": {
+   "100": 5,
+   "300": 7
+  },
+  "parents": {
+   "300": 1
+  },
+  "pid": 300,
+  "expect": false
+ },
+ {
+  "name": "a recorded pid that another process now has is not the agent's",
+  "rules": [
+   "R-D8"
+  ],
+  "roots": {
+   "100": 5
+  },
+  "recorded": {
+   "300": {
+    "start": 7,
+    "root": 100
+   }
+  },
+  "starts": {
+   "100": 5,
+   "300": 9
+  },
+  "parents": {
+   "300": 1
+  },
+  "pid": 300,
+  "expect": false
+ },
+ {
+  "name": "a recorded descendant belongs to the root it was recorded under, not another root with a claim open",
+  "rules": [
+   "R-D8"
+  ],
+  "roots": {
+   "100": 5,
+   "150": 6
+  },
+  "recorded": {
+   "300": {
+    "start": 7,
+    "root": 100
+   }
+  },
+  "starts": {
+   "100": 5,
+   "150": 6,
+   "300": 7
+  },
+  "parents": {
+   "300": 1
+  },
+  "pid": 300,
+  "expect": true,
+  "expect_root": 100
+ },
+ {
+  "name": "a live child not yet recorded belongs to the root above it by the chain",
+  "rules": [
+   "R-D8"
+  ],
+  "roots": {
+   "100": 5,
+   "150": 6
+  },
+  "starts": {
+   "100": 5,
+   "150": 6,
+   "300": 7,
+   "310": 8
+  },
+  "parents": {
+   "300": 150,
+   "310": 300
+  },
+  "pid": 310,
+  "expect": true,
+  "expect_root": 150
+ },
+ {
+  "name": "a root whose pid another process has now is no root: its children are nobody's",
+  "rules": [
+   "R-D8"
+  ],
+  "roots": {
+   "100": 5
+  },
+  "starts": {
+   "100": 9,
+   "300": 10
+  },
+  "parents": {
+   "300": 100
+  },
+  "pid": 300,
+  "expect": false
+ },
+ {
+  "name": "a descendant recorded under a root that is gone is nobody's",
+  "rules": [
+   "R-D8"
+  ],
+  "roots": {
+   "150": 6
+  },
+  "recorded": {
+   "300": {
+    "start": 7,
+    "root": 100
+   }
+  },
+  "starts": {
+   "150": 6,
+   "300": 7
+  },
+  "parents": {
+   "300": 1
+  },
+  "pid": 300,
+  "expect": false
+ },
+ {
+  "name": "a root's own pid is itself",
+  "rules": [
+   "R-D8"
+  ],
+  "roots": {
+   "100": 5,
+   "150": 6
+  },
+  "starts": {
+   "100": 5,
+   "150": 6
+  },
+  "parents": {},
+  "pid": 150,
+  "expect": true,
+  "expect_root": 150
+ }
+]

@@ -45,6 +45,15 @@ public struct Workspaces: Codable, Equatable {
     public private(set) var home: [WindowID: Int] = [:]
     /// The last window focused on each workspace, so coming back lands where you left off.
     public private(set) var lastFocused: [Int: WindowID] = [:]
+    /// R-D2: windows that live with another window (an emulator's toolbar and extended controls),
+    /// by the window they follow. They have a workspace, so a switch hides and shows them with it,
+    /// but they are not windows of their own (R-D3): `windows(on:)` leaves them out.
+    public private(set) var companionOf: [WindowID: WindowID] = [:]
+
+    // The companion links are rebuilt by every scan; they are not saved.
+    private enum CodingKeys: String, CodingKey {
+        case current, shown, focusedDisplay, order, lastShown, reserved, home, lastFocused
+    }
 
     public init() {}
 
@@ -56,6 +65,9 @@ public struct Workspaces: Codable, Equatable {
     @discardableResult
     public mutating func sync(seen: [WindowID], alive: Set<WindowID>, on display: [WindowID: DisplayKey] = [:]) -> [WindowID] {
         home = home.filter { alive.contains($0.key) }
+        // A companion whose window is gone is dropped too: alone it would count as a window.
+        for (c, m) in companionOf where home[m] == nil { home[c] = nil }
+        companionOf = companionOf.filter { home[$0.key] != nil && home[$0.value] != nil }
         lastFocused = lastFocused.filter { alive.contains($0.value) && home[$0.value] == $0.key }
         var added: [WindowID] = []
         for id in seen where home[id] == nil && alive.contains(id) {
@@ -124,11 +136,30 @@ public struct Workspaces: Codable, Equatable {
 
     public func workspace(of id: WindowID) -> Int? { home[id] }
 
+    /// The windows on workspace `n`. A companion is not one (R-D3).
     public func windows(on n: Int) -> [WindowID] {
-        home.filter { $0.value == n }.map(\.key).sorted()
+        home.filter { $0.value == n && companionOf[$0.key] == nil }.map(\.key).sorted()
     }
 
+    public func isCompanion(_ id: WindowID) -> Bool { companionOf[id] != nil }
+
+    /// R-D2: `companion` lives with `main` from now on, and is on its workspace right away. Nothing
+    /// happens if `main` is unknown or is itself a companion.
+    public mutating func attach(_ companion: WindowID, to main: WindowID) {
+        guard companion != main, let n = home[main], companionOf[main] == nil else { return }
+        companionOf[companion] = main
+        home[companion] = n
+        if lastFocused[n] == companion { lastFocused[n] = nil }
+    }
+
+    /// R-D1: the window turned out to be a window of its own (its title arrived): it is counted from now on.
+    public mutating func detach(_ id: WindowID) { companionOf[id] = nil }
+
+    /// The window a companion follows, or the window itself.
+    public func main(of id: WindowID) -> WindowID { companionOf[id] ?? id }
+
     public mutating func noteFocus(_ id: WindowID) {
+        let id = main(of: id)
         guard let n = home[id] else { return }
         lastFocused[n] = id
     }
@@ -137,8 +168,11 @@ public struct Workspaces: Codable, Equatable {
     /// focuses next; without, it only takes that role when the workspace has none.
     public mutating func assign(_ id: WindowID, to n: Int, focus: Bool = true) {
         guard Self.range.contains(n), home[id] != nil else { return }
+        // R-D4: a companion is not moved alone; its window moves and takes it along.
+        let id = main(of: id)
         if let old = home[id], lastFocused[old] == id { lastFocused[old] = nil }
         home[id] = n
+        for (c, m) in companionOf where m == id { home[c] = n }
         if focus || lastFocused[n] == nil { lastFocused[n] = id }
     }
 

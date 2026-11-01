@@ -677,7 +677,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.spaces.moveFocused(to: n)
             }
         }
+        // R-D7: the same chords inside a VM that grabs the keyboard.
+        deviceKeys.stop()
+        deviceKeys.start { [weak self] action in
+            guard let self, self.stillTrusted() else { return }
+            let parts = action.split(separator: " ")
+            guard parts.count == 2, let n = Int(parts[1]) else { return }
+            if parts[0] == "switch" { self.spaces.switchTo(n) } else if parts[0] == "move" { self.spaces.moveFocused(to: n) }
+        }
     }
+    private let deviceKeys = DeviceKeyBridge()
 
     private func run(_ action: (Spaces) -> Void) {
         guard stillTrusted() else { return NSSound.beep() }
@@ -744,6 +753,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in HandsLends.shared.expire() }
         deck.sandboxHandler = { [weak self] r in self?.sandbox.service.handle(r) ?? Wire.Reply(ok: false, error: "not ready") }
+        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in AgentOwned.shared.recordDescendants() }   // R-D8
+        spaces.sandboxOwns = { [weak self] pid in self?.sandbox.ownsProcess(pid) ?? false }
         sandbox.start()
         sandbox.cleanupAtLaunch()
         deck.onWorkingChange = { [weak self] in self?.dock.reload() }

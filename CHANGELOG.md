@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Simulators, emulators and virtual machines (window management).** An emulator's toolbar and
+  extended controls now follow its window to another workspace and are not counted as windows of their
+  own; a device that rotated while parked comes back at the size it has; the workspace keys work
+  inside UTM, Parallels, VMware Fusion and VirtualBox (and in virt-viewer and Boxes on Linux); an
+  agent's emulator window, which belongs to a child of the process it started, goes to the agent
+  workspace; the emulator floats on Hyprland. One table for every platform: `spec/devices.json`. Survey
+  and what is untested live: `docs/devices-and-vms.md`.
+
 - **Agent hands, phase 4: keys and a pointer for windows that are not in front.** `agent press` now sends keys (several,
   separated by spaces) to the one process, and `agent click-at` and `agent drag` post window-local mouse events to it,
   without activating, raising, switching a Space, moving the real pointer, or posting to the session. Only to a process
