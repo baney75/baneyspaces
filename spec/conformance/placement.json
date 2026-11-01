@@ -1,0 +1,223 @@
+[
+ {
+  "name": "new windows land where you are",
+  "rules": [
+   "R-P1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "switch",
+    "n": 4
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "expect": {
+     "workspaces": {
+      "A:4": [
+       "w1"
+      ]
+     },
+     "active": "w1"
+    }
+   }
+  ]
+ },
+ {
+  "name": "a window the compositor put elsewhere is moved to where you are, silently",
+  "rules": [
+   "R-P1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "switch",
+    "n": 4
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot",
+    "workspace": 2,
+    "effects": [
+     {
+      "do": "move_window",
+      "window": "w1",
+      "to": "A:4"
+     }
+    ]
+   },
+   {
+    "expect": {
+     "workspaces": {
+      "A:4": [
+       "w1"
+      ],
+      "A:2": []
+     },
+     "active": null
+    }
+   }
+  ]
+ },
+ {
+  "name": "new windows land on the monitor you are on",
+  "rules": [
+   "R-P1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "B"
+   },
+   {
+    "do": "observe_focus_monitor",
+    "monitor": "B"
+   },
+   {
+    "do": "switch",
+    "n": 2
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "expect": {
+     "workspaces": {
+      "B:2": [
+       "w1"
+      ]
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "a window opened on the other monitor stays there",
+  "rules": [
+   "R-P1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "B"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot",
+    "monitor": "B"
+   },
+   {
+    "expect": {
+     "workspaces": {
+      "B:1": [
+       "w1"
+      ]
+     },
+     "active": null,
+     "focused_monitor": "A"
+    }
+   }
+  ]
+ },
+ {
+  "name": "the same window opened twice is one window",
+  "rules": [
+   "R-P1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot",
+    "effects": []
+   },
+   {
+    "expect": {
+     "workspaces": {
+      "A:1": [
+       "w1"
+      ]
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "an app with a window elsewhere still opens the next one here",
+  "rules": [
+   "R-P1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "switch",
+    "n": 3
+   },
+   {
+    "do": "open",
+    "window": "w2",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "expect": {
+     "workspaces": {
+      "A:1": [
+       "w1"
+      ],
+      "A:3": [
+       "w2"
+      ]
+     },
+     "active": "w2"
+    }
+   }
+  ]
+ }
+]

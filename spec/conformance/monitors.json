@@ -1,0 +1,280 @@
+[
+ {
+  "name": "first monitor shows workspace 1 and has focus",
+  "rules": [
+   "R-M1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "expect": {
+     "focused_monitor": "A",
+     "monitors": {
+      "A": {
+       "slot": 0,
+       "current": 1
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "each monitor has its own set, slots in order",
+  "rules": [
+   "R-M1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "B"
+   },
+   {
+    "expect": {
+     "monitors": {
+      "A": {
+       "slot": 0,
+       "current": 1
+      },
+      "B": {
+       "slot": 1,
+       "current": 1
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "a monitor added twice is the same monitor",
+  "rules": [
+   "R-M1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "expect": {
+     "monitors": {
+      "A": {
+       "slot": 0
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "a monitor you plug in shows an empty workspace 1",
+  "rules": [
+   "R-M1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "switch",
+    "n": 4
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "B",
+    "expect": {
+     "monitors": {
+      "B": {
+       "current": 1
+      }
+     },
+     "workspaces": {
+      "B:1": []
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "unplugging a monitor hands its windows to the first monitor, same number",
+  "rules": [
+   "R-M2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "B"
+   },
+   {
+    "do": "observe_focus_monitor",
+    "monitor": "B"
+   },
+   {
+    "do": "switch",
+    "n": 5
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "open",
+    "window": "w2",
+    "pid": 2,
+    "app": "foot"
+   },
+   {
+    "do": "monitor_removed",
+    "monitor": "B",
+    "effects": [
+     {
+      "do": "move_window",
+      "window": "w1",
+      "to": "A:5"
+     },
+     {
+      "do": "move_window",
+      "window": "w2",
+      "to": "A:5"
+     }
+    ],
+    "expect": {
+     "focused_monitor": "A",
+     "workspaces": {
+      "A:5": [
+       "w1",
+       "w2"
+      ]
+     },
+     "monitors": {
+      "A": {
+       "current": 1
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "a freed slot goes to the next monitor plugged in",
+  "rules": [
+   "R-M2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "B"
+   },
+   {
+    "do": "monitor_removed",
+    "monitor": "A"
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "C",
+    "expect": {
+     "monitors": {
+      "C": {
+       "slot": 0
+      },
+      "B": {
+       "slot": 1
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "with no monitor left, windows wait for it and come back",
+  "rules": [
+   "R-M2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "monitor_removed",
+    "monitor": "A",
+    "expect": {
+     "workspaces": {
+      "A:1": [
+       "w1"
+      ]
+     }
+    }
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "A",
+    "expect": {
+     "workspaces": {
+      "A:1": [
+       "w1"
+      ]
+     },
+     "monitors": {
+      "A": {
+       "slot": 0
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "nothing opens without a monitor",
+  "rules": [
+   "R-M2"
+  ],
+  "steps": [
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "error": "no_monitor"
+   },
+   {
+    "do": "switch",
+    "n": 2,
+    "error": "no_monitor"
+   }
+  ]
+ }
+]

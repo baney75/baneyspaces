@@ -1,0 +1,243 @@
+[
+ {
+  "name": "a user activation of a window on another workspace takes you there",
+  "rules": [
+   "R-F1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "switch",
+    "n": 2
+   },
+   {
+    "do": "activate",
+    "window": "w1",
+    "cause": "user",
+    "effects": [
+     {
+      "do": "show_workspace",
+      "monitor": "A",
+      "workspace": 1
+     },
+     {
+      "do": "focus_window",
+      "window": "w1"
+     }
+    ],
+    "expect": {
+     "monitors": {
+      "A": {
+       "current": 1
+      }
+     },
+     "active": "w1"
+    }
+   }
+  ]
+ },
+ {
+  "name": "a user activation on the other monitor takes you to that monitor",
+  "rules": [
+   "R-F1"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "B"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot",
+    "monitor": "B"
+   },
+   {
+    "do": "switch",
+    "n": 3,
+    "monitor": "B"
+   },
+   {
+    "do": "activate",
+    "window": "w1",
+    "cause": "user",
+    "expect": {
+     "focused_monitor": "B",
+     "monitors": {
+      "B": {
+       "current": 1
+      }
+     },
+     "active": "w1"
+    }
+   }
+  ]
+ },
+ {
+  "name": "an app asking for attention does not take you to its workspace",
+  "rules": [
+   "R-F2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "switch",
+    "n": 2
+   },
+   {
+    "do": "open",
+    "window": "w2",
+    "pid": 2,
+    "app": "foot"
+   },
+   {
+    "do": "activate",
+    "window": "w1",
+    "cause": "app",
+    "effects": [
+     {
+      "do": "refuse_follow",
+      "window": "w1",
+      "reason": "not_user_caused"
+     },
+     {
+      "do": "focus_window",
+      "window": "w2"
+     }
+    ],
+    "expect": {
+     "monitors": {
+      "A": {
+       "current": 2
+      }
+     },
+     "active": "w2",
+     "guard": {
+      "refused": 1
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "an app activating a window already in front is accepted",
+  "rules": [
+   "R-F2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "open",
+    "window": "w2",
+    "pid": 2,
+    "app": "foot"
+   },
+   {
+    "do": "activate",
+    "window": "w1",
+    "cause": "app",
+    "effects": [],
+    "expect": {
+     "active": "w1"
+    }
+   }
+  ]
+ },
+ {
+  "name": "an app activating the other monitor's window does not move your focus",
+  "rules": [
+   "R-F2"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "monitor_added",
+    "monitor": "B"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "open",
+    "window": "w2",
+    "pid": 2,
+    "app": "foot",
+    "monitor": "B"
+   },
+   {
+    "do": "activate",
+    "window": "w2",
+    "cause": "app",
+    "expect": {
+     "focused_monitor": "A",
+     "active": "w1"
+    }
+   }
+  ]
+ },
+ {
+  "name": "a window outside the scheme is ignored",
+  "rules": [
+   "R-F3"
+  ],
+  "steps": [
+   {
+    "do": "monitor_added",
+    "monitor": "A"
+   },
+   {
+    "do": "open",
+    "window": "w1",
+    "pid": 1,
+    "app": "foot"
+   },
+   {
+    "do": "activate",
+    "window": "ghost",
+    "cause": "user",
+    "effects": [],
+    "expect": {
+     "active": "w1"
+    }
+   }
+  ]
+ }
+]
