@@ -590,9 +590,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         started = true
         registerShortcuts()
         missionControlKeys.start()
+        syncMissionControl()
         FullScreenKeys.loadMode()
         syncFullScreenKeys()
-        syncMissionControl()
         spaces.start()
         watchClicksForDisplay()
         if WorkspaceDock.enabled { dock.start() }

@@ -291,7 +291,8 @@ for mode in ["baneyspaces", "native"] {
         if desktops > 0 { fail("baneyspaces: a macOS desktop of its own appeared while activating full-screen windows (a slide)") }
         say("baneyspaces: three full-screen windows activated in turn: \(half) half-drawn frames, \(desktops) desktop slides")
     } else {
-        let asked = traceLines(since: started).filter { $0.hasPrefix("fullscreen ask window=") && windows.keys.contains { k in $0.contains("window=\(wid(k)) ") } }
+        let ids = windows.keys.map { wid($0) }
+        let asked = traceLines(since: started).filter { line in line.hasPrefix("fullscreen ask window=") && ids.contains { line.contains("window=\($0) ") } }
         if !asked.isEmpty { fail("native: activating full-screen windows on one workspace asked one to leave: \(asked.first!)") }
         say("native: three full-screen windows activated in turn: \(asked.count) leave-full-screen requests")
     }
