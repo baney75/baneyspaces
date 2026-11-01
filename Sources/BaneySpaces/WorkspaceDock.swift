@@ -229,9 +229,8 @@ final class WorkspaceDock {
         let carrying = outsideDrag.update(buttonsDown: NSEvent.pressedMouseButtons != 0) { NSPasteboard(name: .drag).changeCount }
         // A drag that ended without leaving the dock or dropping (Escape) is over too.
         if !carrying, model.fileDrag != nil { model.fileDrag = nil }
-        springLoad(carrying)
         // A drag whose windows closed, or whose "+N" row went away (taking its gesture, and the
-        // end it would have reported), ends here: the dock stays put until then.
+        // end it would have reported), ends first, so nothing below acts on its stale target.
         let pressed = NSEvent.pressedMouseButtons != 0
         if !pressed { model.cancelled.released() }
         // The window list is re-read a couple of times a second mid-drag: reloads wait out a drag,
@@ -247,6 +246,7 @@ final class WorkspaceDock {
             Trace.log("dock drag cancelled: its windows or its row are gone")
             model.cancelDrag()
         }
+        springLoad(carrying)
         guard !pinned else { return }
         // Once a second, so a menu window's age is known before the pointer reaches the edge.
         let uptime = ProcessInfo.processInfo.systemUptime
@@ -1030,7 +1030,8 @@ final class DockModel: ObservableObject {
     /// anything (`DockDrop.isOrphaned`). Mid-drag the tiles hold still, so this reads the live list.
     func dragOrphaned(refresh: Bool = false) -> Bool {
         guard let d = drag, !d.carried else { return false }
-        let row: Bool? = d.listApp.map { id in moreApps?.apps.contains { $0.id == id } ?? false }
+        let shown = moreApps.map { (tile: $0.tile.id, apps: $0.apps.map(\.id)) }
+        let row: Bool? = d.listApp.map { DockDrop.rowStillShown(app: $0, from: d.from, list: shown) }
         return DockDrop.isOrphaned(ids: d.ids, alive: liveWindows(d.from, refresh), rowShown: row)
     }
 
@@ -1060,6 +1061,8 @@ final class DockModel: ObservableObject {
     func cancelDrag() {
         guard let d = drag else { return }
         cancelled.cancelled(d.ids)
+        heldTarget = nil
+        dwell?.cancel()
         if !d.carried { NSCursor.pop() }
         drag = nil
         dragEnded = Date()

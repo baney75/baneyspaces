@@ -31,6 +31,14 @@ public enum DockDrop {
     /// none of its windows are left where it began, or the row it was started from (`rowShown` is
     /// nil for a drag that began on a tile's icon, which outlives a refresh) went away, and with it
     /// the gesture, so its end would never come.
+    /// Whether the "+N" row a drag began on is still on screen: the list shown must be the one of the
+    /// tile the drag came from, and still list the app. Another tile's list taking its place (even
+    /// one that lists the same app) is not the row the gesture is on.
+    public static func rowStillShown(app: String, from tile: Int, list: (tile: Int, apps: [String])?) -> Bool {
+        guard let list, list.tile == tile else { return false }
+        return list.apps.contains(app)
+    }
+
     public static func isOrphaned(ids: [WindowID], alive: [WindowID], rowShown: Bool?) -> Bool {
         survivors(of: ids, alive: alive).isEmpty || rowShown == false
     }
