@@ -132,9 +132,10 @@ final class DevicesTests: XCTestCase {
         m.assign(10, to: 6, focus: false)
         _ = m.switchTo(2)
         XCTAssertTrue(m.windows(on: 1).isEmpty)
-        // if the window goes, its toolbar is not a window on that workspace either
+        // if the window goes, its toolbar goes from the model: alone it would count as a window
         m.sync(seen: [11], alive: [11])
         XCTAssertTrue(m.windows(on: 6).isEmpty)
+        XCTAssertNil(m.workspace(of: 11))
     }
 
     func testCompanionLinksDieWithEitherWindowAndAreNotSaved() throws {

@@ -255,6 +255,8 @@ public struct AgentOwnedSet: Equatable, Sendable {
         return abs(was - now) < 0.5
     }
     public var pids: Set<Int32> { Set(started.keys) }
+    /// Each process with the start time recorded for it.
+    public var roots: [Int32: Double] { started }
 }
 
 /// Whether a click or key may answer the consent sheet: the right kind of event, after the button was enabled,

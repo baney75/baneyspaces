@@ -65,6 +65,8 @@ public struct Workspaces: Codable, Equatable {
     @discardableResult
     public mutating func sync(seen: [WindowID], alive: Set<WindowID>, on display: [WindowID: DisplayKey] = [:]) -> [WindowID] {
         home = home.filter { alive.contains($0.key) }
+        // A companion whose window is gone is dropped too: alone it would count as a window.
+        for (c, m) in companionOf where home[m] == nil { home[c] = nil }
         companionOf = companionOf.filter { home[$0.key] != nil && home[$0.value] != nil }
         lastFocused = lastFocused.filter { alive.contains($0.value) && home[$0.value] == $0.key }
         var added: [WindowID] = []
@@ -142,9 +144,9 @@ public struct Workspaces: Codable, Equatable {
     public func isCompanion(_ id: WindowID) -> Bool { companionOf[id] != nil }
 
     /// R-D2: `companion` lives with `main` from now on, and is on its workspace right away. Nothing
-    /// happens if either is unknown, or if `main` is itself a companion.
+    /// happens if `main` is unknown or is itself a companion.
     public mutating func attach(_ companion: WindowID, to main: WindowID) {
-        guard companion != main, let n = home[main], home[companion] != nil, companionOf[main] == nil else { return }
+        guard companion != main, let n = home[main], companionOf[main] == nil else { return }
         companionOf[companion] = main
         home[companion] = n
         if lastFocused[n] == companion { lastFocused[n] = nil }

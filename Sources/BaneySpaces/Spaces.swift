@@ -118,7 +118,7 @@ final class Spaces {
                 continue
             }
             guard !w.isMinimized, Geometry.isStranded(f, screens: screens) else { continue }
-            w.setFrame(Geometry.restoreFrame(saved: saved.frames[w.id], size: f.size, screens: screens))
+            w.setFrame(DeviceGeometry.restoreFrame(saved: saved.frames[w.id], size: f.size, screens: screens, resizesItself: DeviceApps.resizesItself(pid: w.pid)))
         }
         saved = SavedFrames()
         saved.frames = unreached
@@ -175,8 +175,10 @@ final class Spaces {
         clock.scan = firstScan ? "first" : full ? "full" : last(lastScan!, snap.appWindows, pids, offKnown)
         RunningApps.invalidate()
         let pidsNow = RunningApps.regular
-        let (list, unsure, listed, partial, nonStandard) = Windows.all(owners: snap.owners)
-        notWindows = nonStandard
+        let (list, unsure, listed, partial, nonStandard, companions) = Windows.all(owners: snap.owners)
+        // R-D2: a companion with no window to follow is left alone, as every panel always was.
+        let following = companions.filter { c in list.contains { $0.pid == c.pid } }
+        notWindows = nonStandard.union(companions.map(\.id)).subtracting(following.map(\.id))
         // A window the app closed but kept isn't one any more, though the window server says it's alive.
         let answered = pidsNow.intersection(snap.owners).subtracting(unsure).subtracting(partial)
         let closed = closedWindows(listed: listed, answered: answered, offscreen: snap.offscreen)
@@ -189,7 +191,7 @@ final class Spaces {
         // Accessibility lists only the windows on the macOS desktop being shown. A window it
         // missed keeps the handle from an earlier listing; that handle still moves the window.
         var next = windows.filter { alive.contains($0.key) }
-        for w in list { next[w.id] = w }
+        for w in list + following { next[w.id] = w }
         windows = next
         placedBefore.formIntersection(snap.alive)
         let displays = Windows.displays()
@@ -204,6 +206,10 @@ final class Spaces {
             }
         }
         let added = model.sync(seen: list.map(\.id), alive: alive, on: appeared)
+        // R-D2, R-D3: a toolbar or extended controls lives on its window's workspace and is not a window of its own.
+        for c in following {
+            if let main = list.filter({ $0.pid == c.pid }).map(\.id).max() { model.attach(c.id, to: main) }
+        }
         if model.shown.count > 1, !switching { noteMovedAcrossDisplays(list, frames: frames, act: Date() > displaysSettleUntil) }
         prune(alive: alive)
         // A scan that skipped a busy app can't vouch for that app's windows. It's remembered, and
@@ -291,7 +297,7 @@ final class Spaces {
                 let others = self.windows.values.filter { $0.pid == w.pid && $0.id != id }.compactMap { self.model.workspace(of: $0.id) }
                 // Every new window of a process BaneySpaces started for an agent belongs to the agent workspace, for
                 // as long as the process lives (a panel or a second document opened long after the launch claim ran out).
-                if let to = AgentWorkspace.homeForNewWindow(appFront: false, appWorkspaces: Set(others), claimed: AgentOwned.shared.pids.contains(w.pid) ? agent : nil,
+                if let to = AgentWorkspace.homeForNewWindow(appFront: false, appWorkspaces: Set(others), claimed: AgentOwned.shared.owns(w.pid) ? agent : nil,
                                                             current: here, agent: agent) {
                     Trace.log("agent window \(id) of \(w.appName) joins workspace \(to)")
                     self.model.assign(id, to: to, focus: false)
@@ -356,7 +362,7 @@ final class Spaces {
         }
         guard newProcess else { return }
         refresh()
-        let early = windows.values.filter { $0.pid == pid && model.workspace(of: $0.id) != n }.map(\.id)
+        let early = windows.values.filter { ($0.pid == pid || ProcessTree.descends(pid: $0.pid, roots: [pid: 0], startOf: { _ in nil }, parentOf: AgentOwned.parent(of:))) && model.workspace(of: $0.id) != n }.map(\.id)
         guard !early.isEmpty else { return }
         drop(claim, of: pid)
         move(early, to: n)
@@ -375,6 +381,19 @@ final class Spaces {
         if claims[pid]?.isEmpty == true { claims[pid] = nil }
     }
 
+    /// The process a claim for `pid`'s window was made on: `pid` itself, or an ancestor that an agent
+    /// started. Descent only counts below a process BaneySpaces started, never below one you were using.
+    private func claimant(of pid: pid_t) -> pid_t? {
+        if claims[pid] != nil { return pid }
+        var at = pid
+        for _ in 0..<8 {
+            guard let p = AgentOwned.parent(of: at), p > 1 else { return nil }
+            if claims[p] != nil { return AgentOwned.shared.pids.contains(p) ? p : nil }
+            at = p
+        }
+        return nil
+    }
+
     /// Claimed windows go straight to their workspace, before the next switch would show them.
     /// A window of the app you're in is yours (⌘N), whatever was claimed. True when one went
     /// somewhere other than here.
@@ -387,12 +406,14 @@ final class Spaces {
         let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
         var away = false
         for id in added {
-            guard let w = windows[id], w.pid != front,
+            // R-D8: a window of a child or grandchild of the process the claim names is that process's
+            // (an emulator's window belongs to the `qemu-system-*` it starts).
+            guard let w = windows[id], w.pid != front, let owner = claimant(of: w.pid),
                   // A brand-new window may not have its title yet.
-                  let c = claims[w.pid]?.first(where: { c in
+                  let c = claims[owner]?.first(where: { c in
                       c.title.map { w.title.isEmpty || w.title.localizedCaseInsensitiveContains($0) } ?? true
                   }) else { continue }
-            drop(c, of: w.pid)
+            drop(c, of: owner)
             model.assign(id, to: c.workspace, focus: false)
             Trace.log("claimed window \(id) of \(windows[id]?.appName ?? "?") for workspace \(c.workspace)")
             away = away || !model.isShown(c.workspace)
@@ -405,12 +426,12 @@ final class Spaces {
     /// scans first, at most twice a second, for a window that opened a moment ago.
     func handsWindows(fresh: Bool) -> [HandsWindow] {
         if fresh, active, Date().timeIntervalSince(lastHandsScan) > 0.5 { lastHandsScan = Date(); refresh() }
-        return model.home.compactMap { id, ws in handsWindow(id, ws) }
+        return model.home.compactMap { id, ws in model.isCompanion(id) ? nil : handsWindow(id, ws) }
     }
 
     /// One window straight from the model, for the check right before an engine call.
     func handsLive(_ id: UInt32) -> HandsWindow? {
-        guard let ws = model.home[id] else { return nil }
+        guard let ws = model.home[id], !model.isCompanion(id) else { return nil }
         return handsWindow(id, ws)
     }
 
@@ -1261,7 +1282,7 @@ final class Spaces {
         //    in front makes macOS activate another app on its own, which would look like the
         //    person picking it.
         let target = ([plan.focus].compactMap { $0 } + plan.show)
-            .compactMap { windows[$0] }.first { !$0.isMinimized && saved.frames[$0.id] == nil }
+            .filter { !model.isCompanion($0) }.compactMap { windows[$0] }.first { !$0.isMinimized && saved.frames[$0.id] == nil }
         let frontPid = target?.pid ?? getpid()
         if moveFocus { expectedFront = frontPid }
         var raised = false
@@ -1449,7 +1470,7 @@ final class Spaces {
     private func bringHome(_ moves: [(Window, CGRect)], screens: [CGRect], gen: Int, then: @escaping () -> Void) {
         // A window whose app doesn't answer can't move now; it isn't waited for.
         let targets = moves.compactMap { w, frame -> (Window, CGRect)? in
-            w.frame.map { (w, Geometry.restoreFrame(saved: frame, size: $0.size, screens: screens)) }
+            w.frame.map { (w, DeviceGeometry.restoreFrame(saved: frame, size: $0.size, screens: screens, resizesItself: DeviceApps.resizesItself(pid: w.pid))) }
         }
         guard !targets.isEmpty else { return then() }
         let moving = Set(targets.map(\.0.id))
@@ -1544,7 +1565,8 @@ final class Spaces {
     /// the record and the next switch tries again.
     private func restore(_ w: Window, to frame: CGRect, screens: [CGRect]) -> Bool {
         guard let f = w.frame else { return false }
-        w.place(Geometry.restoreFrame(saved: frame, size: f.size, screens: screens), currentSize: f.size)
+        // R-D6: a device that rotated while parked keeps the size it has now.
+        w.place(DeviceGeometry.restoreFrame(saved: frame, size: f.size, screens: screens, resizesItself: DeviceApps.resizesItself(pid: w.pid)), currentSize: f.size)
         guard let now = w.frame else { return false }
         return !Geometry.isStranded(now, screens: screens)
     }

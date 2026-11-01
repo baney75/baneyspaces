@@ -179,7 +179,7 @@ enum Windows {
     /// `notWindows` are listed elements whose subrole was read and isn't a standard window's
     /// (sheets, panels). One whose subrole couldn't be read is neither: it stays unplaced, so
     /// `UnplacedWindows` looks at it again.
-    static func all(owners: Set<pid_t>? = nil) -> (windows: [Window], unsure: Set<pid_t>, listed: Set<WindowID>, partial: Set<pid_t>, notWindows: Set<WindowID>) {
+    static func all(owners: Set<pid_t>? = nil) -> (windows: [Window], unsure: Set<pid_t>, listed: Set<WindowID>, partial: Set<pid_t>, notWindows: Set<WindowID>, companions: [Window]) {
         // Only apps that own a window are asked. A running app with no windows is often frozen by
         // macOS and never answers, which would cost a full timeout on every scan.
         let candidates = owners.map { RunningApps.regular.intersection($0) } ?? RunningApps.regular
@@ -189,6 +189,7 @@ enum Windows {
             return (pid, app.localizedName ?? "App")
         }
         var results = [[Window]](repeating: [], count: apps.count)
+        var companionResults = [[Window]](repeating: [], count: apps.count)
         var listedIDs = Set<WindowID>(), partial = Set<pid_t>(), notWindows = Set<WindowID>()
         let lock = NSLock()
         DispatchQueue.concurrentPerform(iterations: apps.count) { i in
@@ -202,19 +203,35 @@ enum Windows {
             if listed == nil { lock.lock(); unsure.insert(pid); lock.unlock(); markUnresponsive(pid) } else { markResponsive(pid) }
             let elements = listed ?? []
             let ids = elements.map(\.windowID)
-            var found: [Window] = [], other: [WindowID] = []
+            var found: [Window] = [], other: [WindowID] = [], companions: [Window] = []
+            // R-D1: a simulator, emulator or VM says what each of its windows is for. Every other app
+            // takes the plain path below, exactly as before.
+            let device = DeviceApps.facts(pid: pid)
             for (el, id) in zip(elements, ids) {
                 guard let id, let subrole = el.string(kAXSubroleAttribute) else { continue }
-                if subrole == kAXStandardWindowSubrole as String { found.append(Window(id: id, element: el, pid: pid, appName: name)) } else { other.append(id) }
+                let standard = subrole == kAXStandardWindowSubrole as String
+                guard let device else {
+                    if standard { found.append(Window(id: id, element: el, pid: pid, appName: name)) } else { other.append(id) }
+                    continue
+                }
+                var facts = device
+                facts.title = el.string(kAXTitleAttribute) ?? ""
+                facts.standard = standard
+                switch DeviceTable.classify(facts).role {
+                case .main: found.append(Window(id: id, element: el, pid: pid, appName: name))
+                case .companion: companions.append(Window(id: id, element: el, pid: pid, appName: name))
+                case .ignore: other.append(id)
+                }
             }
             lock.lock()
             results[i] = found
+            companionResults[i] = companions
             listedIDs.formUnion(ids.compactMap { $0 })
             notWindows.formUnion(other)
             if ids.contains(nil) { partial.insert(pid) }
             lock.unlock()
         }
-        return (results.flatMap { $0 }, unsure, listedIDs, partial, notWindows)
+        return (results.flatMap { $0 }, unsure, listedIDs, partial, notWindows, companionResults.flatMap { $0 })
     }
 
     static func alive() -> Set<WindowID> { snapshot(apps: RunningApps.regular).alive }
@@ -231,7 +248,10 @@ enum Windows {
         for w in info {
             guard let id = (w[kCGWindowNumber as String] as? NSNumber)?.uint32Value else { continue }
             alive.insert(id)
-            guard (w[kCGWindowLayer as String] as? Int) == 0,
+            // A device app's tool windows (an emulator's toolbar floats at layer 3) count too: their
+            // opening and closing must start a scan, or a toolbar would wait for the next one.
+            let layer = w[kCGWindowLayer as String] as? Int ?? -1
+            guard layer == 0 || (layer > 0 && layer <= 8 && (w[kCGWindowOwnerPID as String] as? NSNumber).map { DeviceApps.facts(pid: $0.int32Value) != nil } == true),
                   let pid = (w[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value, apps.contains(pid) else { continue }
             appWindows.insert(id)
             owners.insert(pid)
@@ -515,5 +535,31 @@ extension AXUIElement {
         var v = value
         guard let ax = AXValueCreate(type, &v) else { return }
         checked(AXUIElementSetAttributeValue(self, attribute as CFString, ax))
+    }
+}
+
+/// Which running apps are simulators, emulators or VMs (spec/devices.md), asked once per process.
+enum DeviceApps {
+    private static let lock = NSLock()
+    private static var known: [pid_t: (launched: Date?, facts: DeviceFacts?)] = [:]
+
+    /// The facts about an app's process when it is a device app, nil for every other app.
+    static func facts(pid: pid_t) -> DeviceFacts? {
+        lock.lock(); defer { lock.unlock() }
+        let app = NSRunningApplication(processIdentifier: pid)
+        // A pid can be reused by another process: the launch time tells them apart.
+        if let cached = known[pid], cached.launched == app?.launchDate { return cached.facts }
+        let facts = DeviceFacts(bundle: app?.bundleIdentifier ?? "", process: app?.executableURL?.lastPathComponent ?? "")
+        let result = DeviceTable.builtin.app(of: facts) == nil ? nil : facts
+        known[pid] = (app?.launchDate, result)
+        return result
+    }
+
+    static func forget(_ pid: pid_t) { lock.lock(); known[pid] = nil; lock.unlock() }
+
+    /// Whether the app resizes its own windows (a rotated device, a guest's new resolution): R-D6.
+    static func resizesItself(pid: pid_t) -> Bool {
+        guard let f = facts(pid: pid) else { return false }
+        return DeviceTable.builtin.app(of: f)?.resizesItself ?? false
     }
 }

@@ -45,6 +45,22 @@ final class AgentOwned {
         return Double(t.tv_sec) + Double(t.tv_usec) / 1_000_000
     }
 
+    /// The parent of a process, from the kernel's table.
+    static func parent(of pid: Int32) -> Int32? {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0 else { return nil }
+        return info.kp_eproc.e_ppid
+    }
+
+    /// R-D8: whether `pid` is a process started for an agent or descends from one. An emulator's
+    /// window belongs to a grandchild (`emulator` starts `qemu-system-*`), and it is the agent's.
+    func owns(_ pid: Int32) -> Bool {
+        lock.lock(); let all = set; lock.unlock()
+        return ProcessTree.descends(pid: pid, roots: all.roots, startOf: Self.startTime, parentOf: Self.parent(of:))
+    }
+
     func add(_ pid: Int32) {
         guard let t = Self.startTime(pid) else { return }
         lock.lock(); set.add(pid, startedAt: t); lock.unlock()
