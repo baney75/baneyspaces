@@ -129,6 +129,38 @@ final class InstallScriptTests: XCTestCase {
         XCTAssertLessThan(try index(of: "if [ \"$IN_PLACE\" = 0 ]; then\n  rm -rf \"$DEST\"", in: script), try index(of: #"cp -R "$APP" "$DEST""#, in: script))
     }
 
+    /// An ad-hoc or unsigned build never replaces an installed copy: that update would make macOS
+    /// forget the Accessibility permission. The copy that was there stays as it was.
+    func testAnAdHocBuildIsNotInstalledOverAnInstalledCopy() throws {
+        let fm = FileManager.default
+        let home = fm.temporaryDirectory.appendingPathComponent("bs-adhoc-\(UUID().uuidString)").resolvingSymlinksInPath()
+        defer { try? fm.removeItem(at: home) }
+        let app = home.appendingPathComponent("build/BaneySpaces.app")
+        try fm.createDirectory(at: app.appendingPathComponent("Contents/Resources/bin"), withIntermediateDirectories: true)
+        try "new".write(to: app.appendingPathComponent("Contents/Resources/bin/baneyspaces"), atomically: true, encoding: .utf8)
+        let dest = home.appendingPathComponent("Applications")
+        let marker = dest.appendingPathComponent("BaneySpaces.app/Contents/old")
+        try fm.createDirectory(at: marker.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "old".write(to: marker, atomically: true, encoding: .utf8)
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/bash")
+        p.arguments = [root.appendingPathComponent("scripts/install-app.sh").path, app.path]
+        p.environment = ["HOME": home.path, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "BANEYSPACES_DEST_DIR": dest.path]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = pipe
+        try p.run()
+        let out = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        p.waitUntilExit()
+        XCTAssertNotEqual(p.terminationStatus, 0, out)
+        XCTAssertTrue(out.contains("signed ad-hoc"), out)
+        XCTAssertTrue(fm.fileExists(atPath: marker.path), "the installed copy was left alone")
+        let script = try read("scripts/install-app.sh")
+        let guardAt = try index(of: "grep -q '^Authority='", in: script)
+        XCTAssertLessThan(guardAt, try index(of: "to quit' >/dev/null", in: script))
+        XCTAssertLessThan(guardAt, try index(of: "rm -rf \"$DEST\"", in: script))
+    }
+
     func testTheLatestReleaseIsReadFromTheRedirectBeforeDownloading() throws {
         let install = try read("install.sh")
         XCTAssertTrue(install.contains("%{redirect_url}"))

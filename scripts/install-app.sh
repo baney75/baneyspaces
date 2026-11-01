@@ -39,6 +39,18 @@ else
   DEST="$DEST_DIR/BaneySpaces.app"
 fi
 
+# macOS ties the Accessibility permission to the signature. An ad-hoc (or missing) signature is new
+# on every build, so putting one over an installed copy is an update that makes macOS ask again.
+# bundle.sh falls back to ad-hoc when the local signing identity fails, so refuse here, before
+# anything is quit or replaced. A first install (no copy there yet) is allowed.
+if [ "$IN_PLACE" = 0 ] && [ -d "$DEST" ]; then
+  SIGNATURE=$(codesign -dvv "$APP" 2>&1 || true)
+  if ! grep -q '^Authority=' <<<"$SIGNATURE"; then
+    echo "error: this build is signed ad-hoc, so installing it over $DEST would make macOS ask for Accessibility again. Nothing was changed. Check scripts/signing-identity.sh and build again." >&2
+    exit 1
+  fi
+fi
+
 if [ "$IN_PLACE" = 0 ] && [ -z "$TEST" ]; then
   # Quit by bundle ID so BaneySpaces brings every hidden window back before it exits.
   osascript -e 'tell application id "com.baney.baneyspaces" to quit' >/dev/null 2>&1 || true

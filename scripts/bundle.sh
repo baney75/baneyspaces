@@ -59,6 +59,8 @@ COMMIT=$(git rev-parse HEAD 2>/dev/null || echo unknown)
 COMMIT_DATE=$(TZ=UTC git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@COMMIT@/$COMMIT/g" -e "s/@COMMIT_DATE@/$COMMIT_DATE/g" Resources/Info.plist > "$APP/Contents/Info.plist"
 # A stable local identity keeps the Accessibility permission across rebuilds; ad-hoc is the fallback.
+# Ad-hoc is for local builds and CI checks only and never ships as an update: install-app.sh refuses
+# it over an installed copy, and release.sh and install.sh require scripts/release-requirement.txt.
 if [ "${BANEYSPACES_ADHOC:-}" != 1 ] && IDENT=$(scripts/signing-identity.sh 2>/dev/null); then
   # Inside out: the engine's library, then the command, then the app that holds both.
   codesign --force --sign "${IDENT%%$'\t'*}" --keychain "${IDENT#*$'\t'}" --identifier com.baney.baneyspaces.engine "$APP/Contents/Frameworks/libagent_desktop_ffi.dylib"

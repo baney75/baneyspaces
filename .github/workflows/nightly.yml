@@ -31,6 +31,8 @@ jobs:
       - name: Test
         if: steps.changed.outputs.skip != 'true'
         run: swift test
+      # Ad-hoc, so this only proves the bundle builds. It is never uploaded: the updater builds
+      # Nightly on the user's Mac with that Mac's signing identity.
       - name: Bundle the app
         if: steps.changed.outputs.skip != 'true'
         run: BANEYSPACES_ADHOC=1 BANEYSPACES_ARM64_ONLY=1 scripts/bundle.sh
@@ -39,6 +41,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # The nightly release carries notes only. An app file on it would be offered as an
+          # in-place update, so any file there stops the run before the tag moves.
+          ASSETS=$(gh release view nightly --json assets --jq '.assets[].name' 2>/dev/null || true)
+          if [ -n "$ASSETS" ]; then
+            echo "The nightly release has files attached ($(echo $ASSETS)). Nightly ships no app; delete them first."
+            exit 1
+          fi
           scripts/release-notes.sh nightly > notes.md
           git tag -f nightly HEAD
           git push -f origin refs/tags/nightly
