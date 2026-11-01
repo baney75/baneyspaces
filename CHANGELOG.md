@@ -1,5 +1,6 @@
 ## Unreleased
 
+- **The name "Deck" is gone from the product and docs.** The engine behind the launcher's terminal and agent rows, the hooks and the command socket is now the session engine. The socket is `baneyspaces.sock` (was `deck.sock`; the app still listens on the old name, and `baneyspaces` tries both, so a running client keeps working), its state file is `session.json`, and the optional extra-apps file is `~/.config/baneyspaces/session.json` (was `deck.json`; the first launch copies it over, and the old file stays). `baneyspaces doctor` prints `app:` instead of `deck:`. Past release notes keep the old name.
 - Soak gate: `scripts/soak-check.sh` before promoting a build to stable / GitHub Latest (does not unpublish 0.3.0).
 
 # Changelog

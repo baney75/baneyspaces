@@ -29,7 +29,7 @@ public struct Lend: Codable, Equatable, Sendable {
     public var session: String
 }
 
-/// The apps lent right now. Only Donovan lends (the menu, the Deck, or a terminal he types in); the book
+/// The apps lent right now. Only Donovan lends (the menu, the launcher, or a terminal he types in); the book
 /// is recorded in state.json, and an app goes back when he returns it, when its session ends, or when
 /// the time runs out.
 public struct LendBook: Equatable, Sendable {

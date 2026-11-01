@@ -6,8 +6,16 @@ public enum Wire {
     public static var supportDir: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/BaneySpaces")
     }
-    public static var socketPath: String { supportDir.appendingPathComponent("deck.sock").path }
-    public static var statePath: String { supportDir.appendingPathComponent("deck.json").path }
+    public static var socketPath: String { supportDir.appendingPathComponent("baneyspaces.sock").path }
+    public static var statePath: String { supportDir.appendingPathComponent("session.json").path }
+    /// The socket before the Deck name was cut. A running MCP client or hook built against it keeps
+    /// working across an update: the app listens on both, and the command tries both.
+    public static var legacySocketPath: String { supportDir.appendingPathComponent("deck.sock").path }
+
+    /// Where to reach the app, in order: the current socket, then the old one.
+    public static func socketCandidates(dir: URL = supportDir) -> [String] {
+        [dir.appendingPathComponent("baneyspaces.sock").path, dir.appendingPathComponent("deck.sock").path]
+    }
 
     public struct Request: Codable, Equatable, Sendable {
         public enum Op: String, Codable, Sendable {
@@ -72,24 +80,35 @@ public enum Wire {
     }
 
     /// Sends one request and waits up to `timeout` seconds for the reply. Nil when the app isn't running.
-    public static func call(_ request: Request, timeout: Double = 2, path: String = socketPath) -> Reply? {
+    /// With no `path` it tries the current socket and falls back to the old one only when nothing
+    /// listens on the first (a connect failure), never after a timeout, so a request isn't sent twice.
+    public static func call(_ request: Request, timeout: Double = 2, path: String? = nil) -> Reply? {
+        for p in path.map({ [$0] }) ?? socketCandidates() {
+            let (reply, connected) = exchange(request, timeout: timeout, path: p)
+            if connected { return reply }
+        }
+        return nil
+    }
+
+    private static func exchange(_ request: Request, timeout: Double, path: String) -> (Reply?, connected: Bool) {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else { return nil }
+        guard fd >= 0 else { return (nil, false) }
         defer { close(fd) }
         var tv = timeval(tv_sec: Int(timeout), tv_usec: Int32((timeout - Double(Int(timeout))) * 1_000_000))
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
         var noSigPipe: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
-        guard var addr = address(path: path) else { return nil }
+        guard var addr = address(path: path) else { return (nil, false) }
         let ok = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
         }
-        guard ok == 0, var data = try? JSONEncoder().encode(request) else { return nil }
+        guard ok == 0 else { return (nil, false) }
+        guard var data = try? JSONEncoder().encode(request) else { return (nil, true) }
         data.append(0x0A)
-        guard writeAll(fd, data) else { return nil }
-        guard let line = readLine(fd) else { return nil }
-        return try? JSONDecoder().decode(Reply.self, from: line)
+        guard writeAll(fd, data) else { return (nil, true) }
+        guard let line = readLine(fd) else { return (nil, true) }
+        return (try? JSONDecoder().decode(Reply.self, from: line), true)
     }
 
     public static func address(path: String) -> sockaddr_un? {

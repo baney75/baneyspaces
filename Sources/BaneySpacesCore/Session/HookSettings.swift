@@ -1,6 +1,6 @@
 import Foundation
 
-/// Adds and removes BaneySpaces' deck entries in a Claude Code settings object, leaving every other
+/// Adds and removes BaneySpaces' session entries in a Claude Code settings object, leaving every other
 /// hook exactly as it was. Pure, so it's tested against real settings shapes.
 public enum HookSettings {
     /// StopFailure is what turns the Workspace Dock's badge red: a turn that ended on an API error.
@@ -49,7 +49,7 @@ public enum HookSettings {
         return settings
     }
 
-    /// The events Ghostdeck's hook is installed for.
+    /// The events BaneySpaces' hook is installed for.
     public static func installed(_ settings: [String: Any]) -> [String] {
         let hooks = settings["hooks"] as? [String: Any] ?? [:]
         return events.filter { e in

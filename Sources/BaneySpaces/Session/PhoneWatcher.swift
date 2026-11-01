@@ -3,7 +3,7 @@ import BaneySpacesCore
 import IOKit
 import IOKit.usb
 
-/// Phones in the Deck. Android comes from `adb track-devices`, which reports every plug, unplug
+/// Phones in the session engine. Android comes from `adb track-devices`, which reports every plug, unplug
 /// and "Allow USB debugging?" answer as it happens. iPhones come from Xcode's devicectl, asked
 /// again whenever a USB device comes or goes, and once a minute for ones on Wi-Fi.
 final class PhoneWatcher {
@@ -62,7 +62,7 @@ final class PhoneWatcher {
             DispatchQueue.main.async { self?.received(chunk) }
         }
         p.terminationHandler = { [weak self] _ in
-            // adb's server restarted or went away: try again shortly, while the Deck is on.
+            // adb's server restarted or went away: try again shortly, while the session engine is on.
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) { self?.startTracker() }
         }
         do { try p.run(); tracker = p } catch { tracker = nil }
@@ -136,8 +136,8 @@ final class PhoneWatcher {
 
     /// The phone's screen: scrcpy's mirror for Android, Simulator for a simulator, iPhone
     /// Mirroring for an iPhone, and Device Hub for an iPad (iPhone Mirroring has no iPad mode).
-    /// `opened` gets the bundle ID of the app that will show it, so the Deck can dock its window;
-    /// only for apps the Deck wraps, since the drawer leaves when any other app comes forward.
+    /// `opened` gets the bundle ID of the app that will show it, so the session engine can dock its window;
+    /// only for apps the session engine wraps, since the drawer leaves when any other app comes forward.
     func open(_ phone: Phone, opened: (String) -> Void = { _ in }) {
         switch phone.platform {
         case .ios:

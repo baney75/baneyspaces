@@ -100,13 +100,13 @@ if [ "$IN_PLACE" = 0 ]; then
 fi
 
 if [ -z "$TEST" ]; then
-  # The Deck replaces Ghostdeck, its standalone predecessor: two sidebars on the same windows would
+  # The session engine replaces Ghostdeck, its standalone predecessor: two sidebars on the same windows would
   # fight. Ghostdeck quits and goes to the Trash (recoverable), and its command name now runs ours.
   osascript -e 'tell application id "com.baney.ghostdeck" to quit' >/dev/null 2>&1 || true
   if [ -d "$HOME/Applications/Ghostdeck.app" ]; then
     for _ in $(seq 1 25); do pgrep -f "Ghostdeck.app/Contents/MacOS/Ghostdeck" >/dev/null || break; sleep 0.2; done
     mv "$HOME/Applications/Ghostdeck.app" "$HOME/.Trash/Ghostdeck-$(date +%Y%m%d-%H%M%S).app"
-    echo "moved Ghostdeck.app to the Trash; the Deck in BaneySpaces replaces it"
+    echo "moved Ghostdeck.app to the Trash; the session engine in BaneySpaces replaces it"
   fi
 fi
 mkdir -p "$HOME/.local/bin"

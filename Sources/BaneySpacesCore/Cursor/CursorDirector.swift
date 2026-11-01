@@ -95,7 +95,7 @@ public struct CursorMark: Equatable, Sendable {
 /// `handsWillAct` only queues the event and returns.
 public final class CursorDirector: HandsEventListener {
     public struct Host {
-        /// The Deck's name and status for an agent session.
+        /// The session engine's name and status for an agent session.
         public var agent: (String) -> (name: String, status: DockAgent.State) = { _ in ("Agent", .working) }
         /// A window's frame now (global, y down).
         public var windowFrame: (UInt32) -> CGRect? = { _ in nil }

@@ -19,7 +19,7 @@ final class Engine {
         var dirty = false
         var last = Date.distantPast
         var ms = 0
-        /// Script reads since launch, for `deck.json`: how often the engine wakes this app.
+        /// Script reads since launch, for `session.json`: how often the engine wakes this app.
         var reads = 0
         /// When a script was last sent to it, answered or not, and whether it answered (`Sweep`).
         /// A refusal (no Automation permission) isn't a try: the next read asks again.
@@ -390,7 +390,7 @@ final class Engine {
     /// An item by exact ID, else the best fuzzy match on its label, app and folder or host.
     func find(_ query: String) -> Item? {
         if let exact = item(query) { return exact }
-        return DeckRank.rank(query, items) { [$0.label, "\($0.appName) \($0.label)", $0.detail] }.first
+        return SessionRank.rank(query, items) { [$0.label, "\($0.appName) \($0.label)", $0.detail] }.first
     }
 
     /// The copy of the app the row came from: two Ghostty processes share a bundle ID.
@@ -518,7 +518,7 @@ final class Engine {
     }
 }
 
-/// `~/.config/baneyspaces/deck.json`: more apps to wrap, apps to leave out.
+/// `~/.config/baneyspaces/session.json`: more apps to wrap, apps to leave out.
 ///
 ///     { "apps": [{ "bundleID": "com.example.App", "name": "Example", "role": "agent" }],
 ///       "exclude": ["com.apple.Safari"] }
@@ -526,9 +526,10 @@ struct Config {
     var extra: [AppSpec] = []
     var excluded: Set<String> = []
 
-    static var url: URL { FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/baneyspaces/deck.json") }
+    static var url: URL { ConfigMigration.url() }
 
     static func load() -> Config {
+        ConfigMigration.migrate()
         guard let d = FileManager.default.contents(atPath: url.path),
               let obj = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else { return Config() }
         var c = Config()

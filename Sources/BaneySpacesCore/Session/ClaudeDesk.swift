@@ -2,7 +2,7 @@ import Foundation
 
 /// The Claude tab that `claude-desk` (⌘⇧A) tiles sessions into, and the terminals it made there:
 /// the tab's ID on the first line, then one terminal ID per line, in creation order, in
-/// `~/.local/state/claude-desk/tiles`. The Deck's sparkle button reads and writes the same file, so
+/// `~/.local/state/claude-desk/tiles`. The session engine's sparkle button reads and writes the same file, so
 /// either one adds the next tile to the same grid.
 public enum ClaudeDesk {
     public static var stateFile: URL {

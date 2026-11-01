@@ -203,7 +203,7 @@ if [ -s "$DATA/aerospace-login-item" ]; then
   fi
 fi
 
-# The agent hooks the Deck added. Only BaneySpaces' own entries go; every other hook and
+# The agent hooks the session engine added. Only BaneySpaces' own entries go; every other hook and
 # setting stays as it is. With the app gone, the same rule runs here in JavaScript.
 CLAUDE="$HOME/.claude/settings.json"
 # As the file has it: a double quote around the path is written \" in JSON.

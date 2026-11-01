@@ -1,8 +1,8 @@
 import XCTest
 
-/// Donovan removed the Deck sidebar (2026-10-30): the launcher is the one search, and ⌃⌘K opens it.
+/// Donovan removed the sidebar (2026-10-30): the launcher is the one search, and ⌃⌘K opens it.
 /// The app target can't be imported by tests, so this reads the source.
-final class DeckSidebarRemovedTests: XCTestCase {
+final class SidebarRemovedTests: XCTestCase {
     private var root: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -31,8 +31,8 @@ final class DeckSidebarRemovedTests: XCTestCase {
 
     func testControlCommandKOpensTheLauncher() throws {
         let text = try code(root.appendingPathComponent("Sources/BaneySpaces/AppDelegate.swift"))
-        XCTAssertTrue(text.contains("deck.onSearch = { [weak self] in self?.launcher.toggle() }"),
-                      "the Deck's onSearch must open the launcher")
+        XCTAssertTrue(text.contains("session.onSearch = { [weak self] in self?.launcher.toggle() }"),
+                      "the session engine's onSearch must open the launcher")
         // Global means registered before registerShortcuts stops for a missing Accessibility permission.
         let body = try XCTUnwrap(text.components(separatedBy: "private func registerShortcuts() {").dropFirst().first)
         let gate = try XCTUnwrap(body.range(of: "guard started else { return }"))
@@ -40,14 +40,14 @@ final class DeckSidebarRemovedTests: XCTestCase {
             let at = try XCTUnwrap(body.range(of: "keyCode: \(key), modifiers: controlKey | cmdKey"), "\(key) isn't registered")
             XCTAssertLessThan(at.lowerBound, gate.lowerBound, "⌃⌘\(key.suffix(1)) must be registered before the Accessibility gate")
         }
-        XCTAssertTrue(body.contains("self?.deck.onSearch()"), "⌃⌘K must call the Deck's onSearch")
+        XCTAssertTrue(body.contains("self?.session.onSearch()"), "⌃⌘K must call the session engine's onSearch")
     }
 
     func testNewClaudeAndNewTerminalAreLauncherCommands() throws {
         let launcher = try code(root.appendingPathComponent("Sources/BaneySpaces/Launcher.swift"))
         XCTAssertTrue(launcher.contains("\"New Claude Session\"") && launcher.contains("\"New Terminal\""))
         let app = try code(root.appendingPathComponent("Sources/BaneySpaces/AppDelegate.swift"))
-        XCTAssertTrue(app.contains("a.newClaude = { [weak self] in self?.deck.newClaude(in: self?.terminalFolder) }"))
-        XCTAssertTrue(app.contains("a.newTerminal = { [weak self] in self?.deck.engine.newTerminal(in: self?.terminalFolder) }"), "New Terminal opens in the folder you were in")
+        XCTAssertTrue(app.contains("a.newClaude = { [weak self] in self?.session.newClaude(in: self?.terminalFolder) }"))
+        XCTAssertTrue(app.contains("a.newTerminal = { [weak self] in self?.session.engine.newTerminal(in: self?.terminalFolder) }"), "New Terminal opens in the folder you were in")
     }
 }

@@ -1,8 +1,8 @@
 import CoreGraphics
 import Foundation
 
-/// Ranks deck rows for the launcher with the launcher's own matcher, so both search alike.
-public enum DeckRank {
+/// Ranks session rows for the launcher with the launcher's own matcher, so both search alike.
+public enum SessionRank {
     /// `items` best first, dropping the ones that don't match. Ties keep their order.
     public static func rank<T>(_ query: String, _ items: [T], text: (T) -> [String]) -> [T] {
         guard !Fuzzy.fold(query).isEmpty else { return items }

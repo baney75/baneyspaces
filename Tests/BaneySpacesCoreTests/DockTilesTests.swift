@@ -26,15 +26,15 @@ final class DockAgentTests: XCTestCase {
     }
 
     func testAnAgentGoesWhereItsWindowIs() {
-        // The Deck says workspace 3, but the window has since moved to 1.
+        // The session engine says workspace 3, but the window has since moved to 1.
         let placed = DockTiles.place([agent(41612, on: 3)], windows: [1: [22225, 41612], 3: [9]], current: 2)
         XCTAssertEqual(placed.keys.sorted(), [1])
     }
 
-    func testAnAgentWithNoKnownWindowFallsBackToTheDecksWorkspace() {
+    func testAnAgentWithNoKnownWindowFallsBackToTheSessionEnginesWorkspace() {
         let placed = DockTiles.place([agent(0, on: 4), agent(777, on: 0)], windows: [1: [5]], current: 2)
         XCTAssertEqual(placed[4]?.count, 1)
-        // 0 is the Deck's word for the workspace you're on.
+        // 0 is the session engine's word for the workspace you're on.
         XCTAssertEqual(placed[2]?.count, 1)
     }
 
@@ -49,7 +49,7 @@ final class DockAgentTests: XCTestCase {
 
     /// 10-16: the dock showed only working and finished. A permission prompt looked like a
     /// finish, and an API error looked like nothing.
-    func testEachStateTheDeckKnowsGetsItsOwnBadge() {
+    func testEachStateTheEngineKnowsGetsItsOwnBadge() {
         typealias S = DockAgent.State
         XCTAssertEqual(S.of(activity: .working, unseen: false, notice: ""), .working)
         XCTAssertEqual(S.of(activity: .waiting, unseen: true, notice: "Claude needs your permission to use Bash"), .asking)

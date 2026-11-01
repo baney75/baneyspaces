@@ -114,7 +114,7 @@ final class SweepTests: XCTestCase {
 
     func testTheEngineSweepsThroughThisDecision() throws {
         let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Sources/BaneySpaces/Deck/Engine.swift")
+            .appendingPathComponent("Sources/BaneySpaces/Session/Engine.swift")
         let src = try String(contentsOf: url, encoding: .utf8)
         XCTAssertTrue(src.contains("Sweep.due("), "Engine's timer must decide through Sweep.due")
         XCTAssertTrue(src.contains("lastRead: $0.value.scriptTriedAt"), "freshness is the last time a script was tried")
@@ -127,7 +127,7 @@ final class SweepTests: XCTestCase {
 
     func testRefreshEnforcesTheBackoffItselfAndStampsWhenTheScriptRan() throws {
         let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Sources/BaneySpaces/Deck/Engine.swift")
+            .appendingPathComponent("Sources/BaneySpaces/Session/Engine.swift")
         let src = try String(contentsOf: url, encoding: .utf8)
         let body = try XCTUnwrap(src.range(of: "func refresh(_ pid: pid_t) {").map { String(src[$0.lowerBound...]) })
         let refresh = String(body.prefix(upTo: try XCTUnwrap(body.range(of: "// MARK: merging")).lowerBound))

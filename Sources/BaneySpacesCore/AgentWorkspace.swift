@@ -7,7 +7,7 @@ import Foundation
 ///    and keystrokes to a hidden app.
 /// 2. Something on it coming to the front (an agent's click falling back to the foreground, an
 ///    app stealing focus) never takes you there. You go there yourself: its number key, its Dock
-///    tile, or a row in the Deck.
+///    tile, or a row in the launcher.
 /// 3. A window an agent opens in the background joins the agent workspace, not yours.
 public enum AgentWorkspace {
     /// The workspace number, or nil when it's off.

@@ -7,7 +7,7 @@ import ServiceManagement
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let spaces = Spaces()
     /// Terminal splits, browser tabs and agents for the launcher and the dock's badges, plus the `baneyspaces` command.
-    private let deck = DeckController()
+    private let session = SessionController()
     private lazy var sandbox = AppSandbox(spaces: { [weak self] in self?.spaces })
     private let hotkeys = Hotkeys()
     private let updater = Updater()
@@ -27,11 +27,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         d.onSetAgentStatus = { [weak self] on in self?.setDockAgentStatus(on) }
         d.notMenus = { [weak self] in self?.switcher.windowNumber.map { [$0] } ?? [] }
         d.model.agents = { [weak self] in
-            guard let self, self.deck.started else { return [] }
-            return self.deck.dockAgents()
+            guard let self, self.session.started else { return [] }
+            return self.session.dockAgents()
         }
         d.model.onFocusAgent = { [weak self] a, n in
-            guard let self, !self.deck.focusAgent(a.id) else { return }
+            guard let self, !self.session.focusAgent(a.id) else { return }
             if a.window != 0 { self.spaces.focus(a.window, on: n) } else { self.spaces.switchTo(n, announce: false) }
         }
         return d
@@ -119,7 +119,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.spaces.moveCarried(id, to: n, from: grab.frame) { [weak self] in self?.dropGeneration[id, default: 0] == gen }
         }
     }
-    /// Building the launcher scans every app, so the Deck's updates don't build it early.
+    /// Building the launcher scans every app, so the session engine's updates don't build it early.
     private var launcherBuilt = false
     /// The focused terminal's folder when the launcher opened, for New Terminal.
     private var terminalFolder: String?
@@ -145,17 +145,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return out
         }
         a.showOverview = { [weak self] in self?.viewer.open() }
-        a.deckItems = { [weak self] q in self?.deck.launcherItems(q) ?? [] }
+        a.sessionItems = { [weak self] q in self?.session.launcherItems(q) ?? [] }
         a.willShow = { [weak self] in
             guard let self else { return }
             // New Terminal opens where you were working, read before the launcher takes focus.
             // Only a terminal in front says where you were working; a focused row in another app doesn't.
             let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-            self.terminalFolder = Item.workingFolder(self.deck.engine.items, front: front)
-            self.deck.engine.refreshAll()
+            self.terminalFolder = Item.workingFolder(self.session.engine.items, front: front)
+            self.session.engine.refreshAll()
         }
-        a.newClaude = { [weak self] in self?.deck.newClaude(in: self?.terminalFolder) }
-        a.newTerminal = { [weak self] in self?.deck.engine.newTerminal(in: self?.terminalFolder) }
+        a.newClaude = { [weak self] in self?.session.newClaude(in: self?.terminalFolder) }
+        a.newTerminal = { [weak self] in self?.session.engine.newTerminal(in: self?.terminalFolder) }
         a.bringBack = { [weak self] in self?.bringBack() }
         a.toggleDock = { [weak self] in self?.toggleWorkspaceDock() }
         a.dockOn = { WorkspaceDock.enabled }
@@ -215,10 +215,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         c.model.onSetUpdateChannel = { [weak self] in self?.updater.channel = $0 }
         c.model.onSetCheckDaily = { [weak self] in self?.updater.checksAutomatically = $0 }
         c.model.finishedRows = { [weak self] in
-            guard let self, self.deck.started else { return [] }
-            return self.deck.finishedRows().map { .init(id: $0.id, label: $0.label) }
+            guard let self, self.session.started else { return [] }
+            return self.session.finishedRows().map { .init(id: $0.id, label: $0.label) }
         }
-        c.model.onFocusFinished = { [weak self] id in self?.deck.focusFinished(id) }
+        c.model.onFocusFinished = { [weak self] id in self?.session.focusFinished(id) }
         c.model.viewerKeysActive = { [weak self] in self?.missionControlKeys.isActive ?? false }
         c.model.trackpadProblem = { [weak self] in self?.trackpadSwipe.problem }
         c.model.missionControlProblem = { SystemMissionControl.problem }
@@ -238,7 +238,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let settings = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else { return .unreadable }
             return HookSettings.installed(settings).count == HookSettings.events.count ? .on : .off
         }
-        c.model.onInstallHooks = { [weak self] in self?.deck.installHooks() }
+        c.model.onInstallHooks = { [weak self] in self?.session.installHooks() }
         c.model.sandboxSummary = { [weak self] in self?.sandbox.summary() }
         c.model.onSandboxDisabled = { [weak self] in self?.sandbox.disable() }
         c.model.onSandboxReset = { [weak self] done in self?.sandbox.resetNow(done: done) }
@@ -413,8 +413,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                                      andEventID: AEEventID(kAEGetURL))
         // `baneyspaces set` and `get` answer from launch on, before Accessibility: looks and the dock switch
         // only store a choice then; the dock starts with the rest once BaneySpaces does.
-        deck.readSetting = { [weak self] in self?.settingValue($0) }
-        deck.writeSetting = { [weak self] k, v in self?.applySetting(k, v) ?? false }
+        session.readSetting = { [weak self] in self?.settingValue($0) }
+        session.writeSetting = { [weak self] k, v in self?.applySetting(k, v) ?? false }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         let menu = NSMenu()
         menu.delegate = self
@@ -445,7 +445,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             UserActivity.shared.activated(app.processIdentifier, byAgent: AgentActivity.shared.causedByAnyAction(pid: app.processIdentifier, bundle: app.bundleIdentifier))
             guard self.started else { return }
             self.spaces.appActivated(app)
-            self.deck.appChanged()
+            self.session.appChanged()
             // The app used last goes first on its tile, so a dock in view reorders now.
             self.dock.reload()
         }
@@ -475,9 +475,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             source.resume()
             signalSources.append(source)
         }
-        // ⌃⌘K (registered in `registerShortcuts`) opens the launcher, which searches the Deck's rows.
-        deck.onSearch = { [weak self] in self?.launcher.toggle() }
-        deck.onItemsChange = { [weak self] in if self?.launcherBuilt == true { self?.launcher.rowsChanged() } }
+        // ⌃⌘K (registered in `registerShortcuts`) opens the launcher, which searches the session rows.
+        session.onSearch = { [weak self] in self?.launcher.toggle() }
+        session.onItemsChange = { [weak self] in if self?.launcherBuilt == true { self?.launcher.rowsChanged() } }
         startWhenTrusted()
         // ⌘Space works with or without Accessibility; Spotlight hands it over first.
         if Launcher.onCmdSpace { setLauncherOnCmdSpace(true) } else { registerShortcuts() }
@@ -578,7 +578,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Off, settings left taken over (a crash, a change while it wasn't running) go back.
         if TopDragWatcher.enabled { SystemTopDrag.takeOver() } else { SystemTopDrag.restore() }
         syncWindowDrags()
-        startDeck()
+        startSession()
         updateIcon()
         watchdog?.invalidate()
         watchdog = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
@@ -626,7 +626,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         SystemMissionControl.restore()
         viewer.close()
         dock.stop(restoreSystemDock: true)
-        deck.stop()
+        session.stop()
         spaces.suspend()
         started = false
         registerShortcuts()
@@ -665,10 +665,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             hotkeys.register(keyCode: kVK_Space, modifiers: cmdKey) { [weak self] in self?.launcher.toggle() }
         }
         // ⌃⌘K opens the launcher from any app, with or without Accessibility.
-        hotkeys.register(keyCode: kVK_ANSI_K, modifiers: controlKey | cmdKey) { [weak self] in self?.deck.onSearch() }
+        hotkeys.register(keyCode: kVK_ANSI_K, modifiers: controlKey | cmdKey) { [weak self] in self?.session.onSearch() }
         // ⌃⌘U goes to the agent that finished, from any app.
         hotkeys.register(keyCode: kVK_ANSI_U, modifiers: controlKey | cmdKey) { [weak self] in
-            if self?.deck.started == true { self?.deck.jumpToFinished() }
+            if self?.session.started == true { self?.session.jumpToFinished() }
         }
         guard started else { return }
         let mods = Modifier.current.carbon
@@ -701,13 +701,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         image?.isTemplate = true
         statusItem.button?.image = image
         // Agents that finished while you were elsewhere, counted beside the workspace number.
-        let n = started && deck.started ? deck.unseenCount : 0
+        let n = started && session.started ? session.unseenCount : 0
         statusItem.button?.title = n > 0 ? " \(n)" : ""
         statusItem.button?.imagePosition = .imageLeading
     }
 
-    private func startDeck() {
-        deck.onUnseenChange = { [weak self] _ in self?.updateIcon(); self?.dock.reload() }
+    private func startSession() {
+        session.onUnseenChange = { [weak self] _ in self?.updateIcon(); self?.dock.reload() }
         var h = AgentHost()
         h.workspace = { Spaces.agentWorkspace }
         h.setWorkspace = { [weak self] n in Spaces.agentWorkspace = n; self?.run { $0.reapply() }; CursorController.shared.environmentChanged() }
@@ -722,11 +722,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         h.windows = { [weak self] in self?.spaces.agentWindows() ?? [] }
         h.pidOf = { [weak self] id in self?.spaces.handsLive(id)?.pid }
         h.occupied = { [weak self] n in self?.spaces.isOccupied(n) ?? false }
-        deck.agentHost = h
+        session.agentHost = h
         // The agent hands: what the scope guard needs from the workspaces, and what to do when a lend changes.
         // The engine's state folder is set here, once, on the main thread, before any engine queue exists.
         HandsEngine.prepareEnvironment()
-        deck.hands.host = HandsHost(
+        session.hands.host = HandsHost(
             agentWorkspace: { Spaces.agentWorkspace },
             windows: { [weak self] in self?.spaces.handsWindows(fresh: false) ?? [] },
             freshWindows: { [weak self] in self?.spaces.handsWindows(fresh: true) ?? [] },
@@ -735,11 +735,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             inspect: { [weak self] in self?.spaces.handsInspect($0) ?? (nil, false) },
             agentOwned: { AgentOwned.shared.pids },
             askToLend: { app, minutes, takeBack in LendConsent.ask(app: app, minutes: minutes, takeBack: takeBack) },
-            open: { [weak self] args in self?.deck.agent("open", args) ?? Wire.Reply(ok: false, error: "not ready") })
+            open: { [weak self] args in self?.session.agent("open", args) ?? Wire.Reply(ok: false, error: "not ready") })
         // The agent cursor: drawn on the agent workspace while you look at it, and over a lent app.
-        deck.hands.host.cursorMark = { CursorController.shared.mark(window: $0) }
+        session.hands.host.cursorMark = { CursorController.shared.mark(window: $0) }
         CursorController.shared.start(shown: { [weak self] in self.map { Set($0.spaces.model.shown.values).union([$0.spaces.model.current]) } ?? [1] }, agentWorkspace: { Spaces.agentWorkspace },
-                                      agent: { [weak self] in self?.deck.cursorAgent($0) ?? ("Agent", .working) },
+                                      agent: { [weak self] in self?.session.cursorAgent($0) ?? ("Agent", .working) },
                                       windowFrame: { WindowFrames.frame(of: $0) })
         HandsLends.shared.onChange = { [weak self] in
             DispatchQueue.main.async {
@@ -749,15 +749,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in HandsLends.shared.expire() }
-        deck.sandboxHandler = { [weak self] r in self?.sandbox.service.handle(r) ?? Wire.Reply(ok: false, error: "not ready") }
+        session.sandboxHandler = { [weak self] r in self?.sandbox.service.handle(r) ?? Wire.Reply(ok: false, error: "not ready") }
         sandbox.start()
         sandbox.cleanupAtLaunch()
-        deck.onWorkingChange = { [weak self] in self?.dock.reload() }
+        session.onWorkingChange = { [weak self] in self?.dock.reload() }
         // A moment after launch: setting up an observer per app costs the main thread a few
         // hundred milliseconds, which would otherwise land on your first workspace switch.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             guard let self, self.started else { return }
-            self.deck.start(workspaceOf: { [weak self] in self?.spaces.model.workspace(of: $0) },
+            self.session.start(workspaceOf: { [weak self] in self?.spaces.model.workspace(of: $0) },
                             currentWorkspace: { [weak self] in self?.spaces.model.current ?? 1 })
         }
     }
@@ -782,7 +782,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var apps: [Int: [String]] = [:]
         for n in Workspaces.range { apps[n] = spaces.apps(on: n) }
         let entries = MenuLayout.entries(rows: MenuLayout.rows(current: spaces.model.current, apps: apps),
-                                         finished: deck.started ? deck.unseenCount : 0, update: updateNotice(),
+                                         finished: session.started ? session.unseenCount : 0, update: updateNotice(),
                                          dockOn: WorkspaceDock.enabled)
         for entry in entries { menu.addItem(menuItem(for: entry)) }
     }
@@ -812,7 +812,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return item("Quit BaneySpaces", #selector(quit), key: "q")
         case .finished(let count):
             // Clicking an agent goes to it and marks it seen, which drops it from this list.
-            return deck.finishedMenuItem(title: MenuLayout.finishedTitle(count))
+            return session.finishedMenuItem(title: MenuLayout.finishedTitle(count))
         case .update(let notice):
             let it = item(notice.menuTitle, #selector(offerUpdate))
             if notice.installing {

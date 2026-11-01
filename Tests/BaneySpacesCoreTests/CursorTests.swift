@@ -799,9 +799,9 @@ final class CursorOffIsDonovansTests: XCTestCase {
         XCTAssertTrue(off.contains("Trace.log(\"cursor off refused"))
         let setup = try CursorSourceTests.code("Sources/BaneySpaces/Setup.swift")
         XCTAssertTrue(setup.contains("cursor.setEnabled($0)"), "Settings does")
-        let server = try CursorSourceTests.code("Sources/BaneySpaces/Deck/Server.swift")
+        let server = try CursorSourceTests.code("Sources/BaneySpaces/Session/Server.swift")
         XCTAssertTrue(server.contains("Trace.log(\"refused on the socket"))
-        let others = try ["Sources/BaneySpaces/Deck/DeckController.swift", "Sources/BaneySpaces/AppDelegate.swift", "Sources/baneyspaces-cli/main.swift"].map { try CursorSourceTests.code($0) }.joined()
+        let others = try ["Sources/BaneySpaces/Session/SessionController.swift", "Sources/BaneySpaces/AppDelegate.swift", "Sources/baneyspaces-cli/main.swift"].map { try CursorSourceTests.code($0) }.joined()
         XCTAssertFalse(others.contains("setEnabled(false)"))
     }
 }
@@ -900,9 +900,9 @@ final class CursorSourceTests: XCTestCase {
     }
 
     func testTheCursorHasASwitchInSettingsAndTheCommandLine() throws {
-        let deck = try Self.code("Sources/BaneySpaces/Deck/DeckController.swift")
-        XCTAssertTrue(deck.contains("case \"cursor\":"))
-        XCTAssertTrue(deck.contains("CursorController.shared.command(args)"))
+        let session = try Self.code("Sources/BaneySpaces/Session/SessionController.swift")
+        XCTAssertTrue(session.contains("case \"cursor\":"))
+        XCTAssertTrue(session.contains("CursorController.shared.command(args)"))
         let setup = try Self.code("Sources/BaneySpaces/Setup.swift")
         XCTAssertTrue(setup.contains("Show each agent's cursor"))
         let controller = try Self.code("Sources/BaneySpaces/Cursor/CursorController.swift")

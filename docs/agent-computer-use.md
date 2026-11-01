@@ -44,7 +44,7 @@ a guest can't:
 | --- | --- | --- |
 | agent-desktop (Vercel Labs) | The observation and semantic-action engine through its C library (`libagent_desktop_ffi`): accessibility snapshots with refs, strict fail-closed ref resolution, the evidence tri-state, partial observation, web-wrapper collapsing, 56 commands. Built from source at a pinned commit with its `Cargo.lock`, never through npm's postinstall. | Apache-2.0, NOTICE kept |
 | cua-driver (trycua) | The background-input rules from its `macos-background-input-v1-plan`: every action carries an exact `(pid, CGWindowID)`; routes in order semantic AX, exact browser target, window-local pointer, per-process keys with delivery proof; SkyLight per-process event posting for canvas apps; per-process AX enablement for Electron. Ported to Swift where we need them. | MIT, attributed |
-| BaneySpaces | Workspaces, parking, the focus watcher, the agent workspace, the deck, remote (tailnet) and the dock. The part neither of them has. | MIT |
+| BaneySpaces | Workspaces, parking, the focus watcher, the agent workspace, the launcher, remote (tailnet) and the dock. The part neither of them has. | MIT |
 
 Before the engine goes in, `tools/vet_supply.py` from BaneyFleet runs on the pinned source. Its first
 run (2026-10-31, commit 5261b52) came back `ask`: new to the fleet, no release attestations, and three
@@ -88,7 +88,7 @@ Lending is the only way an agent touches a window you were already using, and on
 
 - `lend` and `return` are not agent verbs and not MCP tools. An agent that needs a window gets
   `needs_lend` naming what it wants and why.
-- You lend from the menu or the Deck, or a CLI request raises an on-screen confirmation that only real
+- You lend from the menu or the launcher, or a CLI request raises an on-screen confirmation that only real
   input accepts (BaneySpaces checks the click's source pid, so a synthetic click can't accept it).
 - A lend names one agent (the requester shown in the confirmation) and the specific windows you
   picked, not the whole app. Windows the app opens later aren't included. Another agent gets
@@ -131,7 +131,7 @@ never moves yours.
 - It glides from its last spot to the target element's center (about 150 ms, eased; instant when
   Reduce Motion is on) while the action runs, and shows what happened: a ripple for a click, a
   caret pulse while typing, a short scroll trail. The action never waits for the glide.
-- It carries the agent's name and its status color from the Deck, so two agents on the same
+- It carries the agent's name and its status color from its session, so two agents on the same
   workspace are told apart.
 - It shows on the agent workspace when you look at it, and over a lent app while the agent uses
   it. Anywhere else it stays hidden, and the action still runs.

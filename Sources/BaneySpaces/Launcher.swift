@@ -161,10 +161,10 @@ struct LauncherActions {
     var newClaude: () -> Void = {}
     /// A new terminal window.
     var newTerminal: () -> Void = {}
-    /// The Deck's rows (terminal splits, browser tabs, agents) that answer a query; with nothing
+    /// The session rows (terminal splits, browser tabs, agents) that answer a query; with nothing
     /// typed, only the agents that finished or need you.
-    var deckItems: (String) -> [LauncherItem] = { _ in [] }
-    /// The launcher is opening: read every app's tabs and splits again, since the Deck engine
+    var sessionItems: (String) -> [LauncherItem] = { _ in [] }
+    /// The launcher is opening: read every app's tabs and splits again, since the session engine
     /// reads background tabs only now and then (`Sweep`). They arrive through `rowsChanged`.
     var willShow: () -> Void = {}
 }
@@ -462,12 +462,12 @@ final class LauncherModel: ObservableObject {
         case .web: out = q.isEmpty ? bangDirectory() : searchEverywhere(q)
         case .root:
             if q.isEmpty {
-                out += actions.deckItems("")
+                out += actions.sessionItems("")
                 out += recentApps().prefix(5)
                 out += menuItems()
             } else {
                 out += appItems(q, limit: 8)
-                out += actions.deckItems(q).prefix(8)
+                out += actions.sessionItems(q).prefix(8)
                 out += agentItems(q)
                 out += workspaceItems(q)
                 out += commandItems(q)
@@ -491,7 +491,7 @@ final class LauncherModel: ObservableObject {
         if selected >= items.count { selected = max(0, items.count - 1) }
     }
 
-    /// The Deck's rows changed while the launcher is open.
+    /// The session rows changed while the launcher is open.
     func rowsChanged() { rebuildKeepingSelection() }
 
     /// Rebuilds for results that came in after the typing (files, the App Store): the row you

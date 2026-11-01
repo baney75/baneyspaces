@@ -142,7 +142,7 @@ public struct Attention: Equatable, Sendable {
 
     public mutating func seen(_ id: String) { unseen.removeAll { $0 == id } }
 
-    /// Lights a row up directly, for `ghostdeck notify`: it needs you whatever its title says.
+    /// Lights a row up directly, for `baneyspaces notify`: it needs you whatever its title says.
     public mutating func flag(_ id: String) {
         unseen.removeAll { $0 == id }
         unseen.insert(id, at: 0)

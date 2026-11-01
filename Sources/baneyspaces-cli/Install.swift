@@ -1,7 +1,7 @@
 import BaneySpacesCore
 import Foundation
 
-/// Hooks that report each agent session's state to the Deck: Claude Code's go in
+/// Hooks that report each agent session's state to BaneySpaces: Claude Code's go in
 /// ~/.claude/settings.json beside your own, Grok's in a file of their own in ~/.grok/hooks.
 /// They run async, so the agent never waits on them, and `baneyspaces hook` exits 0 whatever happens.
 enum Hooks {
@@ -57,7 +57,7 @@ enum Hooks {
                 lines.append("Grok: ~/.grok/hooks/baneyspaces.json")
             } catch { lines.append("Grok: couldn't write hooks: \(error.localizedDescription)") }
         }
-        return lines.joined(separator: "\n") + "\nNew sessions report to the Deck."
+        return lines.joined(separator: "\n") + "\nNew sessions report to BaneySpaces."
     }
 
     static func uninstall() -> String {
@@ -66,7 +66,7 @@ enum Hooks {
             do {
                 // No backup: the one worth keeping is from before BaneySpaces, made when it installed.
                 try save(HookSettings.removing(settings), to: claudeURL, backup: false)
-                lines.append("removed the Deck's hooks from ~/.claude/settings.json")
+                lines.append("removed BaneySpaces' hooks from ~/.claude/settings.json")
             } catch { lines.append("couldn't write settings: \(error.localizedDescription)") }
         }
         if FileManager.default.fileExists(atPath: grokURL.path) {
@@ -89,7 +89,7 @@ enum Hooks {
     }
 }
 
-/// The agent skill: tells Claude Code, Grok or any agent that reads skills how to use the Deck.
+/// The agent skill: tells Claude Code, Grok or any agent that reads skills how to use BaneySpaces.
 enum Skill {
     static var dest: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/skills/baneyspaces/SKILL.md")

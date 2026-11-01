@@ -19,7 +19,7 @@ struct HandsHost {
     var askToLend: (_ app: String, _ minutes: Int, _ takeBack: Bool) -> Bool = { _, _, _ in false }
     /// Where the agent cursor last acted in a window, for `agent shot --cursor`.
     var cursorMark: (UInt32) -> CursorMark? = { _ in nil }
-    /// The deck's `agent open <app> [files…]`.
+    /// The session engine's `agent open <app> [files…]`.
     var open: ([String]) -> Wire.Reply = { _ in .init(ok: false, error: "not ready") }
 }
 
@@ -41,7 +41,7 @@ final class HandsRouter {
 
     // MARK: wire
 
-    /// The deck socket's entry: `text` holds a HandsRequest as JSON, the reply carries the envelope.
+    /// The session socket's entry: `text` holds a HandsRequest as JSON, the reply carries the envelope.
     func handleWire(_ r: Wire.Request) -> Wire.Reply {
         let env: HandsEnvelope
         if let data = r.text?.data(using: .utf8), let req = try? JSONDecoder().decode(HandsRequest.self, from: data) {
@@ -417,7 +417,7 @@ final class HandsRouter {
 
     private func open(_ req: HandsRequest) -> HandsEnvelope {
         guard let app = req.string("app") else { return .failure(HandsError(.badArguments, "app is missing", suggestion: "usage: baneyspaces agent open <app>", retry: .safe)) }
-        guard let url = DeckController.appURL(app) else {
+        guard let url = SessionController.appURL(app) else {
             return .failure(HandsError(.appNotFound, "no app called \(app)", suggestion: "Use the app's name as in /Applications, or its bundle id.", retry: .safe))
         }
         let bundle = Bundle(url: url)?.bundleIdentifier ?? ""

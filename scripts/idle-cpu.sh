@@ -2,7 +2,7 @@
 # How much CPU BaneySpaces uses while you aren't touching it, and what the apps it reads spend
 # answering its scripts. Samples once a second for SECONDS_TO_SAMPLE (60) seconds and fails if
 # BaneySpaces' mean is over BUDGET_PCT (0.5; the lifetime mean was 0.70% on 2026-10-30, before the
-# Deck engine stopped reading apps without a reason). Run it with BaneySpaces installed and running and
+# the session engine stopped reading apps without a reason). Run it with BaneySpaces installed and running and
 # nobody using the Mac: typing, switching or an agent at work all count.
 #   scripts/idle-cpu.sh
 #   SECONDS_TO_SAMPLE=120 BUDGET_PCT=0.3 scripts/idle-cpu.sh

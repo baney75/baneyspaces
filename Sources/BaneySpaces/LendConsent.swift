@@ -1,7 +1,7 @@
 import AppKit
 import BaneySpacesCore
 
-/// The only way an app gets lent: a sheet in BaneySpaces that Donovan answers with a real click. The deck socket
+/// The only way an app gets lent: a sheet in BaneySpaces that Donovan answers with a real click. The session socket
 /// is open to every process of his, so a request there can ask for a lend but never make one; this sheet is
 /// where it is decided. "Don't Lend" is the default button; "Lend" stays disabled for the first second, so a
 /// click meant for what was under the pointer can't land on it; and it counts only if the event is a click on

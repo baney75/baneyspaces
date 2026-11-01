@@ -44,7 +44,7 @@ final class ScopedHotkeys {
             let status = RegisterEventHotKey(UInt32(b.keyCode), UInt32(b.modifiers),
                                              EventHotKeyID(signature: signature, id: UInt32(i)),
                                              GetApplicationEventTarget(), 0, &ref)
-            if status == noErr, let ref { refs.append(ref) } else { NSLog("BaneySpaces deck: shortcut %d refused (%d)", b.keyCode, status) }
+            if status == noErr, let ref { refs.append(ref) } else { NSLog("BaneySpaces session: shortcut %d refused (%d)", b.keyCode, status) }
         }
     }
 

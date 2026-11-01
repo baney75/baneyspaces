@@ -3,7 +3,7 @@ import Foundation
 
 /// How an agent's cursor looks and moves. A theme is shape, size and motion, drawn with Core Animation layers
 /// (no Lottie, no images). Colors are the cursor's own and never the palette's, so agent activity is never
-/// mistaken for yours (spec/themes.md): the arrow takes its agent's status color from the Deck.
+/// mistaken for yours (spec/themes.md): the arrow takes its agent's status color from the session engine.
 public struct CursorTheme: Equatable, Codable, Sendable {
     public enum Glyph: String, Codable, Sendable { case arrow, classic, dot, block }
     public enum BadgeShape: String, Codable, Sendable { case pill, square }
@@ -84,7 +84,7 @@ public struct CursorTheme: Equatable, Codable, Sendable {
 
 /// The cursor's colors. Fixed, so nothing the person picks for the dock or the palette recolors an agent.
 public enum CursorPalette {
-    /// The Deck's status colors (working blue, asking yellow, failed red, finished orange).
+    /// The session engine's status colors (working blue, asking yellow, failed red, finished orange).
     public static func status(_ s: DockAgent.State) -> RGB {
         switch s {
         case .working: return RGB(r: 0.20, g: 0.51, b: 0.97)

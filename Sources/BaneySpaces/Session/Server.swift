@@ -10,40 +10,40 @@ final class Server {
     /// hop to the main thread only for the few reads that need it.
     var handleHands: (Wire.Request) -> Wire.Reply = { _ in Wire.Reply(ok: false, error: "not ready") }
     /// Sandbox requests take seconds to a minute (a VM boots), so they never run on the main thread:
-    /// the Deck, the dock and the hotkeys stay responsive while one waits.
+    /// the session engine, the dock and the hotkeys stay responsive while one waits.
     var handleSandbox: (Wire.Request) -> Wire.Reply = { _ in Wire.Reply(ok: false, error: "not ready") }
-    private var fd: Int32 = -1
-    private var source: DispatchSourceRead?
-    private let io = DispatchQueue(label: "deck.socket", attributes: .concurrent)
+    private var listeners: [(fd: Int32, path: String, source: DispatchSourceRead)] = []
+    private let io = DispatchQueue(label: "baneyspaces.socket", attributes: .concurrent)
 
     func stop() {
-        source?.cancel()
-        source = nil
-        if fd >= 0 { close(fd); fd = -1 }
-        unlink(Wire.socketPath)
+        for l in listeners { l.source.cancel(); close(l.fd); unlink(l.path) }
+        listeners = []
     }
 
+    /// Listens on the current socket and on the old `deck.sock`, so a client started before the update still connects.
     func start() {
-        guard source == nil else { return }
-        let path = Wire.socketPath
+        guard listeners.isEmpty else { return }
         try? FileManager.default.createDirectory(at: Wire.supportDir, withIntermediateDirectories: true)
+        for path in Wire.socketCandidates() { listen(on: path) }
+    }
+
+    private func listen(on path: String) {
         unlink(path)
-        fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0, var addr = Wire.address(path: path) else { return NSLog("BaneySpaces deck: no socket") }
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0, var addr = Wire.address(path: path) else { return NSLog("BaneySpaces session: no socket") }
         let bound = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
         }
-        guard bound == 0, listen(fd, 16) == 0 else { return NSLog("BaneySpaces deck: socket bind failed (%d)", errno) }
+        guard bound == 0, Darwin.listen(fd, 16) == 0 else { close(fd); return NSLog("BaneySpaces session: socket bind failed (%d)", errno) }
         chmod(path, 0o600)
-        let flags = fcntl(fd, F_GETFL)
-        _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+        _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
         let src = DispatchSource.makeReadSource(fileDescriptor: fd, queue: io)
-        src.setEventHandler { [weak self] in self?.accept() }
+        src.setEventHandler { [weak self] in self?.accept(fd) }
         src.resume()
-        source = src
+        listeners.append((fd, path, src))
     }
 
-    private func accept() {
+    private func accept(_ fd: Int32) {
         while true {
             let client = Darwin.accept(fd, nil, nil)
             guard client >= 0 else { return }
@@ -84,12 +84,12 @@ final class Server {
 
 /// Listens on this Mac's tailnet address for work from your other machines. Each request must
 /// carry the token from `baneyspaces remote token`, and only what `Remote.allows` lets through
-/// reaches the Deck: nothing a remote caller sends can change what you see.
+/// reaches the session engine: nothing a remote caller sends can change what you see.
 final class RemoteServer {
     var handle: (Wire.Request) -> Wire.Reply = { _ in Wire.Reply(ok: false, error: "not ready") }
     private var fd: Int32 = -1
     private var source: DispatchSourceRead?
-    private let io = DispatchQueue(label: "baneyspaces.deck.remote", attributes: .concurrent)
+    private let io = DispatchQueue(label: "baneyspaces.session.remote", attributes: .concurrent)
     private(set) var address: String?
     /// At most this many remote requests at once; more are closed straight away, so slow or
     /// endless connections can't use up the app's file descriptors.

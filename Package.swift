@@ -36,7 +36,7 @@ let package = Package(
                     "-Xlinker", "-rpath", "-Xlinker", "\(root)/engine/lib",
                 ]),
             ]),
-        // `baneyspaces`, the Deck's command for hooks, agents and you. Foundation only, so it starts in milliseconds.
+        // `baneyspaces`, the command for hooks, agents and you. Foundation only, so it starts in milliseconds.
         .executableTarget(name: "baneyspaces-cli", dependencies: ["BaneySpacesCore"]),
         // `swift run -c release cursor-probe`: 100 glides on an offscreen overlay, frame times and the real pointer.
         .executableTarget(name: "cursor-probe", dependencies: ["BaneySpacesCore", "BaneySpacesCursor"],
