@@ -1,0 +1,5 @@
+# The agent-desktop commit the head-to-head builds as the "agent-desktop" column. It is the same
+# commit and the same tarball hash phase 1 pins in engine/PIN, so both tools use one engine.
+ENGINE_REPO=vercel-labs/agent-desktop
+ENGINE_COMMIT=5261b5287b5208e7c4bf3713df6f66faaaf2c4cc
+ENGINE_SHA256=b5cf8219e254ab6ddb9832ebc3ff84655e958102e78ab9c204c920b5d37be721

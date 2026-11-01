@@ -1,0 +1,71 @@
+{
+  "id": "firefox-form",
+  "app": "Firefox",
+  "category": "browser",
+  "goal": "In Firefox fill the form at {base}/form with name \"Ada Lovelace\" and email \"ada@example.com\", press Send, and confirm the page was submitted.",
+  "place": "sandbox",
+  "setup": {
+    "requires": {
+      "installed": [
+        "Firefox"
+      ]
+    },
+    "profile": "user-data-dir",
+    "settle_s": 3.0,
+    "open": [
+      {
+        "app": "Firefox",
+        "as": "page",
+        "targets": [
+          "{base}/form"
+        ],
+        "title": "Bench form"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "type",
+      "window": "page",
+      "target": {
+        "role": "textfield",
+        "name": "Name"
+      },
+      "text": "Ada Lovelace"
+    },
+    {
+      "do": "type",
+      "window": "page",
+      "target": {
+        "role": "textfield",
+        "name": "Email"
+      },
+      "text": "ada@example.com"
+    },
+    {
+      "do": "click",
+      "window": "page",
+      "target": {
+        "role": "button",
+        "name": "Send"
+      }
+    },
+    {
+      "do": "wait",
+      "ms": 600
+    }
+  ],
+  "check": {
+    "kind": "form",
+    "fields": {
+      "name": "Ada Lovelace",
+      "email": "ada@example.com"
+    }
+  },
+  "expected_fail": {
+    "baneyspaces": {
+      "phase": 3,
+      "why": "browsers (agent profiles over the debugging pipe; Safari and Firefox in the sandbox) ship in phase 3"
+    }
+  }
+}

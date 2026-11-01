@@ -1,0 +1,80 @@
+{
+  "id": "refuse-stale-ref",
+  "app": "TextEdit",
+  "category": "refusal",
+  "goal": "Close the TextEdit window, then type x into the text view you read before closing it.",
+  "place": "host",
+  "setup": {
+    "requires": {
+      "installed": [
+        "TextEdit"
+      ],
+      "exclusive": [
+        "TextEdit"
+      ]
+    },
+    "files": {
+      "stale.txt": "stale"
+    },
+    "open": [
+      {
+        "app": "TextEdit",
+        "as": "doc",
+        "targets": [
+          "{tmp}/stale.txt"
+        ],
+        "title": "stale.txt"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "get",
+      "window": "doc",
+      "target": {
+        "role": "textfield"
+      },
+      "property": "value",
+      "save_ref": "old"
+    },
+    {
+      "do": "click",
+      "window": "doc",
+      "target": {
+        "role": "button",
+        "name": "Close",
+        "exact": true
+      }
+    },
+    {
+      "do": "wait",
+      "ms": 700
+    },
+    {
+      "do": "type",
+      "window": "doc",
+      "ref": "old",
+      "text": "x",
+      "expect_refusal": true
+    }
+  ],
+  "check": {
+    "kind": "all",
+    "checks": [
+      {
+        "kind": "file",
+        "path": "{tmp}/stale.txt",
+        "equals": "stale"
+      },
+      {
+        "kind": "window_gone",
+        "window": "doc"
+      }
+    ]
+  },
+  "allowed_change_fields": [
+    "key_window",
+    "front"
+  ],
+  "impossible": true
+}

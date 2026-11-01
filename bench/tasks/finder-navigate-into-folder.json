@@ -1,0 +1,60 @@
+{
+  "id": "finder-navigate-into-folder",
+  "app": "Finder",
+  "category": "finder",
+  "goal": "In the open Finder window open the folder named inner.",
+  "place": "host",
+  "setup": {
+    "requires": {
+      "installed": [
+        "Finder"
+      ],
+      "exclusive": [
+        "Finder"
+      ]
+    },
+    "files": {
+      "nav/inner/readme.txt": "x",
+      "nav/other.txt": "y"
+    },
+    "open": [
+      {
+        "app": "Finder",
+        "as": "win",
+        "targets": [
+          "{tmp}/nav"
+        ],
+        "title": "nav"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "click",
+      "window": "win",
+      "target": {
+        "text": "inner"
+      }
+    },
+    {
+      "do": "press",
+      "window": "win",
+      "key": "cmd+Down"
+    },
+    {
+      "do": "wait",
+      "ms": 600
+    }
+  ],
+  "check": {
+    "kind": "window_title",
+    "window": "win",
+    "equals": "inner"
+  },
+  "expected_fail": {
+    "baneyspaces": {
+      "phase": 4,
+      "why": "phase 1 types through the accessibility tree only; keys refuse with not_supported until per-process keys ship"
+    }
+  }
+}

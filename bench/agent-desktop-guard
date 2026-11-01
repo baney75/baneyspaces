@@ -1,0 +1,184 @@
+#!/usr/bin/env python3
+"""A guard around the agent-desktop binary for the agent-desktop end-to-end column.
+
+claude's Bash is allowed to run THIS file only. It is an ALLOWLIST: a command goes to the real binary
+(BENCH_AD_BIN) only when its verb, every flag and every positional argument are on that verb's list, and
+it stays inside the current task's windows (BENCH_GUARD_FILE: {"windows": ["w-123", ...], "snapshots": [...]}):
+
+  - snapshot/find/press name one of the task's windows with --window-id; act verbs carry exactly one ref
+    (or, for wait, an element ref) that comes from a snapshot of an allowed window, learned from the
+    snapshots this guard itself ran, so nothing is ever aimed at "whatever is focused";
+  - --app, --headed, --session, --trace, --screenshot and every flag not listed for the verb are refused,
+    as are desktop-wide surfaces and positional arguments that are not a ref or the verb's payload;
+  - list-windows is filtered to the task's windows, so other windows' titles never reach the agent.
+
+A refusal is an agent-desktop style envelope with ok:false and code "guard_refused": the bench's own refusal,
+which the harness never credits to the tool (its binary was not reached).
+"""
+import fcntl
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+
+REAL = os.environ.get("BENCH_AD_BIN", "agent-desktop")
+GUARD_FILE = os.environ.get("BENCH_GUARD_FILE", "")
+SURFACES_OK = {"window", "menubar", "menu", "sheet", "popover", "alert"}
+REF_FULL = re.compile(r"^@(s[0-9A-Za-z]+):e\d+$")
+REF_ANY = re.compile(r"@(s[0-9A-Za-z]+):e\d+")
+
+# verb -> (value flags, boolean flags, positionals, window required)
+# positionals: "ref" | "ref text" | "combo" | "ms" | "" | "words"
+ACT = ({"--timeout-ms"}, set(), "ref", False)
+SPEC = {
+    "snapshot": ({"--window-id", "--surface", "--max-depth", "--root", "--timeout-ms"},
+                 {"-i", "--interactive-only", "--compact", "--skeleton", "--include-bounds"}, "", True),
+    "find": ({"--window-id", "--surface", "--role", "--name", "--value", "--text", "--description", "--native-id", "--root",
+              "--state", "--nth", "--limit", "--timeout-ms"}, {"--exact", "--count", "--first", "--last"}, "", True),
+    "get": ({"--property", "--timeout-ms"}, set(), "ref", False),
+    "click": ACT, "toggle": ACT, "check": ACT, "uncheck": ACT, "expand": ACT, "collapse": ACT, "focus": ACT,
+    "clear": ACT, "scroll-to": ACT,
+    "type": ({"--timeout-ms", "--interval-ms"}, set(), "ref text", False),
+    "set-value": ({"--timeout-ms"}, set(), "ref text", False),
+    "select": ({"--timeout-ms"}, set(), "ref text", False),
+    "scroll": ({"--direction", "--amount", "--timeout-ms"}, set(), "ref", False),
+    "press": ({"--window-id"}, set(), "combo", True),
+    "wait": ({"--element", "--predicate", "--value", "--action", "--timeout"}, set(), "ms", False),
+    "list-windows": ({"--timeout-ms"}, set(), "", False),
+    "skills": (set(), set(), "words", False),
+    "version": (set(), set(), "", False),
+}
+
+
+def refuse(message, suggestion="Use only the window ids you were given, and refs from your own snapshots of them."):
+    print(json.dumps({"ok": False, "error": {"code": "guard_refused", "message": message, "retry": "never",
+                                              "suggestion": suggestion}}))
+    sys.exit(2)
+
+
+def norm(w):
+    return w if str(w).startswith("w-") else f"w-{w}"
+
+
+def read_state():
+    try:
+        with open(GUARD_FILE, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        refuse("the guard has no task file", "Run this through the benchmark harness.")
+
+
+def learn(snapshot_id):
+    """Add a snapshot id under an exclusive lock, so parallel tool calls cannot lose each other's ids."""
+    with open(GUARD_FILE + ".lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        state = read_state()
+        if snapshot_id not in state.setdefault("snapshots", []):
+            state["snapshots"].append(snapshot_id)
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(GUARD_FILE) or ".", prefix="guard-")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(state, fh)
+        os.replace(tmp, GUARD_FILE)
+
+
+def check_ref(ref, state):
+    m = REF_FULL.match(ref)
+    if not m:
+        refuse(f"{ref!r} is not a ref (@<snapshot>:e<N>)", "Take a snapshot of your window and use the refs it prints.")
+    if m.group(1) not in set(state.get("snapshots", [])):
+        refuse(f"ref {ref} does not come from a snapshot of this task's windows", "Take a snapshot of your window and use the refs it prints.")
+
+
+def check(args, state):
+    if not args or args[0] not in SPEC:
+        refuse(f"command {args[0] if args else '(none)'} is not allowed", "Allowed: " + ", ".join(sorted(SPEC)))
+    verb = args[0]
+    value_flags, bool_flags, pos_spec, needs_window = SPEC[verb]
+    allowed = {norm(w) for w in state.get("windows", [])}
+    positionals, seen_window, seen_element = [], False, False
+    i, rest_positional = 1, False
+    while i < len(args):
+        a = args[i]
+        if a == "--" and not rest_positional:
+            rest_positional = True
+            i += 1
+            continue
+        if not rest_positional and a.startswith("-") and a != "-":
+            name, eq, val = a.partition("=")
+            if name in bool_flags and not eq:
+                i += 1
+                continue
+            if name in value_flags:
+                if not eq:
+                    if i + 1 >= len(args):
+                        refuse(f"{name} needs a value")
+                    val, i = args[i + 1], i + 1
+                if name == "--window-id":
+                    if norm(val) not in allowed:
+                        refuse(f"window {norm(val)} is not one of this task's windows")
+                    seen_window = True
+                elif name == "--surface" and val not in SURFACES_OK:
+                    refuse(f"surface {val} is not allowed")
+                elif name in ("--root", "--element"):
+                    check_ref(val, state)
+                    seen_element = seen_element or name == "--element"
+                i += 1
+                continue
+            refuse(f"option {name} is not allowed for {verb}",
+                   "Allowed options for this command: " + ", ".join(sorted(value_flags | bool_flags)) if (value_flags | bool_flags) else "this command takes none")
+        positionals.append(a)
+        i += 1
+    if needs_window and not seen_window:
+        refuse(f"{verb} must name one of your windows with --window-id")
+    if pos_spec in ("ref", "ref text"):
+        want = 1 if pos_spec == "ref" else 2
+        if len(positionals) != want:
+            refuse(f"{verb} takes {'a ref' if want == 1 else 'a ref and its text'} and nothing else, got {len(positionals)} argument(s)",
+                   "Aim every action at a ref from your own snapshot.")
+        check_ref(positionals[0], state)
+    elif pos_spec == "combo":
+        if len(positionals) != 1:
+            refuse("press takes one key combination")
+    elif pos_spec == "ms":
+        has_ms = len(positionals) == 1 and positionals[0].isdigit()
+        if verb == "wait" and not (has_ms or seen_element):          # parsed flags, never a substring of the joined argv
+            refuse("wait needs a number of milliseconds or --element <ref>")
+        if len(positionals) > 1 or (positionals and not positionals[0].isdigit()):
+            refuse("wait takes at most a number of milliseconds")
+    elif pos_spec == "words":
+        if not all(re.match(r"^[a-z][a-z-]*$", p) for p in positionals):
+            refuse("skills takes plain words")
+    elif positionals:
+        refuse(f"{verb} takes no positional arguments")
+    # a ref hidden in free text is not an argument we pass; nothing further to check
+
+
+def main():
+    args = sys.argv[1:]
+    state = read_state()
+    check(args, state)
+    if args[0] in ("skills", "version"):
+        os.execvp(REAL, [REAL, *args])
+    p = subprocess.run([REAL, *args], capture_output=True, text=True)
+    out = p.stdout
+    try:
+        env = json.loads(out.strip().splitlines()[-1]) if out.strip() else None
+    except ValueError:
+        env = None
+    if env and env.get("ok"):
+        data = env.get("data")
+        if args[0] in ("snapshot", "find") and isinstance(data, dict) and data.get("snapshot_id"):
+            learn(data["snapshot_id"])
+        if args[0] == "list-windows" and isinstance(data, list):
+            allowed = {norm(w) for w in state.get("windows", [])}
+            env["data"] = [w for w in data if w.get("id") in allowed]
+            out = json.dumps(env) + "\n"
+    sys.stdout.write(out)
+    sys.stderr.write(p.stderr)
+    sys.exit(p.returncode)
+
+
+if __name__ == "__main__":
+    main()
