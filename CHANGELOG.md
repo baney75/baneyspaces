@@ -9,6 +9,16 @@
   back, and an unproved one is `unverified` (retry never). SkyLight's per-process post is found by name at run time with
   the public call as the fallback. Prepared and unit-tested; `scripts/agent-keys-probe.swift` runs on `main` after merge
   when Donovan has been idle 10 minutes. Logic ported from cua-driver (MIT), see NOTICE.
+
+- **The overview shows every window and never clips** (`spec/overview.md`). Workspaces with windows share the screen
+  by how many they have; empty ones become a row of numbered slots with a "+" along the bottom (each a click and drop
+  target that opens to a full tile under the pointer). Every window is a card at its window's shape, with a live
+  preview when Screen Recording is already allowed (checked, never asked) and the app icon large otherwise; two windows
+  side by side stay side by side. "+N" appears only past 24 cards in a tile. The workspace you're on is marked in the
+  theme's accent (a soft glow, a 2 px line in Omarchy, 1 px in Minimal), never "You're here" in red text. Type to find
+  (the launcher's matcher; Return goes to the best match), drag a card to a tile or a slot (hold Option to follow),
+  middle-click a card to close it, one dim help line that hides after 20 opens (`?` brings it back). Cards spring from
+  their windows on a snapshot layer, never the window itself. Each display shows its own overview.
 - **Themes, 22 palettes and a dock switch.** Settings › Appearance has a theme (**BaneySpaces**, the
   look it has always had; **Omarchy**, square corners, 2 px borders, monospace and numbered blocks;
   **Minimal**) and a palette (**Auto** or one of Omarchy's 22), shared with the other platforms from

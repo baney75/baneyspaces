@@ -17,7 +17,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// While running, checks every 2 s that macOS still trusts BaneySpaces.
     private var watchdog: Timer?
     private var signalSources: [DispatchSourceSignal] = []
-    private lazy var viewer = ViewerController(spaces: spaces)
+    private lazy var viewer: ViewerController = {
+        let v = ViewerController(spaces: spaces)
+        v.agents = { [weak self] in
+            guard let self, self.deck.started else { return [] }
+            return self.deck.dockAgents()
+        }
+        // STUB until `fix/open-here` merges: it adds the open-here entry point (`launcher.openHere(app:target:)`,
+        // `launcher.show(entry:)`). Until then a strip slot, a tile's `+` or a search that matches nothing goes
+        // to the workspace and shows the launcher there; the launcher's own open decides where an app lands.
+        v.onOpenHere = { [weak self] n, _ in
+            guard let self else { return }
+            self.spaces.switchTo(n)
+            self.launcher.show()
+        }
+        return v
+    }()
     private lazy var dock: WorkspaceDock = {
         let d = WorkspaceDock(spaces: spaces)
         d.onShowOverview = { [weak self] in self?.viewer.open() }
@@ -68,8 +83,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.cancelSettling(id)
         }
         t.onRelease = { [weak self] grab, drop in
-            guard let self, let n = self.viewer.endCarrying(), drop else { return }
-            self.dropCarried(grab, on: n)
+            guard let self, let (n, follow) = self.viewer.endCarrying(), drop else { return }
+            self.dropCarried(grab, on: n, follow: follow)
         }
         // The same drag taken down to the Workspace Dock: let go on a tile, it goes there.
         t.onCarry = { [weak self] grab, _ in
@@ -87,7 +102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// dock. The window server and the app finish their own drop first: the window moves once
     /// it has held still for 60 ms (four looks 20 ms apart), no sooner than 0.1 s after the
     /// release and no later than 0.5 s.
-    private func dropCarried(_ grab: TopDrag.Grab, on n: Int) {
+    private func dropCarried(_ grab: TopDrag.Grab, on n: Int, follow: Bool = false) {
         let id = grab.window
         cancelSettling(id)
         let gen = dropGeneration[id, default: 0]
@@ -116,7 +131,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 Trace.log("drop gave up waiting window=\(id) after \(ms) ms looks=\(looks) still=\(still) settled=false")
             }
             self.settling[id] = nil
-            self.spaces.moveCarried(id, to: n, from: grab.frame) { [weak self] in self?.dropGeneration[id, default: 0] == gen }
+            self.spaces.moveCarried(id, to: n, from: grab.frame, follow: follow) { [weak self] in self?.dropGeneration[id, default: 0] == gen }
         }
     }
     /// Building the launcher scans every app, so the Deck's updates don't build it early.

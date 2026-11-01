@@ -17,7 +17,7 @@ public enum Surface: String, CaseIterable, Sendable {
     // The launcher.
     case launcherPanel, launcherMini, launcherRow, launcherThumb, launcherImage, launcherKey
     // The overview (the Mission Control replacement) and the workspace HUD.
-    case overviewTile, overviewChip, hudPanel, hudCell
+    case overviewTile, overviewChip, overviewCard, overviewSlot, hudPanel, hudCell
     // Settings.
     case settingsTile, settingsCallout, settingsCell
 
@@ -25,8 +25,8 @@ public enum Surface: String, CaseIterable, Sendable {
         switch self {
         case .dockBar, .switcherPanel, .launcherPanel, .launcherMini, .hudPanel: .bar
         case .dockList: .list
-        case .dockTile, .dockButton, .switcherTile, .switcherWindow, .overviewTile, .settingsTile, .settingsCallout: .tile
-        case .dockChip, .dockRow, .launcherRow, .launcherThumb, .launcherImage, .launcherKey, .overviewChip, .hudCell, .settingsCell: .row
+        case .dockTile, .dockButton, .switcherTile, .switcherWindow, .overviewTile, .overviewSlot, .settingsTile, .settingsCallout: .tile
+        case .dockChip, .dockRow, .launcherRow, .launcherThumb, .launcherImage, .launcherKey, .overviewChip, .overviewCard, .hudCell, .settingsCell: .row
         }
     }
 
@@ -51,6 +51,8 @@ public enum Surface: String, CaseIterable, Sendable {
         case .launcherKey: 4
         case .overviewTile: 16
         case .overviewChip: 9
+        case .overviewCard: 10
+        case .overviewSlot: 12
         case .hudPanel: 22
         case .hudCell: 7
         case .settingsTile: 11
@@ -64,7 +66,8 @@ public enum Surface: String, CaseIterable, Sendable {
     public var shippedBorder: (rest: Double, focused: Double) {
         switch self {
         case .switcherTile, .switcherWindow, .settingsTile: (1, 2)
-        case .overviewTile: (1, 3)
+        // The current workspace is a soft glow in the accent, not a heavy line.
+        case .overviewTile, .overviewSlot: (1, 1.5)
         case .hudCell: (1, 1)
         default: (1, 1.5)
         }

@@ -1005,6 +1005,37 @@ final class Spaces {
         let pid: pid_t
         let app: String
         let title: String
+        /// Where the window is (or would be, for one parked on another workspace), in Accessibility
+        /// coordinates; nil when unknown. The overview keeps each card's place and shape from it.
+        var frame: CGRect? = nil
+    }
+
+    /// Every workspace's windows for the overview, each with where it really is. Parked windows
+    /// answer with the place they'll come back to, never the corner they wait in.
+    func overviewEntries() -> [Int: [Entry]] {
+        let server = Windows.serverWindows()
+        var out: [Int: [Entry]] = [:]
+        for n in Workspaces.range {
+            out[n] = model.windows(on: n).compactMap { id in
+                windows[id].map { w in
+                    Entry(id: id, pid: w.pid, app: w.appName, title: w.title, frame: saved.frames[id] ?? server[id]?.bounds)
+                }
+            }
+        }
+        return out
+    }
+
+    /// Presses a window's own close button, so an app with unsaved changes asks first.
+    func closeWindow(_ id: WindowID) {
+        guard active, let w = windows[id], let button: AXUIElement = w.element.value(kAXCloseButtonAttribute) else { return }
+        AXUIElementSetMessagingTimeout(w.element, 0.25)
+        AXUIElementPerformAction(button, kAXPressAction as CFString)
+    }
+
+    /// Whether the window is still there (an app that asked about unsaved changes keeps it).
+    func isOpen(_ id: WindowID) -> Bool {
+        guard let w = windows[id] else { return false }
+        return Windows.lists(id, pid: w.pid)
     }
 
     /// The windows on workspace `n`, for the viewer.
@@ -1025,7 +1056,8 @@ final class Spaces {
     /// overview: it goes back to where the drag picked it up, then to workspace `n`, so it's
     /// waiting there where it was instead of pressed against the menu bar.
     /// `wanted` is asked again when the move runs, which may be after a switch in progress.
-    func moveCarried(_ id: WindowID, to n: Int, from frame: CGRect, wanted: @escaping () -> Bool = { true }) {
+    /// `follow` (Option held at the drop) goes to `n` after the move.
+    func moveCarried(_ id: WindowID, to n: Int, from frame: CGRect, follow: Bool = false, wanted: @escaping () -> Bool = { true }) {
         let inRange = Workspaces.range.contains(n)
         // `wanted` runs only once the first two hold.
         let want = active && inRange ? wanted() : nil
@@ -1033,7 +1065,7 @@ final class Spaces {
             Trace.log("drop not wanted window=\(id) active=\(active) inRange=\(inRange) wanted=\(want.map { "\($0)" } ?? "unasked")")
             return
         }
-        if switching { Trace.log("drop waits for a switch window=\(id)"); return enqueue { [weak self] in self?.moveCarried(id, to: n, from: frame, wanted: wanted) } }
+        if switching { Trace.log("drop waits for a switch window=\(id)"); return enqueue { [weak self] in self?.moveCarried(id, to: n, from: frame, follow: follow, wanted: wanted) } }
         Trace.log("drop moves window=\(id) to=\(n)")
         // Already gone to `n` while the drop settled: the window is out of sight on the workspace
         // just left, so it goes back to its spot now, before the switch below shows it here.
@@ -1045,6 +1077,8 @@ final class Spaces {
         // Out of sight now, it goes back where the drag picked it up, never on screen here.
         let putBack: () -> Void = { [weak self] in self?.placeAway(id, at: frame) }
         if switching { enqueue(putBack) } else { putBack() }
+        // Option held: the person goes with it. The switch restores the window to the place the drag picked it up.
+        if follow { switchTo(n) }
     }
 
     /// A window on another workspace will come back at `frame`: a parked one's record says so,

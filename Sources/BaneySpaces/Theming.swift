@@ -23,6 +23,10 @@ extension TextWeight {
 enum Chrome {
     static var accent: Color { Appearance.shared.accent }
 
+    /// The accent role of the theme's palette: what marks the place you are (the overview's current workspace). In the
+    /// Auto palette it is the accent chosen in Settings; in a named palette it is that palette's own.
+    static var themeAccent: Color { Appearance.color(look.color("accent")) }
+
     /// One color per workspace; by default around the color wheel so neighbors never look
     /// alike. White text reads on all of them.
     static func workspace(_ n: Int) -> Color { Appearance.shared.workspace(n) }

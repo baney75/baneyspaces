@@ -3,8 +3,9 @@ import BaneySpacesCore
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The overview: all nine workspaces at once, laid out like the number keys' 3×3 grid.
-/// Opens from the Mission Control key or ⌃↑ in place of Mission Control.
+/// The overview (spec/overview.md): all nine workspaces at once, in place of Mission Control. The
+/// layout (`OverviewLayout`) says where every tile, card and strip slot goes and never clips; this
+/// file draws it, takes the keys, the mouse and the drag, and finds windows by typing.
 final class ViewerModel: ObservableObject {
     /// A window card being dragged: what it is, where it came from, where the cursor is.
     struct Drag {
@@ -15,39 +16,91 @@ final class ViewerModel: ObservableObject {
 
     @Published var current = 1
     @Published var tiles: [Int: [Spaces.Entry]] = [:]
-    @Published var hovered: Int?
-    /// The tile the arrow keys picked. Kept apart from `hovered`: SwiftUI can report the pointer
-    /// leaving a tile as it redraws it lit, which would drop the keyboard's pick. Only the
-    /// pointer entering a tile takes over from it.
-    @Published var keyed: Int?
-    /// The lit tile, and the one Return goes to.
-    var highlighted: Int? { keyed ?? hovered }
+    /// What was typed to find a window.
+    @Published var query = ""
+    /// What the arrow keys picked. Kept apart from `hovered`: only the pointer entering something takes over from it.
+    @Published var keyed: OverviewTarget?
+    @Published var hovered: OverviewTarget?
     @Published var drag: Drag?
     /// The drag is a real window carried up from the desktop by its title bar, not a card
     /// picked up here; the pointer belongs to that drag, so the viewer only watches it.
     @Published var carrying = false
+    /// Live previews by window id.
+    @Published var previews: [WindowID: NSImage] = [:]
+    /// Tiles whose "+N" card was opened.
+    @Published var expanded: Set<Int> = []
+    /// The strip slot the pointer (or a drag) is over, open to a full tile.
+    @Published var openSlot: Int?
+    @Published var help = OverviewHelp()
+    /// While the snapshot layers carry the cards in or out, the cards themselves wait.
+    @Published var cardsHidden = false
+    var settings = OverviewSettings()
     /// Icons supplied directly, for rendered product images with sample windows.
     var icons: [WindowID: NSImage] = [:]
-    /// Each tile's frame in the viewer, to find the tile under a dragged card.
-    var tileFrames: [Int: CGRect] = [:]
+    /// The agent on each window, for its badge.
+    var agents: [WindowID: DockAgent] = [:]
+    /// This display's name, and the workspaces other displays are showing with those displays' names.
+    var displayName: String?
+    var otherDisplays: [Int: String] = [:]
+    var safeTop: CGFloat = 0
     var onPick: (Int) -> Void = { _ in }
     var onPickWindow: (WindowID, Int) -> Void = { _, _ in }
-    var onMove: (WindowID, Int) -> Void = { _, _ in }
+    /// A window moved to a workspace; true when Option was held, to follow it.
+    var onMove: (WindowID, Int, Bool) -> Void = { _, _, _ in }
     var onClose: () -> Void = {}
+    var onCloseWindow: (WindowID, Int) -> Void = { _, _ in }
+    /// A strip slot clicked, or "+" pressed on a selected tile: open something on that workspace (the launcher's open-here).
+    var onOpenHere: (Int, String?) -> Void = { _, _ in }
 
-    func load(from spaces: Spaces) {
-        spaces.refresh()
-        // A drag in progress keeps its cards where they are; a reload would cancel the gesture.
-        guard drag == nil else { return }
-        current = spaces.model.current
-        tiles = Dictionary(uniqueKeysWithValues: Workspaces.range.map { ($0, spaces.entries(on: $0)) })
+    // MARK: Layout
+
+    private var cache: (input: OverviewInput, layout: OverviewLayout)?
+    /// The layout drawn last: what hit tests and drops are answered from.
+    private(set) var lastLayout: OverviewLayout?
+
+    var windows: [OverviewWindow] {
+        Workspaces.range.flatMap { n in (tiles[n] ?? []).map { OverviewWindow(id: $0.id, workspace: n, frame: $0.frame) } }
     }
 
-    /// The tile a dragged card would land on, if it isn't the one it came from.
-    var dropTarget: Int? {
-        guard let drag else { return nil }
-        return tileFrames.first { $0.value.contains(drag.location) && $0.key != drag.from }?.key
+    func layout(for size: CGSize) -> OverviewLayout {
+        let input = OverviewInput(size: size, safeTop: safeTop, screen: CGRect(origin: .zero, size: size), windows: windows, current: current,
+                                  settings: settings, metrics: OverviewMetrics.make(spec: Chrome.spec), dragging: drag != nil || carrying,
+                                  expanded: expanded, help: help.visible, openSlot: nil)
+        let base: OverviewLayout
+        if let c = cache, c.input == input { base = c.layout } else { base = OverviewLayout.make(input); cache = (input, base) }
+        let l = base.opening(slot: openSlot, safeTop: safeTop)
+        lastLayout = l
+        return l
     }
+
+    func entry(_ id: WindowID) -> Spaces.Entry? {
+        for list in tiles.values { if let e = list.first(where: { $0.id == id }) { return e } }
+        return nil
+    }
+
+    // MARK: Type to find
+
+    var filter: OverviewFilter {
+        OverviewFilter(Workspaces.range.flatMap { n in (tiles[n] ?? []).map { OverviewFilter.Item(id: $0.id, workspace: n, app: $0.app, title: $0.title) } })
+    }
+
+    private var filterCache: (stamp: [WindowID], filter: OverviewFilter)?
+    /// The windows `query` matches; nil with no query.
+    var found: OverviewFilter.Result? {
+        guard !query.isEmpty else { return nil }
+        let stamp = windows.map(\.id)
+        let f: OverviewFilter
+        if let c = filterCache, c.stamp == stamp { f = c.filter } else { f = filter; filterCache = (stamp, f) }
+        return f.match(query, prefer: current)
+    }
+
+    /// Where Return goes: the best match while typing, else what the keys or the pointer picked.
+    var highlighted: OverviewTarget? {
+        if let best = found?.best { return .card(best) }
+        return keyed ?? hovered
+    }
+
+    // MARK: Actions
 
     /// Forget anything left from the last time the viewer was open.
     func reset() {
@@ -55,29 +108,66 @@ final class ViewerModel: ObservableObject {
         carrying = false
         hovered = nil
         keyed = nil
+        query = ""
+        expanded = []
+        openSlot = nil
+        cardsHidden = false
     }
 
-    func hover(_ n: Int, _ inside: Bool) {
-        if inside { hovered = n; keyed = nil } else if hovered == n { hovered = nil }
+    func hover(_ target: OverviewTarget?, _ inside: Bool) {
+        if inside { hovered = target; keyed = nil } else if hovered == target { hovered = nil }
+        if drag == nil {
+            if inside, case .slot(let n)? = target { openSlot = n }
+            else if !inside, case .slot(let n)? = target, openSlot == n { openSlot = nil }
+        }
     }
 
-    func endDrag() {
+    /// Return, or a click on what's selected: where it goes.
+    func activate(_ target: OverviewTarget) {
+        switch target {
+        case .tile(let n), .slot(let n): onPick(n)
+        case .card(let id): if let n = workspace(of: id) { onPickWindow(id, n) }
+        case .more(let n): expanded.formSymmetricDifference([n])
+        case .plus: if let n = lastLayout?.plusTarget { onPick(n) }
+        }
+    }
+
+    func workspace(of id: WindowID) -> Int? { Workspaces.range.first { n in (tiles[n] ?? []).contains { $0.id == id } } }
+
+    /// The window under `p`, for a middle click.
+    func card(at p: CGPoint) -> (id: WindowID, workspace: Int)? {
+        guard let l = lastLayout else { return nil }
+        for t in l.tiles { if let c = t.cards.first(where: { $0.frame.contains(p) }) { return (c.id, t.n) } }
+        return nil
+    }
+
+    /// The pointer moved over a drag: the slot under it opens to a full tile.
+    func dragMoved() {
+        guard let d = drag, let l = lastLayout else { return }
+        let slot = l.slotNumber(at: d.location)
+        if slot != openSlot { openSlot = slot }
+    }
+
+    /// The workspace a dragged card would land on, if it isn't the one it came from.
+    var dropTarget: Int? {
+        guard let drag, let l = lastLayout else { return nil }
+        return l.dropTarget(at: drag.location, from: drag.from)
+    }
+
+    func endDrag(follow: Bool = false) {
         guard let drag else { return }
         if let to = dropTarget {
             // Show the result right away; the real move follows a moment later.
             tiles[drag.from]?.removeAll { $0.id == drag.entry.id }
             tiles[to, default: []].append(drag.entry)
-            onMove(drag.entry.id, to)
+            onMove(drag.entry.id, to, follow)
         }
         withAnimation(Chrome.ease(0.15, .panelOut)) { self.drag = nil }
+        openSlot = nil
     }
-}
 
-private struct TileFrames: PreferenceKey {
-    static var defaultValue: [Int: CGRect] = [:]
-    static func reduce(value: inout [Int: CGRect], nextValue: () -> [Int: CGRect]) {
-        value.merge(nextValue()) { $1 }
-    }
+    /// Sets what each window's card draws (a preview, if there is one).
+    func image(for e: Spaces.Entry) -> NSImage? { icons[e.id] ?? NSRunningApplication(processIdentifier: e.pid)?.icon }
 }
 
 struct ViewerView: View {
@@ -86,7 +176,7 @@ struct ViewerView: View {
     @ObservedObject private var appearance = Appearance.shared
     /// Rendered images can't capture a live blur, so they draw a still backdrop instead.
     var stillBackdrop = false
-    private var accent: Color { Chrome.accent }
+    private var accent: Color { Chrome.themeAccent }
     /// Panel style and opacity are the BaneySpaces theme's; a theme with one fill ignores them.
     private var adjustable: Bool { Chrome.spec.fill.adjustable }
 
@@ -100,12 +190,12 @@ struct ViewerView: View {
             if adjustable && appearance.settings.panelStyle == .tinted {
                 Chrome.accent.opacity(AppearanceSettings.tintWash).ignoresSafeArea().allowsHitTesting(false)
             }
-            GeometryReader { g in grid(in: g.size) }
+            GeometryReader { g in content(model.layout(for: g.size)) }
             liftedCard
         }
+        .ignoresSafeArea()
         .coordinateSpace(name: "viewer")
         .environment(\.colorScheme, Chrome.scheme)
-        .onPreferenceChange(TileFrames.self) { model.tileFrames = $0 }
     }
 
     @ViewBuilder private var backdrop: some View {
@@ -118,171 +208,357 @@ struct ViewerView: View {
         }
     }
 
-    /// Three rows share the screen's height, so a tile grows with the display.
-    private func grid(in size: CGSize) -> some View {
-        let tileHeight: CGFloat = max(160, (size.height - 2 * 48 - 40 - 2 * 20) / 3)
-        return VStack(spacing: 18) {
-            VStack(spacing: 20) {
-                ForEach(0..<3, id: \.self) { row in gridRow(row, tileHeight: tileHeight) }
+    // MARK: The layout, drawn
+
+    private func content(_ layout: OverviewLayout) -> some View {
+        let found = model.found
+        return ZStack(alignment: .topLeading) {
+            ForEach(layout.tiles, id: \.n) { tile in tileView(tile) }
+            ForEach(layout.tiles, id: \.n) { tile in
+                ForEach(tile.cards, id: \.id) { card in cardView(card, workspace: tile.n, found: found) }
+                if let more = tile.more { moreCard(more, workspace: tile.n) }
             }
-            footer
+            if let strip = layout.strip { stripBackdrop(strip) }
+            ForEach(Array(layout.slots.enumerated()), id: \.offset) { _, slot in slotView(slot, layout: layout) }
+            ForEach(Array(layout.slots.enumerated()), id: \.offset) { _, slot in openedSlotView(slot) }
+            if let rect = layout.help, model.help.visible { helpLine.placed(rect) }
+            findBar(found: found, layout: layout)
         }
-        .padding(48)
-        .frame(maxWidth: 1600)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(width: layout.size.width, height: layout.size.height, alignment: .topLeading)
     }
 
-    private func gridRow(_ row: Int, tileHeight: CGFloat) -> some View {
-        HStack(spacing: 20) {
-            ForEach(1...3, id: \.self) { col in tile(row * 3 + col, height: tileHeight) }
+    private func stripBackdrop(_ strip: CGRect) -> some View { Color.clear.placed(strip).allowsHitTesting(false) }
+
+    private func tileView(_ tile: OverviewLayout.Tile) -> some View {
+        let target = OverviewTarget.tile(tile.n)
+        let selected = model.drag == nil && model.highlighted == target
+        let isTarget = model.dropTarget == tile.n
+        let other = model.otherDisplays[tile.n]
+        return ZStack(alignment: .topLeading) {
+            tileShape(isCurrent: tile.isCurrent, isTarget: isTarget, isSelected: selected)
+                .contentShape(Chrome.shape(.overviewTile, continuous: false))
+                .onTapGesture { model.onPick(tile.n) }
+                .onHover { model.hover(target, $0) }
+            tileHeader(tile, selected: selected || isTarget, other: other).placed(tile.header, in: tile.frame)
+            if isTarget { moveHere.placed(tile.body, in: tile.frame) }
+            if tile.windowCount == 0 { emptyLabel.placed(tile.body, in: tile.frame) }
+        }
+        .frame(width: tile.frame.width, height: tile.frame.height, alignment: .topLeading)
+        .opacity(other == nil ? 1 : 0.55)
+        .placed(tile.frame)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(tileLabel(tile))
+    }
+
+    private func tileLabel(_ tile: OverviewLayout.Tile) -> String {
+        let apps = (model.tiles[tile.n] ?? []).map(\.app)
+        return "Workspace \(tile.n)\(tile.isCurrent ? ", current" : ""), \(apps.isEmpty ? "empty" : apps.joined(separator: ", "))"
+    }
+
+    private func tileShape(isCurrent: Bool, isTarget: Bool, isSelected: Bool) -> some View {
+        let mark = OverviewMark.current(Chrome.spec, theme: Chrome.theme)
+        let border: Color
+        if isTarget { border = Chrome.focusEdge(accent) }
+        else if isCurrent { border = Chrome.focusEdge(accent) }
+        else if isSelected { border = Chrome.focusEdge(accent).opacity(0.7) }
+        else { border = Chrome.edge(0.08) }
+        let width = isCurrent || isTarget || isSelected ? CGFloat(mark.width) : Chrome.width(.overviewTile)
+        let dash: [CGFloat] = isTarget ? [8, 5] : []
+        let glow = isCurrent && mark.glow
+        return Chrome.shape(.overviewTile, continuous: false)
+            .fill(Chrome.tileFill(target: isSelected || isTarget))
+            .overlay(Chrome.shape(.overviewTile, continuous: false).strokeBorder(border, style: StrokeStyle(lineWidth: width, dash: dash)))
+            .shadow(color: Chrome.shadow(glow ? 0.55 : 0, color: accent), radius: glow ? 16 : 0)
+    }
+
+    private func tileHeader(_ tile: OverviewLayout.Tile, selected: Bool, other: String?) -> some View {
+        // On one baseline: centered, the small caption floats above the big number's foot.
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            OverviewNumber(n: tile.n, selected: selected, large: true)
+            if tile.windowCount > 0 {
+                Text(tile.windowCount == 1 ? "1 window" : "\(tile.windowCount) windows").font(Chrome.font(10)).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+            if let other { Text(other).font(Chrome.font(10)).foregroundStyle(.secondary).lineLimit(1) }
+        }
+        .allowsHitTesting(false)
+    }
+
+    private var emptyLabel: some View {
+        Text("Empty").font(Chrome.font(12)).foregroundStyle(.tertiary).frame(maxWidth: .infinity, maxHeight: .infinity).allowsHitTesting(false)
+    }
+
+    private var moveHere: some View {
+        Text("Move here").font(Chrome.font(12, .semibold)).foregroundStyle(accent).frame(maxWidth: .infinity, maxHeight: .infinity).allowsHitTesting(false)
+    }
+
+    // MARK: Cards
+
+    /// A window card in a tile. Click it to go to that window; drag it to another workspace.
+    private func cardView(_ card: OverviewLayout.Card, workspace n: Int, found: OverviewFilter.Result?) -> some View {
+        let e = model.entry(card.id)
+        let target = OverviewTarget.card(card.id)
+        let beingDragged = model.drag?.entry.id == card.id
+        let lit = found?.matches(card.id) ?? true
+        let selected = model.drag == nil && model.highlighted == target
+        return Group {
+            if let e {
+                self.card(e, size: card.frame.size, selected: selected, lifted: false)
+                    .opacity(beingDragged ? 0.3 : (lit ? 1 : OverviewFilter.dimmedOpacity))
+                    .onHover { inside in
+                        model.hover(target, inside)
+                        (inside ? NSCursor.openHand : NSCursor.arrow).set()
+                    }
+                    .gesture(
+                        DragGesture(minimumDistance: 4, coordinateSpace: .named("viewer"))
+                            .onChanged { v in
+                                if model.drag == nil { NSCursor.closedHand.set() }
+                                model.drag = ViewerModel.Drag(entry: e, from: n, location: v.location)
+                                model.dragMoved()
+                            }
+                            .onEnded { _ in
+                                NSCursor.arrow.set()
+                                model.endDrag(follow: NSEvent.modifierFlags.contains(.option))
+                            }
+                    )
+                    .simultaneousGesture(TapGesture().onEnded { model.onPickWindow(e.id, n) })
+                    .accessibilityLabel("\(e.app) \(e.title)")
+                    .accessibilityAddTraits(.isButton)
+            }
+        }
+        .frame(width: card.frame.width, height: card.frame.height)
+        .opacity(model.cardsHidden ? 0 : 1)
+        .placed(card.frame)
+    }
+
+    private enum Detail { case full, compact, icon }
+
+    private func detail(_ size: CGSize) -> Detail {
+        if size.width >= 150 && size.height >= 100 { return .full }
+        if size.width >= 72 && size.height >= 44 { return .compact }
+        return .icon
+    }
+
+    /// The card: a live preview at the window's shape with its icon and title, or the icon large with the title below.
+    private func card(_ e: Spaces.Entry, size: CGSize, selected: Bool, lifted: Bool) -> some View {
+        let shape = Chrome.shape(.overviewCard, continuous: false)
+        let preview = model.previews[e.id]
+        let icon = model.image(for: e)
+        let agent = model.agents[e.id]
+        let border: Color = selected ? Chrome.focusEdge(accent) : (agent?.state.color.opacity(0.9) ?? Chrome.edge(lifted ? 0.25 : 0.1))
+        return ZStack {
+            shape.fill(lifted ? Chrome.liftedFill : (selected ? Chrome.tileFill(target: true) : Chrome.cell(0.06)))
+            if let preview {
+                Image(nsImage: preview).resizable().aspectRatio(contentMode: .fill).frame(width: size.width, height: size.height).clipped()
+                    .overlay(alignment: .bottom) { labelBar(e, icon: icon, size: size) }
+            } else {
+                iconCard(e, icon: icon, size: size)
+            }
+        }
+        .frame(width: size.width, height: size.height)
+        .clipShape(shape)
+        .overlay(shape.strokeBorder(border, lineWidth: Chrome.width(.overviewCard, focused: selected || agent != nil)))
+        .overlay(alignment: .topTrailing) {
+            if let agent { AgentStatusBadge(state: agent.state, size: 16).padding(4) }
+        }
+        .shadow(color: Chrome.shadow(lifted ? 0.5 : 0), radius: lifted ? 14 : 0, y: lifted ? 6 : 0)
+        .scaleEffect(lifted ? Chrome.grow(1.04) : 1)
+    }
+
+    /// The icon and the title over the bottom of a preview. Both ends of a long title stay readable.
+    @ViewBuilder private func labelBar(_ e: Spaces.Entry, icon: NSImage?, size: CGSize) -> some View {
+        if detail(size) != .icon {
+            HStack(spacing: 6) {
+                if let icon { Image(nsImage: icon).resizable().frame(width: 16, height: 16) }
+                Text(e.title.isEmpty || e.title == e.app ? e.app : e.title)
+                    .font(Chrome.font(11, .medium)).foregroundStyle(Chrome.wash()).lineLimit(1).truncationMode(.middle)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 5)
+            .frame(maxWidth: .infinity)
+            .background(Chrome.shade(0.78))
+        } else if let icon {
+            Image(nsImage: icon).resizable().frame(width: 16, height: 16).padding(3).background(Chrome.shade(0.78))
+        }
+    }
+
+    /// Without a preview: the app's icon large in the middle and the window's title below.
+    private func iconCard(_ e: Spaces.Entry, icon: NSImage?, size: CGSize) -> some View {
+        let d = detail(size)
+        let side = min(max(min(size.width, size.height) * (d == .full ? 0.42 : 0.5), 14), 72)
+        return VStack(spacing: 4) {
+            Spacer(minLength: 0)
+            if let icon { Image(nsImage: icon).resizable().frame(width: side, height: side) }
+            if d != .icon {
+                Text(e.app).font(Chrome.font(11, .medium)).foregroundStyle(Chrome.wash()).lineLimit(1).truncationMode(.middle)
+                if d == .full, !e.title.isEmpty, e.title != e.app {
+                    Text(e.title).font(Chrome.font(10)).foregroundStyle(.secondary).lineLimit(2).truncationMode(.middle).multilineTextAlignment(.center)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(6)
+        .frame(width: size.width, height: size.height)
+    }
+
+    private func moreCard(_ more: OverviewLayout.More, workspace n: Int) -> some View {
+        let target = OverviewTarget.more(n)
+        let selected = model.highlighted == target
+        let shape = Chrome.shape(.overviewCard, continuous: false)
+        return VStack(spacing: 2) {
+            Text(more.expanded ? "Show fewer" : "+\(more.count)").font(Chrome.font(more.expanded ? 11 : 18, .bold)).foregroundStyle(Chrome.wash())
+            if !more.expanded { Text("more").font(Chrome.font(10)).foregroundStyle(.secondary) }
+        }
+        .frame(width: more.frame.width, height: more.frame.height)
+        .background(shape.fill(selected ? Chrome.tileFill(target: true) : Chrome.cell(0.06)))
+        .overlay(shape.strokeBorder(selected ? Chrome.focusEdge(accent) : Chrome.edge(0.1), lineWidth: Chrome.width(.overviewCard, focused: selected)))
+        .contentShape(shape)
+        .onTapGesture { model.activate(target) }
+        .onHover { model.hover(target, $0) }
+        .opacity(model.cardsHidden ? 0 : 1)
+        .placed(more.frame)
+    }
+
+    // MARK: The strip
+
+    private func slotView(_ slot: OverviewLayout.Slot, layout: OverviewLayout) -> some View {
+        let target: OverviewTarget = slot.n.map { .slot($0) } ?? .plus
+        let selected = model.drag == nil && model.highlighted == target
+        let dropOn = slot.n.map { model.dropTarget == $0 } ?? (model.dropTarget != nil && model.dropTarget == layout.plusTarget)
+        let mark = OverviewMark.current(Chrome.spec, theme: Chrome.theme)
+        let shape = Chrome.shape(.overviewSlot, continuous: false)
+        let other = slot.n.flatMap { model.otherDisplays[$0] }
+        let border: Color = slot.isCurrent || dropOn ? Chrome.focusEdge(accent) : (selected ? Chrome.focusEdge(accent).opacity(0.7) : Chrome.edge(0.1))
+        let width = slot.isCurrent || dropOn || selected ? CGFloat(mark.width) : Chrome.width(.overviewSlot)
+        let glow = slot.isCurrent && mark.glow
+        return ZStack {
+            shape.fill(Chrome.tileFill(target: selected || dropOn))
+            if let n = slot.n {
+                shape.fill(Chrome.workspace(n).opacity(0.22))
+                OverviewNumber(n: n, selected: selected || dropOn, large: false)
+            } else {
+                Image(systemName: "plus").font(Chrome.font(16, .semibold)).foregroundStyle(selected || dropOn ? accent : Chrome.wash(0.7))
+            }
+        }
+        .overlay(shape.strokeBorder(border, style: StrokeStyle(lineWidth: width, dash: dropOn ? [6, 4] : [])))
+        .shadow(color: Chrome.shadow(glow ? 0.55 : 0, color: accent), radius: glow ? 12 : 0)
+        .opacity(other == nil ? 1 : 0.55)
+        .frame(width: slot.frame.width, height: slot.frame.height)
+        .contentShape(shape)
+        .onTapGesture {
+            // A slot opens the launcher for that workspace; the "+" does for the first empty one.
+            if let n = slot.n ?? layout.plusTarget { model.onOpenHere(n, nil) }
+        }
+        .onHover { model.hover(target, $0) }
+        .placed(slot.frame)
+        .accessibilityLabel(slot.n.map { "Workspace \($0), empty. Open an app here" } ?? "New workspace")
+        .accessibilityAddTraits(.isButton)
+    }
+
+    /// A strip slot under the pointer, opened to a full tile.
+    @ViewBuilder private func openedSlotView(_ slot: OverviewLayout.Slot) -> some View {
+        if let n = slot.n, let rect = slot.opened {
+            let dropOn = model.dropTarget == n
+            let shape = Chrome.shape(.overviewTile, continuous: false)
+            ZStack(alignment: .topLeading) {
+                shape.fill(Chrome.tileFill(target: true))
+                shape.fill(Chrome.workspace(n).opacity(0.18))
+                OverviewNumber(n: n, selected: true, large: true).padding(Chrome.spec.space.padding)
+                Text(dropOn || model.drag != nil ? "Move here" : "Empty · click to open an app")
+                    .font(Chrome.font(11)).foregroundStyle(dropOn ? accent : Color.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .overlay(shape.strokeBorder(Chrome.focusEdge(accent), style: StrokeStyle(lineWidth: CGFloat(OverviewMark.current(Chrome.spec, theme: Chrome.theme).width), dash: dropOn ? [8, 5] : [])))
+            .frame(width: rect.width, height: rect.height)
+            .contentShape(shape)
+            .onTapGesture { model.onOpenHere(n, nil) }
+            .onHover { model.hover(.slot(n), $0) }
+            .placed(rect)
+        }
+    }
+
+    // MARK: Find, help, the lifted card
+
+    private var helpLine: some View {
+        Text(OverviewHelp.line).font(Chrome.font(11)).foregroundStyle(Chrome.wash(0.55)).lineLimit(1)
+            .frame(maxWidth: .infinity).allowsHitTesting(false)
+    }
+
+    /// The text typed to find a window, and, when nothing matches it, the launcher's way to open it here.
+    @ViewBuilder private func findBar(found: OverviewFilter.Result?, layout: OverviewLayout) -> some View {
+        if !model.query.isEmpty {
+            VStack(spacing: 6) {
+                Text(model.query).font(Chrome.font(15, .medium)).foregroundStyle(Chrome.wash())
+                    .padding(.horizontal, 14).padding(.vertical, 6)
+                    .background(Chrome.panel(0.92), in: Chrome.pill())
+                    .overlay(Chrome.pill().strokeBorder(Chrome.focusEdge(accent), lineWidth: Chrome.width(.overviewChip, focused: true)))
+                if found?.isEmpty == true {
+                    Text("Open \u{201C}\(model.query)\u{201D} here").font(Chrome.font(12, .medium)).foregroundStyle(Chrome.wash())
+                        .padding(.horizontal, 12).padding(.vertical, 7)
+                        .background(Chrome.shape(.overviewChip, continuous: false).fill(Chrome.tileFill(target: true)))
+                        .overlay(Chrome.shape(.overviewChip, continuous: false).strokeBorder(Chrome.focusEdge(accent), lineWidth: Chrome.width(.overviewChip, focused: true)))
+                        .contentShape(Rectangle())
+                        .onTapGesture { model.onOpenHere(model.current, model.query) }
+                }
+            }
+            .frame(width: layout.size.width)
+            .offset(y: model.safeTop + Chrome.spec.space.padding)
         }
     }
 
     /// The lifted card follows the cursor.
     @ViewBuilder private var liftedCard: some View {
         if let drag = model.drag {
-            card(drag.entry, lifted: true)
-                .frame(width: 300)
+            // As big as its card, but never so big it hides the tile it is going to.
+            let full = model.lastLayout?.card(drag.entry.id)?.card.frame.size ?? CGSize(width: 220, height: 140)
+            let shrink = min(1, 200 / max(full.width, 1))
+            let size = CGSize(width: full.width * shrink, height: full.height * shrink)
+            card(drag.entry, size: size, selected: false, lifted: true)
                 .position(drag.location)
                 .allowsHitTesting(false)
         }
     }
+}
 
-    private var footer: some View {
-        Text(model.drag == nil
-                     ? "Click a workspace or press its number  ·  Arrow keys and Return work too  ·  Drag a window to another workspace  ·  Esc to close"
-                     : model.carrying
-                     ? "Let go over a workspace to move the window there  ·  Anywhere else leaves it here"
-                     : "Drop on a workspace to move the window there")
-            .font(Chrome.font(12))
-            .foregroundStyle(Chrome.wash(0.7))
-            .frame(height: 40)
-    }
+/// A workspace's number in the theme's indicator: big and plain with a tint mark (BaneySpaces), in a
+/// bordered block (Omarchy) or over a bar (Minimal). It turns accent when selected.
+struct OverviewNumber: View {
+    let n: Int
+    let selected: Bool
+    let large: Bool
 
-    private func tile(_ n: Int, height: CGFloat) -> some View {
-        let entries = model.tiles[n] ?? []
-        let isCurrent = n == model.current
-        let isTarget = model.dropTarget == n
-        let isHovered = model.drag == nil && model.highlighted == n
-        let content = VStack(alignment: .leading, spacing: 8) {
-            tileHeader(n, count: entries.count, isCurrent: isCurrent)
-            tileBody(n, entries: entries, isTarget: isTarget)
-        }
-        return content
-            .padding(14)
-            .frame(maxWidth: .infinity, minHeight: height, maxHeight: height, alignment: .topLeading)
-            .background(tileShape(isCurrent: isCurrent, isTarget: isTarget, isHovered: isHovered))
-            .scaleEffect(isTarget ? Chrome.grow(1.02) : 1)
-            .animation(Chrome.ease(0.12, .row), value: isTarget)
-            .background(GeometryReader { g in
-                Color.clear.preference(key: TileFrames.self, value: [n: g.frame(in: .named("viewer"))])
-            })
-            .contentShape(Chrome.shape(.overviewTile, continuous: false))
-            .onTapGesture { model.onPick(n) }
-            .onHover { inside in model.hover(n, inside) }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(tileLabel(n, entries: entries, isCurrent: isCurrent))
-            .accessibilityAddTraits(.isButton)
-    }
-
-    private func tileHeader(_ n: Int, count: Int, isCurrent: Bool) -> some View {
-        // On one baseline: centered, the small caption floats above the big number's foot.
-        HStack(alignment: .firstTextBaseline) {
-            Text("\(n)").font(Chrome.font(22, .bold, rounded: true))
-            if count > 0 {
-                Text(count == 1 ? "1 window" : "\(count) windows").font(Chrome.font(10)).foregroundStyle(.secondary)
+    var body: some View {
+        let tint = Chrome.workspace(n)
+        let color = selected ? Chrome.themeAccent : Chrome.wash()
+        let size: Double = large ? 22 : 15
+        switch Chrome.spec.indicator {
+        case .dot:
+            HStack(spacing: 6) {
+                Text("\(n)").font(Chrome.font(size, .bold, rounded: true)).foregroundStyle(color)
+                if large { Chrome.mark().fill(tint).frame(width: 8, height: 8) }
             }
-            Spacer()
-            if isCurrent { Text("You're here").font(Chrome.font(10, .semibold)).foregroundStyle(accent) }
-        }
-    }
-
-    @ViewBuilder private func tileBody(_ n: Int, entries: [Spaces.Entry], isTarget: Bool) -> some View {
-        if entries.isEmpty {
-            Spacer()
-            emptyLabel(isTarget: isTarget)
-            Spacer()
-        } else {
-            windowList(n, entries: entries)
-            if isTarget {
-                Text("Move here").font(Chrome.font(10, .semibold)).foregroundStyle(accent)
+        case .numberBlock:
+            Text("\(n)").font(Chrome.font(size * 0.7, .bold)).foregroundStyle(color)
+                .frame(minWidth: size * 1.1, minHeight: size * 1.1)
+                .overlay(Rectangle().strokeBorder(selected ? Chrome.themeAccent : tint, lineWidth: Chrome.width(.overviewSlot, focused: selected)))
+        case .bar:
+            VStack(spacing: 2) {
+                Text("\(n)").font(Chrome.font(size * 0.8, .bold)).foregroundStyle(color)
+                Rectangle().fill(tint).frame(width: size, height: Chrome.width(.overviewSlot, focused: true))
             }
         }
     }
+}
 
-    @ViewBuilder private func emptyLabel(isTarget: Bool) -> some View {
-        if isTarget {
-            Text("Move here").font(Chrome.font(12)).foregroundStyle(accent).frame(maxWidth: .infinity)
-        } else {
-            Text("Empty").font(Chrome.font(12)).foregroundStyle(.tertiary).frame(maxWidth: .infinity)
-        }
+private extension View {
+    /// At `rect` in the overview's space, whatever the parent's alignment.
+    func placed(_ rect: CGRect) -> some View {
+        frame(width: rect.width, height: rect.height).position(x: rect.midX, y: rect.midY)
     }
 
-    /// Every window is listed; a full tile scrolls instead of hiding any. Rendered images can't
-    /// draw a scroll view, so they get the plain list.
-    @ViewBuilder private func windowList(_ n: Int, entries: [Spaces.Entry]) -> some View {
-        let list = VStack(spacing: 6) { ForEach(entries) { e in draggableCard(e, from: n) } }
-        if stillBackdrop {
-            list
-        } else {
-            ScrollView(.vertical) { list }.scrollIndicators(.automatic)
-        }
-    }
-
-    private func tileShape(isCurrent: Bool, isTarget: Bool, isHovered: Bool) -> some View {
-        let border: Color
-        if isTarget { border = Chrome.focusEdge(accent) } else if isCurrent { border = Chrome.focusEdge(accent.opacity(0.85)) }
-        else if isHovered { border = Chrome.theme == .baneyspaces ? Chrome.wash(0.6) : Chrome.focusEdge(accent) } else { border = Chrome.edge(0.08) }
-        let width = Chrome.width(.overviewTile, focused: isTarget || isCurrent || isHovered)
-        let dash: [CGFloat] = isTarget ? [8, 5] : []
-        return Chrome.shape(.overviewTile, continuous: false)
-            .fill(Chrome.tileFill(target: isTarget))
-            .overlay(Chrome.shape(.overviewTile, continuous: false).strokeBorder(border, style: StrokeStyle(lineWidth: width, dash: dash)))
-    }
-
-    private func tileLabel(_ n: Int, entries: [Spaces.Entry], isCurrent: Bool) -> String {
-        let apps = entries.isEmpty ? "empty" : entries.map(\.app).joined(separator: ", ")
-        return "Workspace \(n)\(isCurrent ? ", current" : ""), \(apps)"
-    }
-
-    /// A window card in a tile. Click it to go to that window; drag it to another workspace.
-    private func draggableCard(_ e: Spaces.Entry, from n: Int) -> some View {
-        let beingDragged = model.drag?.entry.id == e.id
-        return card(e, lifted: false)
-            .opacity(beingDragged ? 0.3 : 1)
-            .onHover { inside in (inside ? NSCursor.openHand : NSCursor.arrow).set() }
-            .gesture(
-                DragGesture(minimumDistance: 4, coordinateSpace: .named("viewer"))
-                    .onChanged { v in
-                        if model.drag == nil { NSCursor.closedHand.set() }
-                        model.drag = ViewerModel.Drag(entry: e, from: n, location: v.location)
-                    }
-                    .onEnded { _ in
-                        NSCursor.arrow.set()
-                        model.endDrag()
-                    }
-            )
-            .simultaneousGesture(TapGesture().onEnded { model.onPickWindow(e.id, n) })
-    }
-
-    private func card(_ e: Spaces.Entry, lifted: Bool) -> some View {
-        HStack(spacing: 8) {
-            Image(nsImage: model.icons[e.id] ?? NSRunningApplication(processIdentifier: e.pid)?.icon ?? NSImage())
-                .resizable().frame(width: 20, height: 20)
-            // One line per window: the app, then its title, trimmed in the middle if long.
-            (Text(e.app).font(Chrome.font(12, .medium))
-             + Text(e.title.isEmpty || e.title == e.app ? "" : "  \(e.title)").font(Chrome.font(12)).foregroundColor(.secondary))
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Spacer(minLength: 0)
-        }
-        .padding(.vertical, 6)
-        .padding(.horizontal, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Chrome.shape(.overviewChip, continuous: false).fill(lifted ? Chrome.liftedFill : Chrome.cell(0.06)))
-        .overlay(Chrome.shape(.overviewChip, continuous: false).strokeBorder(Chrome.edge(lifted ? 0.25 : 0), lineWidth: Chrome.width(.overviewChip)))
-        .shadow(color: Chrome.shadow(lifted ? 0.5 : 0), radius: 14, y: 6)
-        .scaleEffect(lifted ? Chrome.grow(1.04) : 1)
+    /// At `rect` of a parent whose own frame is `parent`.
+    func placed(_ rect: CGRect, in parent: CGRect) -> some View {
+        frame(width: rect.width, height: rect.height).position(x: rect.midX - parent.minX, y: rect.midY - parent.minY)
     }
 }
 
@@ -298,175 +574,4 @@ struct Backdrop: NSViewRepresentable {
     }
 
     func updateNSView(_ v: NSVisualEffectView, context: Context) {}
-}
-
-/// A borderless panel over everything, on every display's active desktop.
-final class ViewerPanel: NSPanel {
-    override var canBecomeKey: Bool { true }
-}
-
-final class ViewerController {
-    private let spaces: Spaces
-    private let model = ViewerModel()
-    private var panel: ViewerPanel?
-    private var keyMonitor: Any?
-    /// Open from the moment `open()` runs until `close()` starts, not until the fade ends, so a
-    /// quick second press always does the right thing.
-    private(set) var isOpen = false { didSet { MissionControlKeys.viewerOpen = isOpen } }
-    /// Bumped on every open, so a fade-out that finishes late can't hide a viewer reopened since.
-    private var openCount = 0
-
-    init(spaces: Spaces) {
-        self.spaces = spaces
-        model.onPick = { [weak self] n in
-            self?.close()
-            self?.spaces.switchTo(n)
-        }
-        model.onPickWindow = { [weak self] id, n in
-            self?.close()
-            self?.spaces.focus(id, on: n)
-        }
-        model.onMove = { [weak self] id, n in
-            guard let self else { return }
-            self.spaces.move(id, to: n)
-            // The tile already shows the move; reload once the real one has settled.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { self.model.load(from: self.spaces) }
-        }
-        // Closing without a pick hands focus back to the workspace you were on.
-        model.onClose = { [weak self] in
-            guard let self else { return }
-            self.close()
-            self.spaces.switchTo(self.spaces.model.current)
-        }
-    }
-
-    func toggle() { isOpen ? model.onClose() : open() }
-
-    func open() {
-        if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil }
-        isOpen = true
-        openCount += 1
-        model.reset()
-        // Opened on the display under the pointer, it's about that display's workspace.
-        spaces.usePointerDisplay()
-        spaces.rememberFocus()
-        model.load(from: spaces)
-        let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
-        guard let frame = screen?.frame else { return }
-        let p = panel ?? makePanel()
-        panel = p
-        p.ignoresMouseEvents = false
-        p.setFrame(frame, display: true)
-        p.alphaValue = 0
-        // The viewer takes the keyboard so 1–9, Return and Esc reach it, not the app below.
-        Windows.makeFrontmost(getpid())
-        NSApp.activate(ignoringOtherApps: true)
-        p.makeKeyAndOrderFront(nil)
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = Chrome.duration(0.12, .panelIn)
-            p.animator().alphaValue = 1
-        }
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self else { return event }
-            if event.keyCode == 53 { self.model.onClose(); return nil }   // Esc
-            if let c = event.charactersIgnoringModifiers, let n = Int(c), Workspaces.range.contains(n) {
-                self.model.onPick(n)
-                return nil
-            }
-            if event.keyCode == 36 { self.model.onPick(self.model.highlighted ?? self.model.current); return nil }  // Return
-            // The arrow keys move the highlight from tile to tile; Return goes there.
-            let steps: [UInt16: GridStep] = [123: .left, 124: .right, 125: .down, 126: .up]
-            if let step = steps[event.keyCode], self.model.drag == nil {
-                self.model.keyed = step.from(self.model.highlighted ?? self.model.current)
-                return nil
-            }
-            return event
-        }
-    }
-
-    /// The top-left of the screen a carried window's overview is on, in window-server space.
-    private var carryOrigin = CGPoint.zero
-
-    /// Opens over the screen under `p` for a window being dragged to the top of the screen, in
-    /// place of Mission Control. The drag stays the window server's: the viewer takes neither
-    /// the pointer nor the keyboard, and only follows where it goes. False for a window that
-    /// isn't on a workspace.
-    func openCarrying(_ id: WindowID, at p: CGPoint) -> Bool {
-        guard !isOpen, let (entry, from) = spaces.entry(for: id) else { return false }
-        // Matched in window-server space, as the drag was: at a screen's very top edge an AppKit
-        // point would fall just outside it.
-        let cgFrames = TopDragWatcher.screens()
-        guard let mainHeight = NSScreen.screens.first?.frame.maxY,
-              let i = cgFrames.firstIndex(where: { $0.contains(p) }), i < NSScreen.screens.count else { return false }
-        let screen = NSScreen.screens[i]
-        if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil }
-        isOpen = true
-        openCount += 1
-        model.reset()
-        model.load(from: spaces)
-        carryOrigin = CGPoint(x: screen.frame.minX, y: mainHeight - screen.frame.maxY)
-        let panel = panel ?? makePanel()
-        self.panel = panel
-        panel.ignoresMouseEvents = true
-        panel.setFrame(screen.frame, display: true)
-        model.carrying = true
-        model.drag = ViewerModel.Drag(entry: entry, from: from, location: viewerPoint(p))
-        panel.alphaValue = 0
-        panel.orderFrontRegardless()
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = Chrome.duration(0.12, .panelIn)
-            panel.animator().alphaValue = 1
-        }
-        Trace.log("topDrag open window=\(id) from=\(from)")
-        return true
-    }
-
-    /// The carried window's card follows the pointer.
-    func carryMoved(to p: CGPoint) {
-        guard isOpen, model.carrying, var d = model.drag else { return }
-        d.location = viewerPoint(p)
-        model.drag = d
-    }
-
-    /// The button came up: the workspace the window was let go over, if not its own. Closes.
-    func endCarrying() -> Int? {
-        guard isOpen, model.carrying else { return nil }
-        let target = model.dropTarget
-        Trace.log("topDrag release target=\(target.map(String.init) ?? "none")")
-        close()
-        return target
-    }
-
-    /// The pointer in the viewer's own space, which SwiftUI lays out inside the safe area: below
-    /// the camera housing on a Mac with a notch, so tile frames start that far down.
-    private func viewerPoint(_ p: CGPoint) -> CGPoint {
-        let inset = panel?.contentView?.safeAreaInsets ?? NSEdgeInsetsZero
-        return CGPoint(x: p.x - carryOrigin.x - inset.left, y: p.y - carryOrigin.y - inset.top)
-    }
-
-    func close() {
-        if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil }
-        guard isOpen, let p = panel else { return }
-        isOpen = false
-        model.reset()
-        let count = openCount
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = Chrome.duration(0.1, .panelOut)
-            p.animator().alphaValue = 0
-        }, completionHandler: { [weak self] in
-            guard let self, self.openCount == count, !self.isOpen else { return }
-            p.orderOut(nil)
-        })
-    }
-
-    private func makePanel() -> ViewerPanel {
-        let p = ViewerPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        p.level = .statusBar
-        p.isOpaque = false
-        p.backgroundColor = .clear
-        p.hasShadow = false
-        p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        p.contentView = NSHostingView(rootView: ViewerView(model: model).environment(\.colorScheme, .dark))
-        return p
-    }
 }
