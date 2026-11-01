@@ -13,9 +13,12 @@ import Foundation
 public struct IPhoneApp: Equatable, Sendable {
     public let name: String
     public let bundleID: String?
-    public init(name: String, bundleID: String? = nil) {
+    /// The app's icon as image data (PNG, JPEG, HEIC), when the source has one.
+    public let icon: Data?
+    public init(name: String, bundleID: String? = nil, icon: Data? = nil) {
         self.name = name
         self.bundleID = bundleID
+        self.icon = icon
     }
 }
 
@@ -182,5 +185,109 @@ public enum IPhoneOpen {
         case .noSpotlightItem: return "iPhone Mirroring has no Spotlight menu item"
         case .typingFailed: return "Couldn't type into iPhone Mirroring"
         }
+    }
+}
+
+/// Finding the phone's apps in whatever iPhone Mirroring keeps, without knowing its format. The container
+/// can only be read by BaneySpaces after macOS asks you (nobody could read it first), so this tolerates
+/// shapes it has never seen: it walks any property list or JSON for dictionaries that pair a name with a
+/// bundle identifier, and `shape(of:)` describes a structure by its key names and types only, never a
+/// value, so a diagnostic can say what the format is without leaving anything personal in a log.
+public enum IPhoneAppParse {
+    static let nameKeys = ["CFBundleDisplayName", "displayName", "localizedName", "appName", "applicationName", "name", "title", "CFBundleName", "label"]
+    static let bundleKeys = ["bundleIdentifier", "bundleID", "bundleId", "CFBundleIdentifier", "appBundleIdentifier", "applicationIdentifier", "appID", "identifier"]
+    static let iconKeys = ["iconData", "icon", "iconImage", "iconImageData", "appIcon", "image", "imageData"]
+
+    /// "com.toyopagroup.picaboo": reverse-DNS, at least two dots, letters, digits, `-` and `_`.
+    public static func looksLikeBundleID(_ s: String) -> Bool {
+        let parts = s.split(separator: ".", omittingEmptySubsequences: false)
+        return parts.count >= 3 && s.count <= 155 && parts.allSatisfy { p in
+            !p.isEmpty && p.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }
+        }
+    }
+
+    private static func string(_ d: [String: Any], _ keys: [String]) -> String? {
+        for k in keys {
+            if let hit = d.first(where: { $0.key.caseInsensitiveCompare(k) == .orderedSame }), let v = hit.value as? String,
+               !v.trimmingCharacters(in: .whitespaces).isEmpty { return v }
+        }
+        return nil
+    }
+
+    private static func data(_ d: [String: Any]) -> Data? {
+        for k in iconKeys {
+            if let hit = d.first(where: { $0.key.caseInsensitiveCompare(k) == .orderedSame }), let v = hit.value as? Data, v.count > 16 { return v }
+        }
+        return nil
+    }
+
+    /// Every app found anywhere in a property list or JSON object: a dictionary with a name and a bundle id,
+    /// or a dictionary keyed by bundle ids whose values carry a name. First sighting of a bundle id wins.
+    public static func apps(in object: Any) -> [IPhoneApp] {
+        var found: [IPhoneApp] = []
+        var seen = Set<String>()
+        func add(_ name: String, _ id: String?, _ icon: Data?) {
+            let key = (id ?? name).lowercased()
+            guard seen.insert(key).inserted else { return }
+            found.append(IPhoneApp(name: name.trimmingCharacters(in: .whitespaces), bundleID: id, icon: icon))
+        }
+        func walk(_ o: Any, depth: Int) {
+            guard depth < 12 else { return }
+            if let d = o as? [String: Any] {
+                if let id = string(d, bundleKeys), looksLikeBundleID(id), let name = string(d, nameKeys) {
+                    add(name, id, data(d))
+                } else {
+                    for (k, v) in d {
+                        if looksLikeBundleID(k), let inner = v as? [String: Any], let name = string(inner, nameKeys) {
+                            add(name, k, data(inner))
+                        }
+                    }
+                }
+                for v in d.values { walk(v, depth: depth + 1) }
+            } else if let a = o as? [Any] {
+                for v in a { walk(v, depth: depth + 1) }
+            }
+        }
+        walk(object, depth: 0)
+        return found
+    }
+
+    /// The structure of an object by key names and types: no strings, numbers or data. A key that is a
+    /// bundle id is shown as `<bundle-id>`. Arrays show their count and the shape of their first element.
+    public static func shape(of object: Any, depth: Int = 0, maxDepth: Int = 6) -> String {
+        let pad = String(repeating: "  ", count: depth)
+        if depth > maxDepth { return pad + "…\n" }
+        if let d = object as? [String: Any] {
+            var out = pad + "dict(\(d.count))\n"
+            let keys = d.keys.sorted()
+            let ids = keys.filter(looksLikeBundleID)
+            for k in keys where !looksLikeBundleID(k) {
+                out += pad + "  \(k):\n" + shape(of: d[k]!, depth: depth + 2, maxDepth: maxDepth)
+            }
+            if let first = ids.first {
+                out += pad + "  <bundle-id> × \(ids.count):\n" + shape(of: d[first]!, depth: depth + 2, maxDepth: maxDepth)
+            }
+            return out
+        }
+        if let a = object as? [Any] {
+            var out = pad + "array(\(a.count))\n"
+            if let first = a.first { out += shape(of: first, depth: depth + 1, maxDepth: maxDepth) }
+            return out
+        }
+        if object is Data { return pad + "data\n" }
+        if object is Date { return pad + "date\n" }
+        if let n = object as? NSNumber { return pad + (CFGetTypeID(n) == CFBooleanGetTypeID() ? "bool\n" : "number\n") }
+        if object is String { return pad + "string\n" }
+        return pad + "\(type(of: object))\n"
+    }
+
+    /// A table's columns that hold a name and a bundle id, if it has both: what to select to get apps.
+    public static func appColumns(_ columns: [String]) -> (name: String, bundle: String, icon: String?)? {
+        func pick(_ keys: [String]) -> String? {
+            for k in keys { if let c = columns.first(where: { $0.caseInsensitiveCompare(k) == .orderedSame || $0.lowercased().replacingOccurrences(of: "_", with: "") == k.lowercased() || $0.lowercased() == "z" + k.lowercased() }) { return c } }
+            return nil
+        }
+        guard let b = pick(bundleKeys), let n = pick(nameKeys), n != b else { return nil }
+        return (n, b, pick(iconKeys))
     }
 }
