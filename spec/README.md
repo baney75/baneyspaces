@@ -8,6 +8,8 @@ not written here does not ship on one platform alone.
 | [workspaces.md](workspaces.md) | The workspace rules, each with an id (`R-S1`, ...) |
 | [keys.json](keys.json) | The key map per platform, and what Linux replaces in Omarchy |
 | [envelope.md](envelope.md) | The JSON envelope every CLI and MCP result uses, and the error codes |
+| [themes.md](themes.md) | The three themes, the 22 palettes and the dock switch (`themes.json`, `palettes.json`) |
+| [ui.md](ui.md) | The dock, switcher, launcher, overview and settings rules (`R-D*`, `R-W*`, `R-L*`, `R-O*`) |
 | [cli.md](cli.md) | The command family and which commands exist on which platform |
 | [mcp-tools.json](mcp-tools.json) | The MCP tools, as `tools/list` returns them (generated from the Rust core) |
 | [conformance/](conformance/) | Cases as JSON: inputs, the effects they must produce, the state they must leave |

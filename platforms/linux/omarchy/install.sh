@@ -13,11 +13,12 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC="$(cd "$HERE/../../.." && pwd)"
-DRY=0; BINARY=1; BIN_DIR="$HOME/.local/bin"
+DRY=0; BINARY=1; SHELLPLUGIN=1; BIN_DIR="$HOME/.local/bin"
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY=1;;
     --no-binary) BINARY=0;;
+    --no-shell) SHELLPLUGIN=0;;
     --bin) BIN_DIR="$2"; shift;;
     --src) SRC="$2"; shift;;
     -h|--help) sed -n '2,12p' "$0"; exit 0;;
@@ -74,7 +75,7 @@ do_ "mkdir -p '$DEST'"
 for f in baneyspaces.lua baneyspaces-autostart.lua; do
   say "  $f (commands run $BIN_ABS)"
   if [ "$DRY" = 0 ]; then
-    sed "s|exec_cmd(\"baneyspaces |exec_cmd(\"$BIN_ABS |" "$HERE/$f" > "$DEST/$f"
+    sed -e "s|exec_cmd(\"baneyspaces |exec_cmd(\"$BIN_ABS |" -e "s|exec_raw(\"baneyspaces |exec_raw(\"$BIN_ABS |" "$HERE/$f" > "$DEST/$f"
   fi
 done
 
@@ -107,6 +108,9 @@ say "manifest -> $STATE/install.json"
 if [ "$DRY" = 0 ] && [ "$ALREADY" = 0 ]; then
   mkdir -p "$STATE"
   printf '{"installed":"%s","backup":"%s","main":"%s","include":"%s"}\n' "$STAMP" "$BACKUP" "$MAIN" "$DEST" > "$STATE/install.json"
+fi
+if [ "$SHELLPLUGIN" = 1 ]; then
+  "$HERE/shell-install.sh" $([ "$DRY" = 1 ] && echo --dry-run)
 fi
 say "done. Hyprland has not been reloaded. Run: hyprctl reload && hyprctl configerrors"
 say "the reload starts the daemon (the autostart file hooks config.reloaded); until it is up the workspace keys use Hyprland's own dispatch"

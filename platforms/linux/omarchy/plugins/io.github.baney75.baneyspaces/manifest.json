@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.baney75.baneyspaces",
+  "name": "BaneySpaces",
+  "version": "0.2.0",
+  "author": "Donovan Baney",
+  "license": "MIT",
+  "description": "The Workspace Dock, Alt+Tab across workspaces, the launcher and the all-workspaces overview for BaneySpaces. Talks to the baneyspaces daemon over its socket; follows the active Omarchy theme.",
+  "kinds": ["service"],
+  "keepLoaded": true,
+  "entryPoints": { "service": "Service.qml" },
+  "baneyspaces": { "daemon": "baneyspaces daemon", "config": "~/.config/baneyspaces/config.toml" }
+}

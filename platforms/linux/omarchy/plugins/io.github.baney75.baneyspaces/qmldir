@@ -1,0 +1,16 @@
+Dock 1.0 Dock.qml
+DockScreen 1.0 DockScreen.qml
+DockBar 1.0 DockBar.qml
+DockList 1.0 DockList.qml
+DragGhost 1.0 DragGhost.qml
+AppIcon 1.0 AppIcon.qml
+Switcher 1.0 Switcher.qml
+Launcher 1.0 Launcher.qml
+Overview 1.0 Overview.qml
+SettingsPanel 1.0 SettingsPanel.qml
+Daemon 1.0 Daemon.qml
+Theme 1.0 Theme.qml
+Toggle 1.0 Toggle.qml
+Segmented 1.0 Segmented.qml
+PanelFrame 1.0 PanelFrame.qml
+Indicator 1.0 Indicator.qml

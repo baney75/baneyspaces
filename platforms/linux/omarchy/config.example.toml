@@ -1,0 +1,61 @@
+# BaneySpaces settings (spec/config.md). Every line is optional; what is commented out shows the default.
+# Editing this file is noticed and applied at once. `baneyspaces config` lists the keys and what they take; the
+# Settings panel writes this file too. Keys marked (Linux) are additions the shared schema does not have yet.
+
+[behavior.dock]
+# enabled = true            # false: no dock window exists, nothing reveals at the edge
+# edge = "bottom"           # the Linux dock is drawn at the bottom so far
+# reveal_ms = 0             # how long the pointer rests on the edge
+# hide_ms = 400             # how long it is off the dock before it goes down
+# auto_hide = true          # (Linux) false keeps it up and reserves its space
+# size = "medium"           # (Linux) small | medium | large
+# in_fullscreen = false     # (Linux) come up over a full-screen window
+# badges = true             # (Linux) agent status on app icons
+
+[behavior.switcher]
+# enabled = true            # (Linux) Alt+Tab across every workspace
+# mode = "windows"          # windows | apps
+# hold_ms = 120             # the Mac's hold-Tab delay; not used on Linux
+
+[behavior.launcher]
+# enabled = true            # (Linux) Super+Space
+# files = true              # (Linux)
+# install = true            # (Linux) install and remove apps with omarchy pkg
+# search_engine = "ddg"     # (Linux) a bang trigger
+# agent = "claude"          # (Linux) what a leading ? asks
+
+[behavior.overview]
+# enabled = true            # (Linux) Super+Tab
+# previews = "live"         # live | icons
+# layout = "adaptive"       # Linux draws the 3 x 3 grid either way so far
+# empty = "compact"         # Linux draws every workspace the same size so far
+
+[behavior]
+# follow_focus = true       # always on so far
+# new_window = "current"    # current only so far
+
+[theme]
+# name = "omarchy"          # omarchy | baneyspaces | minimal (shape, type, motion; spec/themes.md)
+# palette = "auto"          # auto follows the live Omarchy theme, or a name from spec/palettes.json
+
+# Any token of themes.json, for this machine only, e.g.
+# [theme.override]
+# fill.opacity = 0.7
+# radius.tile = 4
+
+[animation]
+# preset = "baneyspaces"    # baneyspaces | omarchy | snappy | smooth | off
+# speed = 1.0               # multiplies every duration; 0 is off
+# respect_reduce_motion = true
+
+[animation.workspace]
+# style = "off"             # workspace switches are instant (Omarchy's choice too); fade | slide
+
+[animation.dock.in]
+# duration_ms = -1          # -1 uses the preset; also animation.dock.out, animation.list.in, animation.list.out, animation.row
+
+# Your own bangs (the launcher's "!jira PROJ-1"). Only http(s) addresses, with {q} where the words go. (Linux)
+# [[bangs]]
+# trigger = "jira"
+# name = "Jira"
+# url = "https://acme.atlassian.net/browse/{q}"

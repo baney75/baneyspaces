@@ -4,6 +4,7 @@
 use crate::apps;
 use crate::bus;
 use crate::hands;
+use crate::shell;
 use crate::hypr::{parse_event, Hypr, HyprError, HyprEvent};
 use crate::paths::Paths;
 use crate::proc;
@@ -36,6 +37,7 @@ pub struct Client {
     pub class: String,
     pub title: String,
     pub mapped: bool,
+    pub focus_rank: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -47,6 +49,8 @@ pub struct Mon {
     pub ws_name: String,
     pub special: String,
     pub disabled: bool,
+    /// Logical (scaled, rotated) rectangle in the compositor's layout.
+    pub rect: crate::ui::Rect,
 }
 
 pub struct TokenInfo {
@@ -70,11 +74,14 @@ pub struct Core {
     /// snapshot id -> the window and process it was taken of
     pub snaps: HashMap<String, hands::SnapInfo>,
     pub overview_shown: bool,
+    pub shell: shell::ShellState,
     pub events_seen: u64,
     pub started: u64,
     pub trace: bool,
     /// The model may disagree with the compositor (a dispatch failed and a re-read did not work).
     pub dirty: bool,
+    /// state.json is written just after a command answers, not before: the switch has been made by then.
+    pub persist_pending: bool,
     pub last_prune: std::cell::Cell<u64>,
     /// `BANEYSPACES_TEST_OPS=1`: lets nested.sh fake a reused pid and a failing dispatch.
     pub test_ops: bool,
@@ -177,6 +184,12 @@ impl Core {
                         ws_name: m["activeWorkspace"]["name"].as_str().unwrap_or("").into(),
                         special: m["specialWorkspace"]["name"].as_str().unwrap_or("").into(),
                         disabled: m["disabled"].as_bool().unwrap_or(false),
+                        rect: {
+                            let scale = m["scale"].as_f64().filter(|s| *s > 0.0).unwrap_or(1.0);
+                            let (w, h) = (m["width"].as_f64().unwrap_or(0.0) / scale, m["height"].as_f64().unwrap_or(0.0) / scale);
+                            let (w, h) = if m["transform"].as_i64().unwrap_or(0) % 2 == 1 { (h, w) } else { (w, h) };
+                            crate::ui::Rect::new(m["x"].as_f64().unwrap_or(0.0), m["y"].as_f64().unwrap_or(0.0), w, h)
+                        },
                     })
                     .filter(|m| !m.disabled)
                     .collect()
@@ -206,6 +219,7 @@ impl Core {
                         class: c["class"].as_str().unwrap_or("").into(),
                         title: c["title"].as_str().unwrap_or("").into(),
                         mapped: c["mapped"].as_bool().unwrap_or(true),
+                        focus_rank: c["focusHistoryID"].as_i64().unwrap_or(i64::MAX),
                     })
                     .collect()
             })
@@ -231,17 +245,19 @@ impl Core {
 
     // ---- Hyprland setup ------------------------------------------------------------------
 
-    /// Turns workspace animations off, stops apps taking focus by asking, and gives a display that
-    /// shows nothing of ours a workspace. Run at start and after every config reload.
+    /// Stops apps taking focus by asking, sets the workspace switch animation (off unless the config asks), and gives a
+    /// display that shows nothing of ours a workspace. Run at start and after every config reload.
     pub fn configure_hyprland(&self, new: &[String]) -> bool {
-        // Instant switching and the focus rule are what the rest rests on: if either cannot be set,
-        // the model stays dirty and commands are refused until they can.
+        // Instant switching and the focus rule are what the rest rests on: if either cannot be set, the model stays dirty
+        // and commands are refused until they can. Switching workspaces is instant by default, which is Omarchy's own choice
+        // (`workspaces` is off in its looknfeel), so on Omarchy this changes nothing; `animation.workspace.style = fade | slide`
+        // turns Hyprland's animation on. Omarchy's other animations (windows, layers, the scratchpad's slide) are not touched.
+        let anim = match self.shell.cfg.get_str("motion.workspace_style").as_str() {
+            style @ ("fade" | "slide") => format!("hl.animation({{ leaf = \"workspaces\", enabled = true, speed = 4, bezier = \"easeOutQuint\", style = \"{style}\" }})"),
+            _ => "hl.animation({ leaf = \"workspaces\", enabled = false })".to_string(),
+        };
         let mut ok = true;
-        for lua in [
-            "hl.animation({ leaf = \"workspaces\", enabled = false })",
-            "hl.animation({ leaf = \"specialWorkspace\", enabled = false })",
-            "hl.config({ misc = { focus_on_activate = false } })",
-        ] {
+        for lua in [anim.as_str(), "hl.config({ misc = { focus_on_activate = false } })"] {
             if let Err(e) = self.hypr.eval(lua) {
                 self.log(&format!("could not apply {lua}: {e}"));
                 ok = false;
@@ -305,7 +321,7 @@ impl Core {
             return Ok(effects);
         }
         let r = self.exec(&effects);
-        self.persist();
+        self.persist_pending = true;
         if let Err((err, delivered_any)) = r {
             // The model has committed a state the compositor may not have reached. Re-read it
             // before anything else is accepted.
@@ -313,6 +329,7 @@ impl Core {
             self.resync();
             return Err(ApplyError::Compositor { err, delivered_any });
         }
+        self.mark_dirty();
         Ok(effects)
     }
 
@@ -531,6 +548,7 @@ impl Core {
         self.load_tokens();
         for c in &clients {
             self.open_client(c, true);
+            self.title_changed(&c.addr);
         }
         // With the windows known, the window to put in front on the display you are on is known too.
         if let Some(f) = mons.iter().find(|m| m.focused) {
@@ -693,9 +711,11 @@ impl Core {
             HyprEvent::OpenWindow { addr } => {
                 if let Some(c) = self.client(&addr) {
                     self.open_client(&c, false);
+                    self.title_changed(&addr);
                 }
             }
             HyprEvent::CloseWindow { addr } => {
+                self.shell.badges.close(&addr);
                 let _ = self.apply(Event::Close { window: addr });
             }
             HyprEvent::ActiveWindow { addr } => {
@@ -707,8 +727,12 @@ impl Core {
                     self.log("stale activation ignored");
                     return;
                 }
+                if let Some(a) = &addr {
+                    self.shell.badges.focus(a);
+                }
                 let _ = self.apply(Event::Activate { window: addr, cause: Cause::User });
             }
+            HyprEvent::WindowTitle { addr } => self.title_changed(&addr),
             HyprEvent::MonitorAdded { name } => {
                 if !self.model.monitors().any(|m| m == name) {
                     let _ = self.model.apply(Event::MonitorAdded { monitor: name.clone() });
@@ -843,7 +867,11 @@ pub fn refuses_user_op(peer: Option<u32>, is_agent: impl Fn(u32) -> bool) -> boo
 /// is a registered agent process) is refused them. This guards against accidents, such as an
 /// agent shell running `baneyspaces switch 3`; it is not a boundary against a hostile process of
 /// your own user, which could unset its environment.
-const USER_ONLY: &[&str] = &["switch", "move", "focus_monitor", "agent_show", "agent_hide", "agent_toggle", "agent_move", "agent_bring", "overview", "stop"];
+const USER_ONLY: &[&str] = &[
+    "switch", "move", "focus_monitor", "agent_show", "agent_hide", "agent_toggle", "agent_move", "agent_bring", "overview", "stop",
+    // the shell plugin and your keys: an agent never drives your screen, windows, launcher or settings
+    "focus", "move_windows", "window_close", "dock", "dock_bar", "switcher", "launcher", "launcher_run", "settings",
+];
 
 impl Core {
     /// The launch this process belongs to lost its session bus when the daemon restarted.
@@ -883,6 +911,9 @@ pub fn handle(shared: &Shared, req: &Value, peer: Option<u32>) -> Envelope {
     }
     if op.starts_with("test_") && !lock(shared).test_ops {
         return Envelope::err("invalid_args", "test operations are off", Retry::Never, "");
+    }
+    if let Some(env) = shell::handle(shared, op, &args, &agent, peer) {
+        return env;
     }
     match op {
         "ping" => Envelope::ok(json!({ "pong": true, "pid": std::process::id() })),
@@ -961,12 +992,6 @@ pub fn handle(shared: &Shared, req: &Value, peer: Option<u32>) -> Envelope {
             Envelope::ok(v)
         }
         "ls" => Envelope::ok(ls(&lock(shared))),
-        "overview" => {
-            let mut c = lock(shared);
-            c.overview_shown = !c.overview_shown;
-            c.persist();
-            Envelope::ok(json!({ "shown": c.overview_shown, "note": "recorded in state.json; the overview is drawn by the Omarchy shell plugin (part 2)" }))
-        }
         "agent_show" | "agent_hide" | "agent_toggle" => {
             let ev = match op {
                 "agent_show" => Event::AgentShow,
@@ -1345,19 +1370,58 @@ fn peer_pid(s: &UnixStream) -> Option<u32> {
     (r == 0 && cred.pid > 0).then_some(cred.pid as u32)
 }
 
-fn serve_conn(shared: Shared, mut s: UnixStream) {
+fn serve_conn(shared: Shared, s: UnixStream) {
     let _ = s.set_read_timeout(Some(Duration::from_secs(10)));
     let peer = peer_pid(&s);
-    let mut line = String::new();
-    let mut r = BufReader::new(&s).take(1 << 20);
-    if r.read_line(&mut line).is_err() {
-        return;
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    // One writer per connection: replies and pushed state never interleave.
+    if let Ok(mut w) = s.try_clone() {
+        std::thread::spawn(move || {
+            for line in rx {
+                if writeln!(w, "{line}").is_err() {
+                    break;
+                }
+            }
+        });
     }
-    let env = match serde_json::from_str::<Value>(&line) {
-        Ok(req) => handle(&shared, &req, peer),
-        Err(e) => Envelope::err("invalid_args", format!("bad request: {e}"), Retry::Never, ""),
-    };
-    let _ = writeln!(s, "{}", env.to_json());
+    let mut r = BufReader::new(&s);
+    loop {
+        let mut line = String::new();
+        match r.by_ref().take(1 << 20).read_line(&mut line) {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {}
+        }
+        let req = serde_json::from_str::<Value>(&line);
+        let id = req.as_ref().ok().and_then(|r| r.get("id").cloned());
+        let env = match &req {
+            Ok(req) if req["op"] == "subscribe" => {
+                // The shell plugin's stream: state is pushed as it changes. It shows your windows, so an
+                // agent process may not subscribe.
+                let mut c = lock(&shared);
+                if peer.is_some_and(|p| c.is_agent_peer(p)) {
+                    let _ = tx.send(Envelope::err("not_in_scope", "the shell stream is for you, not for an agent", Retry::Never, "").to_json());
+                    continue;
+                }
+                let _ = s.set_read_timeout(None);
+                c.shell.subs.push(tx.clone());
+                let first = json!({ "event": "ui", "data": c.ui_state() }).to_string();
+                drop(c);
+                let _ = tx.send(Envelope::ok(json!({ "subscribed": true })).to_json());
+                let _ = tx.send(first);
+                continue;
+            }
+            Ok(req) => handle(&shared, req, peer),
+            Err(e) => Envelope::err("invalid_args", format!("bad request: {e}"), Retry::Never, ""),
+        };
+        let mut out = env.to_json();
+        if let Some(id) = id {
+            if let Ok(mut v) = serde_json::from_str::<Value>(&out) {
+                v["id"] = id;
+                out = v.to_string();
+            }
+        }
+        let _ = tx.send(out);
+    }
 }
 
 pub fn run(trace: bool) -> i32 {
@@ -1399,6 +1463,7 @@ pub fn run(trace: bool) -> i32 {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600));
     }
+    let dirty = std::sync::Arc::new((Mutex::new(false), std::sync::Condvar::new()));
     let core = Core {
         model: Model::new(),
         hypr: hypr.clone(),
@@ -1407,10 +1472,12 @@ pub fn run(trace: bool) -> i32 {
         token_pids: HashMap::new(),
         snaps: HashMap::new(),
         overview_shown: false,
+        shell: shell::ShellState::new(dirty.clone()),
         events_seen: 0,
         started: now(),
         trace,
         dirty: false,
+        persist_pending: false,
         last_prune: std::cell::Cell::new(0),
         test_ops: std::env::var("BANEYSPACES_TEST_OPS").is_ok_and(|v| v == "1"),
         fail_next: None,
@@ -1489,6 +1556,8 @@ pub fn run(trace: bool) -> i32 {
           }
         });
     }
+    shell::spawn_publisher(shared.clone(), dirty);
+    shell::spawn_pointer_loop(shared.clone());
     eprintln!("baneyspaces daemon: ready ({})", sock.display());
     for conn in listener.incoming().flatten() {
         let shared = shared.clone();
@@ -1572,10 +1641,12 @@ mod tests {
             token_pids: HashMap::new(),
             snaps: HashMap::new(),
             overview_shown: false,
+            shell: shell::ShellState::new(std::sync::Arc::new((Mutex::new(false), std::sync::Condvar::new()))),
             events_seen: 0,
             started: now(),
             trace: false,
             dirty: false,
+            persist_pending: false,
             last_prune: std::cell::Cell::new(0),
             test_ops: false,
             fail_next: None,

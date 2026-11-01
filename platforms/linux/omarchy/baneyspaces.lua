@@ -30,40 +30,77 @@ hl.unbind("SUPER + SHIFT + ALT + code:16")
 hl.unbind("SUPER + SHIFT + ALT + code:17")
 hl.unbind("SUPER + SHIFT + ALT + code:18")
 hl.unbind("SUPER + TAB")
+hl.unbind("ALT + TAB")
+hl.unbind("ALT + SHIFT + TAB")
+hl.unbind("SUPER + SPACE")
+hl.unbind("SUPER + SHIFT + TAB")
 
--- Workspace animations off: a BaneySpaces switch is instant.
-hl.animation({ leaf = "workspaces", enabled = false })
-hl.animation({ leaf = "specialWorkspace", enabled = false })
+-- The shell plugin animates its own panels; the compositor must not add a second animation.
+hl.layer_rule({ match = { namespace = "^baneyspaces-.*" }, no_anim = true, animation = "none" })
+
+-- Omarchy's own workspace switch animation stays. `baneyspaces set motion.workspace_animation off` makes
+-- a switch instant (the daemon turns it off at runtime, so this file never has to).
 
 -- Apps may ask for focus; only you take it. The daemon guards the agent workspace as well.
 hl.config({ misc = { focus_on_activate = false } })
 
-hl.bind("SUPER + code:10", hl.dsp.exec_cmd("baneyspaces switch 1"), { description = "BaneySpaces: workspace 1" })
-hl.bind("SUPER + code:11", hl.dsp.exec_cmd("baneyspaces switch 2"), { description = "BaneySpaces: workspace 2" })
-hl.bind("SUPER + code:12", hl.dsp.exec_cmd("baneyspaces switch 3"), { description = "BaneySpaces: workspace 3" })
-hl.bind("SUPER + code:13", hl.dsp.exec_cmd("baneyspaces switch 4"), { description = "BaneySpaces: workspace 4" })
-hl.bind("SUPER + code:14", hl.dsp.exec_cmd("baneyspaces switch 5"), { description = "BaneySpaces: workspace 5" })
-hl.bind("SUPER + code:15", hl.dsp.exec_cmd("baneyspaces switch 6"), { description = "BaneySpaces: workspace 6" })
-hl.bind("SUPER + code:16", hl.dsp.exec_cmd("baneyspaces switch 7"), { description = "BaneySpaces: workspace 7" })
-hl.bind("SUPER + code:17", hl.dsp.exec_cmd("baneyspaces switch 8"), { description = "BaneySpaces: workspace 8" })
-hl.bind("SUPER + code:18", hl.dsp.exec_cmd("baneyspaces switch 9"), { description = "BaneySpaces: workspace 9" })
-hl.bind("SUPER + SHIFT + code:10", hl.dsp.exec_cmd("baneyspaces move 1"), { description = "BaneySpaces: send window to workspace 1" })
-hl.bind("SUPER + SHIFT + code:11", hl.dsp.exec_cmd("baneyspaces move 2"), { description = "BaneySpaces: send window to workspace 2" })
-hl.bind("SUPER + SHIFT + code:12", hl.dsp.exec_cmd("baneyspaces move 3"), { description = "BaneySpaces: send window to workspace 3" })
-hl.bind("SUPER + SHIFT + code:13", hl.dsp.exec_cmd("baneyspaces move 4"), { description = "BaneySpaces: send window to workspace 4" })
-hl.bind("SUPER + SHIFT + code:14", hl.dsp.exec_cmd("baneyspaces move 5"), { description = "BaneySpaces: send window to workspace 5" })
-hl.bind("SUPER + SHIFT + code:15", hl.dsp.exec_cmd("baneyspaces move 6"), { description = "BaneySpaces: send window to workspace 6" })
-hl.bind("SUPER + SHIFT + code:16", hl.dsp.exec_cmd("baneyspaces move 7"), { description = "BaneySpaces: send window to workspace 7" })
-hl.bind("SUPER + SHIFT + code:17", hl.dsp.exec_cmd("baneyspaces move 8"), { description = "BaneySpaces: send window to workspace 8" })
-hl.bind("SUPER + SHIFT + code:18", hl.dsp.exec_cmd("baneyspaces move 9"), { description = "BaneySpaces: send window to workspace 9" })
-hl.bind("SUPER + SHIFT + ALT + code:10", hl.dsp.exec_cmd("baneyspaces move 1 --stay"), { description = "BaneySpaces: send window to workspace 1, stay here" })
-hl.bind("SUPER + SHIFT + ALT + code:11", hl.dsp.exec_cmd("baneyspaces move 2 --stay"), { description = "BaneySpaces: send window to workspace 2, stay here" })
-hl.bind("SUPER + SHIFT + ALT + code:12", hl.dsp.exec_cmd("baneyspaces move 3 --stay"), { description = "BaneySpaces: send window to workspace 3, stay here" })
-hl.bind("SUPER + SHIFT + ALT + code:13", hl.dsp.exec_cmd("baneyspaces move 4 --stay"), { description = "BaneySpaces: send window to workspace 4, stay here" })
-hl.bind("SUPER + SHIFT + ALT + code:14", hl.dsp.exec_cmd("baneyspaces move 5 --stay"), { description = "BaneySpaces: send window to workspace 5, stay here" })
-hl.bind("SUPER + SHIFT + ALT + code:15", hl.dsp.exec_cmd("baneyspaces move 6 --stay"), { description = "BaneySpaces: send window to workspace 6, stay here" })
-hl.bind("SUPER + SHIFT + ALT + code:16", hl.dsp.exec_cmd("baneyspaces move 7 --stay"), { description = "BaneySpaces: send window to workspace 7, stay here" })
-hl.bind("SUPER + SHIFT + ALT + code:17", hl.dsp.exec_cmd("baneyspaces move 8 --stay"), { description = "BaneySpaces: send window to workspace 8, stay here" })
-hl.bind("SUPER + SHIFT + ALT + code:18", hl.dsp.exec_cmd("baneyspaces move 9 --stay"), { description = "BaneySpaces: send window to workspace 9, stay here" })
-hl.bind("SUPER + TAB", hl.dsp.exec_cmd("baneyspaces overview"), { description = "BaneySpaces: overview" })
-hl.bind("SUPER + GRAVE", hl.dsp.exec_cmd("baneyspaces agent-workspace toggle"), { description = "BaneySpaces: show or hide the agent workspace" })
+
+-- Super+N: do Hyprland's own focus when that is exactly what BaneySpaces would do (no process to start); else ask the daemon.
+function baneyspaces_switch(n)
+  local fast = false
+  if not hl.get_active_special_workspace() then
+    local here = hl.get_active_monitor()
+    local target = nil
+    for _, w in ipairs(hl.get_workspaces()) do
+      if w.id == n then target = w end
+    end
+    if target == nil then
+      fast = true
+    elseif target.monitor ~= nil and here ~= nil and target.monitor.name == here.name then
+      fast = true
+    else
+      for _, m in ipairs(hl.get_monitors()) do
+        if m.active_workspace ~= nil and m.active_workspace.id == n then fast = true end
+      end
+    end
+  end
+  if fast then
+    hl.dispatch(hl.dsp.focus({ workspace = tostring(n) }))
+  else
+    hl.dispatch(hl.dsp.exec_raw("baneyspaces switch " .. tostring(n)))
+  end
+end
+
+hl.bind("SUPER + code:10", function() baneyspaces_switch(1) end, { description = "BaneySpaces: workspace 1" })
+hl.bind("SUPER + code:11", function() baneyspaces_switch(2) end, { description = "BaneySpaces: workspace 2" })
+hl.bind("SUPER + code:12", function() baneyspaces_switch(3) end, { description = "BaneySpaces: workspace 3" })
+hl.bind("SUPER + code:13", function() baneyspaces_switch(4) end, { description = "BaneySpaces: workspace 4" })
+hl.bind("SUPER + code:14", function() baneyspaces_switch(5) end, { description = "BaneySpaces: workspace 5" })
+hl.bind("SUPER + code:15", function() baneyspaces_switch(6) end, { description = "BaneySpaces: workspace 6" })
+hl.bind("SUPER + code:16", function() baneyspaces_switch(7) end, { description = "BaneySpaces: workspace 7" })
+hl.bind("SUPER + code:17", function() baneyspaces_switch(8) end, { description = "BaneySpaces: workspace 8" })
+hl.bind("SUPER + code:18", function() baneyspaces_switch(9) end, { description = "BaneySpaces: workspace 9" })
+hl.bind("SUPER + SHIFT + code:10", hl.dsp.exec_raw("baneyspaces move 1"), { description = "BaneySpaces: send window to workspace 1" })
+hl.bind("SUPER + SHIFT + code:11", hl.dsp.exec_raw("baneyspaces move 2"), { description = "BaneySpaces: send window to workspace 2" })
+hl.bind("SUPER + SHIFT + code:12", hl.dsp.exec_raw("baneyspaces move 3"), { description = "BaneySpaces: send window to workspace 3" })
+hl.bind("SUPER + SHIFT + code:13", hl.dsp.exec_raw("baneyspaces move 4"), { description = "BaneySpaces: send window to workspace 4" })
+hl.bind("SUPER + SHIFT + code:14", hl.dsp.exec_raw("baneyspaces move 5"), { description = "BaneySpaces: send window to workspace 5" })
+hl.bind("SUPER + SHIFT + code:15", hl.dsp.exec_raw("baneyspaces move 6"), { description = "BaneySpaces: send window to workspace 6" })
+hl.bind("SUPER + SHIFT + code:16", hl.dsp.exec_raw("baneyspaces move 7"), { description = "BaneySpaces: send window to workspace 7" })
+hl.bind("SUPER + SHIFT + code:17", hl.dsp.exec_raw("baneyspaces move 8"), { description = "BaneySpaces: send window to workspace 8" })
+hl.bind("SUPER + SHIFT + code:18", hl.dsp.exec_raw("baneyspaces move 9"), { description = "BaneySpaces: send window to workspace 9" })
+hl.bind("SUPER + SHIFT + ALT + code:10", hl.dsp.exec_raw("baneyspaces move 1 --stay"), { description = "BaneySpaces: send window to workspace 1, stay here" })
+hl.bind("SUPER + SHIFT + ALT + code:11", hl.dsp.exec_raw("baneyspaces move 2 --stay"), { description = "BaneySpaces: send window to workspace 2, stay here" })
+hl.bind("SUPER + SHIFT + ALT + code:12", hl.dsp.exec_raw("baneyspaces move 3 --stay"), { description = "BaneySpaces: send window to workspace 3, stay here" })
+hl.bind("SUPER + SHIFT + ALT + code:13", hl.dsp.exec_raw("baneyspaces move 4 --stay"), { description = "BaneySpaces: send window to workspace 4, stay here" })
+hl.bind("SUPER + SHIFT + ALT + code:14", hl.dsp.exec_raw("baneyspaces move 5 --stay"), { description = "BaneySpaces: send window to workspace 5, stay here" })
+hl.bind("SUPER + SHIFT + ALT + code:15", hl.dsp.exec_raw("baneyspaces move 6 --stay"), { description = "BaneySpaces: send window to workspace 6, stay here" })
+hl.bind("SUPER + SHIFT + ALT + code:16", hl.dsp.exec_raw("baneyspaces move 7 --stay"), { description = "BaneySpaces: send window to workspace 7, stay here" })
+hl.bind("SUPER + SHIFT + ALT + code:17", hl.dsp.exec_raw("baneyspaces move 8 --stay"), { description = "BaneySpaces: send window to workspace 8, stay here" })
+hl.bind("SUPER + SHIFT + ALT + code:18", hl.dsp.exec_raw("baneyspaces move 9 --stay"), { description = "BaneySpaces: send window to workspace 9, stay here" })
+hl.bind("SUPER + TAB", hl.dsp.exec_raw("baneyspaces overview next"), { description = "BaneySpaces: overview (next workspace)" })
+hl.bind("SUPER + SHIFT + TAB", hl.dsp.exec_raw("baneyspaces overview prev"), { description = "BaneySpaces: overview (previous workspace)" })
+hl.bind("ALT + TAB", hl.dsp.exec_raw("baneyspaces switcher next"), { description = "BaneySpaces: switch windows across workspaces" })
+hl.bind("ALT + SHIFT + TAB", hl.dsp.exec_raw("baneyspaces switcher prev"), { description = "BaneySpaces: switch windows backwards" })
+hl.bind("SUPER + SPACE", hl.dsp.exec_raw("baneyspaces launcher toggle"), { description = "BaneySpaces: launcher" })
+hl.bind("SUPER + GRAVE", hl.dsp.exec_raw("baneyspaces agent-workspace toggle"), { description = "BaneySpaces: show or hide the agent workspace" })
