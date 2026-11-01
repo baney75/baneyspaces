@@ -116,6 +116,10 @@ final class SetupModel: ObservableObject {
     @Published var screenshotsFreed = SystemShortcuts.hasFreed
     /// The Mission Control key is switched on but macOS refused the key watcher.
     @Published var viewerKeysFailed = false
+    /// Why the trackpad swipe up doesn't open the overview, if it doesn't.
+    @Published var trackpadFailed: String?
+    /// Why macOS's Mission Control couldn't be switched off (the way back couldn't be set up).
+    @Published var missionControlFailed: String?
     /// The person asked for access a while ago and macOS still says no: most likely an old
     /// permission from an earlier copy of the app, which only a reset clears.
     @Published var staleGrant = false
@@ -128,6 +132,9 @@ final class SetupModel: ObservableObject {
     var onViewerKeysChange: ((Bool) -> Void)?
     /// Asked by the window controller; true while the Mission Control key watcher is running.
     var viewerKeysActive: () -> Bool = { true }
+    /// Asked by the window controller; why the trackpad swipe isn't working, or nil.
+    var trackpadProblem: () -> String? = { nil }
+    var missionControlProblem: () -> String? = { nil }
     /// Called when every required step turns green while the window is open.
     var onReady: (() -> Void)?
 
@@ -178,6 +185,10 @@ final class SetupModel: ObservableObject {
         openAtLogin = status == .enabled
         loginNeedsApproval = status == .requiresApproval
         viewerKeysFailed = trusted && viewerKeys && !viewerKeysActive()
+        let swipe = trusted && viewerKeys ? trackpadProblem() : nil
+        if swipe != trackpadFailed { trackpadFailed = swipe }
+        let mc = trusted && viewerKeys ? missionControlProblem() : nil
+        if mc != missionControlFailed { missionControlFailed = mc }
         hooks = hooksInstalled()
         let info = updateInfo()
         if info != update { update = info }
@@ -479,10 +490,15 @@ struct SetupView: View {
 
         if model.desktops > 1 {
             step(done: false, title: "Optional: keep one macOS desktop") {
-                Text("You have \(model.desktops) desktops in Mission Control. Windows on the others are out of reach. Open Mission Control, hover each extra desktop at the top, and click its close button.")
-                    .foregroundStyle(.secondary)
-                Button("Open Mission Control") {
-                    NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Mission Control.app"))
+                if model.viewerKeys {
+                    Text("You have \(model.desktops) desktops in Mission Control. Windows on the others are out of reach. BaneySpaces' overview has replaced Mission Control, so to close the extra ones, turn off \"Use BaneySpaces' overview instead of Mission Control\" under Keys, open Mission Control, hover each extra desktop at the top and click its close button, then turn the switch back on.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("You have \(model.desktops) desktops in Mission Control. Windows on the others are out of reach. Open Mission Control, hover each extra desktop at the top, and click its close button.")
+                        .foregroundStyle(.secondary)
+                    Button("Open Mission Control") {
+                        NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Mission Control.app"))
+                    }
                 }
             }
         }
@@ -540,13 +556,27 @@ struct SetupView: View {
         }
 
         section("See every workspace at once") {
-            Toggle("The Mission Control key and ⌃↑ open BaneySpaces' overview", isOn: Binding(get: { model.viewerKeys }, set: { model.setViewerKeys($0) }))
+            Toggle("Use BaneySpaces' overview instead of Mission Control", isOn: Binding(get: { model.viewerKeys }, set: { model.setViewerKeys($0) }))
             if model.viewerKeysFailed {
-                Text("macOS didn't let BaneySpaces watch those keys, so they still open Mission Control. Turn the switch off and on to try again. The overview is always in the menu bar menu (Show All Workspaces).")
-                    .font(.callout).foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Already switched on and still not working?").font(.callout.bold())
+                    Text("macOS wouldn't let BaneySpaces watch the Mission Control key and ⌃↑, so macOS's Mission Control stays on until it does. Usually macOS kept an old permission from an earlier copy of BaneySpaces. Fixing it removes the old entry and asks again. The overview is always in the menu bar menu (Show All Workspaces).")
+                        .font(.callout).foregroundStyle(.secondary)
+                    Button(model.fixing ? "Fixing…" : "Fix Permission", action: model.fixPermission)
+                        .disabled(model.fixing)
+                }
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.12)))
             } else {
-                Text("Turn this off to give both keys back to Mission Control and to apps that use ⌃↑. The overview stays in the menu bar menu.")
+                Text("The Mission Control key, ⌃↑, a swipe up with three or four fingers (as your trackpad settings have it) and any hot corner set to Mission Control open the overview; a swipe down closes it. macOS's Mission Control is switched off in the Dock while BaneySpaces runs, and comes back, with your hot corners as they were, when you turn this off or quit. A Magic Mouse's two-finger double tap opens nothing while this is on.")
                     .font(.callout).foregroundStyle(.secondary)
+            }
+            if let problem = model.missionControlFailed {
+                Text("macOS's Mission Control is still on. \(problem) BaneySpaces tries again every few minutes.")
+                    .font(.callout).foregroundStyle(.orange)
+            }
+            if let problem = model.trackpadFailed {
+                Text(problem).font(.callout).foregroundStyle(.orange)
             }
             Toggle("Dragging a window to the top of the screen opens the overview", isOn: Binding(get: { model.topDrag }, set: { model.setTopDrag($0) }))
             Text("Let go over a workspace to send the window there; let go at the top and it fills the screen. Mission Control for that drag stays off while this is on, and comes back when you turn it off.")

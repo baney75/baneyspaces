@@ -66,8 +66,39 @@ Prefer to keep ⌘1 for your browser's first tab? Pick ⌃, ⌥ or ⌃⌥ in set
 
 ## See everything at once
 
-Press the Mission Control key (F3 on Apple keyboards) or ⌃↑, and BaneySpaces shows all nine
-workspaces in the same 3×3 grid as the number keys, with every window's app and title.
+Press the Mission Control key (F3 on Apple keyboards) or ⌃↑, swipe up with three or four fingers
+on the trackpad (whichever your trackpad settings give Mission Control), or push the pointer into a
+hot corner you had set to Mission Control, and BaneySpaces shows all nine workspaces in the same 3×3
+grid as the number keys, with every window's app and title. A swipe down, Esc or the same key again
+puts you back.
+
+**macOS's Mission Control is replaced, not joined.** BaneySpaces switches it off in the Dock, so the
+"Desktop" view never opens from the trackpad, a hot corner or the keys, and it remaps any hot corner
+that was set to Mission Control to nothing and answers that corner itself. It saves what was there
+first. To get Mission Control back, turn off **Settings › Keys › Use BaneySpaces' overview instead of
+Mission Control**: every setting goes back exactly as it was. Quitting BaneySpaces and uninstalling
+do the same, and the Dock restarts each time. If BaneySpaces stops without quitting (a crash, or
+the app dragged to the Trash), a small launch agent puts Mission Control back once no BaneySpaces
+has run for a minute (30 seconds after an update's restart that never came back). The agent stays
+installed across quits, so macOS doesn't announce a new background item at every launch; it goes
+when you turn the Settings switch off or uninstall, and does nothing while BaneySpaces isn't
+holding Mission Control off. BaneySpaces
+switches Mission Control off only after that agent is written, loaded and checked, and after what
+was there is saved to disk; if either can't be done, Mission Control stays on and Settings says
+why. If the agent is switched off later (the Background Item notice), BaneySpaces gives Mission
+Control back instead of holding it off without a way back. Only a build that knows this takeover
+counts as running: an older BaneySpaces started later does not keep Mission Control off. To get
+Mission Control back yourself, turn off the Settings switch; if BaneySpaces isn't running, use
+`defaults delete com.apple.dock mcx-expose-disabled; killall Dock` (and set any hot corner you had
+on Mission Control back in System Settings). Doing that while BaneySpaces runs also works: it
+notices within 20 seconds and switches its own overview off.
+
+App Exposé (⌃↓) goes with Mission Control, and so does a Magic Mouse's two-finger double tap,
+which opens nothing while this is on. The trackpad swipe uses macOS's private trackpad framework,
+loaded when BaneySpaces starts and checked against the touches it gets; if macOS won't load it or
+reports touches in a layout BaneySpaces doesn't read, Settings says so and the other ways in still
+work. Only trackpads are watched, with each trackpad's own finger settings, and Show Desktop and
+pinch gestures aren't taken for a swipe.
 
 - **Click a workspace,** or press its number, to go there. The arrow keys move the highlight
   and Return goes to it.
@@ -287,8 +318,9 @@ Everything else is optional and already set sensibly:
 - **Your keys.** ⌘ by default, or ⌃, ⌥ or ⌃⌥ with what each one gives up. macOS uses ⌘⇧3, ⌘⇧4
   and ⌘⇧5 for screenshots and claims them first; **Free Them** turns those off so they can move
   windows (⌃⌘⇧3 and ⌃⌘⇧4 still capture to the clipboard), and **Turn Them Back On** undoes it.
-- **See every workspace at once.** The Mission Control key and ⌃↑ open the overview, or switch
-  that off to keep them for Mission Control.
+- **See every workspace at once.** The Mission Control key, ⌃↑, a three- or four-finger swipe up and
+  any hot corner you had set to Mission Control open the overview in place of macOS's. Switch **Use
+  BaneySpaces' overview instead of Mission Control** off to get Mission Control back as it was.
 - **Start with your Mac.** On unless you turn it off. If macOS wants you to approve it, setup
   shows a button that opens Login Items.
 
@@ -463,7 +495,8 @@ app as usual instead, and its menu entry says so.
   keyboard entry holds Secure Input, macOS lets no other app see keystrokes. That applies to
   every global shortcut, not just these.
 - **Windows on other macOS desktops are left alone.** Keep one macOS desktop in Mission Control
-  and let the nine workspaces do the rest.
+  and let the nine workspaces do the rest. To close extra desktops, turn off **Use BaneySpaces'
+  overview instead of Mission Control** first, since macOS's is switched off while it's on.
 - **An agent pressing ⌘1–⌘9 in the foreground switches workspaces,** the same as you would.
   Background key delivery to one app doesn't.
 

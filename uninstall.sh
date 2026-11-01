@@ -36,6 +36,66 @@ pref() {
   else defaults read "$ID" "$1" 2>/dev/null || true; fi
 }
 
+# The test reads this Mac's settings as BANEYSPACES_UNINSTALL_MACOS says, not for real.
+# BANEYSPACES_UNINSTALL_MACOS_<key> sets one setting (a - in the key is a _); BANEYSPACES_UNINSTALL_MACOS, every other.
+macos_pref() {
+  if [ -n "$TEST" ]; then v="BANEYSPACES_UNINSTALL_MACOS_${2//-/_}"; echo "${!v-${BANEYSPACES_UNINSTALL_MACOS:-}}"
+  else defaults read "$1" "$2" 2>/dev/null || true; fi
+}
+
+# Puts macOS's Mission Control back from BaneySpaces' record of what was there. The Dock's switch
+# (mcx-expose-disabled) and each hot corner BaneySpaces remapped from Mission Control go back to
+# what the record says, but only while still as BaneySpaces left them (the switch on, the corner
+# at 1): a setting changed since is the person's. A setting the record doesn't have wasn't there
+# before, and is removed. A switch that was already on before BaneySpaces stays on, untouched.
+restore_mission_control() {
+  local mc_saved mc_changed corner was
+  mc_saved=$(pref systemMissionControlSaved)
+  # The app also keeps the record in a file of its own, which survives a crash that its settings don't.
+  [ -n "$mc_saved" ] || mc_saved=$(defaults read "$DATA/mc-record" 2>/dev/null || true)
+  [ -n "$mc_saved" ] || return 0
+  mc_changed=""
+  if [ "$(macos_pref com.apple.dock mcx-expose-disabled)" = "1" ]; then
+    was=$(printf '%s\n' "$mc_saved" | sed -n 's|.*"com.apple.dock/mcx-expose-disabled" = \([01]\);.*|\1|p')
+    if [ "$was" != 1 ]; then
+      step "Putting back Mission Control"
+      if [ -n "$was" ]; then sys defaults write com.apple.dock mcx-expose-disabled -bool false
+      else sys defaults delete com.apple.dock mcx-expose-disabled 2>/dev/null || true; fi
+      mc_changed=1
+    fi
+  fi
+  for corner in tl tr bl br; do
+    was=$(printf '%s\n' "$mc_saved" | sed -n "s|.*\"com.apple.dock/wvous-$corner-corner\" = \([0-9]*\);.*|\1|p")
+    if [ -n "$was" ] && [ "$(macos_pref com.apple.dock "wvous-$corner-corner")" = "1" ]; then
+      step "Putting back the $corner hot corner"
+      sys defaults write com.apple.dock "wvous-$corner-corner" -int "$was"
+      mc_changed=1
+    fi
+  done
+  [ -z "$mc_changed" ] || sys killall Dock 2>/dev/null || true
+  return 0
+}
+
+# The launch agent that did this when BaneySpaces had stopped running, and its files.
+WATCHDOG=com.baney.baneyspaces.mc-watchdog
+remove_watchdog() {
+  # The plist first: when the agent is what runs this, unloading it ends this very process.
+  rm -f "$HOME/Library/LaunchAgents/$WATCHDOG.plist"
+  sys launchctl bootout "gui/$(id -u)/$WATCHDOG" >/dev/null 2>&1 || true
+  return 0
+}
+
+# `uninstall.sh --restore-mission-control`: only that. The launch agent runs it (from a copy in
+# BaneySpaces' folder) when BaneySpaces hasn't run for a minute, and it ends by forgetting the
+# record, so the next launch saves what is there then.
+if [ "${1:-}" = "--restore-mission-control" ]; then
+  restore_mission_control
+  sys defaults delete "$ID" systemMissionControlSaved >/dev/null 2>&1 || true
+  rm -f "$DATA/mc-heartbeat" "$DATA/mc-updating" "$DATA/mc-record.plist"
+  remove_watchdog
+  exit 0
+fi
+
 step "Quitting BaneySpaces (it puts every window back first)"
 sys osascript -e "tell application id \"$ID\" to quit" >/dev/null 2>&1 || true
 for _ in $(seq 1 75); do running || break; sleep 0.2; done
@@ -99,12 +159,7 @@ fi
 # a setting still off as BaneySpaces left it goes back to its saved value. Fill-the-screen, which
 # builds before 2026-10-28 turned off too, comes back on as the app does it, unless the app
 # already gave it back or it was off before BaneySpaces.
-# The test reads this Mac's settings as BANEYSPACES_UNINSTALL_MACOS says, not for real.
-# BANEYSPACES_UNINSTALL_MACOS_<key> sets one setting; BANEYSPACES_UNINSTALL_MACOS, every other.
-macos_pref() {
-  if [ -n "$TEST" ]; then v="BANEYSPACES_UNINSTALL_MACOS_$2"; echo "${!v-${BANEYSPACES_UNINSTALL_MACOS:-}}"
-  else defaults read "$1" "$2" 2>/dev/null || true; fi
-}
+# (macos_pref, above, reads this Mac's settings.)
 top_drag_back() {  # domain key process what
   [ "$(macos_pref "$1" "$2")" = "0" ] || return 0
   step "Putting back $4 for a window dragged to the top"
@@ -126,6 +181,10 @@ if { [ -n "$saved" ] || [ "$(pref systemTopDragFillPending)" = 1 ] || [ "$(pref 
   sys defaults write com.apple.WindowManager EnableTopTilingByEdgeDrag -bool true
   sys killall WindowManager 2>/dev/null || true
 fi
+
+# Mission Control, if the app wasn't there to put it back (it does on its own when it is).
+restore_mission_control
+remove_watchdog
 
 # AeroSpace: the installer stopped it opening at login so the two don't fight over the same keys.
 if [ -f "$DATA/aerospace-start-at-login" ] && [ -f "$HOME/.aerospace.toml" ]; then

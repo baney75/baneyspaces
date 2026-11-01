@@ -172,6 +172,51 @@ final class UninstallTests: XCTestCase {
         XCTAssertFalse(out.contains("enterMissionControlByTopWindowDrag"), out)
     }
 
+    /// Without the app, Mission Control and the hot corners BaneySpaces remapped go back from its record.
+    func testWithoutTheAppMissionControlAndItsCornersComeBack() throws {
+        let saved: [String: Any] = ["com.apple.dock/wvous-tl-corner": 2, "com.apple.dock/wvous-br-corner": 2]
+        let out = try uninstall(prefs: ["systemMissionControlSaved": saved], macOS: "0",
+                                macOSKeys: ["mcx_expose_disabled": "1", "wvous_tl_corner": "1", "wvous_br_corner": "1", "wvous_tr_corner": "5"])
+        // The switch wasn't there before, so it's removed rather than set to a value.
+        XCTAssertTrue(out.contains("would run: defaults delete com.apple.dock mcx-expose-disabled"), out)
+        XCTAssertTrue(out.contains("would run: defaults write com.apple.dock wvous-tl-corner -int 2"), out)
+        XCTAssertTrue(out.contains("would run: defaults write com.apple.dock wvous-br-corner -int 2"), out)
+        XCTAssertFalse(out.contains("wvous-tr-corner"), "a corner BaneySpaces never touched")
+        XCTAssertTrue(out.contains("would run: killall Dock"), out)
+    }
+
+    /// A switch that was on before comes back on.
+    func testWithoutTheAppASwitchThatWasOnBeforeStaysOn() throws {
+        let out = try uninstall(prefs: ["systemMissionControlSaved": ["com.apple.dock/mcx-expose-disabled": true]], macOS: "0",
+                                macOSKeys: ["mcx_expose_disabled": "1"])
+        XCTAssertFalse(out.contains("mcx-expose-disabled") || out.contains("killall Dock"), "left as it was: no write, no Dock restart\n" + out)
+        let off = try uninstall(prefs: ["systemMissionControlSaved": ["com.apple.dock/mcx-expose-disabled": false]], macOS: "0",
+                                macOSKeys: ["mcx_expose_disabled": "1"])
+        XCTAssertTrue(off.contains("would run: defaults write com.apple.dock mcx-expose-disabled -bool false"), off)
+    }
+
+    /// The launch agent and its files go with the app.
+    func testTheMissionControlWatchdogIsRemoved() throws {
+        try write("Library/LaunchAgents/com.baney.baneyspaces.mc-watchdog.plist", "<plist/>")
+        let out = try uninstall()
+        XCTAssertTrue(out.contains("would run: launchctl bootout gui/"), out)
+        XCTAssertFalse(fm.fileExists(atPath: path("Library/LaunchAgents/com.baney.baneyspaces.mc-watchdog.plist").path))
+    }
+
+    /// Settings changed since (the switch off, a corner given another job) are the person's.
+    func testWithoutTheAppMissionControlSettingsChangedSinceStay() throws {
+        let saved: [String: Any] = ["com.apple.dock/wvous-tl-corner": 2]
+        let out = try uninstall(prefs: ["systemMissionControlSaved": saved], macOS: "0",
+                                macOSKeys: ["mcx_expose_disabled": "0", "wvous_tl_corner": "5"])
+        XCTAssertFalse(out.contains("mcx-expose-disabled") || out.contains("wvous-tl-corner") || out.contains("killall Dock"), out)
+    }
+
+    /// No record, nothing to do: the Dock's switch may be somebody else's.
+    func testWithoutARecordMissionControlIsLeftAlone() throws {
+        let out = try uninstall(macOS: "1", macOSKeys: ["mcx_expose_disabled": "1", "wvous_tl_corner": "1"])
+        XCTAssertFalse(out.contains("mcx-expose-disabled") || out.contains("wvous-tl-corner"), out)
+    }
+
     /// r2: one in the Trash still counts as the app.
     func testUsesTheAppFromTheTrash() throws {
         try write(".Trash/BaneySpaces 2.app/Contents/MacOS/BaneySpaces", "#!/bin/sh\n")

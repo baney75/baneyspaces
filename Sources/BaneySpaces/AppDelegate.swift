@@ -162,6 +162,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         a.showSetup = { [weak self] in self?.showSetup() }
         return LauncherController(actions: a)
     }()
+    private lazy var trackpadSwipe: TrackpadSwipe = {
+        let s = TrackpadSwipe()
+        s.onSwipe = { [weak self] direction in
+            guard let self, self.started else { return }
+            switch direction {
+            case .up: if !self.viewer.isOpen { self.viewer.open() }
+            case .down: if self.viewer.isOpen { self.viewer.toggle() }
+            }
+        }
+        return s
+    }()
+    private var missionControlTicks = 0
+    private lazy var hotCorners: HotCornerWatcher = {
+        let w = HotCornerWatcher()
+        w.onOpen = { [weak self] in
+            guard let self, self.started, !self.viewer.isOpen else { return }
+            self.viewer.open()
+        }
+        return w
+    }()
     private lazy var missionControlKeys: MissionControlKeys = {
         let keys = MissionControlKeys { [weak self] in self?.viewer.toggle() }
         keys.onCmdTab = { [weak self] forward, isRepeat, time in
@@ -198,10 +218,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         c.model.onFocusFinished = { [weak self] id in self?.deck.focusFinished(id) }
         c.model.viewerKeysActive = { [weak self] in self?.missionControlKeys.isActive ?? false }
+        c.model.trackpadProblem = { [weak self] in self?.trackpadSwipe.problem }
+        c.model.missionControlProblem = { SystemMissionControl.problem }
         c.model.onViewerKeysChange = { [weak self] on in
             MissionControlKeys.enabled = on
-            guard let self, self.started else { return }
-            self.restartKeyWatcher()
+            guard let self else { return }
+            if self.started { self.restartKeyWatcher() }
+            self.syncMissionControl()
         }
         c.model.onWorkspaceDockChange = { [weak self] on in self?.setWorkspaceDock(on) }
         c.model.onTopDragChange = { [weak self] on in self?.setTopDrag(on) }
@@ -223,10 +246,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return c
     }()
 
+    private var mcBackAtDock = 0
+
+    /// While Mission Control is held off: the person may have turned it back on (the README's
+    /// `defaults delete`, a profile), and the launch agent may have been switched off (the
+    /// Background Item notice). Neither may leave BaneySpaces answering beside macOS's view, or
+    /// holding it off with no way back.
+    private func checkMissionControlHeld() {
+        // The key watcher can stop while Accessibility is still granted; then nothing answers the key.
+        guard missionControlKeys.isActive else {
+            Trace.log("mission control: the key watcher stopped; giving Mission Control back")
+            return syncMissionControl()
+        }
+        if SystemMissionControl.isOffAtDock {
+            mcBackAtDock = 0
+        } else {
+            // Twice in a row, so one unlucky read of the Dock's settings doesn't undo it.
+            mcBackAtDock += 1
+            if mcBackAtDock >= 2 {
+                mcBackAtDock = 0
+                Trace.log("mission control: turned back on at the Dock; BaneySpaces' overview switched off")
+                return setup.model.setViewerKeys(false)
+            }
+        }
+        guard missionControlTicks % 15 == 0 else { return }
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard !SystemMissionControl.isArmed else { return }
+            DispatchQueue.main.async {
+                Trace.log("mission control: the launch agent is no longer loaded")
+                self?.syncMissionControl()
+            }
+        }
+    }
+
     /// The key watcher reads its settings when it starts, so a change restarts it.
     private func restartKeyWatcher() {
         missionControlKeys.stop()
         missionControlKeys.start()
+    }
+
+    /// macOS's Mission Control is off while BaneySpaces' overview answers its keys, its trackpad
+    /// swipe and its hot corners; switched off, without Accessibility, or while macOS won't let the
+    /// key watcher run (nothing would answer the key), all of it goes back.
+    private func syncMissionControl() {
+        guard missionControlWanted else { return giveMissionControlBack() }
+        // The launch agent is set up off the main thread; one attempt at a time.
+        guard !armingMissionControl else { return }
+        armingMissionControl = true
+        SystemMissionControl.takeOver(stillWanted: { [weak self] in self?.missionControlWanted ?? false }) { [weak self] taken in
+            guard let self else { return }
+            self.armingMissionControl = false
+            guard taken else { return self.giveMissionControlBack() }
+            self.trackpadSwipe.start()
+            self.hotCorners.set(corners: SystemMissionControl.answeredCorners())
+        }
+    }
+
+    private var armingMissionControl = false
+
+    /// Accessibility granted, the switch on, and the key watcher running: something answers the keys.
+    private var missionControlWanted: Bool { started && MissionControlKeys.enabled && missionControlKeys.isActive }
+
+    /// Not wanted, or not safe: without the launch agent that puts it back, Mission Control stays
+    /// on (and the swipe and corners stay quiet, since it would open beside the overview).
+    private func giveMissionControlBack() {
+        let why = missionControlWanted ? SystemMissionControl.problem : nil
+        trackpadSwipe.stop()
+        hotCorners.stop()
+        // The agent goes with the switch, and only then; Accessibility lost or a quit leaves it loaded.
+        SystemMissionControl.restore(keeping: why, removeAgent: !MissionControlKeys.enabled)
     }
 
     /// An app dragged out of the disk image never ran the installer's other steps: AeroSpace stepping
@@ -274,6 +362,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if CommandLine.arguments.contains("--restore-dock") {
             SystemDock.restore()
             SystemTopDrag.restore()
+            SystemMissionControl.restore()
             exit(0)
         }
         // `BaneySpaces --check-settings`: opens the settings window on each tab and exits 1 if any
@@ -390,10 +479,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // The macOS Dock comes back with everything else; the next launch tucks it away again.
         dock.stop(restoreSystemDock: true)
         topDrag.stop()
+        // Mission Control comes back with the Dock, so there's always a way to see the desktops.
+        // Quitting for an update is the exception: the new build takes over, and if it never
+        // starts the launch agent puts Mission Control back after 30 seconds.
+        if SystemMissionControl.isTakenByUs {
+            if UserDefaults.standard.dictionary(forKey: "updatingTo") != nil { SystemMissionControl.leaveForUpdate() }
+            else { SystemMissionControl.restore() }
+        }
         if started { spaces.restoreAll() }
         // ⌘Space goes back to Spotlight while BaneySpaces isn't running; the next launch takes it again.
         SystemShortcuts.spotlightQueue.sync { SystemShortcuts.restoreSpotlight() }
         spaces.flushWrites()
+        // Last: a fault in the private framework while letting go must not skip anything above.
+        trackpadSwipe.stop()
+        hotCorners.stop()
     }
 
     // MARK: Accessibility
@@ -406,6 +505,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Workspace Dock takes over again once it starts. The same goes for the drag to the top.
         SystemDock.restore()
         SystemTopDrag.restore()
+        SystemMissionControl.restore()
         updateIcon()
         trustTimer?.invalidate()
         trustTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] timer in
@@ -441,6 +541,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         started = true
         registerShortcuts()
         missionControlKeys.start()
+        syncMissionControl()
         spaces.start()
         watchClicksForDisplay()
         if WorkspaceDock.enabled { dock.start() }
@@ -455,7 +556,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return }
             guard self.stillTrusted() else { return }
             // A key watcher macOS refused earlier gets another chance.
-            if (MissionControlKeys.enabled || MissionControlKeys.cmdTabEnabled) && !self.missionControlKeys.isActive { self.missionControlKeys.start() }
+            if (MissionControlKeys.enabled || MissionControlKeys.cmdTabEnabled) && !self.missionControlKeys.isActive {
+                self.missionControlKeys.start()
+                if self.missionControlKeys.isActive { self.syncMissionControl() }
+            }
+            // Every ten seconds: proof of life for the launch agent, and System Settings changes
+            // to hot corners and trackpad gestures. Nothing here lists devices.
+            self.missionControlTicks += 1
+            if self.missionControlTicks % 5 == 0 {
+                if SystemMissionControl.isTakenByUs {
+                    SystemMissionControl.beat()
+                    self.trackpadSwipe.refreshSettings()
+                    self.hotCorners.set(corners: SystemMissionControl.answeredCorners())
+                    self.checkMissionControlHeld()
+                } else if self.started, MissionControlKeys.enabled, self.missionControlKeys.isActive,
+                          SystemMissionControl.problem == nil || self.missionControlTicks % 150 == 0 {
+                    // Taken back by the launch agent while this ran, or not armed yet: try again
+                    // (every five minutes when the safety net failed, so macOS isn't asked again and again).
+                    self.syncMissionControl()
+                }
+            }
         }
     }
 
@@ -470,8 +590,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         missionControlKeys.stop()
         topDrag.stop()
         cancelSettling()
-        // Not watching any more, so macOS answers the drag again until BaneySpaces is back.
+        // Not watching any more, so macOS answers the drag, the swipe and the corners again until BaneySpaces is back.
         SystemTopDrag.restore()
+        trackpadSwipe.stop()
+        hotCorners.stop()
+        SystemMissionControl.restore()
         viewer.close()
         dock.stop(restoreSystemDock: true)
         deck.stop()
