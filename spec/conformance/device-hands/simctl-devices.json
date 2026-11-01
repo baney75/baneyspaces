@@ -1,0 +1,60 @@
+{
+ "devices": {
+  "com.apple.CoreSimulator.SimRuntime.iOS-27-0": [
+   {
+    "dataPath": "/Users/example/Library/Developer/CoreSimulator/Devices/1A192DF0-4406-4B0B-9BB1-9432BCC1CD73/data",
+    "dataPathSize": 18337792,
+    "logPath": "/Users/example/Library/Logs/CoreSimulator/1A192DF0-4406-4B0B-9BB1-9432BCC1CD73",
+    "udid": "1A192DF0-4406-4B0B-9BB1-9432BCC1CD73",
+    "isAvailable": true,
+    "deviceTypeIdentifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-18-Pro",
+    "state": "Booted",
+    "name": "iPhone 18 Pro"
+   },
+   {
+    "dataPath": "/Users/example/Library/Developer/CoreSimulator/Devices/6D9F4110-35FF-4466-A3A9-35F43529A203/data",
+    "dataPathSize": 18337792,
+    "logPath": "/Users/example/Library/Logs/CoreSimulator/6D9F4110-35FF-4466-A3A9-35F43529A203",
+    "udid": "6D9F4110-35FF-4466-A3A9-35F43529A203",
+    "isAvailable": true,
+    "deviceTypeIdentifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-18-Pro-Max",
+    "state": "Shutdown",
+    "name": "iPhone 18 Pro Max"
+   },
+   {
+    "dataPath": "/Users/example/Library/Developer/CoreSimulator/Devices/7CCA84D7-12E2-454F-A36D-A8B1DE2F2F18/data",
+    "dataPathSize": 4139044864,
+    "logPath": "/Users/example/Library/Logs/CoreSimulator/7CCA84D7-12E2-454F-A36D-A8B1DE2F2F18",
+    "udid": "7CCA84D7-12E2-454F-A36D-A8B1DE2F2F18",
+    "lastUsedAt": "2026-07-24T16:51:39Z",
+    "isAvailable": true,
+    "logPathSize": 430080,
+    "deviceTypeIdentifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro",
+    "state": "Shutdown",
+    "name": "iPhone 17 Pro"
+   }
+  ],
+  "com.apple.CoreSimulator.SimRuntime.tvOS-27-0": [
+   {
+    "dataPath": "/Users/example/Library/Developer/CoreSimulator/Devices/70745198-1CF4-4395-823C-519C21F3C6F7/data",
+    "dataPathSize": 4096,
+    "logPath": "/Users/example/Library/Logs/CoreSimulator/70745198-1CF4-4395-823C-519C21F3C6F7",
+    "udid": "70745198-1CF4-4395-823C-519C21F3C6F7",
+    "isAvailable": true,
+    "deviceTypeIdentifier": "com.apple.CoreSimulator.SimDeviceType.Apple-TV-4K-3rd-generation-4K",
+    "state": "Shutdown",
+    "name": "Apple TV 4K (3rd generation)"
+   },
+   {
+    "dataPath": "/Users/example/Library/Developer/CoreSimulator/Devices/3AC4CC5B-8D5D-4AD1-BDE5-A7834AE4A50B/data",
+    "dataPathSize": 4096,
+    "logPath": "/Users/example/Library/Logs/CoreSimulator/3AC4CC5B-8D5D-4AD1-BDE5-A7834AE4A50B",
+    "udid": "3AC4CC5B-8D5D-4AD1-BDE5-A7834AE4A50B",
+    "isAvailable": true,
+    "deviceTypeIdentifier": "com.apple.CoreSimulator.SimDeviceType.Apple-TV-4K-3rd-generation-1080p",
+    "state": "Shutdown",
+    "name": "Apple TV 4K (3rd generation) (at 1080p)"
+   }
+  ]
+ }
+}

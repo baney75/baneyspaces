@@ -1,0 +1,37 @@
+{
+ "devicetypes": [
+  {
+   "productFamily": "iPhone",
+   "bundlePath": "/Library/Developer/CoreSimulator/Profiles/DeviceTypes/iPhone 17 Pro.simdevicetype",
+   "maxRuntimeVersion": 4294967295,
+   "maxRuntimeVersionString": "65535.255.255",
+   "identifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro",
+   "modelIdentifier": "iPhone18,1",
+   "minRuntimeVersionString": "26.0.0",
+   "minRuntimeVersion": 1703936,
+   "name": "iPhone 17 Pro"
+  },
+  {
+   "productFamily": "iPhone",
+   "bundlePath": "/Library/Developer/CoreSimulator/Profiles/DeviceTypes/iPhone 17.simdevicetype",
+   "maxRuntimeVersion": 4294967295,
+   "maxRuntimeVersionString": "65535.255.255",
+   "identifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
+   "modelIdentifier": "iPhone18,3",
+   "minRuntimeVersionString": "26.0.0",
+   "minRuntimeVersion": 1703936,
+   "name": "iPhone 17"
+  },
+  {
+   "productFamily": "iPad",
+   "bundlePath": "/Library/Developer/CoreSimulator/Profiles/DeviceTypes/iPad Pro 13-inch (M5).simdevicetype",
+   "maxRuntimeVersion": 4294967295,
+   "maxRuntimeVersionString": "65535.255.255",
+   "identifier": "com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M5-12GB",
+   "modelIdentifier": "iPad17,4",
+   "minRuntimeVersionString": "26.0.0",
+   "minRuntimeVersion": 1703936,
+   "name": "iPad Pro 13-inch (M5)"
+  }
+ ]
+}
