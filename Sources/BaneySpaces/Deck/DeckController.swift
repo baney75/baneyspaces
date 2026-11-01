@@ -54,10 +54,44 @@ final class AgentOwned {
         return info.kp_eproc.e_ppid
     }
 
-    /// R-D8: whether `pid` is a process started for an agent or descends from one. An emulator's
-    /// window belongs to a grandchild (`emulator` starts `qemu-system-*`), and it is the agent's.
+    /// Descendants of the processes started for an agent, recorded with their start times while their parent
+    /// was alive (R-D8). A grandchild whose parent exits is reparented to launchd; the record is what keeps it
+    /// the agent's. Recorded by `recordDescendants()`, about twice a second.
+    private var descendants: [Int32: Double] = [:]
+
+    /// Every process and its parent, from the kernel.
+    static func processTable() -> [(pid: Int32, ppid: Int32)] {
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_ALL]
+        var size = 0
+        guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 0 else { return [] }
+        var buf = [UInt8](repeating: 0, count: size + 8 * MemoryLayout<kinfo_proc>.stride)
+        guard sysctl(&mib, 3, &buf, &size, nil, 0) == 0 else { return [] }
+        let n = size / MemoryLayout<kinfo_proc>.stride
+        return buf.withUnsafeBytes { raw in
+            (0..<n).map { i in
+                let p = raw.load(fromByteOffset: i * MemoryLayout<kinfo_proc>.stride, as: kinfo_proc.self)
+                return (p.kp_proc.p_pid, p.kp_eproc.e_ppid)
+            }
+        }
+    }
+
+    /// Notes new children, grandchildren and so on of the agent's processes, and forgets ones that ended.
+    func recordDescendants() {
+        lock.lock(); let roots = Set(set.pids); lock.unlock()
+        guard !roots.isEmpty || !descendants.isEmpty else { return }
+        let table = Self.processTable()
+        lock.lock()
+        descendants = descendants.filter { pid, started in Self.startTime(pid).map { abs($0 - started) < 0.5 } ?? false }
+        let found = ProcessTree.newDescendants(roots: roots, known: Set(descendants.keys), table: table)
+        for pid in found { if let t = Self.startTime(pid) { descendants[pid] = t } }
+        lock.unlock()
+    }
+
+    /// R-D8: whether `pid` is a process started for an agent, a descendant recorded while its parent lived, or
+    /// (right now) a descendant by the parent chain.
     func owns(_ pid: Int32) -> Bool {
-        lock.lock(); let all = set; lock.unlock()
+        lock.lock(); let all = set; let recorded = descendants[pid]; lock.unlock()
+        if let recorded, let now = Self.startTime(pid), abs(recorded - now) < 0.5 { return true }
         return ProcessTree.descends(pid: pid, roots: all.roots, startOf: Self.startTime, parentOf: Self.parent(of:))
     }
 

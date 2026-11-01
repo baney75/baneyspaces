@@ -26,7 +26,7 @@ final class DevicesTests: XCTestCase {
             let f = c["facts"] as! [String: Any]
             let facts = DeviceFacts(platform: f["platform"] as! String, bundle: f["bundle"] as? String ?? "",
                                     process: f["process"] as? String ?? "", windowClass: f["class"] as? String ?? "",
-                                    exe: f["exe"] as? String ?? "", title: f["title"] as? String ?? "",
+                                    exe: f["exe"] as? String ?? "", args: f["args"] as? [String] ?? [], title: f["title"] as? String ?? "",
                                     standard: f["standard"] as? Bool ?? true)
             let d = DeviceTable.classify(facts)
             let e = c["expect"] as! [String: Any]
@@ -36,6 +36,7 @@ final class DevicesTests: XCTestCase {
             if let w = e["agent_home"] as? Bool { XCTAssertEqual(d.agentHome, w, name) }
             if let w = e["resizes_itself"] as? Bool { XCTAssertEqual(d.resizesItself, w, name) }
             if let w = e["float"] as? Bool { XCTAssertEqual(d.float, w, name) }
+            if let w = e["sandbox_only"] as? Bool { XCTAssertEqual(d.sandboxOnly, w, name) }
         }
     }
 
@@ -65,7 +66,7 @@ final class DevicesTests: XCTestCase {
             Dictionary(uniqueKeysWithValues: (v as! [String: NSNumber]).map { (Int32($0.key)!, $0.value.doubleValue) })
         }
         for c in try cases("placement.json") {
-            let roots = table(c["roots"]), starts = table(c["starts"]), parents = table(c["parents"])
+            let roots = table(c["roots"]).merging(table(c["recorded"] ?? [:])) { a, _ in a }, starts = table(c["starts"]), parents = table(c["parents"])
             let got = ProcessTree.descends(pid: Int32(truncating: c["pid"] as! NSNumber), roots: roots,
                                            startOf: { starts[$0] }, parentOf: { parents[$0].map { Int32($0) } })
             XCTAssertEqual(got, c["expect"] as? Bool, c["name"] as! String)
@@ -156,11 +157,111 @@ final class DevicesTests: XCTestCase {
 
     // MARK: R-D7 and the tap list
 
-    func testOurTapIsRearmedWhenAnotherKeyTapIsAheadOfIt() {
-        XCTAssertTrue(DeviceKeys.shouldRearm(taps: [(owner: 900, takesKeys: true), (owner: 100, takesKeys: true)], ours: 100))
-        XCTAssertFalse(DeviceKeys.shouldRearm(taps: [(owner: 100, takesKeys: true), (owner: 900, takesKeys: true)], ours: 100))
-        XCTAssertFalse(DeviceKeys.shouldRearm(taps: [(owner: 900, takesKeys: false), (owner: 100, takesKeys: true)], ours: 100),
-                       "a listen-only tap swallows nothing")
-        XCTAssertFalse(DeviceKeys.shouldRearm(taps: [], ours: 100))
+    func testOurTapIsRemadeOnlyWhenAnotherKeyTakingTapAppears() {
+        let ours: Int32 = 100
+        let known: Set<UInt32> = [1, 2]
+        XCTAssertTrue(DeviceKeys.shouldRearm(taps: [(id: 1, owner: 900, takesKeys: true), (id: 3, owner: 900, takesKeys: true)], known: known, ours: ours), "a new one")
+        XCTAssertFalse(DeviceKeys.shouldRearm(taps: [(id: 3, owner: ours, takesKeys: true)], known: known, ours: ours), "our own is not another's")
+        XCTAssertFalse(DeviceKeys.shouldRearm(taps: [(id: 3, owner: 900, takesKeys: false)], known: known, ours: ours), "a listen-only tap swallows nothing")
+        XCTAssertFalse(DeviceKeys.shouldRearm(taps: [(id: 1, owner: 900, takesKeys: true), (id: 2, owner: 901, takesKeys: true)], known: known, ours: ours), "the ones seen when ours was made, in any order")
+        XCTAssertFalse(DeviceKeys.shouldRearm(taps: [], known: known, ours: ours))
     }
+
+    // MARK: the key bridge's shared state (R-D7)
+
+    func testTheKeyBridgeStateDecidesLikeTheSpec() {
+        let st = KeyBridgeState()
+        st.setFront("utm", mod: "cmd")
+        XCTAssertEqual(st.keyDown(code: 20, workspaceKey: 3, mods: ["cmd"], repeating: false), .pass, "not armed: nothing is taken")
+        st.arm()
+        XCTAssertEqual(st.keyDown(code: 20, workspaceKey: 3, mods: ["cmd"], repeating: false), .run("switch 3"))
+        XCTAssertEqual(st.keyDown(code: 20, workspaceKey: 3, mods: ["cmd"], repeating: true), .swallow, "auto-repeat of a taken key")
+        XCTAssertEqual(st.keyUp(code: 20), .swallow)
+        XCTAssertEqual(st.keyUp(code: 20), .pass, "the up of a key that was not taken")
+        XCTAssertEqual(st.keyDown(code: 8, workspaceKey: nil, mods: ["cmd"], repeating: false), .pass, "cmd-c is the guest's")
+        st.keyDown(code: 21, workspaceKey: 4, mods: ["cmd"], repeating: false).run()
+        st.disarm()
+        XCTAssertEqual(st.keyUp(code: 21), .pass, "disarm forgets what it took; the up goes to the app")
+    }
+
+    func testTheKeyBridgeStateSurvivesArmingAndDisarmingWhileKeysArrive() {
+        let st = KeyBridgeState()
+        st.setFront("utm", mod: "cmd")
+        let group = DispatchGroup()
+        var swallowedUnpaired = 0
+        let counter = NSLock()
+        for t in 0..<4 {
+            group.enter()
+            DispatchQueue.global().async {
+                for i in 0..<20_000 {
+                    let code = Int64(18 + (i + t) % 9)
+                    if case .run = st.keyDown(code: code, workspaceKey: Int(code - 17), mods: ["cmd"], repeating: false) {
+                        _ = st.keyUp(code: code)
+                    }
+                    if i % 97 == 0 { st.setFront(i % 2 == 0 ? "utm" : "parallels", mod: i % 3 == 0 ? "cmd" : "ctrl") }
+                }
+                counter.lock(); swallowedUnpaired += 1; counter.unlock()
+                group.leave()
+            }
+        }
+        group.enter()
+        DispatchQueue.global().async {
+            for i in 0..<20_000 { if i % 2 == 0 { st.arm() } else { st.disarm() } }
+            group.leave()
+        }
+        XCTAssertEqual(group.wait(timeout: .now() + 60), .success, "no deadlock")
+        XCTAssertEqual(swallowedUnpaired, 4)
+        st.disarm()
+        XCTAssertFalse(st.isArmed)
+        XCTAssertEqual(st.keyUp(code: 18), .pass)
+    }
+
+    // MARK: R-D9, through the placement the scan runs
+
+    func testASandboxViewGoesToTheAgentWorkspaceOnlyWhenTheSandboxOwnsItsProcess() {
+        var m = Workspaces()
+        m.displays(["A"])
+        m.sync(seen: [10, 11, 12], alive: [10, 11, 12])
+        let pinned: Set<WindowID> = [10, 11]
+        let owned: Set<WindowID> = [10]
+        let moved = DevicePlacement.placePinned(windows: [10, 11, 12], pinned: pinned, ownedBySandbox: { owned.contains($0) }, agent: 9, model: &m)
+        XCTAssertEqual(moved, [10])
+        XCTAssertEqual(m.workspace(of: 10), 9, "the sandbox's own view is on the agent workspace")
+        XCTAssertEqual(m.workspace(of: 11), 1, "a stranger's window titled like it is left alone")
+        XCTAssertEqual(m.workspace(of: 12), 1)
+        XCTAssertTrue(m.windows(on: 1).contains(11))
+        XCTAssertTrue(DevicePlacement.placePinned(windows: [10], pinned: pinned, ownedBySandbox: { _ in true }, agent: 9, model: &m).isEmpty, "already there")
+        XCTAssertTrue(DevicePlacement.placePinned(windows: [11], pinned: pinned, ownedBySandbox: { _ in true }, agent: nil, model: &m).isEmpty, "no agent workspace, no pin")
+    }
+
+    func testTheScanUsesWhatThePlacementDecidesAndTheSandboxRegistry() throws {
+        let spaces = try Repo.code("Sources/BaneySpaces/Spaces.swift")
+        XCTAssertTrue(spaces.contains("DevicePlacement.placePinned("), "the scan places pinned windows")
+        XCTAssertTrue(spaces.contains("sandboxOwns($0.pid)"), "and asks the sandbox which processes are its own")
+        let windows = try Repo.code("Sources/BaneySpaces/Windows.swift")
+        XCTAssertTrue(windows.contains("decision.agentHome"), "Windows.all hands the table's pin to the scan")
+        let app = try Repo.code("Sources/BaneySpaces/AppDelegate.swift")
+        XCTAssertTrue(app.contains("spaces.sandboxOwns = "), "and the app wires the sandbox's registry in")
+    }
+
+    // MARK: R-D8, recorded descendants
+
+    func testNewDescendantsAreFoundByTheirParentAndOnlyOnce() {
+        let table: [(pid: Int32, ppid: Int32)] = [(100, 1), (200, 100), (300, 200), (400, 1), (500, 400)]
+        XCTAssertEqual(ProcessTree.newDescendants(roots: [100], known: [], table: table).sorted(), [200, 300])
+        XCTAssertEqual(ProcessTree.newDescendants(roots: [100], known: [200, 300], table: table), [])
+        XCTAssertEqual(ProcessTree.newDescendants(roots: [100], known: [300], table: [(200, 1), (300, 200)]), [], "200 already left and is nobody's")
+        XCTAssertTrue(ProcessTree.newDescendants(roots: [], known: [], table: table).isEmpty)
+    }
+
+    func testAWindowThatWasATitlelessCompanionIsCountedOnceItIsDetached() {
+        var m = model(10, companions: [11])
+        XCTAssertTrue(m.windows(on: 1) == [10])
+        m.detach(11)
+        XCTAssertEqual(m.windows(on: 1), [10, 11], "its title arrived and it is a window of its own")
+    }
+}
+
+private extension KeyBridgeState.Verdict {
+    @discardableResult func run() -> String? { if case .run(let a) = self { return a }; return nil }
 }

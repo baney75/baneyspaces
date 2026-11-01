@@ -284,7 +284,9 @@ pub fn run_placement_case(case: &Value) -> Result<(), String> {
     let table = |k: &str| -> BTreeMap<u32, u64> {
         case[k].as_object().into_iter().flatten().filter_map(|(p, v)| Some((p.parse().ok()?, v.as_u64()?))).collect()
     };
-    let (roots, starts) = (table("roots"), table("starts"));
+    let (mut roots, starts) = (table("roots"), table("starts"));
+    // Descendants recorded while their parent lived count as roots of their own.
+    roots.extend(table("recorded"));
     let parents: BTreeMap<u32, u32> = table("parents").into_iter().map(|(k, v)| (k, v as u32)).collect();
     let pid = case["pid"].as_u64().unwrap_or(0) as u32;
     let got = descends_from(&roots, pid, |p| starts.get(&p).copied(), |p| parents.get(&p).copied());

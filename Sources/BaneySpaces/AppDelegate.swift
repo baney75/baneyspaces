@@ -753,6 +753,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in HandsLends.shared.expire() }
         deck.sandboxHandler = { [weak self] r in self?.sandbox.service.handle(r) ?? Wire.Reply(ok: false, error: "not ready") }
+        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in AgentOwned.shared.recordDescendants() }   // R-D8
+        spaces.sandboxOwns = { [weak self] pid in self?.sandbox.ownsProcess(pid) ?? false }
         sandbox.start()
         sandbox.cleanupAtLaunch()
         deck.onWorkingChange = { [weak self] in self?.dock.reload() }

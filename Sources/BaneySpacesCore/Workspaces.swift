@@ -152,6 +152,9 @@ public struct Workspaces: Codable, Equatable {
         if lastFocused[n] == companion { lastFocused[n] = nil }
     }
 
+    /// R-D1: the window turned out to be a window of its own (its title arrived): it is counted from now on.
+    public mutating func detach(_ id: WindowID) { companionOf[id] = nil }
+
     /// The window a companion follows, or the window itself.
     public func main(of id: WindowID) -> WindowID { companionOf[id] ?? id }
 

@@ -22,17 +22,20 @@ public struct DeviceFacts: Equatable, Sendable {
     public var process: String
     public var windowClass: String
     public var exe: String
+    /// The process's command line arguments (empty when unknown).
+    public var args: [String]
     public var title: String
     /// AXStandardWindow (or a compositor window).
     public var standard: Bool
 
     public init(platform: String = "macos", bundle: String = "", process: String = "", windowClass: String = "",
-                exe: String = "", title: String = "", standard: Bool = true) {
+                exe: String = "", args: [String] = [], title: String = "", standard: Bool = true) {
         self.platform = platform
         self.bundle = bundle
         self.process = process
         self.windowClass = windowClass
         self.exe = exe
+        self.args = args
         self.title = title
         self.standard = standard
     }
@@ -44,6 +47,8 @@ public struct DeviceDecision: Equatable, Sendable {
     public var agentHome: Bool
     public var resizesItself: Bool
     public var float: Bool
+    /// `agentHome` applies only to a process BaneySpaces' sandbox started (R-D9).
+    public var sandboxOnly: Bool = false
 }
 
 public struct DeviceKeysInfo: Equatable, Sendable {
@@ -55,10 +60,14 @@ public struct DeviceKeysInfo: Equatable, Sendable {
 public struct DeviceApp: Sendable {
     public struct Rule: Sendable {
         var titlePrefix: String?, titleContains: String?, titleIs: String?, titleEmpty: Bool?
+        var standard: Bool?, platform: String?, onlyIf: String?
         var role: DeviceRole
         var home: String?
-        func hits(_ title: String) -> Bool {
-            (titlePrefix.map { title.hasPrefix($0) } ?? true)
+        func hits(_ f: DeviceFacts) -> Bool {
+            let title = f.title
+            return (platform.map { $0 == f.platform } ?? true)
+                && (standard.map { $0 == f.standard } ?? true)
+                && (titlePrefix.map { title.hasPrefix($0) } ?? true)
                 && (titleContains.map { title.contains($0) } ?? true)
                 && (titleIs.map { title == $0 } ?? true)
                 && (titleEmpty.map { title.isEmpty == $0 } ?? true)
@@ -70,6 +79,9 @@ public struct DeviceApp: Sendable {
     public let resizesItself: Bool
     public let float: Bool
     let match: [String: [String: [String]]]
+    /// Per platform: a process name pattern -> the argument it must be started with / the title prefix its window must have.
+    let processArg: [String: [String: String]]
+    let processTitle: [String: [String: String]]
     let rules: [Rule]
     public let keys: [String: DeviceKeysInfo]
 
@@ -86,6 +98,8 @@ public struct DeviceApp: Sendable {
         return (m["process"] ?? []).contains { Self.name($0, matches: f.process) }
             || (m["class"] ?? []).contains { Self.name($0, matches: f.windowClass) }
             || (m["exe"] ?? []).contains { Self.name($0, matches: f.exe) }
+            || (processArg[f.platform] ?? [:]).contains { Self.name($0.key, matches: f.process) && f.args.contains($0.value) }
+            || (processTitle[f.platform] ?? [:]).contains { (Self.name($0.key, matches: f.process) || Self.name($0.key, matches: f.exe)) && f.title.hasPrefix($0.value) }
     }
 }
 
@@ -103,8 +117,12 @@ public struct DeviceTable: Sendable {
                 throw DeviceTableError.bad("devices.json: an app lacks id, label, kind or windows")
             }
             var match: [String: [String: [String]]] = [:]
+            var processArg: [String: [String: String]] = [:], processTitle: [String: [String: String]] = [:]
             for (platform, v) in (a["match"] as? [String: Any]) ?? [:] {
-                match[platform] = (v as? [String: Any])?.compactMapValues { $0 as? [String] } ?? [:]
+                let m = v as? [String: Any] ?? [:]
+                match[platform] = m.compactMapValues { $0 as? [String] }
+                processArg[platform] = m["process_arg"] as? [String: String] ?? [:]
+                processTitle[platform] = m["process_title"] as? [String: String] ?? [:]
             }
             var keys: [String: DeviceKeysInfo] = [:]
             for (platform, v) in (a["keys"] as? [String: Any]) ?? [:] {
@@ -117,10 +135,11 @@ public struct DeviceTable: Sendable {
                 }
                 return DeviceApp.Rule(titlePrefix: r["title_prefix"] as? String, titleContains: r["title_contains"] as? String,
                                       titleIs: r["title_is"] as? String, titleEmpty: r["title_empty"] as? Bool,
+                                      standard: r["standard"] as? Bool, platform: r["platform"] as? String, onlyIf: r["only_if"] as? String,
                                       role: role, home: r["home"] as? String)
             }
             return DeviceApp(id: id, label: label, kind: kind, resizesItself: a["resizes_itself"] as? Bool ?? false,
-                             float: a["float"] as? Bool ?? false, match: match, rules: parsed, keys: keys)
+                             float: a["float"] as? Bool ?? false, match: match, processArg: processArg, processTitle: processTitle, rules: parsed, keys: keys)
         }
     }
 
@@ -137,11 +156,11 @@ public struct DeviceTable: Sendable {
         guard let app = app(of: f) else {
             return DeviceDecision(app: nil, role: f.standard ? .main : .ignore, agentHome: false, resizesItself: false, float: false)
         }
-        let rule = app.rules.first { $0.hits(f.title) }
+        let rule = app.rules.first { $0.hits(f) }
         var role = rule?.role ?? (f.standard ? .main : .ignore)
         if role == .main, !f.standard { role = .ignore }
         return DeviceDecision(app: app.id, role: role, agentHome: role == .main && rule?.home == "agent",
-                              resizesItself: app.resizesItself, float: app.float)
+                              resizesItself: app.resizesItself, float: app.float, sandboxOnly: rule?.onlyIf == "sandbox_process")
     }
 
     public static func classify(_ f: DeviceFacts) -> DeviceDecision { builtin.classify(f) }
@@ -199,11 +218,68 @@ public enum DeviceKeys {
         return nil
     }
 
-    /// Whether another event tap that takes key events stands in front of ours. The list is
-    /// front-to-back as `CGGetEventTapList` gives it.
-    public static func shouldRearm(taps: [(owner: Int32, takesKeys: Bool)], ours: Int32) -> Bool {
-        guard let first = taps.firstIndex(where: { $0.takesKeys }) else { return false }
-        return taps[first].owner != ours
+    /// Whether a key-taking tap from another process has appeared since `known` (the tap ids seen when ours was
+    /// made). Apple documents no order for `CGGetEventTapList`, so position says nothing; a newcomer does.
+    public static func shouldRearm(taps: [(id: UInt32, owner: Int32, takesKeys: Bool)], known: Set<UInt32>, ours: Int32) -> Bool {
+        taps.contains { $0.takesKeys && $0.owner != ours && !known.contains($0.id) }
+    }
+}
+
+/// The state the key bridge's tap callback and the main thread share, behind one lock. The callback does
+/// the least it can under it: read the front app and modifier, look the key up, answer. `disarm` clears
+/// the keys it took under the same lock, so a key up that arrives after is passed on, never lost or held.
+public final class KeyBridgeState: @unchecked Sendable {
+    public enum Verdict: Equatable, Sendable { case pass, swallow, run(String) }
+    private let lock = NSLock()
+    private var front: String?
+    private var mod = "cmd"
+    private var armed = false
+    private var taken = Set<Int64>()
+    private let table: DeviceTable
+
+    public init(table: DeviceTable = .builtin) { self.table = table }
+
+    public func setFront(_ app: String?, mod: String) {
+        lock.lock(); front = app; self.mod = mod; lock.unlock()
+    }
+    public func arm() { lock.lock(); armed = true; lock.unlock() }
+    public func disarm() { lock.lock(); armed = false; taken.removeAll(); lock.unlock() }
+    public var isArmed: Bool { lock.lock(); defer { lock.unlock() }; return armed }
+
+    /// A key down for workspace key `n` (1-9, or nil for any other key) with these modifiers. Auto-repeat
+    /// of a key already taken is swallowed; the first press runs its action.
+    public func keyDown(code: Int64, workspaceKey n: Int?, mods: Set<String>, repeating: Bool) -> Verdict {
+        lock.lock(); defer { lock.unlock() }
+        guard armed else { return .pass }
+        if repeating { return taken.contains(code) ? .swallow : .pass }
+        guard let n, let action = DeviceKeys.action(frontApp: front, mod: mod, bridge: true, chord: ChordSpec(mods: mods, key: String(n)), table: table) else { return .pass }
+        taken.insert(code)
+        return .run(action)
+    }
+
+    /// The key up of a key whose down was taken is taken too.
+    public func keyUp(code: Int64) -> Verdict {
+        lock.lock(); defer { lock.unlock() }
+        return taken.remove(code) != nil ? .swallow : .pass
+    }
+}
+
+// MARK: placement of a window the table pins (R-D9)
+
+public enum DevicePlacement {
+    /// R-D9: windows the table pins to the agent workspace go there, but only when their process is one
+    /// BaneySpaces' sandbox started. A stranger's window titled `bsx-...` is left where it is. Returns the
+    /// windows moved.
+    @discardableResult
+    public static func placePinned(windows: [WindowID], pinned: Set<WindowID>, ownedBySandbox: (WindowID) -> Bool,
+                                   agent: Int?, model: inout Workspaces) -> [WindowID] {
+        guard let agent else { return [] }
+        var moved: [WindowID] = []
+        for id in windows where pinned.contains(id) && model.workspace(of: id) != nil && model.workspace(of: id) != agent && ownedBySandbox(id) {
+            model.assign(id, to: agent, focus: false)
+            moved.append(id)
+        }
+        return moved
     }
 }
 
@@ -220,5 +296,19 @@ public enum ProcessTree {
             at = p
         }
         return false
+    }
+
+    /// Processes in `table` (pid, parent pid) that descend from `roots` and are not in `known` yet: recorded
+    /// while their parent is alive, so they stay the agent's if the parent exits and they are reparented.
+    public static func newDescendants(roots: Set<Int32>, known: Set<Int32>, table: [(pid: Int32, ppid: Int32)]) -> [Int32] {
+        var owned = roots.union(known), found: [Int32] = []
+        var grew = true
+        while grew {
+            grew = false
+            for p in table where owned.contains(p.ppid) && !owned.contains(p.pid) && p.pid > 1 {
+                owned.insert(p.pid); found.append(p.pid); grew = true
+            }
+        }
+        return found
     }
 }

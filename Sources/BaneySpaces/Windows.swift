@@ -179,7 +179,7 @@ enum Windows {
     /// `notWindows` are listed elements whose subrole was read and isn't a standard window's
     /// (sheets, panels). One whose subrole couldn't be read is neither: it stays unplaced, so
     /// `UnplacedWindows` looks at it again.
-    static func all(owners: Set<pid_t>? = nil) -> (windows: [Window], unsure: Set<pid_t>, listed: Set<WindowID>, partial: Set<pid_t>, notWindows: Set<WindowID>, companions: [Window]) {
+    static func all(owners: Set<pid_t>? = nil) -> (windows: [Window], unsure: Set<pid_t>, listed: Set<WindowID>, partial: Set<pid_t>, notWindows: Set<WindowID>, companions: [Window], pinned: Set<WindowID>) {
         // Only apps that own a window are asked. A running app with no windows is often frozen by
         // macOS and never answers, which would cost a full timeout on every scan.
         let candidates = owners.map { RunningApps.regular.intersection($0) } ?? RunningApps.regular
@@ -190,6 +190,7 @@ enum Windows {
         }
         var results = [[Window]](repeating: [], count: apps.count)
         var companionResults = [[Window]](repeating: [], count: apps.count)
+        var pinnedIDs = Set<WindowID>()
         var listedIDs = Set<WindowID>(), partial = Set<pid_t>(), notWindows = Set<WindowID>()
         let lock = NSLock()
         DispatchQueue.concurrentPerform(iterations: apps.count) { i in
@@ -217,8 +218,12 @@ enum Windows {
                 var facts = device
                 facts.title = el.string(kAXTitleAttribute) ?? ""
                 facts.standard = standard
-                switch DeviceTable.classify(facts).role {
-                case .main: found.append(Window(id: id, element: el, pid: pid, appName: name))
+                let decision = DeviceTable.classify(facts)
+                switch decision.role {
+                case .main:
+                    found.append(Window(id: id, element: el, pid: pid, appName: name))
+                    // R-D9: the table pins it; Spaces moves it only if the sandbox started its process.
+                    if decision.agentHome { lock.lock(); pinnedIDs.insert(id); lock.unlock() }
                 case .companion: companions.append(Window(id: id, element: el, pid: pid, appName: name))
                 case .ignore: other.append(id)
                 }
@@ -231,7 +236,7 @@ enum Windows {
             if ids.contains(nil) { partial.insert(pid) }
             lock.unlock()
         }
-        return (results.flatMap { $0 }, unsure, listedIDs, partial, notWindows, companionResults.flatMap { $0 })
+        return (results.flatMap { $0 }, unsure, listedIDs, partial, notWindows, companionResults.flatMap { $0 }, pinnedIDs)
     }
 
     static func alive() -> Set<WindowID> { snapshot(apps: RunningApps.regular).alive }
@@ -541,20 +546,52 @@ extension AXUIElement {
 /// Which running apps are simulators, emulators or VMs (spec/devices.md), asked once per process.
 enum DeviceApps {
     private static let lock = NSLock()
-    private static var known: [pid_t: (launched: Date?, facts: DeviceFacts?)] = [:]
+    /// Keyed by pid and the kernel's start time of that process, so a reused pid is a different entry.
+    private static var known: [pid_t: (started: Double, facts: DeviceFacts?)] = [:]
+
+    /// The executable's name from the kernel, which is right for processes LaunchServices never started
+    /// (the emulator's qemu), and the command line.
+    static func process(pid: pid_t) -> (name: String, args: [String]) {
+        var path = [CChar](repeating: 0, count: 4096)
+        let n = proc_pidpath(pid, &path, UInt32(path.count))
+        let name = n > 0 ? (String(cString: path) as NSString).lastPathComponent : ""
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var size = 0
+        guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 8 else { return (name, []) }
+        var buf = [UInt8](repeating: 0, count: size)
+        guard sysctl(&mib, 3, &buf, &size, nil, 0) == 0 else { return (name, []) }
+        let argc = Int(buf.withUnsafeBytes { $0.load(as: Int32.self) })
+        var i = 4
+        while i < size, buf[i] != 0 { i += 1 }          // the executable path
+        while i < size, buf[i] == 0 { i += 1 }          // its padding
+        var args: [String] = []
+        while args.count < min(argc, 64), i < size {
+            let start = i
+            while i < size, buf[i] != 0 { i += 1 }
+            args.append(String(decoding: buf[start..<i], as: UTF8.self))
+            i += 1
+        }
+        return (name, args)
+    }
 
     /// The facts about an app's process when it is a device app, nil for every other app.
     static func facts(pid: pid_t) -> DeviceFacts? {
-        lock.lock(); defer { lock.unlock() }
-        let app = NSRunningApplication(processIdentifier: pid)
-        // A pid can be reused by another process: the launch time tells them apart.
-        if let cached = known[pid], cached.launched == app?.launchDate { return cached.facts }
-        let facts = DeviceFacts(bundle: app?.bundleIdentifier ?? "", process: app?.executableURL?.lastPathComponent ?? "")
+        let started = AgentOwned.startTime(pid) ?? 0
+        lock.lock()
+        if let cached = known[pid], cached.started == started, started != 0 { lock.unlock(); return cached.facts }
+        lock.unlock()
+        let p = process(pid: pid)
+        let facts = DeviceFacts(bundle: NSRunningApplication(processIdentifier: pid)?.bundleIdentifier ?? "", process: p.name, args: p.args)
+        // By process, bundle and command line only: a window's title is read per window, in Windows.all.
         let result = DeviceTable.builtin.app(of: facts) == nil ? nil : facts
-        known[pid] = (app?.launchDate, result)
+        lock.lock()
+        if known.count > 512 { known = known.filter { kill($0.key, 0) == 0 } }   // gone processes
+        known[pid] = (started, result)
+        lock.unlock()
         return result
     }
 
+    /// A process that ends is forgotten.
     static func forget(_ pid: pid_t) { lock.lock(); known[pid] = nil; lock.unlock() }
 
     /// Whether the app resizes its own windows (a rotated device, a guest's new resolution): R-D6.

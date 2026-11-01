@@ -156,6 +156,23 @@ final class Spaces {
     /// Brings the window list up to date. Unless `full`, the Accessibility scan (one round trip
     /// per app, the slowest part of a switch) is skipped when no app window opened or closed
     /// and no app launched or quit since the last scan.
+    /// Set by the app: whether a process is the one BaneySpaces' sandbox started for its VM (R-D9).
+    var sandboxOwns: (pid_t) -> Bool = { _ in false }
+    private var titleRescans = 0
+
+    /// R-D1: look again 1, 3 and 5 seconds after a device window opens, because the table decides by title.
+    private func rescanForTitles() {
+        guard titleRescans == 0 else { return }
+        titleRescans = 3
+        for delay in [1.0, 3.0, 5.0] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self else { return }
+                self.titleRescans -= 1
+                if self.active, !self.switching { self.refresh(full: true) }
+            }
+        }
+    }
+
     func refresh(full: Bool = false) {
         let pids = RunningApps.regular
         let snap = Windows.snapshot(apps: pids)
@@ -175,7 +192,7 @@ final class Spaces {
         clock.scan = firstScan ? "first" : full ? "full" : last(lastScan!, snap.appWindows, pids, offKnown)
         RunningApps.invalidate()
         let pidsNow = RunningApps.regular
-        let (list, unsure, listed, partial, nonStandard, companions) = Windows.all(owners: snap.owners)
+        let (list, unsure, listed, partial, nonStandard, companions, pinned) = Windows.all(owners: snap.owners)
         // R-D2: a companion with no window to follow is left alone, as every panel always was.
         let following = companions.filter { c in list.contains { $0.pid == c.pid } }
         notWindows = nonStandard.union(companions.map(\.id)).subtracting(following.map(\.id))
@@ -207,9 +224,18 @@ final class Spaces {
         }
         let added = model.sync(seen: list.map(\.id), alive: alive, on: appeared)
         // R-D2, R-D3: a toolbar or extended controls lives on its window's workspace and is not a window of its own.
+        // A window whose title arrived and is a window after all (R-D1) is counted from now on.
+        for w in list where model.isCompanion(w.id) { model.detach(w.id) }
         for c in following {
             if let main = list.filter({ $0.pid == c.pid }).map(\.id).max() { model.attach(c.id, to: main) }
         }
+        // R-D9: a window the table pins to the agent workspace goes there only when the sandbox started its process.
+        let pinnedMoved = DevicePlacement.placePinned(windows: Array(pinned), pinned: pinned, ownedBySandbox: { [sandboxOwns] id in
+            windows[id].map { sandboxOwns($0.pid) } ?? false
+        }, agent: Self.agentWorkspace, model: &model)
+        if !pinnedMoved.isEmpty { Trace.log("sandbox view \(pinnedMoved) joins the agent workspace") }
+        // A device window's title can arrive after it does (an emulator opens untitled): look again for its first seconds.
+        if added.contains(where: { windows[$0].map { DeviceApps.facts(pid: $0.pid) != nil } ?? false }) { rescanForTitles() }
         if model.shown.count > 1, !switching { noteMovedAcrossDisplays(list, frames: frames, act: Date() > displaysSettleUntil) }
         prune(alive: alive)
         // A scan that skipped a busy app can't vouch for that app's windows. It's remembered, and
@@ -219,7 +245,7 @@ final class Spaces {
         if !unsure.isEmpty || watcher.missing { scheduleRetry() }
         let screens = Windows.screens()
         // A window from the saved layout that only now answered goes back to its workspace.
-        var returned = false
+        var returned = !pinnedMoved.isEmpty
         var fromLayout = Set<WindowID>()
         for id in added {
             if let d = dormant.removeValue(forKey: id), windows[id]?.pid == d.pid,
@@ -385,13 +411,11 @@ final class Spaces {
     /// started. Descent only counts below a process BaneySpaces started, never below one you were using.
     private func claimant(of pid: pid_t) -> pid_t? {
         if claims[pid] != nil { return pid }
-        var at = pid
-        for _ in 0..<8 {
-            guard let p = AgentOwned.parent(of: at), p > 1 else { return nil }
-            if claims[p] != nil { return AgentOwned.shared.pids.contains(p) ? p : nil }
-            at = p
-        }
-        return nil
+        // Only a process an agent started can have claims descend to its children, recorded or by the chain.
+        guard AgentOwned.shared.owns(pid) else { return nil }
+        let roots = claims.keys.filter { AgentOwned.shared.pids.contains($0) }
+        return roots.first { ProcessTree.descends(pid: pid, roots: [$0: 0], startOf: { _ in nil }, parentOf: AgentOwned.parent(of:)) }
+            ?? roots.min { (claims[$0]?.first?.until ?? .distantFuture) < (claims[$1]?.first?.until ?? .distantFuture) }
     }
 
     /// Claimed windows go straight to their workspace, before the next switch would show them.

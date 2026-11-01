@@ -125,5 +125,65 @@
   },
   "pid": 600,
   "expect": false
+ },
+ {
+  "name": "a grandchild recorded while its parent lived stays the agent's after the parent exits and it is reparented",
+  "rules": [
+   "R-D8"
+  ],
+  "roots": {
+   "100": 5
+  },
+  "recorded": {
+   "300": 7
+  },
+  "starts": {
+   "100": 5,
+   "300": 7
+  },
+  "parents": {
+   "300": 1
+  },
+  "pid": 300,
+  "expect": true
+ },
+ {
+  "name": "one never recorded and already reparented to launchd is not (the recording runs twice a second; the limit is stated in the spec)",
+  "rules": [
+   "R-D8"
+  ],
+  "roots": {
+   "100": 5
+  },
+  "starts": {
+   "100": 5,
+   "300": 7
+  },
+  "parents": {
+   "300": 1
+  },
+  "pid": 300,
+  "expect": false
+ },
+ {
+  "name": "a recorded pid that another process now has is not the agent's",
+  "rules": [
+   "R-D8"
+  ],
+  "roots": {
+   "100": 5
+  },
+  "recorded": {
+   "300": 7
+  },
+  "starts": {
+   "100": 5,
+   "300": 9
+  },
+  "parents": {
+   "300": 1
+  },
+  "pid": 300,
+  "expect": false
  }
 ]
