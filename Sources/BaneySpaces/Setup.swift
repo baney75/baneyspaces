@@ -40,7 +40,14 @@ final class SetupModel: ObservableObject {
     var onSandboxReset: ((@escaping (String?) -> Void) -> Void)?
     var onSandboxDeleteImages: ((@escaping (String?) -> Void) -> Void)?
 
-    func setSandbox(_ s: SandboxSettings) { sandbox = s; s.save(); refreshSandbox() }
+    var onSandboxDisabled: (() -> Void)?
+    /// Why this Mac can't run the sandbox (under 16 GB), shown instead of quietly running a smaller VM.
+    var sandboxHostProblem: String? { SandboxSettings.hostProblem(hostMemoryGB: Int(ProcessInfo.processInfo.physicalMemory >> 30)) }
+    func setSandbox(_ s: SandboxSettings) {
+        let wasOn = sandbox.enabled
+        sandbox = s; s.save(); refreshSandbox()
+        if wasOn && !s.enabled { onSandboxDisabled?() } // turning it off removes the VMs, not just refuses new ones
+    }
     func refreshSandbox() {
         guard let s = sandboxSummary() else { return }
         sandboxState = s.state; sandboxDisk = s.detail; sandboxRunning = s.running; sandboxBusy = s.busy
@@ -765,6 +772,8 @@ struct SetupView: View {
         section("Sandbox") {
             Toggle("Allow the sandbox: a throwaway macOS VM for agent work", isOn: Binding(get: { model.sandbox.enabled },
                 set: { var s = model.sandbox; s.enabled = $0; model.setSandbox(s) }))
+                .disabled(model.sandboxHostProblem != nil)
+            if let why = model.sandboxHostProblem { Text(why).font(.callout).foregroundStyle(.orange) }
             Text("Untrusted sites, throwaway logins and anything that installs software run in a virtual Mac that has no access to your files, iCloud, keychain, the Mac itself, your network or your tailnet: only the internet, and one handoff folder per task. It's deleted when the task ends, and a clean copy is kept ready so a reset takes seconds. Nothing starts until an agent asks.")
                 .font(.callout).foregroundStyle(.secondary)
             HStack(spacing: 18) {

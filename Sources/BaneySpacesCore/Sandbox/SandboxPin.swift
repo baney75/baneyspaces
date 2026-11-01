@@ -44,6 +44,13 @@ public struct SandboxSettings: Equatable, Sendable {
         return SandboxSettings(enabled: enabled, memoryGB: min(memoryGB, mem), cpus: min(cpus, cpu))
     }
 
+    /// Why this Mac can't run the sandbox, nil if it can. A macOS guest needs 4 GB, and the sandbox may take
+    /// at most a quarter of the Mac's memory (a warm clone runs beside the working VM), so under 16 GB it is refused
+    /// instead of quietly running a VM bigger than the cap.
+    public static func hostProblem(hostMemoryGB: Int) -> String? {
+        hostMemoryGB >= 16 ? nil : "this Mac has \(hostMemoryGB) GB of memory; the sandbox needs 16 GB (a 4 GB macOS guest is at most a quarter of it)"
+    }
+
     public static let enabledKey = "sandboxEnabled", memoryKey = "sandboxMemoryGB", cpuKey = "sandboxCPUs"
 
     public static func load(_ d: UserDefaults = .standard) -> SandboxSettings {

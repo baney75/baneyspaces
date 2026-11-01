@@ -10,14 +10,13 @@ public struct HostFacts: Equatable, Sendable {
         public init(_ label: String, _ ip: String, iface: String = "") { self.label = label; self.ip = ip; self.iface = iface }
     }
     public var addresses: [Address]
-    public var addresses6: [Address]
     public var router: String?
     public var tailscaleInstalled: Bool
     /// Set when the Application Firewall could be dropping the probe, which would look like a block.
     public var firewallProblem: String?
-    public init(addresses: [Address] = [], addresses6: [Address] = [], router: String? = nil,
+    public init(addresses: [Address] = [], router: String? = nil,
                 tailscaleInstalled: Bool = false, firewallProblem: String? = nil) {
-        self.addresses = addresses; self.addresses6 = addresses6; self.router = router
+        self.addresses = addresses; self.router = router
         self.tailscaleInstalled = tailscaleInstalled; self.firewallProblem = firewallProblem
     }
     /// IPv4 addresses for the block list. The vmnet bridge exists only while a VM runs, and it is the
@@ -36,7 +35,7 @@ public protocol ProbeListener: AnyObject {
 
 public protocol HostFactsReading: AnyObject {
     func read() -> HostFacts
-    func listener(ipv6: Bool) -> ProbeListener?
+    func listener() -> ProbeListener?
 }
 
 /// What one guest probe saw.
@@ -61,13 +60,10 @@ public enum SandboxSelfcheck {
     public static let webCheck = "https://www.cloudflare.com/cdn-cgi/trace"
     public static let tailnetProbe = Probe(label: "the tailnet (100.100.100.100)", ip: "100.100.100.100", port: 80)
 
-    public static func probes(facts: HostFacts, gateway: String?, listenerPort: UInt16, listener6Port: UInt16?) -> [Probe] {
+    public static func probes(facts: HostFacts, gateway: String?, listenerPort: UInt16) -> [Probe] {
         var out = facts.addresses.map { Probe(label: $0.label, ip: $0.ip, port: listenerPort) }
         if let gateway, !out.contains(where: { $0.ip == gateway }) {
             out.append(Probe(label: "the vmnet gateway \(gateway) (this Mac)", ip: gateway, port: listenerPort))
-        }
-        if let l6 = listener6Port {
-            out += facts.addresses6.map { Probe(label: $0.label, ip: $0.ip, port: l6) }
         }
         if let r = facts.router { out.append(Probe(label: "the LAN router", ip: r, port: 80)) }
         out.append(tailnetProbe)
@@ -105,6 +101,11 @@ public enum SandboxSelfcheck {
         }
         s += """
         wait
+        # IPv6 is switched off in the guest (Softnet's rules are IPv4): an address on a network interface, or a default route out of one, is a failure.
+        # (lo0 and the system's utun tunnels keep link-local addresses that lead nowhere off the machine.)
+        v6a=$(ifconfig 2>/dev/null | awk '/^[a-z0-9]+:/ {i=$1} /inet6 / && i ~ /^(en|bridge|vmenet)/ {n++} END {print n+0}')
+        v6r=$(netstat -rn -f inet6 2>/dev/null | awk '$1 == "default" && $NF ~ /^(en|bridge)/ {n++} END {print n+0}')
+        echo "V6 $((v6a + v6r))"
         cat "$d/web" 2>/dev/null || echo "WEB 99"
         echo "CONTROL $(cat "$d/control" 2>/dev/null)"
         if [ -n "$gw" ]; then echo "GWPROBE $(cat "$d/gateway" 2>/dev/null)"; fi
@@ -119,11 +120,11 @@ public enum SandboxSelfcheck {
     public static func classify(_ line: String) -> ProbeOutcome {
         guard let m = line.range(of: #"RC=(\d+)"#, options: .regularExpression) else { return .inconclusive("no result from nc") }
         let rc = Int(line[m].dropFirst(3)) ?? -1
-        let tail = String(line.suffix(120))
+        let tail = GuestHands.sanitize(String(line.suffix(120)))
         if rc == 0 || line.range(of: "succeeded|refused|reset by peer", options: [.regularExpression, .caseInsensitive]) != nil {
             return .reachable(tail)
         }
-        if line.range(of: "timed out|timeout|no route to host|network is unreachable|can't assign requested address",
+        if line.range(of: "timed out|timeout|no route to host|network is unreachable",
                       options: [.regularExpression, .caseInsensitive]) != nil {
             return .blocked(tail)
         }
@@ -137,8 +138,7 @@ public enum SandboxSelfcheck {
     }
 
     /// Reads the guest script's output against the probes that were sent. Pure: tested with canned text.
-    public static func evaluate(facts: HostFacts, probes: [Probe], output: String, hostHits: Int, host6Hits: Int,
-                                exitStatus: Int32) -> Report {
+    public static func evaluate(facts: HostFacts, probes: [Probe], output: String, hostHits: Int, exitStatus: Int32) -> Report {
         var problems: [String] = []
         if let f = facts.firewallProblem { problems.append(f) }
         if facts.addresses.isEmpty { problems.append("no address of this Mac was found to test isolation against") }
@@ -150,11 +150,12 @@ public enum SandboxSelfcheck {
             return Report(problems: problems, gateway: nil)
         }
         var gateway: String?
-        var web: Int?, control: String?, gwprobe: String?
+        var web: Int?, control: String?, gwprobe: String?, v6: Int?
         var results: [Int: String] = [:]
         for raw in output.split(separator: "\n") {
             let line = String(raw)
             if line.hasPrefix("GATEWAY ") { let g = line.dropFirst(8).trimmingCharacters(in: .whitespaces); gateway = g.isEmpty ? nil : g }
+            else if line.hasPrefix("V6 ") { v6 = Int(line.dropFirst(3).trimmingCharacters(in: .whitespaces)) }
             else if line.hasPrefix("WEB ") { web = Int(line.dropFirst(4).trimmingCharacters(in: .whitespaces)) }
             else if line.hasPrefix("CONTROL ") { control = String(line.dropFirst(8)) }
             else if line.hasPrefix("GWPROBE ") { gwprobe = String(line.dropFirst(8)) }
@@ -164,9 +165,12 @@ public enum SandboxSelfcheck {
                 else if let n = Int(rest) { results[n] = "" }
             }
         }
+        if v6 != 0 {
+            problems.append("the guest has IPv6 addresses (\(v6.map(String.init) ?? "unread")): IPv6 is switched off in the sandbox because Softnet's rules are IPv4")
+        }
         if web != 0 { problems.append("the guest has no internet (\(webCheck)): its DNS or egress is broken") }
         if case .reachable = classify(control ?? "") {} else {
-            problems.append("positive control failed: nc could not connect to \(controlHost):\(controlPort) (\(control.map { String($0.suffix(80)) } ?? "no answer")); a silent probe would prove nothing")
+            problems.append("positive control failed: nc could not connect to \(controlHost):\(controlPort) (\(control.map { GuestHands.sanitize(String($0.suffix(80))) } ?? "no answer")); a silent probe would prove nothing")
         }
         guard let gateway else {
             problems.append("could not read the guest's gateway to probe it")
@@ -186,36 +190,36 @@ public enum SandboxSelfcheck {
             }
         }
         if hostHits > 0 { problems.append("the host listener saw \(hostHits) connection(s) from the guest") }
-        if host6Hits > 0 { problems.append("the host IPv6 listener saw \(host6Hits) connection(s) from the guest") }
         return Report(problems: problems, gateway: gateway)
+    }
+
+    /// Switches IPv6 off in the guest (every network service). A rooted guest could switch it back on, so the
+    /// check below fails if it finds an address, and the PIN notes what Softnet does and doesn't cover.
+    public static func harden(vm: String, tart: SandboxTart) {
+        _ = tart.guest(vm, "export PATH=/usr/bin:/bin:/usr/sbin:/sbin; networksetup -listallnetworkservices | tail -n +2 | sed 's/^\\*//' | while IFS= read -r s; do sudo -n /usr/sbin/networksetup -setv6off \"$s\"; done; true", timeout: 60)
     }
 
     /// Runs the whole check against a booted guest. Any failure to run counts as a failure.
     public static func run(vm: String, tart: SandboxTart, hostFacts: HostFactsReading, refresh: Bool = true) -> Report {
         var facts = hostFacts.read()
-        let l4 = hostFacts.listener(ipv6: false)
-        let l6 = facts.addresses6.isEmpty ? nil : hostFacts.listener(ipv6: true)
-        defer { l4?.close(); l6?.close() }
-        if l4 == nil {
+        let l4 = hostFacts.listener()
+        defer { l4?.close() }
+        guard let l4 else {
             return Report(problems: ["could not open a listener on this Mac to probe isolation against"], gateway: nil)
         }
-        if !facts.addresses6.isEmpty && l6 == nil {
-            facts.firewallProblem = (facts.firewallProblem.map { $0 + "; " } ?? "") + "this Mac has IPv6 addresses but no IPv6 listener could be opened to probe them"
-        }
-        let port = l4!.port
+        let port = l4.port
         // First ask the guest for its gateway so the probes include it; the script also probes it itself.
         let gw = tart.guest(vm, "PATH=/usr/bin:/bin:/usr/sbin:/sbin route -n get default | awk '/gateway:/ {print $2; exit}'", timeout: 30)
         let gateway = gw.ok ? gw.stdout.trimmingCharacters(in: .whitespacesAndNewlines) : nil
         if refresh { // the vmnet bridge only exists while a VM runs
             let fresh = hostFacts.read()
             for a in fresh.addresses where !facts.addresses.contains(where: { $0.ip == a.ip }) { facts.addresses.append(a) }
-            for a in fresh.addresses6 where !facts.addresses6.contains(where: { $0.ip == a.ip }) { facts.addresses6.append(a) }
         }
-        let probes = probes(facts: facts, gateway: gateway.flatMap { $0.isEmpty ? nil : $0 }, listenerPort: port, listener6Port: l6?.port)
+        let probes = probes(facts: facts, gateway: gateway.flatMap { SandboxNetwork.isUsableIPv4($0) ? $0 : nil }, listenerPort: port)
         let script = guestScript(probes: probes, gatewayPort: port)
         let r = tart.guest(vm, script, timeout: 120)
         tart.clock.sleep(0.2) // connections the guest made a moment ago may still be arriving
-        return evaluate(facts: facts, probes: probes, output: r.stdout, hostHits: l4?.accepted() ?? 0,
-                        host6Hits: l6?.accepted() ?? 0, exitStatus: r.timedOut ? 124 : r.status)
+        return evaluate(facts: facts, probes: probes, output: r.stdout, hostHits: l4.accepted(),
+                        exitStatus: r.timedOut ? 124 : (r.truncated ? 125 : r.status))
     }
 }

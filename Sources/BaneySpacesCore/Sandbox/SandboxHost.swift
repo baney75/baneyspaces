@@ -69,7 +69,7 @@ public final class SystemHostFacts: HostFactsReading {
         self.runner = runner; self.exists = exists; self.exe = exe
     }
 
-    public func listener(ipv6: Bool) -> ProbeListener? { TCPProbeListener(ipv6: ipv6) }
+    public func listener() -> ProbeListener? { TCPProbeListener(ipv6: false) }
 
     public func read() -> HostFacts {
         var facts = HostFacts(tailscaleInstalled: Self.tailscalePaths.contains(where: exists))
@@ -85,14 +85,6 @@ public final class SystemHostFacts: HostFactsReading {
                     guard SandboxNetwork.isUsableIPv4(ip) else { continue }
                     if !facts.addresses.contains(where: { $0.ip == ip }) {
                         facts.addresses.append(.init("this Mac's address on \(name)", ip, iface: name))
-                    }
-                } else if a.pointee.sa_family == UInt8(AF_INET6) {
-                    var v6 = ip.lowercased()
-                    if let pct = v6.firstIndex(of: "%") { v6 = String(v6[..<pct]) }
-                    let linkLocal = v6.hasPrefix("fe80:")
-                    if v6 == "::1" || (linkLocal && !(name.hasPrefix("en") || name.hasPrefix("bridge"))) { continue }
-                    if !facts.addresses6.contains(where: { $0.ip == v6 }) {
-                        facts.addresses6.append(.init("this Mac's IPv6 address on \(name)", v6))
                     }
                 }
             }
@@ -117,6 +109,9 @@ public final class SystemHostFacts: HostFactsReading {
         }
         guard let state = ask(["--getglobalstate"]) else {
             return "could not read the Application Firewall state (socketfilterfw): a dropped probe would pass unnoticed"
+        }
+        if state.range(of: #"State\s*=\s*2"#, options: .regularExpression) != nil {
+            return "the Application Firewall is set to block all incoming connections: the probe's listener can't be reached, so a timeout would prove nothing"
         }
         if state.range(of: #"disabled|State\s*=\s*0"#, options: [.regularExpression, .caseInsensitive]) != nil { return nil }
         guard state.range(of: #"enabled|State\s*=\s*[12]"#, options: [.regularExpression, .caseInsensitive]) != nil else {

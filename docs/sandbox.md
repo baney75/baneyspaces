@@ -27,12 +27,13 @@ from another machine. The sandbox is off until Settings > Agents turns it on.
    Where it waits depends on use (`SandboxWarmPolicy`):
    - **In memory** while the sandbox is in use (a sandbox command, `status` excepted, in the last 15
      minutes) and the Mac has the VM's memory plus 4 GB free: it is left running, already holding the
-     task's handoff folder (a running VM can't gain a share later). `reset` kills the working VM and
+     slot of its own (below). `reset` kills the working VM and
      promotes the warm one: nothing to restore from disk. (Tart has no in-memory pause, so "paused" means
      booted and idle.) It counts as the second of the two guests.
    - **On disk** (`tart suspend`) after 15 idle minutes, when memory gets tight, when it is built while
      idle or tight, and on `down`. `tick()` moves a running warm clone to disk when its conditions stop
-     holding. A reset from disk restores the saved state: 4.8 to 12 s depending on how busy the Mac is.
+     holding, and when another tool has a VM that may need the second guest slot (up to one tick, 5 s; a third-party VM
+     is otherwise blocked from that slot for as long as the clone runs, at most the 15 idle minutes). A reset from disk restores the saved state: 4.8 to 12 s depending on how busy the Mac is.
    `reset` keeps the 10 s budget for the p90 of the run; `status` (`reset_stats`) and the probe report
    count, p50 and p90, and each reset says whether it came `from` memory or disk. With no warm clone
    ready `reset` waits for the build (`swap_after_wait`) or boots cold (`cold`); a cold boot never counts
@@ -78,12 +79,21 @@ budget): the rules are the ones a full check already passed with, and a failure 
 
 ## Handoff folder
 
-One per task, `~/Library/Application Support/BaneySpaces/sandbox/handoff/<task>` (mode 700, task names
-are plain file names, a symlink is refused), mounted read-write through Tart's directory sharing at
-`/Volumes/My Shared Files/handoff` in the guest. It is the only host path in the `tart run` command line.
-No home folder, iCloud, keychain, clipboard (`--no-clipboard`), audio or USB. The sandbox never deletes a
-handoff folder: it holds the task's results. A reset keeps the same task's folder; the old guest is
-killed before the new one starts, so two guests never share it.
+One per task, `~/Library/Application Support/BaneySpaces/sandbox/handoff/<task>` (mode 700; task names are plain
+file names, anchored at both ends; a symlink is refused). In the guest it is `/Volumes/My Shared Files/handoff`,
+read-write through Tart's directory sharing, and it is the only host path in the `tart run` command line. No home
+folder, iCloud, keychain, clipboard (`--no-clipboard`), audio or USB. The sandbox never deletes a task's folder.
+
+**No folder is ever shared by two guests.** A running VM can't gain a share, so every VM starts with a share of its
+own: an empty slot, `sandbox/slots/<vm>`. That includes the warm clone, which therefore never sees any task's
+files (a guest that was compromised could otherwise plant files for the clean-looking next guest to open).
+The task's files are *moved* into the slot (renames, instant; the guest sees them at once, measured) only when
+that VM takes over as the working guest, after the previous guest is dead, and moved back to `handoff/<task>`
+when it ends (`reset`, `down`, a failed start, a crash at the next launch). While a guest has them, they are in its
+slot (`status` shows `handoff.host_path`), and `handoff.rests_at` is where they come back. A name that already
+exists at the destination gets a suffix: nothing is overwritten. A VM that has been bound to a task is deleted at
+the end of that task, never reused for another; the live slots are recorded in `sandbox/live.json` (outside what
+the guest can see) so a crash can put the files back.
 
 ## Guest hands: the interface (stub today)
 
@@ -125,9 +135,24 @@ local Homebrew tap, the setuid Softnet copy in `/usr/local/lib/baneyspaces/bin` 
 root:wheel 4755, repaired if its mode or contents drift), every download and formula checked against the
 sha256s in the script and `sandbox/PIN`, and optionally the image. Idempotent; it never touches the app.
 
+## What it does at quit, and when it is off
+
+Quit never waits on a sandbox operation: every VM process is killed at once, then the deletes and the files
+going back run on their own thread for at most a few seconds; what is left is cleaned up at the next launch (the app
+takes the sandbox lock at launch whether or not the sandbox is on). The window calls the sandbox makes into the
+app give up after 1.5 s, so a `view` in progress can't hold up quit. Only the process holding the sandbox lock ever
+deletes VMs, and only `bsx-*` ones. Turning the sandbox off in Settings removes its VMs, the warm clone included.
+
+## IPv6
+
+Softnet's rules are IPv4. IPv6 is switched off inside the guest (`networksetup -setv6off`, every service, before the
+first check), and the in-guest check fails if the guest has any IPv6 address but loopback. Residual: a guest that
+is root can switch it back on, and nothing here claims Softnet then filters IPv6 for it. The check also no longer
+treats "can't assign requested address" as proof of a block.
+
 ## Settings > Agents
 
-On/off, memory (4 to 16 GB, macOS guests need 4; capped at a quarter of the Mac's), CPUs (capped at half), the state and disk
+On/off, memory (4 to 16 GB, macOS guests need 4; capped at a quarter of the Mac's; a Mac under 16 GB is refused with a message, not run with a smaller VM), CPUs (capped at half), the state and disk
 used, Reset Now, Delete Images (the VMs and the pulled image, with a confirmation). Memory and CPUs apply
 to the next VM.
 

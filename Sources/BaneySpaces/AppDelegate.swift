@@ -239,6 +239,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         c.model.onInstallHooks = { [weak self] in self?.deck.installHooks() }
         c.model.sandboxSummary = { [weak self] in self?.sandbox.summary() }
+        c.model.onSandboxDisabled = { [weak self] in self?.sandbox.disable() }
         c.model.onSandboxReset = { [weak self] done in self?.sandbox.resetNow(done: done) }
         c.model.onSandboxDeleteImages = { [weak self] done in
             let a = NSAlert()

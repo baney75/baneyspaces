@@ -67,7 +67,7 @@ public enum GuestHands {
         }
         let r = tart.guest(vm, stubScript, stdin: text + "\n", timeout: timeout, limit: maxReplyBytes + 1)
         if r.truncated { return failure(request.id, "bad_reply", "rejected the guest's reply: larger than \(maxReplyBytes) bytes", retry: "safe") }
-        guard r.ok else { return failure(request.id, "transport", "tart exec failed (\(r.status)): \(r.tail)", retry: "safe") }
+        guard r.ok else { return failure(request.id, "transport", "tart exec failed (\(r.status))", retry: "safe") } // the guest's own words are not echoed
         return decode(r.stdout, id: request.id)
     }
 
@@ -92,16 +92,22 @@ public enum GuestHands {
             let d = reply.data ?? [:]
             guard d.count <= maxDataEntries else { return bad("too many fields") }
             for (k, v) in d {
-                guard k.utf8.count <= maxKeyBytes, k.range(of: #"^[a-z_][a-z0-9_]*$"#, options: .regularExpression) != nil else { return bad("bad field name") }
+                guard k.utf8.count <= maxKeyBytes, k.range(of: #"\A[a-z_][a-z0-9_]*\z"#, options: .regularExpression) != nil else { return bad("bad field name") }
                 guard clean(v, max: maxValueBytes) else { return bad("field \(k) is too long or has control characters") }
             }
         } else {
             guard let e = reply.error, reply.data == nil else { return bad("failure without an error") }
-            guard e.code.range(of: #"^[a-z_]{1,32}$"#, options: .regularExpression) != nil,
+            guard e.code.range(of: #"\A[a-z_]{1,32}\z"#, options: .regularExpression) != nil,
                   ["safe", "after_snapshot", "after", "never"].contains(e.retry),
                   clean(e.suggestion, max: maxValueBytes) else { return bad("malformed error") }
         }
         return reply
+    }
+
+    /// Text that came from the guest, made safe to print and log: control characters dropped, length capped.
+    public static func sanitize(_ text: String, max: Int = 160) -> String {
+        let kept = text.unicodeScalars.filter { $0.value >= 0x20 && $0.value != 0x7f }
+        return String(String.UnicodeScalarView(kept)).trimmingCharacters(in: .whitespaces).prefix(max).description
     }
 
     static func failure(_ id: String, _ code: String, _ message: String, retry: String = "never") -> Reply {

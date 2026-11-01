@@ -42,8 +42,9 @@ public enum SandboxWindows {
 /// What the sandbox needs from the app to place a window. The app delegate fills it in.
 public protocol SandboxWindowHost: AnyObject {
     func agentWorkspace() -> Int?
-    /// The next window of `pid` goes to `workspace` (BaneySpaces' own claim; it never follows it).
-    func claim(pid: Int32, workspace: Int)
+    /// The next window of `pid` goes to `workspace` (BaneySpaces' own claim; it never follows it). False if
+    /// the claim could not be registered in time: the caller must not let the process show a window.
+    func claim(pid: Int32, workspace: Int) -> Bool
     func windows(of pid: Int32) -> [SandboxWindows.Window]
     func move(window: UInt32, to workspace: Int)
 }

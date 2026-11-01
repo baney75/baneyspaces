@@ -6,12 +6,22 @@ tart            2.41.1
   tarball sha256  e680a734febccfce7d4e910c1f7f13fc3b00f19a181c945e2d746de3214c32c2   (GitHub release digest; matches BaneyFleet's fleet-ci pin)
   install       Homebrew, from the local tap baneyspaces/pins (sandbox/Formula/tart.rb, softnet.rb), because the
                 cirruslabs/cli tap still ships Tart 2.32.1 and Softnet 0.19.0 (Softnet 0.25 needs macOS 26+).
-  formula sha256  tart.rb     4e22358d0c16438529a33a1dd3c12ee8ebade3d5c84f1351b8aebdfa0889f677
-                  softnet.rb  7385eb4284310e82910f9b0af6536fc6e7fdc2ea19d5d931cae3bba351419015
+  formula sha256  tart.rb     117016ba2df4cde92468ecf59bf278416ff850058bc03ad388c676336418a264
+                  softnet.rb  e754c5494df67cb62087ebfd4b7358357955aaaf10e559f4df72c6e28f8e33c5
   verified      brew checked the tarball sha256; `codesign --verify --deep --strict tart.app` ok
   vet_supply    BaneyFleet tools/vet_supply.py on the release tarball (--repo openai/tart): verdict ASK
                 (exit 10): no GitHub release attestation, VirusTotal skipped (no VT_API_KEY in Magnus Secrets).
                 The sha256 is the one BaneyFleet already pinned and vetted for its macOS CI node.
+
+provenance      cirruslabs/tart and cirruslabs/softnet moved to the openai organization (GitHub's transfer redirect), so
+                openai/* is the real upstream and the formulae's homepage and url say so. Checked 2026-11-01:
+                  $ gh api repos/cirruslabs/tart --jq '.full_name+" "+.html_url'      ->  openai/tart https://github.com/openai/tart
+                  $ gh api repos/cirruslabs/softnet --jq '.full_name+" "+.html_url'   ->  openai/softnet https://github.com/openai/softnet
+                The same two tarball sha256s are BaneyFleet's fleet-ci pins, which its macOS CI node already installs:
+                tools/fleet_ci/install-macos.sh:69 (TART_SHA256) and :71 (SOFTNET_SHA256). No new trust is added here.
+                vet_supply.py verdict on both tarballs: ASK, for two reasons only: "not attested by openai/<repo>"
+                (no GitHub release attestation) and VirusTotal skipped (no VT_API_KEY in Magnus Secrets). It found
+                nothing else (inventory: one archive each; no manifests, no skill files).
 
 softnet         0.25.0
   release       https://github.com/openai/softnet/releases/download/0.25.0/softnet.tar.gz
@@ -20,6 +30,11 @@ softnet         0.25.0
   installed     /usr/local/lib/baneyspaces/bin/softnet, root:wheel 4755 (setuid root, like fleet-ci: Tart starts it
                 for --net-softnet and it drops privileges). BaneySpaces puts that folder first on Tart's PATH.
                   scripts/install-sandbox.sh does this (sha256-checked, idempotent, repairs a wrong mode)
+
+ipv6            Softnet's rules are IPv4. IPv6 is therefore switched off inside the guest (`networksetup -setv6off` on
+                every service, before the first check) and the in-guest self-check fails if the guest has any IPv6
+                address but loopback. A guest that is root can switch it back on, and this pin does not claim Softnet
+                filters IPv6 for it: the residual is documented in docs/sandbox.md.
 
 image           ghcr.io/cirruslabs/macos-tahoe-base@sha256:4aaa751fa7538902d73c767f27a066fc87e83f183069da4e4b5022863abd4c77
   macOS         Tahoe 26.6.2 (guest), host 27.2

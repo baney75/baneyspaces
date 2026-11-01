@@ -195,7 +195,7 @@ final class SandboxInstallScriptTests: XCTestCase {
         XCTAssertTrue(s.contains("IMAGE=\(SandboxPin.image)"))
         let pin = try String(contentsOf: repo.appendingPathComponent("sandbox/PIN"), encoding: .utf8)
         for h in ["5a2e8ef779f0a2169b88d273ee806c0d64321ec7714c0dc99bf217523ae9b008", "5c838134bb91af720d3575a9918e0bebe48a40bf37deaf0a5ec2219ba94b8534",
-                  "4e22358d0c16438529a33a1dd3c12ee8ebade3d5c84f1351b8aebdfa0889f677", "7385eb4284310e82910f9b0af6536fc6e7fdc2ea19d5d931cae3bba351419015"] {
+                  "117016ba2df4cde92468ecf59bf278416ff850058bc03ad388c676336418a264", "e754c5494df67cb62087ebfd4b7358357955aaaf10e559f4df72c6e28f8e33c5"] {
             XCTAssertTrue(s.contains(h), "script pins \(h.prefix(12))")
             XCTAssertTrue(pin.contains(h), "sandbox/PIN records \(h.prefix(12))")
         }
@@ -213,7 +213,7 @@ final class SandboxInstallScriptTests: XCTestCase {
     }
 
     func testTheFormulaeMatchTheirPinnedHashes() throws {
-        for (name, h) in [("tart", "4e22358d0c16438529a33a1dd3c12ee8ebade3d5c84f1351b8aebdfa0889f677"), ("softnet", "7385eb4284310e82910f9b0af6536fc6e7fdc2ea19d5d931cae3bba351419015")] {
+        for (name, h) in [("tart", "117016ba2df4cde92468ecf59bf278416ff850058bc03ad388c676336418a264"), ("softnet", "e754c5494df67cb62087ebfd4b7358357955aaaf10e559f4df72c6e28f8e33c5")] {
             let r = SystemProcessRunner().run("/usr/bin/shasum", ["-a", "256", repo.appendingPathComponent("sandbox/Formula/\(name).rb").path], env: [:], stdin: nil, timeout: 10, outputLimit: 4096)
             XCTAssertTrue(r.stdout.hasPrefix(h), name)
         }

@@ -97,10 +97,10 @@ public final class SandboxTart {
         guard s.ok else { throw SandboxError("set_failed", "tart set failed (\(s.status)): \(s.tail)") }
     }
 
-    public func spawnRun(vm: String, options: TartRunOptions) throws -> RunningProcess {
+    public func spawnRun(vm: String, options: TartRunOptions, hold: Bool = false) throws -> RunningProcess {
         let args = try Self.runArguments(vm: vm, options: options)
         let log = logDir.map { "\($0)/vm-\(vm).log" }
-        do { return try runner.spawn(binary, args, env: env, logPath: log) }
+        do { return try runner.spawn(binary, args, env: env, logPath: log, hold: hold) }
         catch { throw SandboxError("run_failed", "could not start tart run: \(error.localizedDescription)") }
     }
 

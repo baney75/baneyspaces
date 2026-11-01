@@ -69,9 +69,11 @@ public enum SandboxProbe {
             return (g.ok && g.data?["daemon"] == "stub", g.ok ? "daemon=\(g.data?["daemon"] ?? "?") macos=\(g.data?["macos"] ?? "?")" : (g.error?.suggestion ?? "no answer"))
         }
         step("down") {
+            let name = manager.snapshot().vm
             let s = try manager.down()
-            let left = (try? tart.localVMs().filter { $0 == s.vm }) ?? ["?"]
-            return (s.phase == .stopped && left.isEmpty, "stopped")
+            let present = (try? tart.localVMs()) ?? ["?"]
+            let gone = name != nil && !present.contains(name!) && s.vm == nil
+            return (s.phase == .stopped && gone, gone ? "stopped, \(name ?? "?") deleted" : "\(name ?? "no VM") is still there")
         }
         return report
     }

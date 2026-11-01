@@ -92,7 +92,7 @@ public final class SandboxService {
             "tart": ["version": SandboxPin.tartVersion, "softnet": SandboxPin.softnetVersion] as [String: Any],
             "disk": ["vm_gb": SandboxDisk.gb(disk.vmBytes), "image_gb": SandboxDisk.gb(disk.imageBytes), "vm_count": disk.vmCount] as [String: Any],
             "settings": ["enabled": cfg.enabled, "memory_gb": cfg.memoryGB, "cpus": cfg.cpus] as [String: Any],
-            "handoff": ["guest_path": SandboxPin.guestHandoffPath, "host_path": s.task.map { manager.paths.handoffRoot.appendingPathComponent($0).path } as Any? ?? NSNull()] as [String: Any],
+            "handoff": ["guest_path": SandboxPin.guestHandoffPath, "host_path": (s.slot ?? s.task.map { manager.paths.handoffRoot.appendingPathComponent($0).path }) as Any? ?? NSNull(), "rests_at": s.task.map { manager.paths.handoffRoot.appendingPathComponent($0).path } as Any? ?? NSNull()] as [String: Any],
             "last_error": s.lastError as Any? ?? NSNull(),
             "pending_deletes": s.pendingDeletes,
         ]

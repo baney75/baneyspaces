@@ -49,7 +49,7 @@ final class SandboxWarmStateTests: XCTestCase {
         XCTAssertFalse(suspends(r).contains(w), "not written to disk")
         let spawn = r.tart.spawned.first { $0.args.last == w }!
         XCTAssertTrue(spawn.proc.isRunning)
-        XCTAssertTrue(spawn.args.contains { $0.hasSuffix("/handoff/t1") }, "it already has the task's folder, which a running VM can't change later")
+        XCTAssertTrue(spawn.args.contains { $0.contains("/slots/") && !$0.hasSuffix("/handoff/t1") }, "a slot of its own: the task's folder is never shared with it")
     }
 
     func testResetPromotesTheRunningCloneWithNothingToRestore() throws {
@@ -100,7 +100,7 @@ final class SandboxWarmStateTests: XCTestCase {
     }
 
     func testTightMemoryAtBuildTimePutsItOnDisk() throws {
-        let r = rig(7) // VM 4 GB + 4 GB needed
+        let r = rig(3) // the VM's own 4 GB is already taken; under 4 GB of headroom left
         _ = try r.manager.up(task: "t1")
         XCTAssertTrue(r.manager.waitUntilWarm(limit: 120))
         XCTAssertEqual(r.manager.snapshot().warmLocation, .disk)

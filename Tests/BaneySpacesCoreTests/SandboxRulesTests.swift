@@ -59,6 +59,23 @@ final class SandboxRulesTests: XCTestCase {
         XCTAssertTrue(rig.tart.calls.isEmpty, "an unpinned image never reaches tart")
     }
 
+    func testASmallMacIsRefusedNotQuietlyClamped() {
+        XCTAssertNil(SandboxSettings.hostProblem(hostMemoryGB: 32))
+        XCTAssertNil(SandboxSettings.hostProblem(hostMemoryGB: 16))
+        XCTAssertNotNil(SandboxSettings.hostProblem(hostMemoryGB: 8))
+        let r = Rig.make(hostMemoryGB: 8); defer { try? FileManager.default.removeItem(at: r.dir) }
+        XCTAssertThrowsError(try r.manager.up(task: "t")) { XCTAssertEqual(($0 as? SandboxError)?.code, "host_too_small") }
+        XCTAssertTrue(r.tart.calls.isEmpty)
+    }
+
+    func testFirewallBlockAllIsAProblem() {
+        let rig = Rig.make(); defer { try? FileManager.default.removeItem(at: rig.dir) }
+        rig.tart.firewallState = "Firewall is enabled. (State = 2)"
+        XCTAssertTrue(SystemHostFacts(runner: rig.tart).read().firewallProblem?.contains("block all") == true)
+        rig.tart.firewallState = "Firewall is disabled. (State = 0)"
+        XCTAssertNil(SystemHostFacts(runner: rig.tart).read().firewallProblem)
+    }
+
     func testSettingsAreClamped() {
         XCTAssertEqual(SandboxSettings(enabled: true, memoryGB: 5, cpus: 99).memoryGB, 4)
         XCTAssertEqual(SandboxSettings(enabled: true, memoryGB: 16, cpus: 8).clamped(hostMemoryGB: 32, hostCPUs: 10).memoryGB, 8)
@@ -77,17 +94,17 @@ final class SandboxSelfcheckTests: XCTestCase {
                           router: "192.168.1.1", tailscaleInstalled: true)
 
     func probes() -> [SandboxSelfcheck.Probe] {
-        SandboxSelfcheck.probes(facts: facts, gateway: "192.168.64.1", listenerPort: 5000, listener6Port: nil)
+        SandboxSelfcheck.probes(facts: facts, gateway: "192.168.64.1", listenerPort: 5000)
     }
 
-    func output(web: Int = 0, control: String = "RC=0 succeeded!", gw: String = "RC=1 Operation timed out", each: String = "RC=1 Operation timed out") -> String {
-        var s = "GATEWAY 192.168.64.1\nWEB \(web)\nCONTROL \(control)\nGWPROBE \(gw)\n"
+    func output(web: Int = 0, v6: Int = 0, control: String = "RC=0 succeeded!", gw: String = "RC=1 Operation timed out", each: String = "RC=1 Operation timed out") -> String {
+        var s = "GATEWAY 192.168.64.1\nV6 \(v6)\nWEB \(web)\nCONTROL \(control)\nGWPROBE \(gw)\n"
         for i in probes().indices { s += "PROBE \(i) \(each)\n" }
         return s
     }
 
     func eval(_ out: String, hits: Int = 0, facts f: HostFacts? = nil, status: Int32 = 0) -> SandboxSelfcheck.Report {
-        SandboxSelfcheck.evaluate(facts: f ?? facts, probes: probes(), output: out, hostHits: hits, host6Hits: 0, exitStatus: status)
+        SandboxSelfcheck.evaluate(facts: f ?? facts, probes: probes(), output: out, hostHits: hits, exitStatus: status)
     }
 
     func testProbesCoverTheMacTheGatewayTheRouterAndTheTailnet() {
@@ -109,6 +126,22 @@ final class SandboxSelfcheckTests: XCTestCase {
 
     func testTheGatewayMustBeShut() {
         XCTAssertTrue(eval(output(gw: "RC=0 succeeded!")).problems.contains { $0.contains("vmnet gateway") })
+    }
+
+    func testAGuestWithIPv6FailsBecauseSoftnetIsIPv4Only() {
+        XCTAssertTrue(eval(output(v6: 2)).problems.contains { $0.contains("IPv6") })
+        XCTAssertFalse(eval(output().replacingOccurrences(of: "V6 0\n", with: "")).passed, "an unread IPv6 state is a failure")
+    }
+
+    func testCantAssignRequestedAddressIsNotProofOfABlock() {
+        if case .inconclusive = SandboxSelfcheck.classify("RC=1 nc: connectx: Can't assign requested address") {} else { XCTFail("it proves nothing about the network") }
+    }
+
+    func testGuestTextIsSanitizedInProblems() {
+        let evil = "RC=1 \u{1B}[31mbad\u{07}" + String(repeating: "x", count: 500)
+        let r = eval(output(each: evil))
+        XCTAssertTrue(r.problems.allSatisfy { !$0.unicodeScalars.contains { $0.value < 0x20 } }, "no control characters from the guest reach a message")
+        XCTAssertTrue(r.problems.allSatisfy { $0.count < 400 })
     }
 
     func testNoInternetFailsClosed() {

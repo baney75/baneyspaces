@@ -41,7 +41,7 @@ enum SandboxCommand {
             let resets = args.firstIndex(of: "--resets").flatMap { $0 + 1 < args.count ? Int(args[$0 + 1]) : nil } ?? 3
             let report = SandboxProbe.run(manager: service.manager, tart: tart, resets: resets, clock: SystemClock(),
                                           log: { print($0); fflush(stdout) })
-            service.manager.shutdown() // the warm clone goes too: the probe leaves nothing behind
+            service.manager.shutdown(deadline: 120) // the warm clone goes too: the probe leaves nothing behind (no UI to keep responsive here)
             let left = (try? tart.leftovers()) ?? ["?"]
             print("leftover bsx-* VMs: \(left.isEmpty ? "none" : left.joined(separator: ", "))")
             print(report.passed && left.isEmpty ? "sandbox-probe PASS" : "sandbox-probe FAIL")
@@ -53,7 +53,12 @@ enum SandboxCommand {
             FileHandle.standardError.write(Data("--local runs one self-contained sequence: use `sandbox --local probe`, or drop --local to use the app\n".utf8))
             exit(2)
         }
-        let reply = service.handle(Wire.Request(op: .sandbox, text: verb, args: args))
+        let request = Wire.Request(op: .sandbox, text: verb, args: args)
+        if let why = SocketPolicy.refusal(for: request) { // --local is not a way around what the socket refuses
+            FileHandle.standardError.write(Data((why + "\n").utf8))
+            exit(2)
+        }
+        let reply = service.handle(request)
         finish(reply)
     }
 }

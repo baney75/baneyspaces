@@ -1,6 +1,6 @@
 class Softnet < Formula
   desc "Software networking with isolation for Tart (BaneySpaces pin)"
-  homepage "https://github.com/cirruslabs/softnet"
+  homepage "https://github.com/openai/softnet"
   version "0.25.0"
   license "Fair Source"
   url "https://github.com/openai/softnet/releases/download/0.25.0/softnet.tar.gz"

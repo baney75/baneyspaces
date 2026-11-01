@@ -1,6 +1,6 @@
 class Tart < Formula
   desc "Run macOS VMs on Apple silicon (BaneySpaces pin)"
-  homepage "https://github.com/cirruslabs/tart"
+  homepage "https://github.com/openai/tart"
   version "2.41.1"
   license "Fair Source"
   url "https://github.com/openai/tart/releases/download/2.41.1/tart.tar.gz"

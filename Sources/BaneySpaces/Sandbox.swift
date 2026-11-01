@@ -26,34 +26,61 @@ final class AppSandbox: SandboxWindowHost {
         }
     }
 
-    /// Nothing of the sandbox outlives the app.
+    /// Nothing of the sandbox outlives the app. Never waits on a lifecycle operation: processes are killed at
+    /// once and the deletes run on their own thread; this waits a few seconds at most (the window host calls
+    /// below give up after 1.5 s, so a view in progress can't hold it).
     func shutdown() {
         timer?.invalidate()
-        service.manager.shutdown()
+        service.manager.shutdown(deadline: 4)
     }
 
-    /// Deletes VMs a crash left behind, once, in the background, if the sandbox is on.
+    /// Settings turned the sandbox off: every VM and the warm clone go, off the main thread.
+    func disable() {
+        DispatchQueue.global(qos: .utility).async { [service] in service?.manager.stopAll() }
+    }
+
+    /// At launch, sandbox on or off: takes the sandbox lock, puts back the files of a slot a crash left bound and
+    /// deletes VMs it left behind.
     func cleanupAtLaunch() {
-        guard SandboxSettings.load().enabled else { return }
         DispatchQueue.global(qos: .utility).async { [service] in
             do { try service?.manager.startupCleanup() } catch { NSLog("BaneySpaces sandbox: %@", "\(error)") }
         }
     }
 
-    // MARK: SandboxWindowHost (called off the main thread; they hop to it)
+    // MARK: SandboxWindowHost (called off the main thread). They never wait on the main thread for long: if the
+    // main thread is busy, or waiting for the sandbox to finish at quit, the call gives up and says so.
 
-    func agentWorkspace() -> Int? { DispatchQueue.main.sync { Spaces.agentWorkspace } }
+    private final class Box<T>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var v: T
+        init(_ v: T) { self.v = v }
+        var value: T { get { lock.lock(); defer { lock.unlock() }; return v } set { lock.lock(); v = newValue; lock.unlock() } }
+    }
 
-    func claim(pid: Int32, workspace: Int) {
-        DispatchQueue.main.sync { spacesProvider()?.claimNextWindow(of: pid, for: workspace, within: 40, newProcess: true) }
+    private func onMain<T>(_ fallback: T, timeout: TimeInterval = 1.5, _ body: @escaping () -> T) -> T {
+        if Thread.isMainThread { return body() }
+        let box = Box(fallback)
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.main.async { box.value = body(); done.signal() }
+        return done.wait(timeout: .now() + timeout) == .success ? box.value : fallback
+    }
+
+    func agentWorkspace() -> Int? { onMain(nil) { Spaces.agentWorkspace } }
+
+    func claim(pid: Int32, workspace: Int) -> Bool {
+        onMain(false, timeout: 5) { [spacesProvider] in
+            guard let spaces = spacesProvider() else { return false }
+            spaces.claimNextWindow(of: pid, for: workspace, within: 40, newProcess: true)
+            return true
+        }
     }
 
     func windows(of pid: Int32) -> [SandboxWindows.Window] {
-        DispatchQueue.main.sync { spacesProvider()?.windowsOf(pid: pid) ?? [] }
+        onMain([]) { [spacesProvider] in spacesProvider()?.windowsOf(pid: pid) ?? [] }
     }
 
     func move(window: UInt32, to workspace: Int) {
-        DispatchQueue.main.sync { spacesProvider()?.move(window, to: workspace) }
+        _ = onMain(false) { [spacesProvider] in spacesProvider()?.move(window, to: workspace); return true }
     }
 }
 

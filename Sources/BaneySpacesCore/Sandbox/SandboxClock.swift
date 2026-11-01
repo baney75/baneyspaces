@@ -33,6 +33,8 @@ public protocol RunningProcess: AnyObject {
     var isRunning: Bool { get }
     func terminate()
     func kill()
+    /// Lets a process started with `hold: true` go. It has executed nothing of the real program until this.
+    func release()
     /// True once it has exited, false if `timeout` ran out first.
     func waitForExit(timeout: TimeInterval) -> Bool
 }
@@ -41,7 +43,9 @@ public protocol RunningProcess: AnyObject {
 public protocol ProcessRunning: AnyObject {
     /// `outputLimit`: bytes of stdout or stderr kept; a child that writes more is stopped and the result is `truncated`.
     func run(_ exe: String, _ args: [String], env: [String: String], stdin: String?, timeout: TimeInterval, outputLimit: Int) -> ProcessResult
-    func spawn(_ exe: String, _ args: [String], env: [String: String], logPath: String?) throws -> RunningProcess
+    /// `hold`: the child waits, before running `exe`, until `release()` is called on it, so a caller can
+    /// register a window claim for its pid before the program can show a window.
+    func spawn(_ exe: String, _ args: [String], env: [String: String], logPath: String?, hold: Bool) throws -> RunningProcess
 }
 
 public final class SystemProcessRunner: ProcessRunning {
@@ -104,10 +108,20 @@ public final class SystemProcessRunner: ProcessRunning {
                              timedOut: timedOut && !over.isSet, truncated: over.isSet)
     }
 
-    public func spawn(_ exe: String, _ args: [String], env: [String: String], logPath: String?) throws -> RunningProcess {
+    public func spawn(_ exe: String, _ args: [String], env: [String: String], logPath: String?, hold: Bool) throws -> RunningProcess {
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: exe)
-        p.arguments = args
+        var fifo: String?
+        if hold {
+            // A FIFO the shell reads before it execs the real program: nothing of `exe` runs until release().
+            let path = NSTemporaryDirectory() + "bsx-hold-\(UUID().uuidString)"
+            guard mkfifo(path, 0o600) == 0 else { throw SandboxError("run_failed", "could not make the launch barrier") }
+            fifo = path
+            p.executableURL = URL(fileURLWithPath: "/bin/sh")
+            p.arguments = ["-c", "IFS= read -r _ < \"$1\"; shift; exec \"$@\"", "sh", path, exe] + args
+        } else {
+            p.executableURL = URL(fileURLWithPath: exe)
+            p.arguments = args
+        }
         p.environment = env
         p.standardInput = FileHandle.nullDevice
         var log: FileHandle?
@@ -118,9 +132,9 @@ public final class SystemProcessRunner: ProcessRunning {
         }
         p.standardOutput = log ?? FileHandle.nullDevice
         p.standardError = log ?? FileHandle.nullDevice
-        try p.run()
+        do { try p.run() } catch { if let fifo { unlink(fifo) }; throw error }
         try? log?.close()
-        return SystemRunning(p)
+        return SystemRunning(p, fifo: fifo)
     }
 }
 
@@ -133,11 +147,29 @@ final class OverflowFlag: @unchecked Sendable {
 
 final class SystemRunning: RunningProcess {
     let p: Process
-    init(_ p: Process) { self.p = p }
+    private var fifo: String?
+    private let lock = NSLock()
+    init(_ p: Process, fifo: String? = nil) { self.p = p; self.fifo = fifo }
+    func release() {
+        lock.lock(); let path = fifo; fifo = nil; lock.unlock()
+        guard let path else { return }
+        defer { unlink(path) }
+        // The shell opens the FIFO for reading first; a non-blocking open for writing fails until it has.
+        for _ in 0..<200 {
+            let fd = open(path, O_WRONLY | O_NONBLOCK)
+            if fd >= 0 { _ = write(fd, "\n", 1); close(fd); return }
+            if !p.isRunning { return }
+            Thread.sleep(forTimeInterval: 0.025)
+        }
+    }
     var pid: Int32 { p.processIdentifier }
     var isRunning: Bool { p.isRunning }
     func terminate() { if p.isRunning { p.terminate() } }
-    func kill() { if p.isRunning { Darwin.kill(p.processIdentifier, SIGKILL) } }
+    func kill() {
+        if p.isRunning { Darwin.kill(p.processIdentifier, SIGKILL) }
+        lock.lock(); let path = fifo; fifo = nil; lock.unlock()
+        if let path { unlink(path) }
+    }
     func waitForExit(timeout: TimeInterval) -> Bool {
         let end = Date().addingTimeInterval(timeout)
         while p.isRunning {
