@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **⌘Tab workspaces mode lists empty workspaces.** A single occupied workspace no longer makes ⌘Tab a no-op. Window-bar hold eligibility is pinned by `WindowBarGateTests`.
+- **⌘Tab workspaces mode lists empty workspaces.** A single occupied workspace no longer makes ⌘Tab a no-op. The workspace row wraps so nine tiles still fit a 1,024 pt display. Window-bar hold eligibility is pinned by `WindowBarGateTests`.
 
 ## Unreleased
 

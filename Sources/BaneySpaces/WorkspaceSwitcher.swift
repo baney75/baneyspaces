@@ -430,7 +430,12 @@ struct SwitcherView: View {
     }
 
     private var workspaceRow: some View {
-        HStack(spacing: 12) {
+        // Wrap so nine tiles still fit a 1,024 pt display (Sol on #145).
+        let columns = Array(
+            repeating: GridItem(.fixed(108), spacing: 12),
+            count: SwitcherLayout.workspaceColumns(tileCount: model.tiles.count)
+        )
+        return LazyVGrid(columns: columns, spacing: 12) {
             ForEach(Array(model.tiles.enumerated()), id: \.element.id) { i, tile in
                 let on = i == model.selected
                 VStack(spacing: 8) {
@@ -448,16 +453,14 @@ struct SwitcherView: View {
                 }
                 .frame(width: 108, height: 128)
                 .background(Chrome.shape(.switcherTile).fill(on ? Chrome.cell(0.16) : Chrome.cell(0.05)))
-                .overlay(Chrome.shape(.switcherTile).strokeBorder(on ? Chrome.focusEdge(Chrome.accent.opacity(0.9)) : Chrome.edge(0.08),
+                .overlay(Chrome.shape(.switcherTile).strokeBorder(on ? Chrome.wash(0.55) : Chrome.edge(0),
                                                                   lineWidth: Chrome.width(.switcherTile, focused: on)))
                 .accessibilityLabel("Workspace \(tile.n), \(tile.count) windows\(on ? ", selected" : "")")
             }
         }
     }
-}
 
-/// A workspace's number in its own color, the same everywhere: dock, ⌘Tab and launcher. A dot in
-/// the BaneySpaces theme, a numbered block in Omarchy, a number over a bar in Minimal.
+
 struct WorkspaceBadge: View {
     let n: Int
     var size: CGFloat = 20

@@ -25,3 +25,32 @@ public enum WindowBarGate: Sendable {
 
     public static func shouldOpen(windowCount: Int) -> Bool { windowCount > 1 }
 }
+
+/// How many workspace tiles fit in one row of the ⌘Tab panel without clipping.
+public enum SwitcherLayout: Sendable {
+    public static let tileWidth: Double = 108
+    public static let spacing: Double = 12
+    public static let padding: Double = 28
+    /// Typical smaller Mac display content width the panel must stay inside.
+    public static let narrowScreen: Double = 1024
+
+    public static func workspaceColumns(
+        tileCount: Int,
+        maxWidth: Double = narrowScreen,
+        tileWidth: Double = tileWidth,
+        spacing: Double = spacing,
+        padding: Double = padding
+    ) -> Int {
+        let n = max(tileCount, 1)
+        for cols in stride(from: n, through: 1, by: -1) {
+            let width = Double(cols) * tileWidth + Double(max(cols - 1, 0)) * spacing + padding
+            if width <= maxWidth { return cols }
+        }
+        return 1
+    }
+
+    public static func rowWidth(columns: Int, tileWidth: Double = tileWidth, spacing: Double = spacing, padding: Double = padding) -> Double {
+        let cols = max(columns, 1)
+        return Double(cols) * tileWidth + Double(max(cols - 1, 0)) * spacing + padding
+    }
+}
