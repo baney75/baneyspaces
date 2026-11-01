@@ -62,9 +62,22 @@ pub fn render_hypr_lua(binary: &str) -> String {
     s.push_str("hl.animation({ leaf = \"specialWorkspace\", enabled = false })\n\n");
     s.push_str("-- Apps may ask for focus; only you take it. The daemon guards the agent workspace as well.\n");
     s.push_str("hl.config({ misc = { focus_on_activate = false } })\n\n");
+    s.push_str("-- The recovery chord: hold Super+Shift+Escape for two seconds to put the default keys and theme back.\n");
+    s.push_str("-- Bound here, always, and again inside every mode. Config can neither bind nor remove it (spec/config.md).\n");
+    s.push_str("function __baneyspaces_recovery(bindfn)\n");
+    s.push_str("  bindfn(\"SUPER + SHIFT + Escape\", function()\n");
+    s.push_str(&format!("    hl.timer(function()\n      if hl.is_key_down(\"Escape\") then\n        hl.exec_cmd(\"{binary} config reset keys --notify\")\n        hl.exec_cmd(\"{binary} config reset theme --notify\")\n      end\n    end, {{ timeout = {}, type = \"oneshot\" }})\n", crate::chord::recovery_hold_ms()));
+    s.push_str("  end, \"BaneySpaces: recovery (hold 2 s)\")\nend\n");
+    s.push_str("__baneyspaces_recovery(function(keys, dsp, desc) hl.bind(keys, dsp, { description = desc }) end)\n\n");
+    s.push_str("-- Your keys: the daemon writes them from config.toml (baneyspaces config set keys.bindings...).\n");
+    s.push_str("-- Until it has, or when there is no daemon, the defaults below keep every workspace key working.\n");
+    s.push_str("local generated = (os.getenv(\"XDG_STATE_HOME\") or ((os.getenv(\"HOME\") or \"\") .. \"/.local/state\")) .. \"/baneyspaces/hyprland-keys.lua\"\n");
+    s.push_str("local gf = io.open(generated, \"r\")\n");
+    s.push_str("if gf then\n  gf:close()\n  dofile(generated)\nelse\n");
     for b in linux_binds() {
-        s.push_str(&format!("hl.bind(\"{}\", hl.dsp.exec_cmd(\"{} {}\"), {{ description = \"{}\" }})\n", b.keys, binary, b.args, b.description));
+        s.push_str(&format!("  hl.bind(\"{}\", hl.dsp.exec_cmd(\"{} {}\"), {{ description = \"{}\" }})\n", b.keys, binary, b.args, b.description));
     }
+    s.push_str("end\n");
     s
 }
 

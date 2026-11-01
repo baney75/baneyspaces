@@ -73,6 +73,19 @@ pub enum Event {
         monitor: Option<MonitorId>,
         #[serde(default)]
         workspace: Option<u8>,
+        /// The window title, for `[[rules]]` that match on it.
+        #[serde(default)]
+        title: String,
+    },
+    /// The behavior settings (`spec/config.md` Behavior and rules). Absent fields keep their value.
+    Settings {
+        #[serde(default)]
+        follow_focus: Option<bool>,
+        /// `current` or `app`.
+        #[serde(default)]
+        new_window: Option<String>,
+        #[serde(default)]
+        rules: Option<Vec<RuleSpec>>,
     },
     /// A window that already existed when the model started listening: mirrored exactly where it is.
     /// `workspace` absent means the agent workspace.
@@ -170,6 +183,11 @@ pub enum Effect {
     },
     ShowAgent,
     HideAgent,
+    /// A rule asked for the window to float (or not).
+    SetFloat {
+        window: WindowId,
+        float: bool,
+    },
     /// The guard declined to follow or keep an activation.
     RefuseFollow {
         window: WindowId,
@@ -214,8 +232,39 @@ struct Window {
     seq: u64,
 }
 
+/// One `[[rules]]` entry. First match wins.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RuleSpec {
+    #[serde(default)]
+    pub app: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub workspace: Option<u8>,
+    #[serde(default)]
+    pub float: Option<bool>,
+}
+
+#[derive(Clone, Debug)]
+struct Behavior {
+    follow_focus: bool,
+    new_window_app: bool,
+    rules: Vec<(RuleSpec, Option<regex::Regex>)>,
+}
+
+impl Default for Behavior {
+    fn default() -> Self {
+        Behavior {
+            follow_focus: true,
+            new_window_app: false,
+            rules: vec![],
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Model {
+    behavior: Behavior,
     monitors: BTreeMap<MonitorId, Monitor>,
     /// What each display showed last, so one that comes back shows it again.
     last_shown: BTreeMap<MonitorId, u8>,
@@ -382,7 +431,13 @@ impl Model {
                 app,
                 monitor,
                 workspace,
-            } => self.open(window, pid, start, app, monitor, workspace),
+                title,
+            } => self.open(window, pid, start, app, title, monitor, workspace),
+            Event::Settings {
+                follow_focus,
+                new_window,
+                rules,
+            } => self.settings(follow_focus, new_window, rules),
             Event::ObserveWindow {
                 window,
                 pid,
@@ -526,12 +581,63 @@ impl Model {
         self.last_focused.retain(|_, w| w != window);
     }
 
+    fn settings(
+        &mut self,
+        follow_focus: Option<bool>,
+        new_window: Option<String>,
+        rules: Option<Vec<RuleSpec>>,
+    ) -> Result<Vec<Effect>, ModelError> {
+        if let Some(f) = follow_focus {
+            self.behavior.follow_focus = f;
+        }
+        if let Some(n) = new_window {
+            match n.as_str() {
+                "current" => self.behavior.new_window_app = false,
+                "app" => self.behavior.new_window_app = true,
+                other => {
+                    return Err(ModelError::new(
+                        "invalid_args",
+                        format!("new_window is current or app, not {other:?}"),
+                    ))
+                }
+            }
+        }
+        if let Some(rs) = rules {
+            let mut out = vec![];
+            for r in rs {
+                let re = match r.title.as_deref() {
+                    Some(t) => Some(regex::Regex::new(t).map_err(|e| {
+                        ModelError::new("invalid_args", format!("rule title {t:?}: {e}"))
+                    })?),
+                    None => None,
+                };
+                if r.workspace.is_some_and(|n| !WORKSPACES.contains(&n)) {
+                    return Err(ModelError::new("invalid_args", "a rule's workspace is 1 to 9"));
+                }
+                out.push((r, re));
+            }
+            self.behavior.rules = out;
+        }
+        Ok(vec![])
+    }
+
+    /// The first rule that matches a window, by app (name, case-insensitive) and title.
+    fn rule_for(&self, app: &str, title: &str) -> Option<&RuleSpec> {
+        self.behavior.rules.iter().find_map(|(r, re)| {
+            let app_ok = r.app.as_deref().is_none_or(|a| a.eq_ignore_ascii_case(app));
+            let title_ok = re.as_ref().is_none_or(|re| re.is_match(title));
+            (app_ok && title_ok && (r.app.is_some() || r.title.is_some())).then_some(r)
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn open(
         &mut self,
         window: WindowId,
         pid: u32,
         start: u64,
         app: String,
+        title: String,
         monitor: Option<MonitorId>,
         workspace: Option<u8>,
     ) -> Result<Vec<Effect>, ModelError> {
@@ -570,6 +676,29 @@ impl Model {
             workspace.filter(|n| WORKSPACES.contains(n)).unwrap_or(1)
         };
         let placed = workspace.unwrap_or(here);
+        // A rule decides first; then new_window = "app" sends it where the app's other windows are.
+        let rule = self.rule_for(&app, &title).cloned();
+        let by_app = if self.behavior.new_window_app && !app.is_empty() {
+            self.windows
+                .values()
+                .filter(|w| w.app == app)
+                .filter_map(|w| match w.home {
+                    Home::Workspace { n } => Some((w.seq, n)),
+                    Home::Agent => None,
+                })
+                .max()
+                .map(|(_, n)| n)
+        } else {
+            None
+        };
+        let here = rule.as_ref().and_then(|r| r.workspace).or(by_app).unwrap_or(here);
+        let mut extra = vec![];
+        if let Some(f) = rule.as_ref().and_then(|r| r.float) {
+            extra.push(Effect::SetFloat {
+                window: window.clone(),
+                float: f,
+            });
+        }
         self.windows.insert(
             window.clone(),
             Window {
@@ -582,16 +711,18 @@ impl Model {
         );
         if placed != here {
             // The compositor put it on a workspace you are not looking at: moved here, silently.
-            return Ok(vec![Effect::MoveWindow {
+            let mut fx = vec![Effect::MoveWindow {
                 window,
                 to: here.to_string(),
-            }]);
+            }];
+            fx.extend(extra);
+            return Ok(fx);
         }
         self.last_focused.insert(here, window.clone());
         if self.focused_monitor.as_deref() == Some(mon.as_str()) {
             self.active = Some(window);
         }
-        Ok(vec![])
+        Ok(extra)
     }
 
     fn observe_window(
@@ -797,6 +928,17 @@ impl Model {
             effects.push(Effect::RefuseFollow {
                 window: w,
                 reason: "not_user_caused".into(),
+            });
+            restore(self, &mut effects);
+            return effects;
+        }
+        if !self.behavior.follow_focus && !here && cause == Cause::User {
+            // behavior.follow_focus = false: activating a window on a workspace you are not looking at
+            // does not take you there.
+            self.refused += 1;
+            effects.push(Effect::RefuseFollow {
+                window: w,
+                reason: "follow_focus_off".into(),
             });
             restore(self, &mut effects);
             return effects;

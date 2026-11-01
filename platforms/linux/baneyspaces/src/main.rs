@@ -3,6 +3,7 @@
 
 mod apps;
 mod bus;
+mod cfg;
 mod daemon;
 mod hands;
 mod hypr;
@@ -37,6 +38,17 @@ const HELP: &str = "baneyspaces (Linux, Hyprland)
   agent select <ref> <value>     agent scroll <ref> <up|down|left|right> [amount]
   agent shot --window W          agent log [--since SECS]
   agent press|key|pointer ...    not supported yet (phase 3-4)
+  config get [path]              the effective value (defaults filled in), as JSON
+  config set <path> <value>      validated, applied live, recorded in history (value is JSON, or a bare word)
+  config unset <path>            back to the default
+  config apply <file|->          a whole TOML or JSON document, as one change
+  config validate <file|->       the check without applying it (works with no daemon)
+  config schema                  config.schema.json, for agents to read first (works with no daemon)
+  config diff [version]          against the defaults or a history version
+  config undo [n]                step back n versions (default 1)
+  config history                 versions with time, caller and summary
+  config reset [section]         keys | theme | animation | behavior | rules | hooks, or everything [--notify]
+  theme list|show <name>|create <name> --extends <base> [--tokens JSON|-] [--palette JSON]|set <name>|delete <name>
   keys [--hypr-lua]              the key map for this platform
   daemon [--trace]               run the daemon (Omarchy autostarts it)
   stop                           stop the daemon (uninstall.sh does this)
@@ -307,6 +319,118 @@ fn hands_request(verb: &str, mut a: Vec<String>) -> Result<Value, Envelope> {
     Ok(json!({ "op": "hands", "args": args }))
 }
 
+/// Reads a document argument: a file, or `-` for stdin.
+fn read_doc(arg: &str) -> Result<String, Envelope> {
+    use std::io::Read;
+    let mut text = String::new();
+    let r = if arg == "-" { std::io::stdin().take(1 << 20).read_to_string(&mut text).map(|_| ()) } else { std::fs::File::open(arg).and_then(|f| f.take(1 << 20).read_to_string(&mut text)).map(|_| ()) };
+    r.map(|_| text).map_err(|e| fail("invalid_args", &format!("cannot read {arg}: {e}"), "Pass a file, or - to read standard input."))
+}
+
+fn json_arg(arg: &str, what: &str) -> Result<Value, Envelope> {
+    let text = if arg == "-" { read_doc("-")? } else if let Some(f) = arg.strip_prefix('@') { read_doc(f)? } else { arg.to_string() };
+    serde_json::from_str(&text).map_err(|e| fail("invalid_args", &format!("{what} is not JSON: {e}"), "Pass JSON, @file or - for stdin."))
+}
+
+/// `config ...` and `theme ...` as a daemon request. `--notify` is returned separately.
+fn config_request(cmd: &str, mut a: Vec<String>) -> Result<(Value, bool), Envelope> {
+    let notify = take_switch(&mut a, "--notify");
+    let Some(sub) = (!a.is_empty()).then(|| a.remove(0)) else {
+        return Err(fail("invalid_args", &format!("usage: {cmd} <subcommand>"), "Run `baneyspaces help`."));
+    };
+    let req = |op: &str, args: Value| Ok((json!({ "op": op, "args": args }), notify));
+    if cmd == "theme" {
+        return match sub.as_str() {
+            "list" => req("theme_list", json!({})),
+            "show" | "set" | "delete" => {
+                need(&a, 1, &format!("theme {sub} <name>"))?;
+                req(&format!("theme_{sub}"), json!({ "name": a[0] }))
+            }
+            "create" => {
+                let extends = take(&mut a, "--extends");
+                let tokens = take(&mut a, "--tokens");
+                let palette = take(&mut a, "--palette");
+                need(&a, 1, "theme create <name> --extends <base> [--tokens JSON|-] [--palette JSON]")?;
+                let Some(extends) = extends else { return Err(fail("invalid_args", "usage: theme create <name> --extends <base>", "`baneyspaces theme list` shows the themes you can extend.")) };
+                let mut args = json!({ "name": a[0], "extends": extends });
+                if let Some(t) = tokens {
+                    args["tokens"] = json_arg(&t, "--tokens")?;
+                }
+                if let Some(p) = palette {
+                    args["palette"] = json_arg(&p, "--palette")?;
+                }
+                req("theme_create", args)
+            }
+            other => Err(fail("invalid_args", &format!("unknown theme command {other:?}"), "theme list|show|create|set|delete")),
+        };
+    }
+    match sub.as_str() {
+        "get" => req("config_get", json!({ "path": a.first() })),
+        "set" => {
+            need(&a, 2, "config set <path> <value>")?;
+            req("config_set", json!({ "path": a[0], "value_text": a[1..].join(" ") }))
+        }
+        "unset" => {
+            need(&a, 1, "config unset <path>")?;
+            req("config_unset", json!({ "path": a[0] }))
+        }
+        "apply" | "validate" => {
+            need(&a, 1, &format!("config {sub} <file|->"))?;
+            req(&format!("config_{sub}"), json!({ "text": read_doc(&a[0])? }))
+        }
+        "schema" | "history" => req(&format!("config_{sub}"), json!({})),
+        "diff" => req("config_diff", json!({ "version": a.first().and_then(|v| v.parse::<u64>().ok()) })),
+        "undo" => req("config_undo", json!({ "n": a.first().and_then(|v| v.parse::<u64>().ok()) })),
+        "reset" => req("config_reset", json!({ "section": a.first() })),
+        other => Err(fail("invalid_args", &format!("unknown config command {other:?}"), "config get|set|unset|apply|validate|schema|diff|undo|history|reset")),
+    }
+}
+
+/// Sends a config request. `validate` and `schema` need no daemon; `reset` works without one
+/// (the recovery chord must never depend on it).
+fn config_call(paths: &paths::Paths, req: &Value, declared: Option<&str>) -> Envelope {
+    let op = req["op"].as_str().unwrap_or("");
+    let caller = || match (std::env::var("BANEYSPACES_AGENT_TOKEN").is_ok(), declared) {
+        (_, Some(a)) => baneyspaces_core::history::agent_caller(a),
+        (true, None) => "agent:agent".to_string(),
+        _ => "user".to_string(),
+    };
+    if matches!(op, "config_validate" | "config_schema") {
+        return cfg::local_service(true).dispatch(op, &req["args"], &caller()).env;
+    }
+    let wait = if op == "config_reset" { std::time::Duration::from_secs(5) } else { std::time::Duration::from_secs(daemon::CLIENT_TIMEOUT_SECS) };
+    let env = daemon::call_timeout(paths, req, wait);
+    let unreachable = env.error.as_ref().is_some_and(|e| e.code == "daemon_down" || (op == "config_reset" && e.code == "timeout"));
+    if op == "config_reset" && unreachable {
+        let svc = cfg::local_service(true);
+        let out = svc.dispatch(op, &req["args"], &caller());
+        let mut env = out.env;
+        if let Some(a) = out.applied {
+            let hypr = hypr::Hypr::from_env().ok();
+            let live = cfg::apply_outputs(paths, hypr.as_ref(), &svc, &a);
+            if let Some(d) = env.data.as_mut() {
+                d["live"] = live;
+                d["via"] = json!("local (the daemon is not running)");
+            }
+        }
+        return env;
+    }
+    env
+}
+
+/// A desktop notification saying what changed (best effort).
+fn notify(env: &Envelope, what: &str) {
+    let body = match (&env.data, &env.error) {
+        (Some(d), _) => {
+            let ch: Vec<String> = d["changes"].as_array().map(|a| a.iter().take(6).filter_map(|c| c["path"].as_str().map(String::from)).collect()).unwrap_or_default();
+            if ch.is_empty() { "already the defaults".to_string() } else { format!("back to the defaults: {}", ch.join(", ")) }
+        }
+        (_, Some(e)) => format!("failed: {}", e.message),
+        _ => return,
+    };
+    let _ = std::process::Command::new("notify-send").args(["-a", "BaneySpaces", &format!("BaneySpaces: {what}"), &body]).stdin(std::process::Stdio::null()).status();
+}
+
 fn print(env: &Envelope, text: bool) -> i32 {
     if text {
         match (&env.data, &env.error) {
@@ -329,6 +453,9 @@ fn mcp_tool_to_request(name: &str, args: &Value, agent: &str) -> Value {
         .strip_prefix("agent_")
         .unwrap_or(name)
         .replace('_', "-");
+    if name.starts_with("config_") || name.starts_with("theme_") {
+        return json!({ "op": name, "agent": agent, "via": "mcp", "args": args });
+    }
     match verb.as_str() {
         "status" | "windows" => json!({ "op": format!("agent_{verb}"), "agent": agent }),
         "open" => json!({ "op": "agent_open", "agent": agent, "args": args }),
@@ -380,10 +507,8 @@ fn doctor(paths: &paths::Paths) -> Envelope {
 fn main() {
     let (globals, args) = split_globals(std::env::args().skip(1).collect());
     let text = globals.text;
-    let agent = globals
-        .agent
-        .or_else(|| std::env::var("BANEYSPACES_AGENT_ID").ok())
-        .unwrap_or_else(|| "agent".into());
+    let declared = globals.agent.or_else(|| std::env::var("BANEYSPACES_AGENT_ID").ok());
+    let agent = declared.clone().unwrap_or_else(|| "agent".into());
     let paths = paths::Paths::from_env();
     let Some(first) = args.first().cloned() else {
         print!("{HELP}");
@@ -406,11 +531,30 @@ fn main() {
             }
         }
         "doctor" => print(&doctor(&paths), text),
+        "config" | "theme" => match config_request(&first, args[1..].to_vec()) {
+            Ok((mut req, want_notify)) => {
+                req["agent"] = json!(agent);
+                req["declared"] = json!(declared.is_some());
+                let env = config_call(&paths, &req, declared.as_deref());
+                if want_notify {
+                    notify(&env, &format!("reset {}", req["args"]["section"].as_str().unwrap_or("everything")));
+                }
+                print(&env, text)
+            }
+            Err(e) => print(&e, text),
+        },
         "mcp" => {
             let stdin = std::io::stdin();
             let mut out = std::io::stdout();
             let mut call =
-                |name: &str, a: &Value| daemon::call(&paths, &mcp_tool_to_request(name, a, &agent));
+                |name: &str, a: &Value| {
+                    let req = mcp_tool_to_request(name, a, &agent);
+                    if name.starts_with("config_") || name.starts_with("theme_") {
+                        config_call(&paths, &req, Some(&agent))
+                    } else {
+                        daemon::call(&paths, &req)
+                    }
+                };
             let r = mcp::serve(stdin.lock(), &mut out, &mut call);
             let _ = out.flush();
             if r.is_ok() {

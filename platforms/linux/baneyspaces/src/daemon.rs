@@ -381,6 +381,7 @@ impl Core {
                     }
                 }
                 Effect::RefuseFollow { .. } => Ok(()),
+                Effect::SetFloat { window, float } => d(&format!("hl.dsp.window.float({{ action = {}, window = {} }})", lua_str(if *float { "enable" } else { "disable" }), lua_str(&format!("address:{window}")))),
             };
             if let Err((err, partial)) = r {
                 self.log(&format!("effect failed: {err}"));
@@ -482,7 +483,7 @@ impl Core {
             return;
         }
         let monitor = self.monitors().into_iter().find(|m| m.id == c.monitor).map(|m| m.name);
-        let _ = self.apply(Event::Open { window: c.addr.clone(), pid: c.pid, start, app: c.class.clone(), monitor, workspace: n });
+        let _ = self.apply(Event::Open { window: c.addr.clone(), pid: c.pid, start, app: c.class.clone(), monitor, workspace: n, title: c.title.clone() });
         if on_agent && !matches!(self.model.home(&c.addr), Some(Home::Agent)) {
             let _ = self.apply(Event::AgentSend { window: c.addr.clone() });
         }
@@ -851,6 +852,14 @@ impl Core {
         proc::token_of(pid).and_then(|t| self.tokens.get(&t)).is_some_and(|i| i.bus_lost)
     }
 
+    /// The agent a control-socket peer is, if it is one: the name its launch was given.
+    pub fn peer_agent(&self, pid: u32) -> Option<String> {
+        if let Some(i) = proc::token_of(pid).and_then(|t| self.tokens.get(&t)) {
+            return Some(i.agent.clone());
+        }
+        (self.model.agent_proc(pid).is_some() && self.model.is_agent_pid(pid, proc::start_time(pid).unwrap_or(0))).then(|| "agent".to_string())
+    }
+
     /// Whether the process on the other end of the control socket is an agent.
     pub fn is_agent_peer(&self, pid: u32) -> bool {
         if proc::token_of(pid).is_some_and(|t| self.tokens.contains_key(&t)) {
@@ -880,6 +889,9 @@ pub fn handle(shared: &Shared, req: &Value, peer: Option<u32>) -> Envelope {
         if let Err(env) = c.ensure_fresh() {
             return env;
         }
+    }
+    if op.starts_with("config_") || op.starts_with("theme_") {
+        return crate::cfg::handle(shared, op, &args, req, peer);
     }
     if op.starts_with("test_") && !lock(shared).test_ops {
         return Envelope::err("invalid_args", "test operations are off", Retry::Never, "");
@@ -1453,7 +1465,15 @@ pub fn run(trace: bool) -> i32 {
                 let Ok(line) = line else { break };
                 let ev = parse_event(&line);
                 if ev != HyprEvent::Other {
+                    let after = ev.clone();
                     lock(&shared).on_hypr_event(ev);
+                    // Hooks and the config re-apply run with the lock released.
+                    match after {
+                        HyprEvent::Workspace { id } if (1..=9).contains(&id) => crate::cfg::fire_hook("on_switch", vec![("BANEYSPACES_WORKSPACE", id.to_string())]),
+                        HyprEvent::OpenWindow { addr } => crate::cfg::fire_hook("on_window_open", vec![("BANEYSPACES_WINDOW", addr)]),
+                        HyprEvent::ConfigReloaded => crate::cfg::reload(&shared),
+                        _ => {}
+                    }
                 }
             }
             eprintln!("baneyspaces daemon: Hyprland closed the event socket; exiting");
@@ -1489,6 +1509,7 @@ pub fn run(trace: bool) -> i32 {
           }
         });
     }
+    crate::cfg::start(&shared, &paths, Some(hypr.clone()));
     eprintln!("baneyspaces daemon: ready ({})", sock.display());
     for conn in listener.incoming().flatten() {
         let shared = shared.clone();

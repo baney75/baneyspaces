@@ -1,0 +1,364 @@
+[
+  {
+    "name": "behavior.follow_focus = false: your own activation of a window on another workspace does not take you there",
+    "steps": [
+      {
+        "do": "monitor_added",
+        "monitor": "A"
+      },
+      {
+        "do": "open",
+        "window": "w1",
+        "pid": 1,
+        "app": "foot"
+      },
+      {
+        "do": "switch",
+        "n": 2
+      },
+      {
+        "do": "settings",
+        "follow_focus": false
+      },
+      {
+        "do": "activate",
+        "window": "w1",
+        "cause": "user",
+        "effects": [
+          {
+            "do": "refuse_follow",
+            "window": "w1",
+            "reason": "follow_focus_off"
+          }
+        ],
+        "expect": {
+          "monitors": {
+            "A": {
+              "current": 2
+            }
+          },
+          "guard": {
+            "refused": 1
+          }
+        }
+      },
+      {
+        "do": "settings",
+        "follow_focus": true
+      },
+      {
+        "do": "activate",
+        "window": "w1",
+        "cause": "user",
+        "expect": {
+          "monitors": {
+            "A": {
+              "current": 1
+            }
+          },
+          "active": "w1"
+        }
+      }
+    ]
+  },
+  {
+    "name": "behavior.new_window = app: a new window joins the workspace of the app's other windows",
+    "steps": [
+      {
+        "do": "monitor_added",
+        "monitor": "A"
+      },
+      {
+        "do": "settings",
+        "new_window": "app"
+      },
+      {
+        "do": "switch",
+        "n": 4
+      },
+      {
+        "do": "open",
+        "window": "w1",
+        "pid": 1,
+        "app": "foot"
+      },
+      {
+        "do": "switch",
+        "n": 2
+      },
+      {
+        "do": "open",
+        "window": "w2",
+        "pid": 2,
+        "app": "foot",
+        "effects": [
+          {
+            "do": "move_window",
+            "window": "w2",
+            "to": "4"
+          }
+        ],
+        "expect": {
+          "windows": {
+            "w2": {
+              "home": "4"
+            }
+          }
+        }
+      },
+      {
+        "do": "open",
+        "window": "w3",
+        "pid": 3,
+        "app": "kitty",
+        "expect": {
+          "windows": {
+            "w3": {
+              "home": "2"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "behavior.new_window = current (the default): a new window joins the workspace you are on",
+    "steps": [
+      {
+        "do": "monitor_added",
+        "monitor": "A"
+      },
+      {
+        "do": "switch",
+        "n": 4
+      },
+      {
+        "do": "open",
+        "window": "w1",
+        "pid": 1,
+        "app": "foot"
+      },
+      {
+        "do": "switch",
+        "n": 2
+      },
+      {
+        "do": "open",
+        "window": "w2",
+        "pid": 2,
+        "app": "foot",
+        "expect": {
+          "windows": {
+            "w2": {
+              "home": "2"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "[[rules]]: the first match sends a window to its workspace and floats it",
+    "steps": [
+      {
+        "do": "monitor_added",
+        "monitor": "A"
+      },
+      {
+        "do": "settings",
+        "rules": [
+          {
+            "app": "Ghostty",
+            "title": "^vim",
+            "workspace": 3
+          },
+          {
+            "app": "ghostty",
+            "workspace": 2,
+            "float": true
+          }
+        ]
+      },
+      {
+        "do": "open",
+        "window": "w1",
+        "pid": 1,
+        "app": "ghostty",
+        "title": "vim notes",
+        "effects": [
+          {
+            "do": "move_window",
+            "window": "w1",
+            "to": "3"
+          }
+        ],
+        "expect": {
+          "windows": {
+            "w1": {
+              "home": "3"
+            }
+          }
+        }
+      },
+      {
+        "do": "open",
+        "window": "w2",
+        "pid": 2,
+        "app": "Ghostty",
+        "title": "zsh",
+        "effects": [
+          {
+            "do": "move_window",
+            "window": "w2",
+            "to": "2"
+          },
+          {
+            "do": "set_float",
+            "window": "w2",
+            "float": true
+          }
+        ],
+        "expect": {
+          "windows": {
+            "w2": {
+              "home": "2"
+            }
+          }
+        }
+      },
+      {
+        "do": "open",
+        "window": "w3",
+        "pid": 3,
+        "app": "foot",
+        "title": "vim",
+        "expect": {
+          "windows": {
+            "w3": {
+              "home": "1"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "[[rules]]: a rule that matches by title alone, and one with neither app nor title matches nothing",
+    "steps": [
+      {
+        "do": "monitor_added",
+        "monitor": "A"
+      },
+      {
+        "do": "settings",
+        "rules": [
+          {
+            "workspace": 9
+          },
+          {
+            "title": "Picture-in-Picture",
+            "float": true
+          }
+        ]
+      },
+      {
+        "do": "open",
+        "window": "w1",
+        "pid": 1,
+        "app": "firefox",
+        "title": "Picture-in-Picture",
+        "effects": [
+          {
+            "do": "set_float",
+            "window": "w1",
+            "float": true
+          }
+        ],
+        "expect": {
+          "windows": {
+            "w1": {
+              "home": "1"
+            }
+          }
+        }
+      },
+      {
+        "do": "open",
+        "window": "w2",
+        "pid": 2,
+        "app": "firefox",
+        "title": "x",
+        "effects": [],
+        "expect": {
+          "windows": {
+            "w2": {
+              "home": "1"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "rules never move an agent window",
+    "steps": [
+      {
+        "do": "monitor_added",
+        "monitor": "A"
+      },
+      {
+        "do": "settings",
+        "rules": [
+          {
+            "app": "foot",
+            "workspace": 5
+          }
+        ]
+      },
+      {
+        "do": "agent_register",
+        "pid": 7
+      },
+      {
+        "do": "open",
+        "window": "w1",
+        "pid": 7,
+        "app": "foot",
+        "effects": [
+          {
+            "do": "move_window",
+            "window": "w1",
+            "to": "agent"
+          }
+        ],
+        "expect": {
+          "agent": {
+            "windows": [
+              "w1"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "a bad setting is refused by the model",
+    "steps": [
+      {
+        "do": "settings",
+        "new_window": "nowhere",
+        "error": "invalid_args"
+      },
+      {
+        "do": "settings",
+        "rules": [
+          {
+            "app": "x",
+            "workspace": 12
+          }
+        ],
+        "error": "invalid_args"
+      }
+    ]
+  }
+]
