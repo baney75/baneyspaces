@@ -183,6 +183,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         c.model.onUninstall = { [weak self] in self?.uninstall() }
         c.model.onBringBack = { [weak self] in self?.bringBack() }
         c.model.onAbout = { [weak self] in self?.about() }
+        c.model.isStarted = { [weak self] in self?.started ?? false }
         c.model.parkedApps = { [weak self] in self?.parkedRows() ?? [] }
         c.model.onToggleParked = { [weak self] id in self?.toggleParked(id) }
         c.model.updateInfo = { [weak self] in self?.updateInfo() ?? .init() }
@@ -657,6 +658,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func parkedRows() -> [SetupModel.ParkedRow] {
         let on = ParkedApps.bundleIDs
         let slow = SlowMovers.bundleIDs
+        // The window list as it is now, as the menu did: an app's late first window shows.
+        if started { spaces.refresh() }
         var apps = started ? spaces.appsWithWindows() : []
         for id in on where !apps.contains(where: { $0.bundleID == id }) {
             let name = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id)

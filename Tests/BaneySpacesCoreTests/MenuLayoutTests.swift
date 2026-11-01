@@ -126,15 +126,15 @@ final class MenuLayoutTests: XCTestCase {
     func testSettingsListsRefreshAndAutomationWaitsForAccessibility() throws {
         let setup = try code("Sources/BaneySpaces/Setup.swift")
         let app = try code("Sources/BaneySpaces/AppDelegate.swift")
-        XCTAssertTrue(setup.contains("if tab == .automation { reloadParked() }\n    }"), "the parked list reads again on every refresh while the tab is up")
+        XCTAssertTrue(setup.contains("if tab == .automation { reloadParked() }\n            if tab == .updates"), "the parked list reads when the tab appears")
+        XCTAssertFalse(setup.contains("let running = isStarted()\n        if running != started { started = running }\n        if tab == .automation"), "...not on every tick")
         XCTAssertTrue(setup.contains("NSWindow.didBecomeKeyNotification, object: window"), "the lists read again when the window takes the keyboard")
         XCTAssertTrue(setup.contains("onFocusFinished?(id)\n        finished = finishedRows()"), "a clicked row leaves the list at once")
         XCTAssertTrue(setup.contains("model.focusFinished(row.id)"))
         XCTAssertTrue(setup.contains("if tab == .updates { onUpdatesShown?() }"), "the command line tools are looked for when Updates comes up")
         XCTAssertTrue(app.contains("let found = Updater.hasCommandLineTools"))
         XCTAssertFalse(app.contains("lazy var commandLineTools"), "asked once at first use goes stale when the tools are installed")
-        XCTAssertEqual(setup.components(separatedBy: ".disabled(!model.ready)").count - 1, 2, "the app list and Bring Every Window Back wait for Accessibility")
-        XCTAssertTrue(setup.contains("Available once BaneySpaces has Accessibility access"))
+        XCTAssertEqual(setup.components(separatedBy: ".disabled(model.automationReason != nil)").count - 1, 2, "the app list and Bring Every Window Back wait for BaneySpaces to start")
         for name in ["private func bringBack() {", "private func toggleParked(_ id: String) {"] {
             let start = try XCTUnwrap(app.range(of: name))
             XCTAssertTrue(app[start.upperBound...].prefix(60).contains("guard started else { return }"), "\(name) acts only once started")
@@ -170,5 +170,54 @@ final class MenuLayoutTests: XCTestCase {
         XCTAssertFalse(menus.contains("Find or Install an App"))
         XCTAssertFalse(menus.contains("Show All Workspaces"))
         XCTAssertFalse(menus.contains("Send Front Window"))
+    }
+}
+
+/// Review of #100 round 2 (first-F1, first-F3, first-F4), read from the source: the app target
+/// can't be imported.
+final class SettingsFollowUpTests: XCTestCase {
+    private func code(_ path: String) throws -> String {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent(path)
+        return try String(contentsOf: url, encoding: .utf8)
+            .split(separator: "\n").map { $0.components(separatedBy: "//")[0] }.joined(separator: "\n")
+    }
+
+    func testTheBadgeAndTheMenuCountOnlyAgentsTheListCanShow() throws {
+        let deck = try code("Sources/BaneySpaces/Deck/DeckController.swift")
+        XCTAssertTrue(deck.contains("var unseenCount: Int { finishedRows().count }"), "one count for the badge and the menu row")
+        XCTAssertTrue(deck.contains("engine.attention.unseen.compactMap { engine.item($0) }"), "an unseen agent with no row isn't listed")
+    }
+
+    func testTheKeyObserverIsKeptAndRemoved() throws {
+        let setup = try code("Sources/BaneySpaces/Setup.swift")
+        XCTAssertTrue(setup.contains("observers.append((NotificationCenter.default, NotificationCenter.default.addObserver(\n            forName: NSWindow.didBecomeKeyNotification"))
+        XCTAssertTrue(setup.contains("deinit {"))
+        XCTAssertTrue(setup.contains("for o in observers { o.center.removeObserver(o.token) }"))
+        XCTAssertTrue(setup.contains("if let activeObserver { NotificationCenter.default.removeObserver(activeObserver) }"))
+    }
+
+    func testTheParkedListReadsOnEventsNotEveryTick() throws {
+        let setup = try code("Sources/BaneySpaces/Setup.swift")
+        let start = try XCTUnwrap(setup.range(of: "private func reloadOptional()"))
+        let end = try XCTUnwrap(setup.range(of: "func reloadParked()"))
+        XCTAssertFalse(setup[start.lowerBound..<end.lowerBound].contains("reloadParked()"), "reloadOptional runs every few ticks")
+        XCTAssertTrue(setup.contains("NSWorkspace.didLaunchApplicationNotification"))
+        XCTAssertTrue(setup.contains("NSWorkspace.didTerminateApplicationNotification"))
+        XCTAssertTrue(setup.contains("self.model.tab == .automation"), "only while that tab is up")
+    }
+
+    func testSettingsReadsTheListWhenStartedFlipsAndWhileTheTabIsUp() throws {
+        let setup = try code("Sources/BaneySpaces/Setup.swift")
+        // F4: nothing is live until the gate has read the state.
+        XCTAssertTrue(setup.contains("@Published var started = false {"))
+        XCTAssertTrue(setup.contains("var isStarted: () -> Bool = { false } {\n        didSet { started = isStarted() }"))
+        // F2: the list read empty while waiting; it reads the moment BaneySpaces is up.
+        XCTAssertTrue(setup.contains("guard started, !oldValue, tab == .automation else { return }\n            reloadParked()"))
+        // F6: a late first window shows without any notification.
+        XCTAssertTrue(setup.contains("if ticks % 12 == 0, tab == .automation { reloadParked() }"))
+        let app = try code("Sources/BaneySpaces/AppDelegate.swift")
+        XCTAssertTrue(app.contains("if started { spaces.refresh() }"), "the list is the window list as it is now")
     }
 }

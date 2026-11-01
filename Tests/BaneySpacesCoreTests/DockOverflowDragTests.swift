@@ -80,8 +80,97 @@ final class DockOverflowDragTests: XCTestCase {
     func testTheListClosesWhenADropMovedItsApp() throws {
         let text = try dockSource()
         let end = try XCTUnwrap(text.range(of: "func endDrag()"))
-        let body = String(text[end.lowerBound...].prefix(700))
+        let body = String(text[end.lowerBound...].prefix(1300))
         XCTAssertTrue(body.contains("more = nil"), "the list was the source workspace's, so a move closes it")
-        XCTAssertTrue(body.contains("onMove(drag.ids, to)"))
+        XCTAssertTrue(body.contains("onMove(alive, to)"))
+    }
+
+    // Review of #100 (G4): a drag started on a "+N" row outlives the row. When the row goes (its
+    // window closed, its app quit, its tile refreshed) SwiftUI drops the gesture without its end.
+
+    func testADragWhoseWindowsAreAllGoneIsOrphaned() {
+        XCTAssertTrue(DockDrop.isOrphaned(ids: [11, 12], alive: [30, 31], rowShown: true), "closed or moved elsewhere")
+        XCTAssertTrue(DockDrop.isOrphaned(ids: [11], alive: [], rowShown: nil), "the workspace emptied")
+    }
+
+    func testADragKeepsGoingWhileAWindowAndItsRowRemain() {
+        XCTAssertFalse(DockDrop.isOrphaned(ids: [11, 12], alive: [12, 30], rowShown: true))
+        XCTAssertFalse(DockDrop.isOrphaned(ids: [11], alive: [11], rowShown: nil), "a tile icon has no row to lose")
+    }
+
+    func testADragFromAListRowIsOrphanedOnceTheRowIsGone() {
+        // The windows are alive, but the row and its gesture are not: nothing will end this drag.
+        XCTAssertTrue(DockDrop.isOrphaned(ids: [11], alive: [11], rowShown: false))
+    }
+
+    func testOnlyTheSurvivingWindowsAreMoved() {
+        XCTAssertEqual(DockDrop.survivors(of: [11, 12, 13], alive: [13, 11, 40]), [11, 13])
+        XCTAssertEqual(DockDrop.survivors(of: [11], alive: []), [])
+    }
+
+    func testAnOrphanedDragMovesNothingAndLeavesNoTarget() throws {
+        let text = try dockSource()
+        let tick = try XCTUnwrap(text.range(of: "if model.dragOrphaned(refresh: fresh) {"))
+        XCTAssertTrue(text[tick.upperBound...].prefix(160).contains("model.cancelDrag()"), "the tick ends an orphaned drag")
+        let pinned = try XCTUnwrap(text.range(of: "guard !pinned else { return }"))
+        XCTAssertLessThan(tick.lowerBound, pinned.lowerBound, "...before the pinned dock returns early")
+        let end = try XCTUnwrap(text.range(of: "func endDrag()"))
+        let body = String(text[end.lowerBound...].prefix(900))
+        XCTAssertTrue(body.contains("DockDrop.survivors(of: drag.ids, alive: liveWindows(drag.from, true))"), "the drop reads the live window list")
+        XCTAssertTrue(body.contains("alive.isEmpty ? nil : dropTarget"), "no windows left, no target")
+        XCTAssertTrue(body.contains("onMove(alive, to)"), "only a window that still exists moves")
+        // Cancelling clears the drag, and with it the drop target the badge and label read.
+        let cancel = try XCTUnwrap(text.range(of: "func cancelDrag()"))
+        XCTAssertTrue(text[cancel.upperBound...].prefix(200).contains("drag = nil"))
+    }
+
+    func testTheListHeaderAndBadgeReadATargetOnlyForADragFromThisTile() throws {
+        let text = try dockSource()
+        let list = try XCTUnwrap(text.range(of: "private func moreList("))
+        let body = String(text[list.lowerBound...].prefix(2600))
+        XCTAssertTrue(body.contains("let dragHere = model.drag?.from == tile.id"))
+        XCTAssertTrue(body.contains("WorkspaceBadge(n: (dragHere ? model.dropTarget : nil) ?? tile.id"), "no stale target beside \"N more\"")
+        XCTAssertTrue(body.contains("listApp: app.id"), "the drag knows which app's row it began on")
+    }
+
+    // Review of #102 round 1.
+
+    func testACancelledDragStaysCancelledWhileTheGestureLivesOn() {
+        // F1: the gesture keeps reporting moves; without this each one starts the drag again.
+        var cancel = DragCancel()
+        XCTAssertFalse(cancel.blocks([11, 12]))
+        cancel.cancelled([11, 12])
+        XCTAssertTrue(cancel.blocks([11, 12]), "the same gesture's next move starts nothing")
+        XCTAssertFalse(cancel.blocks([30]), "another drag is its own")
+        cancel.released()
+        XCTAssertFalse(cancel.blocks([11, 12]), "a new press may drag the same app again")
+    }
+
+    func testTheDockWiresTheCancelIntoDraggedAndReleasesItWhenThePressEnds() throws {
+        let text = try dockSource()
+        let moved = try XCTUnwrap(text.range(of: "func dragged(_ ids"))
+        XCTAssertTrue(text[moved.lowerBound...].prefix(500).contains("guard !cancelled.blocks(ids) else { return }"))
+        let cancel = try XCTUnwrap(text.range(of: "func cancelDrag()"))
+        XCTAssertTrue(text[cancel.upperBound...].prefix(200).contains("cancelled.cancelled(d.ids)"))
+        XCTAssertTrue(text.contains("if !pressed { model.cancelled.released() }"), "buttons up ends the press")
+    }
+
+    func testTheTickReadsTheWindowListFreshWhileADragIsInFlight() throws {
+        // F5: reloads wait out a drag, so the cached list never shows a closed window.
+        XCTAssertTrue(DockDrop.freshReadDue(now: 10, last: nil))
+        XCTAssertFalse(DockDrop.freshReadDue(now: 10.2, last: 10))
+        XCTAssertTrue(DockDrop.freshReadDue(now: 10.5, last: 10))
+        let text = try dockSource()
+        XCTAssertTrue(text.contains("model.dragOrphaned(refresh: fresh)"))
+        XCTAssertTrue(text.contains("DockDrop.freshReadDue(now:"))
+    }
+
+    func testARowKeepsItsDragWhenOneOfItsWindowsCloses() throws {
+        // F3: the row is the app's; it outlives a window, and the survivors move.
+        XCTAssertFalse(DockDrop.isOrphaned(ids: [11, 12], alive: [12], rowShown: true))
+        XCTAssertEqual(DockDrop.survivors(of: [11, 12], alive: [12]), [12])
+        let text = try dockSource()
+        XCTAssertTrue(text.contains("moreApps?.apps.contains { $0.id == id } ?? false"), "row identity, not exact window ids")
+        XCTAssertFalse(text.contains("list.map(\\.id) == d.ids"))
     }
 }

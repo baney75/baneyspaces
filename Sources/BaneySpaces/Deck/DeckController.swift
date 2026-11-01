@@ -76,7 +76,9 @@ final class DeckController {
         return true
     }
 
-    var unseenCount: Int { engine.attention.unseen.count }
+    /// Agents that finished unseen and still have a row to go to; the menu bar badge counts these,
+    /// so it never counts one the menu's list can't show (a session that closed before you looked).
+    var unseenCount: Int { finishedRows().count }
 
     private var keysAdded = false
 

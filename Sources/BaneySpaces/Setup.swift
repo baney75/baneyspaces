@@ -49,7 +49,27 @@ final class SetupModel: ObservableObject {
         var animates: Bool
     }
     @Published var parkedRows: [ParkedRow] = []
+    /// The parked list is read when the tab appears, the window takes the keyboard, or an app
+    /// launches or quits (`SetupWindowController`), not on every tick: it walks every window.
     var parkedApps: () -> [ParkedRow] = { [] }
+    /// BaneySpaces has started (Accessibility allowed, AeroSpace gone). Automation waits for it.
+    /// False until the first read says otherwise, so nothing is live before the gate knows.
+    @Published var started = false {
+        didSet {
+            // The list was empty while waiting; read it as soon as BaneySpaces is up, and once more
+            // after its first scan of the windows.
+            guard started, !oldValue, tab == .automation else { return }
+            reloadParked()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                if self?.tab == .automation { self?.reloadParked() }
+            }
+        }
+    }
+    var isStarted: () -> Bool = { false } {
+        didSet { started = isStarted() }
+    }
+    /// Why Automation can't act yet, or nil.
+    var automationReason: String? { AutomationGate.reason(trusted: trusted, aeroSpaceRunning: aeroSpaceRunning, started: started) }
     var onToggleParked: ((String) -> Void)?
     /// BaneySpaces' own updates: the build you have, the channel, and any release waiting.
     struct UpdateInfo: Equatable {
@@ -137,6 +157,9 @@ final class SetupModel: ObservableObject {
         if !wasReady && ready { becameReady() }
         // The slower checks once a second.
         if ticks % 4 == 0 { reloadOptional() }
+        // An app's first window can come long after it launches, and one can close with the app still
+        // running: no notification says so, so the Automation list reads every few seconds while up.
+        if ticks % 12 == 0, tab == .automation { reloadParked() }
     }
 
     func reload() {
@@ -158,8 +181,8 @@ final class SetupModel: ObservableObject {
         if info != update { update = info }
         let rows = finishedRows()
         if rows != finished { finished = rows }
-        // Apps come and go while the window sits open or closed on this tab.
-        if tab == .automation { reloadParked() }
+        let running = isStarted()
+        if running != started { started = running }
     }
 
     func reloadParked() {
@@ -609,12 +632,11 @@ struct SetupView: View {
         section("Keep usable by automation") {
             Text("Checked apps aren't hidden on other workspaces, so tools like Cua can still click and type in them. Their windows are parked just out of view instead.")
                 .font(.callout).foregroundStyle(.secondary)
-            if !model.ready {
-                Text("Available once BaneySpaces has Accessibility access (General tab).")
-                    .font(.callout).foregroundStyle(.orange)
+            if let why = model.automationReason {
+                Text(why).font(.callout).foregroundStyle(.orange)
             }
             if model.parkedRows.isEmpty {
-                Text("No apps with windows yet.").font(.callout).foregroundStyle(.secondary)
+                if model.automationReason == nil { Text("No apps with windows yet.").font(.callout).foregroundStyle(.secondary) }
             } else {
                 // Past eight, the list scrolls, so the window never runs off a laptop screen.
                 ScrollView {
@@ -627,14 +649,14 @@ struct SetupView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(height: CGFloat(min(model.parkedRows.count, 8)) * 24)
-                .disabled(!model.ready)
+                .disabled(model.automationReason != nil)
             }
         }
 
         section("If windows get tangled") {
             Text("Gathers every window onto workspace 1, all visible. It gets you out of any tangle.")
                 .font(.callout).foregroundStyle(.secondary)
-            Button("Bring Every Window Back") { model.onBringBack?() }.disabled(!model.ready)
+            Button("Bring Every Window Back") { model.onBringBack?() }.disabled(model.automationReason != nil)
         }
     }
 
@@ -913,6 +935,8 @@ struct SetupView: View {
 final class SetupWindowController: NSWindowController, NSWindowDelegate {
     let model = SetupModel()
     private var activeObserver: NSObjectProtocol?
+    /// The window taking the keyboard, and apps launching or quitting: kept so `deinit` can remove them.
+    private var observers: [(center: NotificationCenter, token: NSObjectProtocol)] = []
     private var sizing: AnyCancellable?
 
     convenience init() {
@@ -955,9 +979,22 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             }
         }
         // The window taking the keyboard (opened, or clicked back to) reads the lists again.
-        NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] _ in
+        observers.append((NotificationCenter.default, NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] _ in
             self?.model.reload()
             self?.model.reloadParked()
+        }))
+        // An app launching or quitting changes the list on the Automation tab; a launch has no
+        // windows for a moment, so it's read once soon after. Later windows are caught by the
+        // model's slow read while the tab is up.
+        let workspace = NSWorkspace.shared.notificationCenter
+        for (name, delay) in [(NSWorkspace.didLaunchApplicationNotification, 1.5), (NSWorkspace.didTerminateApplicationNotification, 0.3)] {
+            observers.append((workspace, workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                    guard let self, self.window?.isVisible == true, self.model.tab == .automation else { return }
+                    self.model.reloadParked()
+                }
+            }))
         }
         // Coming back from System Settings re-checks at once instead of waiting for the next tick.
         activeObserver = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification,
@@ -965,6 +1002,11 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             guard self?.window?.isVisible == true else { return }
             self?.model.reload()
         }
+    }
+
+    deinit {
+        if let activeObserver { NotificationCenter.default.removeObserver(activeObserver) }
+        for o in observers { o.center.removeObserver(o.token) }
     }
 
     var isVisible: Bool { window?.isVisible == true }

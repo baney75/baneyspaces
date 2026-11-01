@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **A drag out of the "+N" list ends cleanly if its app goes.** Closing the window or quitting the app
+  mid-drag, or the list closing under the pointer, cancels the drag instead of leaving the dock in
+  drag mode; a window that closed is never moved. Settings > Automation waits for BaneySpaces to
+  start (and says whether it's Accessibility or AeroSpace), the menu badge counts only agents the
+  menu can list, and the Automation app list reads when the tab opens or an app launches or quits.
 - **Drag an app out of a tile's "+N" list.** Each app in the list that opens over a workspace tile
   drags like the tile's own icons: onto another workspace's tile, or the dashed "+", to move its
   windows there. A click still goes to the app, and the list stays open as the drag starts.
