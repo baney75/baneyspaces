@@ -1,0 +1,23 @@
+BaneySpaces
+Copyright (c) 2026 Donovan Baney (@baney75). MIT License (see LICENSE).
+
+This product includes software developed by others.
+
+agent-desktop (Apache License 2.0)
+  https://github.com/vercel-labs/agent-desktop, built from commit
+  5261b5287b5208e7c4bf3713df6f66faaaf2c4cc (see engine/PIN).
+  Used as a library: its accessibility snapshots, refs and semantic actions run inside
+  BaneySpaces through libagent_desktop_ffi.dylib (Contents/Frameworks in the app).
+  BaneySpaces adds two functions to that library, ad_snapshot_window and ad_get_ref, in
+  engine/patches/0001-ffi-snapshot-window.patch; every changed file is marked there.
+  The upstream repository ships no NOTICE file and names no copyright holder in its
+  LICENSE, so there is nothing further to reproduce. The license text is in
+  LICENSES/agent-desktop-Apache-2.0.txt and in the app at
+  Contents/Resources/licenses/agent-desktop-Apache-2.0.txt.
+  The Rust crates it depends on keep their own licenses; `cargo tree` in
+  engine/.src after scripts/build-engine.sh lists them.
+
+cua-driver (MIT License), trycua
+  https://github.com/trycua/cua. BaneySpaces ports no code from it. The background-input
+  rules in docs/agent-computer-use.md (every action carries an exact process and window;
+  routes in order; no global input) follow its macos-background-input-v1-plan.

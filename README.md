@@ -414,10 +414,54 @@ Ghostty of its own for the agent, a separate process from yours, so nothing the 
 there can stall your terminals. `scripts/agent-hands-probe.swift` (phase 1) proves it on your Mac: an
 agent's command runs there, and only your own keyboard and mouse change what you see.
 
-BaneySpaces is also the hands agents use there: snapshot an app, act on what's in it, check the
-result, all on the agent workspace and never in the foreground. That replaces Cua's driver, which
-is no longer used. The plan, the rules and the phases are in
-[docs/agent-computer-use.md](docs/agent-computer-use.md).
+### The hands: snapshot an app, act on it, check the result
+
+BaneySpaces is also the hands agents use there. They read an app's accessibility tree, act on what's in
+it and check the result, all on the agent workspace and never in the foreground. Cua's driver is no longer
+used. The engine is [agent-desktop](https://github.com/vercel-labs/agent-desktop) (Apache-2.0), built from a
+pinned commit by `make install` and linked into the app; the scope and focus guards, the evidence and the
+MCP server are BaneySpaces'.
+
+```sh
+baneyspaces agent open TextEdit notes.txt       # on the agent workspace; files only from the handoff folder; prints the window id
+baneyspaces agent snapshot --app TextEdit -i    # refs for what an agent can act on
+baneyspaces agent type @s8f3k2p9:e2 "Hello"     # act on a ref; the result carries what it read back
+baneyspaces agent click|set-value|toggle|scroll|select|press <ref> …
+baneyspaces agent find --window 4211 --role button --name Save
+baneyspaces agent get @s8f3k2p9:e2 value        # check from the live element
+baneyspaces agent shot --window 4211            # one window as a PNG in BaneySpaces' shots folder, even while parked (needs Screen Recording)
+baneyspaces agent windows                       # the windows an agent may use right now
+claude mcp add baneyspaces -- baneyspaces mcp   # the same tools over MCP, for Claude Code and Codex
+```
+
+You, not an agent, lend an app from your workspaces. `baneyspaces agent lend Excel --for 20m` shows a sheet in BaneySpaces
+(Don't Lend is the default button) and only a real click on **Lend** lends it: a click posted by a program, or an
+accessibility press, is refused, and running the command (or an agent running it) lends nothing by itself. Nothing sent
+to the deck socket lends. Run the command again for an app that is lent and the sheet offers **Take Back**. A lend names
+that process and its windows as they are then, is refused while you use the app (`in_use`: in front, or used in the last 30
+seconds), ends after 30 minutes (up to 8 hours) or, if you gave `--session`, when that session ends, and is listed in
+`state.json` and `baneyspaces doctor`. Agents can't lend: the MCP server has no such tool and an agent's `lend` answers
+`needs_lend`. `agent move` moves only windows of apps BaneySpaces started for an agent; send your own window with its
+workspace key. `agent open` starts only apps verified to run a separate copy that restores nothing of yours (TextEdit and
+Preview on a file from the handoff folder, and Calculator); every other app, Finder, browsers and password managers
+included, answers `needs_sandbox`, and a window of the agent's copy that shows a document from outside the handoff
+folder, or an Open or Save panel, is off limits. The agent workspace protects you from accidents; it is not a security
+boundary (see [docs/agent-computer-use.md](docs/agent-computer-use.md)).
+
+Every command prints one JSON envelope: `{"ok":true,"data":{…}}`, or `{"ok":false,"error":{"code","message",
+"retry","suggestion"}}` with `retry` one of `safe`, `after_snapshot`, `never`. Four rules, all enforced by the app:
+an agent acts only on windows on the agent workspace or on an app you lent (anything else answers
+`outside_agent_workspace`, and reads are refused the same way; scope is checked again right before every engine call);
+an action never activates an app, raises a window, moves the pointer or posts a global keystroke (`press` answers
+`not_supported` until keys can reach one background app); BaneySpaces ignores an app activation an agent action
+caused, for the window the action worked on and only while it ran, so your workspace doesn't follow it and your own
+windows of the same app still do; and every action returns what it verified from the exact window it targeted.
+`scripts/agent-hands-probe.swift` proves the rest on your Mac: 200 actions in TextEdit (a temporary document) and
+Calculator while it samples your front app, workspace, pointer, front window and any window
+appearing on another workspace every 50 ms.
+
+`make build` and `make test` build the engine first (Rust is needed once; `scripts/build-engine.sh`). The plan,
+the rules and the phases are in [docs/agent-computer-use.md](docs/agent-computer-use.md).
 
 **Phones.** Android phones (USB debugging on) and iPhones show in `baneyspaces ls` and the launcher the moment they're
 plugged in. A row opens the phone's screen: scrcpy for Android, iPhone Mirroring for an iPhone.

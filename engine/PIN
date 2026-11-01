@@ -1,0 +1,12 @@
+# The hands engine BaneySpaces links: agent-desktop (Apache-2.0), built from this commit's source.
+# scripts/build-engine.sh fetches the tarball, refuses anything whose sha256 or embedded commit
+# id differs from what is written here, applies engine/patches/*.patch, and builds only the
+# agent-desktop-ffi crate with the upstream Cargo.lock (--locked). npm and its postinstall
+# are never run. To move the pin: change both lines, run scripts/build-engine.sh, commit.
+ENGINE_REPO=vercel-labs/agent-desktop
+ENGINE_COMMIT=5261b5287b5208e7c4bf3713df6f66faaaf2c4cc
+# sha256 of https://codeload.github.com/vercel-labs/agent-desktop/tar.gz/$ENGINE_COMMIT,
+# recorded 2026-10-31 (two fetches gave the same bytes)
+ENGINE_SHA256=b5cf8219e254ab6ddb9832ebc3ff84655e958102e78ab9c204c920b5d37be721
+# The one upstream file the license text in LICENSES/ is copied from.
+ENGINE_LICENSE_SHA256=cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30

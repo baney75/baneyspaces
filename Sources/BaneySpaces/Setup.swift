@@ -662,7 +662,7 @@ struct SetupView: View {
 
     @ViewBuilder private var automation: some View {
         section("Keep usable by automation") {
-            Text("Checked apps aren't hidden on other workspaces, so tools like Cua can still click and type in them. Their windows are parked just out of view instead.")
+            Text("Checked apps aren't hidden on other workspaces, so automation tools can still click and type in them. Their windows are parked just out of view instead.")
                 .font(.callout).foregroundStyle(.secondary)
             if let why = model.automationReason {
                 Text(why).font(.callout).foregroundStyle(.orange)

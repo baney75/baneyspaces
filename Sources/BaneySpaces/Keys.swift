@@ -219,17 +219,20 @@ enum Desktops {
     }
 }
 
-/// Apps that are never hidden whole. macOS refuses background clicks and keystrokes to a hidden
-/// app, so automation that drives apps from behind (Cua and the like) stops working on them.
-/// Their windows on other workspaces are parked out of view instead, the way an app split
-/// across workspaces already is. Cua Spaces is on the list from the start: hiding it would also
-/// hide its picture-in-picture window.
+/// Apps that are never hidden whole ("Keep Usable by Automation"). macOS refuses background
+/// clicks and keystrokes to a hidden app, so automation that drives apps from behind stops
+/// working on them. Their windows on other workspaces are parked out of view instead, the way an
+/// app split across workspaces already is. The list starts empty: the agent hands need no
+/// entry, because an app with a window on the agent workspace, or lent with `agent lend`, is
+/// parked automatically. Cua Spaces was on it until Cua's driver left the fleet (2026-10-31).
 enum ParkedApps {
     private static let key = "parkInsteadOfHide"
-    private static let initial = ["com.trycua.spaces.macos"]
+    private static let initial: [String] = []
+    /// Left over from before the hands replaced Cua; dropped from a list saved earlier.
+    private static let retired: Set<String> = ["com.trycua.spaces.macos"]
 
     static var bundleIDs: Set<String> {
-        get { Set(UserDefaults.standard.array(forKey: key) as? [String] ?? initial) }
+        get { Set(UserDefaults.standard.array(forKey: key) as? [String] ?? initial).subtracting(retired) }
         set { UserDefaults.standard.set(newValue.sorted(), forKey: key) }
     }
 

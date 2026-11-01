@@ -16,7 +16,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Check the install scripts
-        run: bash -n install.sh && bash -n uninstall.sh && bash -n scripts/bundle.sh
+        run: bash -n install.sh && bash -n uninstall.sh && bash -n scripts/bundle.sh && bash -n scripts/build-engine.sh
+      - name: Build the hands engine
+        run: BANEYSPACES_ARM64_ONLY=1 scripts/build-engine.sh
       - name: Test
         run: swift test
   bundle:

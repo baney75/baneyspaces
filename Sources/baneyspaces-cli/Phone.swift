@@ -3,7 +3,7 @@ import Darwin
 import Foundation
 
 /// `baneyspaces phone …`: phones for agents. Android runs through adb directly, so it works even
-/// with the Deck off; an iPhone is driven through its iPhone Mirroring window with cua-driver.
+/// with the Deck off; an iPhone is driven through its iPhone Mirroring window with `baneyspaces agent`.
 enum PhoneCommand {
     static let usage = """
     usage: baneyspaces phone <command> [-s SERIAL]
@@ -20,7 +20,7 @@ enum PhoneCommand {
       mirror                    show the phone's screen: scrcpy, or iPhone Mirroring
 
     An iPhone is driven through its iPhone Mirroring window: `baneyspaces agent open
-    "iPhone Mirroring"` puts it on the agent workspace, then cua-driver works it from behind.
+    "iPhone Mirroring"` puts it on the agent workspace, then `baneyspaces agent` works it from behind.
     """
 
     static var adb: String? {
