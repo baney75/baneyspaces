@@ -6,7 +6,7 @@ sees twice costs more than a slow release.
 
 ## Done
 
-A change is done when all of these pass on the installed build (`make install`):
+A change is done when steps 1–3 pass on its branch and step 4 passes on `main` right after merge (only `main` is installed on Donovan's Mac). If step 4 fails after merge, revert the merge first, then fix:
 
 1. `swift test`
 2. `scripts/bench.sh` (median no-op switch under 40 ms; p90 of your real switches in `timing.log` under 250 ms).

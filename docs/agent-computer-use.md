@@ -19,14 +19,17 @@ a guest can't:
 1. **Agents never take your screen.** Agent windows live on the agent workspace, parked out of view
    but still drivable. No agent action activates an app, raises a window, posts global input or
    changes a Space. If an app activates itself as a side effect (some do on AXPress), BaneySpaces
-   does not follow it, puts your previous front app back before the next frame, and the action's
-   result reports it; the probe counts it as a failure. Nothing an agent does changes your workspace,
+   does not follow it, holds your keystrokes in a listen-and-hold event tap until your previous front
+   app is back (target: within 50 ms), and the action's result reports it; the probe counts it as a
+   failure. Apps seen to self-activate are put on a list and refused (`not_supported`) until a route
+   that doesn't activate them exists. Nothing an agent does changes your workspace,
    your front app, your pointer or your keyboard focus.
-2. **Your workspaces and your data are off limits by default.** An agent acts only on windows on the
-   agent workspace or in the sandbox, or on an app you lend (below). Apps that exist once per user
-   and hold your data (Safari, Notes, Mail, Messages, Calendar, Photos, Excel and Word documents you
-   have open) are never opened by an agent on your Mac: that work goes to the sandbox unless you lend
-   the app.
+2. **Your workspaces are off limits by default, and the line is drawn by process.** On your Mac an
+   agent only acts on a process BaneySpaces started for it as a new instance (`open -n`, its own pid,
+   checked against the pids you were already running), or on windows you lend (below). An app that
+   can't run a second instance (Finder, Safari, Notes, Mail, Messages, Calendar, Photos, single-instance
+   Electron apps such as Obsidian, Office apps you have open) is never driven by an agent on your Mac:
+   that work goes to the sandbox, or uses files directly instead of Finder.
 3. **Every action is checked.** Each action returns evidence read back from the exact element it
    targeted (its value, state or the accessibility change it caused). A capture of the element's
    region is secondary evidence only, never proof by itself, since a caret or a clock changes pixels
@@ -55,11 +58,19 @@ fails the build instead of passing silently.
 | | Agent workspace | Sandbox |
 | --- | --- | --- |
 | What | Workspace 9 on your Mac, with real apps | A throwaway macOS VM (Apple Virtualization, through Tart) |
-| For | Apps an agent can run its own copy of: a separate browser profile, TextEdit or Pages on a temp file, Finder in a temp folder, Xcode on a scratch checkout, any app you lend | Untrusted sites, throwaway logins, long unattended jobs, the once-per-user apps above, anything that installs software, and benchmark runs that need a clean machine |
+| For | Apps BaneySpaces starts for the agent as a separate process (a browser with its own profile, `open -n TextEdit` on a temp file), plus windows you lend | Untrusted sites, throwaway logins, long unattended jobs, the once-per-user apps above, anything that installs software, and benchmark runs that need a clean machine |
 | Speed | Instant, no VM | Boots in seconds from a warm suspended state; resets to clean by APFS clone |
-| Your data | Never touched unless you lend an app | Not there at all: no iCloud, no keychain, no shared folders except one handoff folder per task |
+| Your data | The agent's apps run as your macOS user, so they can open your files: window rules don't protect files. That's why remote callers, untrusted content and anything that installs go to the sandbox | Not there at all: no iCloud, no keychain, no shared folders except one handoff folder per task |
 | Network | Yours | Internet only: no LAN, no tailnet, no access to the Mac itself |
 | Screen | Its windows live on workspace 9 | Its window lives on workspace 9; you can watch it or never look |
+
+Apple Virtualization allows two macOS guests at once. BaneySpaces runs one sandbox per task; a third
+request gets `busy` with `retry: after` and its place in the queue.
+
+The host talks to the guest's hands daemon over a host-initiated vsock channel. Everything that comes
+back is untrusted: schema-validated, size-capped, never passed to a shell or AppleScript, and labeled
+`guest-asserted` in results. The guest's network is Tart softnet with the host, its gateway, the LAN,
+the tailnet and link-local blocked.
 
 `baneyspaces agent` takes `--in sandbox` (or `--in host`, the default), and the router picks the
 sandbox by itself for the app classes above. The same commands, refs, evidence and agent cursor work
@@ -69,15 +80,18 @@ entirely, and you manage the VM window yourself.
 
 ## Lending
 
-`agent lend <app>` is a command only Donovan runs (from the menu, the Deck, or a terminal he types
-in); an agent can ask for a lend and gets `needs_lend` with a suggestion. A lent app:
+Lending is the only way an agent touches a window you were already using, and only you can do it:
 
-- is named by pid and window ids at lend time, not by name, so a second instance can't be confused
-  with it;
-- refuses agent actions while it is your front app or you used it in the last 30 s, with code
-  `in_use`;
-- shows a small lend badge on its Dock tile and in the menu, and returns by itself when the agent's
-  session ends or after 30 minutes, whichever is first.
+- `lend` and `return` are not agent verbs and not MCP tools. An agent that needs a window gets
+  `needs_lend` naming what it wants and why.
+- You lend from the menu or the Deck, or a CLI request raises an on-screen confirmation that only real
+  input accepts (BaneySpaces checks the click's source pid, so a synthetic click can't accept it).
+- A lend names one agent (the requester shown in the confirmation) and the specific windows you
+  picked, not the whole app. Windows the app opens later aren't included. Another agent gets
+  `needs_lend`.
+- It refuses agent actions while the window is in front or you used it in the last 30 s (`in_use`),
+  shows a lend badge, and returns when that agent's session ends (its MCP connection closes or its
+  `agent run` exits) or after 30 minutes.
 
 ## Interface
 
@@ -97,7 +111,7 @@ baneyspaces mcp                                     # stdio MCP server with the 
 
 Output is one JSON envelope per command: `ok`, `data` or `error` with `code`, `retry` (`safe`,
 `after_snapshot`, `never`) and a `suggestion`. `remote` (tailnet, token) exposes the same tools to
-other machines, look-and-act on the agent workspace and the sandbox only.
+other machines, look-and-act in the sandbox only: a remote caller never drives a process on your Mac.
 
 Targets are a ref, a window id, or a pid. An app name resolves only when exactly one matching process
 has windows in scope; otherwise the command fails with `ambiguous` and lists the candidates.
@@ -140,10 +154,10 @@ All of them, without taking the screen:
 
 | Phase | Ships | Done when |
 | --- | --- | --- |
-| 1 | Engine linked in; `agent windows/snapshot/find/get/click/type/set-value/press/scroll/select/toggle/shot/open/lend/return`; MCP server; focus guard; `type` through AX only (keys refuse with `not_supported` until phase 3). | `scripts/agent-hands-probe.swift`: 200 actions in TextEdit on temp documents and Finder inside a temp folder on the agent workspace, sampling every 50 ms the front app, the current workspace, the pointer, the key window and any window appearing on another workspace; zero changes. Never Notes or any once-per-user app. Plus `swift test`. |
+| 1 | Engine linked in; `agent windows/snapshot/find/get/click/type/set-value/press/scroll/select/toggle/shot/open/lend/return`; MCP server; focus guard; `type` through AX only (keys refuse with `not_supported` until phase 3). | `scripts/agent-hands-probe.swift`: 200 actions in TextEdit on temp documents and Finder inside a temp folder on the agent workspace, watching events for the whole run (app activation, Space and workspace changes, focused-window changes, any window appearing on another workspace) with a 50 ms sampler as a second check; zero events. Every driven pid is one BaneySpaces started (`open -n`). Fleet routing points desktop work at `baneyspaces mcp` when phase 1 merges; until then desktop tasks report "not available". Never Notes or any once-per-user app. Plus `swift test`. |
 | 1b | The agent cursor. | Visible on the agent workspace during the probe, zero changes to the real pointer, under 5 ms added per action. |
-| 2 | The sandbox: `sandbox up/reset/down/status`, the guest hands daemon, routing of once-per-user and untrusted work, the handoff folder, network limited to the internet. | The probe passes inside the sandbox; a sandbox job can't reach the Mac, the LAN or the tailnet (checked from inside); reset returns a clean guest in under 10 s; the sandbox window never appears on your workspaces. |
-| 3 | Browsers and Electron: agent browser profiles over the debugging pipe, Safari and Firefox in the sandbox. | A page form filled and read back in Helium (agent profile), Chrome, Firefox and Safari (sandbox) and in Obsidian, with zero screen changes. |
+| 2 | The sandbox (two at most; `busy` beyond that): `sandbox up/reset/down/status`, the guest hands daemon, routing of once-per-user and untrusted work, the handoff folder, network limited to the internet. | The probe passes inside the sandbox; a sandbox job can't reach the Mac, the LAN or the tailnet (checked from inside); reset returns a clean guest in under 10 s; a malformed or oversized daemon reply is rejected; the guest can't reach the host gateway; the sandbox window never appears on your workspaces. |
+| 3 | Browsers and Electron: agent browser profiles over the debugging pipe, Safari and Firefox in the sandbox. | A page form filled and read back in Helium and Chrome (agent profiles on the host), and in Firefox, Safari and Obsidian with a scratch vault (all three in the sandbox), with zero screen-change events. |
 | 4 | Window-local pointer and per-process keys (SkyLight) for apps without a usable tree; the refusal contract. | A canvas app drawn on from behind with zero changes; every refused route returns a suggestion. |
 | 5 | Head-to-head (`bench/`): the same 30 tasks through BaneySpaces, agent-desktop and ChatGPT's computer use, each run in the same place (all on the agent workspace where the task allows it, all in the sandbox otherwise), scored on success, screen changes, time and turns. Cua's driver is a column only inside the sandbox. Fleet routing switches to BaneySpaces' MCP. | BaneySpaces is best or tied on every column; the numbers and the tool versions are committed under `bench/results/`, and the ratchet blocks any regression. |
 
@@ -181,10 +195,13 @@ where the platform has signing), and each app's updater offers the nightly chann
 
 ## Rules that do not bend
 
-- No global HID events from agent actions, ever.
+- No global HID events from agent actions, ever. The only synthetic input on Donovan's Mac comes from
+  BaneySpaces' own probes (`scripts/*-probe.swift`), only after 10 idle minutes, and each probe aborts
+  the moment a listen-only event tap sees an event whose source isn't the probe's own pid.
 - No `activate`, `SetFrontProcess` or Space change on behalf of an agent.
 - No action on a window outside the agent workspace unless that app is lent.
 - Snapshots and captures can hold private content, and an MCP caller is a model whose provider sees
   every result. So results only ever come from the agent workspace, the sandbox or a lent app, never
-  from your workspaces; captures are returned only when the caller asks for one; and nothing goes
-  into logs.
+  from your workspaces; captures are returned only when the caller asks for one; and no snapshot text
+  or capture goes into a log. Every action does leave a record without content (agent id, verb, pid,
+  window id, ref, route, result code, refusal reason), kept 30 days, so you can see who did what.
