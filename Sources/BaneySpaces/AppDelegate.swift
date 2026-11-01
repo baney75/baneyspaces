@@ -162,6 +162,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         a.showSetup = { [weak self] in self?.showSetup() }
         return LauncherController(actions: a)
     }()
+    private lazy var trackpadSwipe: TrackpadSwipe = {
+        let s = TrackpadSwipe()
+        s.onSwipe = { [weak self] direction in
+            guard let self, self.started else { return }
+            switch direction {
+            case .up: if !self.viewer.isOpen { self.viewer.open() }
+            case .down: if self.viewer.isOpen { self.viewer.toggle() }
+            }
+        }
+        return s
+    }()
+    private lazy var hotCorners: HotCornerWatcher = {
+        let w = HotCornerWatcher()
+        w.onOpen = { [weak self] in
+            guard let self, self.started, !self.viewer.isOpen else { return }
+            self.viewer.open()
+        }
+        return w
+    }()
     private lazy var missionControlKeys: MissionControlKeys = {
         let keys = MissionControlKeys { [weak self] in self?.viewer.toggle() }
         keys.onCmdTab = { [weak self] forward, isRepeat, time in
@@ -198,10 +217,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         c.model.onFocusFinished = { [weak self] id in self?.deck.focusFinished(id) }
         c.model.viewerKeysActive = { [weak self] in self?.missionControlKeys.isActive ?? false }
+        c.model.trackpadProblem = { [weak self] in self?.trackpadSwipe.problem }
         c.model.onViewerKeysChange = { [weak self] on in
             MissionControlKeys.enabled = on
-            guard let self, self.started else { return }
-            self.restartKeyWatcher()
+            guard let self else { return }
+            if self.started { self.restartKeyWatcher() }
+            self.syncMissionControl()
         }
         c.model.onWorkspaceDockChange = { [weak self] on in self?.setWorkspaceDock(on) }
         c.model.onTopDragChange = { [weak self] on in self?.setTopDrag(on) }
@@ -227,6 +248,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func restartKeyWatcher() {
         missionControlKeys.stop()
         missionControlKeys.start()
+    }
+
+    /// macOS's Mission Control is off while BaneySpaces' overview answers its keys, its trackpad
+    /// swipe and its hot corners; switched off, or without Accessibility, all of it goes back.
+    private func syncMissionControl() {
+        if started, MissionControlKeys.enabled {
+            SystemMissionControl.takeOver()
+            trackpadSwipe.start()
+            hotCorners.start(corners: SystemMissionControl.answeredCorners())
+        } else {
+            trackpadSwipe.stop()
+            hotCorners.stop()
+            SystemMissionControl.restore()
+        }
     }
 
     /// An app dragged out of the disk image never ran the installer's other steps: AeroSpace stepping
@@ -274,6 +309,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if CommandLine.arguments.contains("--restore-dock") {
             SystemDock.restore()
             SystemTopDrag.restore()
+            SystemMissionControl.restore()
             exit(0)
         }
         // `BaneySpaces --check-settings`: opens the settings window on each tab and exits 1 if any
@@ -404,6 +440,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Workspace Dock takes over again once it starts. The same goes for the drag to the top.
         SystemDock.restore()
         SystemTopDrag.restore()
+        SystemMissionControl.restore()
         updateIcon()
         trustTimer?.invalidate()
         trustTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] timer in
@@ -439,6 +476,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         started = true
         registerShortcuts()
         missionControlKeys.start()
+        syncMissionControl()
         spaces.start()
         watchClicksForDisplay()
         if WorkspaceDock.enabled { dock.start() }
@@ -468,8 +506,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         missionControlKeys.stop()
         topDrag.stop()
         cancelSettling()
-        // Not watching any more, so macOS answers the drag again until BaneySpaces is back.
+        // Not watching any more, so macOS answers the drag, the swipe and the corners again until BaneySpaces is back.
         SystemTopDrag.restore()
+        trackpadSwipe.stop()
+        hotCorners.stop()
+        SystemMissionControl.restore()
         viewer.close()
         dock.stop(restoreSystemDock: true)
         deck.stop()

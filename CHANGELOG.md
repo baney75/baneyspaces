@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **BaneySpaces' overview replaces macOS's Mission Control.** The trackpad swipe up with three or four
+  fingers (as your trackpad settings have it), a hot corner set to Mission Control, the Mission Control
+  key and ⌃↑ all open the overview, and a swipe down closes it. macOS's own "Desktop" view is switched
+  off in the Dock, and any hot corner that was Mission Control is remapped to nothing and answered by
+  BaneySpaces. Settings › Keys › **Use BaneySpaces' overview instead of Mission Control** (on) turns it
+  back off: every setting returns exactly as it was, as does uninstalling. The trackpad swipe uses
+  macOS's private trackpad framework, loaded at run time; if it can't load, Settings says so. Quitting
+  BaneySpaces leaves Mission Control off until it starts again.
 - **A drag out of the "+N" list ends cleanly if its app goes.** Closing the window or quitting the app
   mid-drag, or the list closing under the pointer, cancels the drag instead of leaving the dock in
   drag mode; a window that closed is never moved. Settings > Automation waits for BaneySpaces to

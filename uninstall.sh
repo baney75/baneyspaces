@@ -102,7 +102,7 @@ fi
 # The test reads this Mac's settings as BANEYSPACES_UNINSTALL_MACOS says, not for real.
 # BANEYSPACES_UNINSTALL_MACOS_<key> sets one setting; BANEYSPACES_UNINSTALL_MACOS, every other.
 macos_pref() {
-  if [ -n "$TEST" ]; then v="BANEYSPACES_UNINSTALL_MACOS_$2"; echo "${!v-${BANEYSPACES_UNINSTALL_MACOS:-}}"
+  if [ -n "$TEST" ]; then v="BANEYSPACES_UNINSTALL_MACOS_${2//-/_}"; echo "${!v-${BANEYSPACES_UNINSTALL_MACOS:-}}"
   else defaults read "$1" "$2" 2>/dev/null || true; fi
 }
 top_drag_back() {  # domain key process what
@@ -125,6 +125,32 @@ if { [ -n "$saved" ] || [ "$(pref systemTopDragFillPending)" = 1 ] || [ "$(pref 
   step "Turning fill-the-screen back on for a window dragged to the top"
   sys defaults write com.apple.WindowManager EnableTopTilingByEdgeDrag -bool true
   sys killall WindowManager 2>/dev/null || true
+fi
+
+# Mission Control, if the app wasn't there to put it back (it does on its own when it is). The
+# Dock's switch (mcx-expose-disabled) and each hot corner BaneySpaces remapped from Mission Control go
+# back to what its record says, but only while still as BaneySpaces left them (the switch on, the
+# corner at 1): a setting changed since is the person's. A setting the record doesn't have wasn't
+# there before, and is removed.
+mc_saved=$(pref systemMissionControlSaved)
+if [ -n "$mc_saved" ]; then
+  mc_changed=""
+  if [ "$(macos_pref com.apple.dock mcx-expose-disabled)" = "1" ]; then
+    step "Putting back Mission Control"
+    was=$(printf '%s\n' "$mc_saved" | sed -n 's|.*"com.apple.dock/mcx-expose-disabled" = \([01]\);.*|\1|p')
+    if [ -n "$was" ]; then sys defaults write com.apple.dock mcx-expose-disabled -bool "$([ "$was" = 1 ] && echo true || echo false)"
+    else sys defaults delete com.apple.dock mcx-expose-disabled 2>/dev/null || true; fi
+    mc_changed=1
+  fi
+  for corner in tl tr bl br; do
+    was=$(printf '%s\n' "$mc_saved" | sed -n "s|.*\"com.apple.dock/wvous-$corner-corner\" = \([0-9]*\);.*|\1|p")
+    if [ -n "$was" ] && [ "$(macos_pref com.apple.dock "wvous-$corner-corner")" = "1" ]; then
+      step "Putting back the $corner hot corner"
+      sys defaults write com.apple.dock "wvous-$corner-corner" -int "$was"
+      mc_changed=1
+    fi
+  done
+  [ -z "$mc_changed" ] || sys killall Dock 2>/dev/null || true
 fi
 
 # AeroSpace: the installer stopped it opening at login so the two don't fight over the same keys.
