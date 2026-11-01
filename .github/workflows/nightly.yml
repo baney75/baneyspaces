@@ -25,6 +25,9 @@ jobs:
             echo "Nightly is already at $(git rev-parse --short HEAD)."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
+      - name: Build the hands engine
+        if: steps.changed.outputs.skip != 'true'
+        run: BANEYSPACES_ARM64_ONLY=1 scripts/build-engine.sh
       - name: Test
         if: steps.changed.outputs.skip != 'true'
         run: swift test
