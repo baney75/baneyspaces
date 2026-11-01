@@ -444,10 +444,18 @@ enum Windows {
         AXUIElementSetMessagingTimeout(app, 0.25)
         guard let bar: AXUIElement = app.value(kAXMenuBarAttribute) else { return nil }
         var named: AXUIElement?
+        // A document app's plain "New" on ⌘N (TextEdit) opens an empty window, and counts only
+        // when the app has no command with "window" in its name.
+        var document: AXUIElement?
         // The Apple menu is first and never has it.
         for menu in children(bar).dropFirst() {
             for list in children(menu) {
                 for item in children(list) {
+                    if let title = item.string(kAXTitleAttribute), title == "New" || title == "New Document", document == nil,
+                       item.bool(kAXEnabledAttribute), item.string("AXMenuItemCmdChar") == "N",
+                       (item.value("AXMenuItemCmdModifiers") as NSNumber?)?.intValue == 0 {
+                        document = item
+                    }
                     guard let title = item.string(kAXTitleAttribute), title.hasPrefix("New"),
                           title.localizedCaseInsensitiveContains("window"), item.bool(kAXEnabledAttribute) else { continue }
                     if item.string("AXMenuItemCmdChar") == "N", (item.value("AXMenuItemCmdModifiers") as NSNumber?)?.intValue == 0 {
@@ -458,7 +466,7 @@ enum Windows {
             }
             guard isResponsive(pid) else { return nil }
         }
-        return named
+        return named ?? document
     }
 }
 

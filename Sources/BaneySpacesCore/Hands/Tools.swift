@@ -78,7 +78,7 @@ public enum HandsTools {
         ], acts: true),
         HandsTool(verb: "select", summary: "Choose an option in a list, menu or popup by ref.", params: [
             refParam,
-            HandsParam("option", .string, "The option's text; omit to select the element itself.", positional: true, rest: true),
+            HandsParam("option", .string, "The text of the option to choose.", required: true, positional: true, rest: true),
         ], acts: true),
         HandsTool(verb: "toggle", summary: "Flip a checkbox, switch or disclosure by ref. Prints the state it read back.", params: [refParam], acts: true),
         HandsTool(verb: "shot", summary: "Capture one window as a PNG, even while it is parked out of view. Needs Screen Recording for BaneySpaces. The file stays on this Mac.", params: [

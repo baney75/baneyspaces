@@ -397,7 +397,9 @@ final class Spaces {
 
     /// Every window BaneySpaces places, with its workspace, for the agent hands' scope guard.
     func handsWindows() -> [HandsWindow] {
-        model.home.compactMap { id, ws in
+        // Up to date first: a window that opened a moment ago is claimed (and parked) by this scan.
+        if active { refresh() }
+        return model.home.compactMap { id, ws in
             guard let w = windows[id] else { return nil }
             let app = NSRunningApplication(processIdentifier: w.pid)
             return HandsWindow(id: id, pid: w.pid, app: w.appName, bundle: app?.bundleIdentifier ?? "", title: ws == Self.agentWorkspace ? w.title : "", workspace: ws)

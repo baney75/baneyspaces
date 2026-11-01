@@ -463,11 +463,20 @@ final class DeckController {
                 }
                 return .init(ok: true, info: ["workspace": "\(n)", "app": appName])
             }
-            // Not running: start it from behind. Whatever it restores is yours and stays put;
-            // once it's up, a new window of its own goes to the agent workspace.
+            // Not running: the agent starts it, so everything it opens at launch (its first untitled
+            // window) is the agent's and goes to the agent workspace, not onto your screen. An app
+            // that opens no window of its own gets one from its New Window command.
             NSWorkspace.shared.openApplication(at: url, configuration: cfg) { app, _ in
                 guard let app else { return }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { _ = newWindow(app) }
+                DispatchQueue.main.async {
+                    // The launch is the agent's: its windows go to the agent workspace, and the app coming
+                    // forward while it starts never takes you there (a launch activates ~100 ms in).
+                    AgentActivity.shared.mark(pid: app.processIdentifier, for: 4)
+                    h.claim(app.processIdentifier, n, true, nil)
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    if Windows.standardIDs(of: app.processIdentifier).isEmpty { _ = newWindow(app) }
+                }
             }
             return .init(ok: true, info: ["workspace": "\(n)", "app": appName, "note": "starting; its window opens there in a moment"])
         case "run":

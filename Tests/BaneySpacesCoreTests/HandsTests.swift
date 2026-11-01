@@ -64,7 +64,7 @@ final class HandsParseTests: XCTestCase {
     }
 
     func testBadInputIsABadArgumentsErrorWithUsage() {
-        for bad in ["click", "snapshot", "snapshot --bogus", "shot --window x", "scroll @s1:e1", "fly @s1:e1", "type @s1:e1"] {
+        for bad in ["click", "snapshot", "snapshot --bogus", "shot --window x", "scroll @s1:e1", "select @s1:e1", "fly @s1:e1", "type @s1:e1"] {
             guard case .failure(let e) = parse(bad) else { return XCTFail("\(bad) should fail") }
             XCTAssertEqual(e.code, .badArguments, bad)
             XCTAssertFalse(e.suggestion.isEmpty, bad)
@@ -288,6 +288,70 @@ final class HandsMCPTests: XCTestCase {
     }
 }
 
+final class HandsEventsTests: XCTestCase {
+    final class Spy: HandsEventListener {
+        var seen: [HandsActionEvent] = []
+        func handsWillAct(_ event: HandsActionEvent) { seen.append(event) }
+    }
+
+    func testNoListenerMeansNothingIsMeasured() {
+        HandsEvents.setListener(nil)
+        XCTAssertFalse(HandsEvents.hasListener)
+        var built = false
+        HandsEvents.willAct({ built = true; return HandsActionEvent(kind: "click", ref: "r", window: 1, pid: 2, app: "A", point: nil) }())
+        XCTAssertFalse(built, "with no listener the event is never even built")
+    }
+
+    func testAListenerGetsTheTargetBeforeDispatch() {
+        let spy = Spy()
+        HandsEvents.setListener(spy)
+        defer { HandsEvents.setListener(nil) }
+        XCTAssertTrue(HandsEvents.hasListener)
+        let p = HandsEvents.center(ofBounds: .object(["x": 100, "y": 40, "width": 20, "height": 10]))
+        HandsEvents.willAct(HandsActionEvent(kind: "click", ref: "@s1:e2", window: 9, pid: 4, app: "TextEdit", point: p))
+        XCTAssertEqual(spy.seen.count, 1)
+        XCTAssertEqual(spy.seen[0].point, CGPoint(x: 110, y: 45))
+        XCTAssertEqual(spy.seen[0].window, 9)
+        XCTAssertEqual(spy.seen[0].kind, "click")
+    }
+
+    func testBoundsThatCantBeReadGiveNoPoint() {
+        XCTAssertNil(HandsEvents.center(ofBounds: nil))
+        XCTAssertNil(HandsEvents.center(ofBounds: .object(["x": 1])))
+    }
+}
+
+/// Regression (2026-10-31): `agent open TextEdit` left the app's launch window on the user's workspace.
+final class AgentOpenLaunchTests: XCTestCase {
+    func testALaunchedAppsWindowsAreClaimedForTheAgentWorkspace() throws {
+        let src = try HandsSourceTests.code("Sources/BaneySpaces/Deck/DeckController.swift")
+        let launch = try XCTUnwrap(src.range(of: "NSWorkspace.shared.openApplication(at: url, configuration: cfg)"))
+        let rest = String(src[launch.upperBound...])
+        let block = String(rest.prefix(while: { _ in true }).prefix(900))
+        // Old behavior: only a New Window press 1.5 s later, so the app's own launch window stayed put.
+        XCTAssertTrue(block.contains("h.claim(app.processIdentifier, n, true, nil)"), "every window the launch opens is claimed")
+        XCTAssertTrue(block.contains("AgentActivity.shared.mark(pid: app.processIdentifier"), "the launch activation is never followed")
+        let claim = try XCTUnwrap(block.range(of: "h.claim(app.processIdentifier, n, true, nil)"))
+        let press = try XCTUnwrap(block.range(of: "newWindow(app)"))
+        XCTAssertTrue(claim.lowerBound < press.lowerBound, "claimed before anything else happens")
+    }
+
+    func testNewProcessClaimsTakeEveryWindowOfTheLaunch() throws {
+        let spaces = try HandsSourceTests.code("Sources/BaneySpaces/Spaces.swift")
+        XCTAssertTrue(spaces.contains("func claimNextWindow(of pid: pid_t, for n: Int, within: TimeInterval = 8, newProcess: Bool = false"))
+    }
+
+    func testTheLedgerNamesIt() throws {
+        let text = try String(contentsOf: HandsSourceTests.root.appendingPathComponent("AGENTS.md"), encoding: .utf8)
+        XCTAssertTrue(text.contains("agent open` leaves the app's launch window on your workspace"))
+    }
+
+    func testTheProbeCountsAWindowOnAnyOtherWorkspaceAsAFailure() throws {
+        let text = try String(contentsOf: HandsSourceTests.root.appendingPathComponent("scripts/agent-hands-probe.swift"), encoding: .utf8)
+        XCTAssertTrue(text.contains("stray window"))
+    }
+}
+
 final class HandsWireTests: XCTestCase {
     func testNoOtherMachineMayUseTheHands() {
         XCTAssertFalse(Remote.allows(Wire.Request(op: .hands, text: "{}")))
@@ -324,7 +388,7 @@ final class HandsSourceTests: XCTestCase {
 
     func testTheEngineIsOnlyCalledHeadlessAndOnlyThroughTheAllowedEntryPoints() throws {
         let allowed: Set<String> = ["ad_init", "ad_adapter_create", "ad_check_permissions", "ad_snapshot_window", "ad_get_ref",
-                                    "ad_execute_by_ref_timeout", "ad_free_string", "ad_last_error_message", "ad_last_error_suggestion"]
+                                    "ad_execute_by_ref_timeout", "ad_adapter_create_with_session", "ad_free_string", "ad_last_error_message", "ad_last_error_suggestion"]
         var calls = 0
         for f in try Self.handsFiles() {
             let text = try Self.code(f)
@@ -355,6 +419,14 @@ final class HandsSourceTests: XCTestCase {
     func testTheFocusLogicHonorsTheGuard() throws {
         let spaces = try Self.code("Sources/BaneySpaces/Spaces.swift")
         XCTAssertEqual(spaces.components(separatedBy: "AgentActivity.shared.caused(pid:").count - 1, 2, "app activation and focus-moved-within")
+    }
+
+    func testEveryActionReportsItsTargetBeforeDispatch() throws {
+        let router = try Self.code("Sources/BaneySpaces/Hands/HandsRouter.swift")
+        let report = try XCTUnwrap(router.range(of: "HandsEvents.willAct("))
+        let act = try XCTUnwrap(router.range(of: "HandsEngine.shared.act("))
+        XCTAssertTrue(report.lowerBound < act.lowerBound)
+        XCTAssertEqual(router.components(separatedBy: "HandsEngine.shared.act(").count - 1, 1, "one place dispatches, so one place reports")
     }
 
     func testEveryActionChecksTheScopeAgain() throws {

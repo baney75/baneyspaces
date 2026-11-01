@@ -121,7 +121,7 @@ public enum ScopeGuard {
         let where_ = w.workspace.map { "workspace \($0)" } ?? "a place BaneySpaces doesn't manage"
         return .denied(HandsError(.outsideAgentWorkspace,
                                   "window \(w.id) of \(w.app) is on \(where_), not the agent workspace",
-                                  suggestion: "Open it where you work with `baneyspaces agent open \(w.app)`, or ask to use it as it is with `baneyspaces agent lend \(w.app)` (and `agent return \(w.app)` when done)."))
+                                  suggestion: "Open a window of it on the agent workspace with `baneyspaces agent open \(w.app)`, or ask to use this one as it is with `baneyspaces agent lend \(w.app)` (and `agent return \(w.app)` when done)."))
     }
 
     /// The windows an agent may use now.

@@ -124,18 +124,19 @@ final class HandsRouter {
         guard let id = data["snapshot_id"]?.string else { return }
         lock.lock(); defer { lock.unlock() }
         snaps[id] = Snap(window: w.id, pid: w.pid, app: w.app, at: Date())
-        if snaps.count > 64, let oldest = snaps.min(by: { $0.value.at < $1.value.at })?.key { snaps[oldest] = nil }
+        if snaps.count > 256, let oldest = snaps.min(by: { $0.value.at < $1.value.at })?.key { snaps[oldest] = nil }
     }
 
-    private func read(_ w: HandsWindow, interactive: Bool, compact: Bool, depth: UInt8 = 10) -> Result<JSONValue, HandsError> {
-        switch HandsEngine.shared.snapshot(app: w.app, windowID: w.id, interactive: interactive, compact: compact, depth: depth) {
+    /// `register: false` for the snapshots taken as evidence: the agent never sees their refs, so they must not push its refs out.
+    private func read(_ w: HandsWindow, interactive: Bool, compact: Bool, depth: UInt8 = 10, register: Bool = true) -> Result<JSONValue, HandsError> {
+        switch HandsEngine.shared.snapshot(app: w.app, windowID: w.id, interactive: interactive, compact: compact, depth: depth, evidence: !register) {
         case .failed(let e): return .failure(e)
         case .ok(let data):
             // The engine must have read the window we asked for, never its neighbor.
             if let got = data["window"]?["id"]?.string, got != "w-\(w.id)" {
                 return .failure(HandsError(.windowNotFound, "the engine read \(got), not window \(w.id)", suggestion: "Run `baneyspaces agent windows` and try again.", retry: .safe))
             }
-            remember(data, w)
+            if register { remember(data, w) }
             return .success(data)
         }
     }
@@ -191,7 +192,7 @@ final class HandsRouter {
             return .failure(HandsError(.badArguments, "\(ref ?? "") isn't a ref", suggestion: "Refs look like @s8f3k2p9:e5 and come from `baneyspaces agent snapshot`.", retry: .safe))
         }
         let sid = String(ref[ref.index(after: ref.startIndex)..<colon])
-        lock.lock(); let snap = snaps[sid]; lock.unlock()
+        lock.lock(); let snap = snaps[sid]; snaps[sid]?.at = Date(); lock.unlock()
         guard let snap else {
             return .failure(HandsError(.unknownRef, "BaneySpaces didn't print \(ref)", suggestion: "Take a snapshot of the window and use the refs it prints.", retry: .afterSnapshot))
         }
@@ -255,13 +256,24 @@ final class HandsRouter {
         case .success(let (w, scope, _)):
             let reads = kind == .typeText || kind == .setValue
             // Tree before the action, to show what it changed.
-            let before: JSONValue? = (reads || kind == .toggle) ? nil : { if case .success(let d) = read(w, interactive: false, compact: true) { return d["tree"] }; return nil }()
+            let before: JSONValue? = (reads || kind == .toggle) ? nil : { if case .success(let d) = read(w, interactive: false, compact: true, register: false) { return d["tree"] }; return nil }()
+            // Every action reports its target before dispatch; the point is measured only for a listener.
+            var point: CGPoint?
+            if HandsEvents.hasListener, case .ok(let b) = HandsEngine.shared.get(ref: ref!, property: "bounds") { point = HandsEvents.center(ofBounds: b["value"]) }
+            HandsEvents.willAct(HandsActionEvent(kind: name, ref: ref!, window: w.id, pid: w.pid, app: w.app, point: point))
             // The follow-focus logic must never treat an activation this action causes as the user's.
             AgentActivity.shared.mark(pid: w.pid)
             let reply = HandsEngine.shared.act(ref: ref!, kind: kind, text: text, direction: direction, amount: amount, key: key, modifiers: modifiers)
             AgentActivity.shared.mark(pid: w.pid)
             switch reply {
-            case .failed(let e): return .failure(e)
+            case .failed(var e):
+                // The engine delivers keys only to the app in front and checks that it is, without raising it.
+                // We never raise an app for an agent, so say what that means instead of echoing its advice.
+                if kind == .pressKey, e.message.contains("lost focus") || e.code == .notSupported {
+                    e = HandsError(.notSupported, "\(w.app) is in the background, and keys reach only the app in front",
+                                   suggestion: "BaneySpaces never raises an app for an agent. Use `type` or `set-value` on a text element, or `click` the control. Keys to a background app arrive in phase 3 (docs/agent-computer-use.md).", retry: .never)
+                }
+                return .failure(e)
             case .ok(let engine):
                 var evidence: JSONValue
                 var verified = engine["disposition"]?["delivery"]?.string == "delivered_verified"
@@ -273,11 +285,14 @@ final class HandsRouter {
                         evidence = .object(["kind": "value_readback", "value": .string(String(got.prefix(500))), "matches": .bool(matches)])
                     } else { evidence = .object(["kind": "value_readback", "error": "the value couldn't be read back"]) }
                 } else if kind == .toggle {
-                    if case .ok(let v) = HandsEngine.shared.get(ref: ref!, property: "states") {
-                        evidence = .object(["kind": "state_readback", "states": v["value"] ?? .null])
-                        verified = true
+                    let value = HandsEngine.shared.get(ref: ref!, property: "value")
+                    let states = HandsEngine.shared.get(ref: ref!, property: "states")
+                    if case .ok(let v) = value {
+                        var o: [String: JSONValue] = ["kind": "state_readback", "value": v["value"] ?? .null]
+                        if case .ok(let s) = states { o["states"] = s["value"] ?? .null }
+                        evidence = .object(o)
                     } else { evidence = .object(["kind": "state_readback", "error": "the state couldn't be read back"]) }
-                } else if let before, case .success(let d) = read(w, interactive: false, compact: true), let after = d["tree"] {
+                } else if let before, case .success(let d) = read(w, interactive: false, compact: true, register: false), let after = d["tree"] {
                     let diff = AXDiff.between(before, after)
                     verified = verified || diff.changed
                     evidence = diff.json()

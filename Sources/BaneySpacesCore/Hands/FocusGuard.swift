@@ -32,10 +32,10 @@ public final class AgentActivity: @unchecked Sendable {
 
     public init(clock: @escaping () -> Date = Date.init) { self.clock = clock }
 
-    public func mark(pid: Int32) {
+    public func mark(pid: Int32, for window: TimeInterval = FocusGuard.window) {
         lock.lock(); defer { lock.unlock() }
         guardrail.prune(now: clock())
-        guardrail.mark(pid: pid, now: clock())
+        guardrail.mark(pid: pid, now: clock(), for: window)
     }
 
     /// Whether an agent action touched this app within the last second.

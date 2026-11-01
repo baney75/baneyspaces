@@ -16,6 +16,10 @@ final class HandsEngine {
     static let shared = HandsEngine()
     private let queue = DispatchQueue(label: "baneyspaces.hands.engine")
     private var adapter: OpaquePointer?
+    /// A second adapter, with a session of its own, for the snapshots taken as evidence: the engine
+    /// keeps only so many saved snapshots per store, and evidence must never push out the refs an
+    /// agent is holding.
+    private var evidenceAdapter: OpaquePointer?
     private var failure: HandsError?
 
     /// AD_POLICY_KIND_HEADLESS: keep each action's built-in behavior, no cursor, no focus.
@@ -50,6 +54,7 @@ final class HandsEngine {
             return failure
         }
         adapter = a
+        evidenceAdapter = "evidence".withCString { ad_adapter_create_with_session($0) } ?? a
         return nil
     }
 
@@ -103,9 +108,10 @@ final class HandsEngine {
     }
 
     /// One window's tree with refs. `windowID` is the engine's id for it ("w-4211").
-    func snapshot(app: String?, windowID: UInt32, interactive: Bool, compact: Bool, depth: UInt8) -> Reply {
+    func snapshot(app: String?, windowID: UInt32, interactive: Bool, compact: Bool, depth: UInt8, evidence: Bool = false) -> Reply {
         queue.sync {
             if let e = ready() { return .failed(e) }
+            let adapter = evidence ? evidenceAdapter : adapter
             var out: UnsafeMutablePointer<CChar>?
             let id = "w-\(windowID)"
             let code: Int32
