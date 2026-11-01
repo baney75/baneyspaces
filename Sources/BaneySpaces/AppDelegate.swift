@@ -17,11 +17,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// While running, checks every 2 s that macOS still trusts BaneySpaces.
     private var watchdog: Timer?
     private var signalSources: [DispatchSourceSignal] = []
-    private lazy var viewer = ViewerController(spaces: spaces)
+    private lazy var viewer: ViewerController = {
+        let v = ViewerController(spaces: spaces)
+        v.onOpenHere = { [weak self] entry in self?.launcher.show(entry: entry) }
+        return v
+    }()
     private lazy var dock: WorkspaceDock = {
         let d = WorkspaceDock(spaces: spaces)
         d.onShowOverview = { [weak self] in self?.viewer.open() }
-        d.onShowLauncher = { [weak self] in self?.launcher.show() }
+        d.onShowLauncher = { [weak self] entry in self?.launcher.show(entry: entry) }
         d.onSetEdge = { [weak self] e in self?.setDockEdge(e) }
         d.onTurnOff = { [weak self] in self?.setWorkspaceDock(false) }
         d.onSetAgentStatus = { [weak self] on in self?.setDockAgentStatus(on) }
@@ -129,15 +133,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         a.focusApp = { [weak self] pid, n in self?.spaces.focusApp(pid, on: n) }
         a.openWindowHere = { [weak self] pid in self?.started == true && self?.spaces.openWindowHere(pid) == true }
         a.canOpenWindow = { pid in Windows.newWindowItem(pid) != nil }
+        a.agentPids = { AgentOwned.shared.pids }
         a.current = { [weak self] in self?.spaces.model.current ?? 1 }
+        a.shownOn = { [weak self] screen in self?.spaces.workspace(onScreen: screen) ?? 1 }
+        a.openMode = { OpenHere.Mode(setting: UserDefaults.standard.string(forKey: Self.launcherOpenKey)) }
+        a.openApp = { [weak self] url, pid, action, target in self?.openApp(url, pid: pid, action, on: target) }
         a.switchTo = { [weak self] n in self?.run { $0.switchTo(n) } }
         a.appsOn = { [weak self] n in self?.spaces.apps(on: n) ?? [] }
         a.workspacesByApp = { [weak self] in
             guard let self, self.started else { return [:] }
             self.spaces.refresh()
             var out: [String: [Int]] = [:]
-            for n in Workspaces.range {
-                for e in self.spaces.entries(on: n) {
+            // The user's windows only: nothing on the agent workspace, nothing of a process started for an agent.
+            let agents = AgentOwned.shared.pids
+            for n in OpenHere.userWorkspaces(Array(Workspaces.range), agentWorkspace: Spaces.agentWorkspace) {
+                for e in self.spaces.entries(on: n) where !agents.contains(e.pid) {
                     guard let path = NSRunningApplication(processIdentifier: e.pid)?.bundleURL?.path else { continue }
                     if out[path]?.contains(n) != true { out[path, default: []].append(n) }
                 }
@@ -562,6 +572,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Applies to every Accessibility call, so one frozen app can't stall a switch.
         AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 0.25)
         started = true
+        clearStaleOpenHereGate()
+        // The files you used lately, read ahead so the launcher's first search is answered on the keystroke.
+        FileWarm.shared.refreshIfStale()
         registerShortcuts()
         missionControlKeys.start()
         syncMissionControl()
@@ -902,6 +915,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .theme: Appearance.shared.settings.theme.rawValue
         case .palette: Appearance.shared.settings.colorPalette
         case .dockEnabled: WorkspaceDock.enabled ? "true" : "false"
+        case .launcherOpen: OpenHere.Mode(setting: UserDefaults.standard.string(forKey: Self.launcherOpenKey)).rawValue
         }
     }
 
@@ -912,8 +926,91 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .theme: Appearance.shared.settings.theme = ThemeID(rawValue: value) ?? .macDefault
         case .palette: Appearance.shared.settings.colorPalette = value
         case .dockEnabled: setWorkspaceDock(value == "true")
+        case .launcherOpen: UserDefaults.standard.set(value, forKey: Self.launcherOpenKey)
         }
         return true
+    }
+
+    /// `behavior.launcher.open` (spec/config.md), kept like the other settings until the config file lands.
+    static let launcherOpenKey = "launcherOpen"
+    /// The probe's gate: an expiry time (seconds since 1970), honored while under a minute away. A key the
+    /// probe left behind, or the old on/off one, is removed at launch.
+    static let openHereGateKey = "openHereURLCommandsUntil"
+
+    /// A probe that was killed leaves its gate key: it lapses on its own, and is removed here.
+    private func clearStaleOpenHereGate() {
+        let d = UserDefaults.standard
+        d.removeObject(forKey: "openHereURLCommands")
+        if d.object(forKey: Self.openHereGateKey) != nil, d.double(forKey: Self.openHereGateKey) < Date().timeIntervalSince1970 + 1 {
+            d.removeObject(forKey: Self.openHereGateKey)
+        }
+    }
+
+    /// Opens the app at `app` on workspace `target`, as Return in the launcher does: the single entry point
+    /// the overview's strip slots and the "+" on a selected tile call (spec/overview.md).
+    func openHere(app: String, target: Int) { launcher.openHere(app: app, target: target) }
+
+    /// Opens an app the way `OpenHere.plan` decided, for workspace `target`. You end on `target` for
+    /// everything but `goThere`; the activation an open causes is never followed to the app's other
+    /// workspace (`Spaces.opening`).
+    private func openApp(_ url: URL, pid: pid_t?, _ action: OpenHere.Action, on target: Int) {
+        let running = pid.flatMap { NSRunningApplication(processIdentifier: $0) }
+        let bundle = Bundle(url: url)?.bundleIdentifier
+        func launch(claim: Bool, newInstance: Bool = false) {
+            let config = NSWorkspace.OpenConfiguration()
+            config.activates = true
+            config.createsNewApplicationInstance = newInstance
+            // Registered before the request: the app activates before it returns, and that activation is
+            // held, not followed to some other workspace (`Spaces.expectLaunch`).
+            if claim, let bundle { spaces.expectLaunch(bundle: bundle, on: target) }
+            NSWorkspace.shared.openApplication(at: url, configuration: config) { [weak self] app, error in
+                if let error { NSLog("BaneySpaces: couldn't open %@: %@", url.path, error.localizedDescription) }
+                DispatchQueue.main.async {
+                    guard claim else { return }
+                    guard let app else { return self?.spaces.launchFailed() ?? () }
+                    self?.spaces.launched(app)
+                }
+            }
+        }
+        guard started else {
+            // No Accessibility yet: no workspaces to place it on.
+            if let running { running.activate(options: []) } else { launch(claim: false) }
+            return
+        }
+        switch action {
+        case .launch:
+            // The launcher found no copy of the user's. A copy running for an agent is not it: opening the
+            // app by name would bring that one forward, so the user gets a copy of their own, or, where
+            // the app allows only one, an answer.
+            let others = bundle.map { NSRunningApplication.runningApplications(withBundleIdentifier: $0) } ?? []
+            if !others.isEmpty, others.allSatisfy({ AgentOwned.shared.pids.contains($0.processIdentifier) }) {
+                let name = url.deletingPathExtension().lastPathComponent
+                if Bundle(url: url)?.object(forInfoDictionaryKey: "LSMultipleInstancesProhibited") as? Bool == true {
+                    Toast.show("\(name) is in use by an agent; open it from the agent workspace or wait", symbol: "lock")
+                    return Trace.log("open here: \(name) refused, in use by an agent")
+                }
+                launch(claim: true, newInstance: true)
+            } else {
+                // The old go-to behavior (`go`) starts it plainly; `here` claims its first window.
+                launch(claim: OpenHere.Mode(setting: UserDefaults.standard.string(forKey: Self.launcherOpenKey)) == .here)
+            }
+        case .reopen:
+            if let id = pid { spaces.openingHere(id, on: target, newProcess: false) }
+            launch(claim: false)
+        case .focusHere:
+            if let id = pid { spaces.focusApp(id, on: target) }
+        case .newWindow:
+            guard let id = pid else { return }
+            // Asked at this moment (an unknown is tried again, a busy app is waited for a moment); only a
+            // failed try moves the window instead.
+            if !spaces.openWindowHere(id, on: target), !spaces.moveWindowHere(id, to: target) { spaces.focusApp(id) }
+        case .moveWindowHere:
+            guard let id = pid else { return }
+            if !spaces.moveWindowHere(id, to: target) { spaces.focusApp(id) }
+        case .goThere:
+            if let id = pid { spaces.focusApp(id) } else { launch(claim: false) }
+        }
+        Trace.log("open here: \(url.deletingPathExtension().lastPathComponent) \(action) on workspace \(target)")
     }
 
     /// Turns the Workspace Dock on or off (`dock.enabled`). Off, there is no dock window at all and
@@ -1004,6 +1101,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case "viewer": run { _ in viewer.toggle() }
         // Opening it changes nothing on its own, so a web page may: every action inside needs a key press.
         case "launcher": launcher.show(scope: LauncherModel.Scope(rawValue: url.lastPathComponent) ?? .root, takeKeys: false)
+        // For `scripts/open-here-probe.swift`: opens an app the way the launcher's Return does, for workspace
+        // <n>: `baneyspaces://open-here/3?app=/System/Applications/Calculator.app`. It starts apps and moves
+        // windows, so only while `defaults write com.baney.baneyspaces openHereURLCommandsUntil -float <now+50>` says so
+        // (the probe sets an expiry a minute away before each open, and removes it); a web page can't.
+        case "open-here":
+            let path = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "app" }?.value
+            // Honored only until the time the probe wrote (a minute at most), so a probe that died leaves the gate shut.
+            let until = UserDefaults.standard.double(forKey: Self.openHereGateKey)
+            guard until > Date().timeIntervalSince1970, until < Date().timeIntervalSince1970 + 61, let path else {
+                return NSLog("BaneySpaces: open-here refused: %@", text)
+            }
+            run { _ in openHere(app: path, target: n) }
         case "dock":
             // Turning it off or hiding it is always allowed: a pinned dock must never outlive
             // its check (2026-10-14, a hide that raced the setting going off left it stuck up).

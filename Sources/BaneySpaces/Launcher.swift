@@ -144,8 +144,17 @@ struct LauncherActions {
     var focusApp: (pid_t, Int?) -> Void = { _, _ in }
     /// A new window of a running app on the workspace you're on; false when it can't make one.
     var openWindowHere: (pid_t) -> Bool = { _ in false }
-    /// Whether a running app has a New Window command.
+    /// The workspace the screen the launcher appears on is showing: where an open from it lands.
+    var shownOn: (NSScreen) -> Int = { _ in 1 }
+    /// `behavior.launcher.open`: open here, or go to where the app already is.
+    var openMode: () -> OpenHere.Mode = { .standard }
+    /// Opens an app as `OpenHere.plan` decided, for the workspace the launcher was opened for.
+    var openApp: (URL, pid_t?, OpenHere.Action, Int) -> Void = { _, _, _, _ in }
+    /// Whether a running app has a New Window command: true only when the item was found. A false says
+    /// nothing (the app may be busy), so it is never kept.
     var canOpenWindow: (pid_t) -> Bool = { _ in false }
+    /// Processes BaneySpaces started for an agent: open here never sees them.
+    var agentPids: () -> Set<pid_t> = { [] }
     var current: () -> Int = { 1 }
     var switchTo: (Int) -> Void = { _ in }
     var appsOn: (Int) -> [String] = { _ in [] }
@@ -187,11 +196,14 @@ final class LauncherController: NSObject, NSWindowDelegate {
 
     /// `takeKeys: false` (opened by a link) shows it without taking the keyboard, so typing meant
     /// for another app never lands in it; a click on it takes the keyboard.
-    func show(scope: LauncherModel.Scope = .root, takeKeys: Bool = true) {
+    /// `entry`: where it was opened from (a dock tile's menu, the overview). Without one, it is open
+    /// for the workspace the screen it appears on is showing. Whatever is opened from it lands there.
+    func show(scope: LauncherModel.Scope = .root, takeKeys: Bool = true, entry: OpenHere.Entry? = nil) {
         let p = panel ?? makePanel()
         panel = p
-        model.prepare(scope: scope)
         let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main ?? NSScreen.screens[0]
+        let target = entry.flatMap(OpenHere.target) ?? OpenHere.target(.launcher(shownOn: model.shown(on: screen)))
+        model.prepare(scope: scope, target: target)
         let size = NSSize(width: 700, height: 500)
         // A little above center, where Spotlight sits.
         let origin = NSPoint(x: screen.visibleFrame.midX - size.width / 2,
@@ -203,6 +215,13 @@ final class LauncherController: NSObject, NSWindowDelegate {
         if takeKeys { p.makeKeyAndOrderFront(nil) } else { p.orderFrontRegardless(); watchClicksElsewhere() }
         p.displayIfNeeded()
         if let field = model.field { p.makeFirstResponder(field) }
+    }
+
+    /// The one entry point for opening an app on a workspace without the launcher on screen: the
+    /// overview's strip slots and the "+" on a selected tile, and `scripts/open-here-probe.swift`.
+    /// The same call Return makes on an app's row (`OpenHere.plan`), for workspace `target`.
+    func openHere(app path: String, target: Int, remember: Bool = false) {
+        model.openHere(app: path, target: target, remember: remember)
     }
 
     func hide() {
@@ -339,9 +358,13 @@ final class LauncherModel: ObservableObject {
     weak var field: NSTextField?
     var close: () -> Void = {}
     var alertOpen = false
+    /// The workspace this launcher was opened for: whatever it opens lands there (`OpenHere`).
+    var target: Int?
 
     private let actions: LauncherActions
-    private var apps: [AppEntry] = []
+    private var apps: [AppEntry] = [] { didSet { appIndex = AppNameIndex(names: apps.map(\.name)) } }
+    /// The apps' names folded once, so a keystroke matches them without folding each again.
+    private var appIndex = AppNameIndex(names: [])
     private var running: [String: [Int]] = [:]
     private var recents = Recents(UserDefaults.standard.stringArray(forKey: "launcherRecents") ?? [])
     private var iconCache: [String: NSImage] = [:]
@@ -352,8 +375,16 @@ final class LauncherModel: ObservableObject {
     /// What `fileResults` were found for. Until a newer search answers, they're shown only while
     /// they still match what's typed.
     private var fileResultsQuery = ""
-    private var fileWork: DispatchWorkItem?
-    private var fileSearches = 0
+    /// One search a keystroke: the warm answer now, Spotlight's a moment later, the older query stopped.
+    private lazy var fileFlow = FileSearchFlow(
+        home: FileManager.default.homeDirectoryForCurrentUser.path,
+        warm: { FileWarm.shared.index },
+        schedule: { delay, work in
+            let item = DispatchWorkItem(block: work)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
+            return { item.cancel() }
+        },
+        query: { text, done in FileFinder.start(text, done: done) })
     private var bangs = Launcher.loadBangs()
     /// Terminal agents found on this Mac: command to path.
     var agents: [String: String] = [:]
@@ -363,8 +394,20 @@ final class LauncherModel: ObservableObject {
         apps = AppEntry.scan()
     }
 
-    func prepare(scope: Scope) {
+    func shown(on screen: NSScreen) -> Int { actions.shownOn(screen) }
+
+    /// What Return does on an app's row, for callers with no row to press (see `LauncherController.openHere`).
+    func openHere(app path: String, target: Int, remember: Bool) {
+        guard path.hasSuffix(".app"), FileManager.default.fileExists(atPath: path), Workspaces.range.contains(target) else { return }
+        self.target = target
+        let name = FileManager.default.displayName(atPath: path).replacingOccurrences(of: ".app", with: "")
+        open(apps.first { $0.path == path } ?? AppEntry(name: name, path: path, folder: ""), remember: remember)
+    }
+
+    func prepare(scope: Scope, target: Int? = nil) {
         actions.willShow()
+        FileWarm.shared.refreshIfStale()
+        self.target = target
         self.scope = scope
         query = ""
         field?.stringValue = ""
@@ -374,6 +417,7 @@ final class LauncherModel: ObservableObject {
         fileResults = []
         bangs = Launcher.loadBangs()
         rebuild()
+        probeWindowCommands()
         // Apps installed since the last look show up without a restart.
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let fresh = AppEntry.scan()
@@ -618,20 +662,17 @@ final class LauncherModel: ObservableObject {
         if q.isEmpty {
             matches = apps
         } else {
-            matches = apps.compactMap { a -> (AppEntry, Int)? in
-                guard let s = Fuzzy.score(q, a.name) else { return nil }
-                return (a, s + recents.boost(a.path) + (running[a.path] != nil ? 15 : 0))
-            }
-            .sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.0.name < $1.0.name }
-            .map(\.0)
+            // Matched on the folded names, no menus read, no files waited for: apps are on screen first.
+            matches = appIndex.rank(q, boost: { [apps, recents, running] i in
+                recents.boost(apps[i].path) + (running[apps[i].path] != nil ? 15 : 0)
+            }, limit: limit).map { apps[$0] }
         }
         // An app open on more than one workspace also gets a row for each, to pick which, and so
-        // does one that opens a new window here instead of going to its workspace.
+        // does one that opens here instead of going to its workspace (⌥↩ goes there too).
         return matches.prefix(limit).flatMap { a -> [LauncherItem] in
             let on = running[a.path] ?? []
-            let look = !q.isEmpty && limit <= 8
-            let main = appItem(a, section: "Apps", look: look)
-            guard on.count > 1 || opensHere(a, look: look), !q.isEmpty else { return [main] }
+            let main = appItem(a, section: "Apps")
+            guard on.count > 1 || hereNote(a) != nil, !q.isEmpty else { return [main] }
             return [main] + on.map { n in
                 LauncherItem(id: "app:\(a.path):\(n)", section: "Apps", title: "\(a.name) on Workspace \(n)",
                              subtitle: "The \(a.name) windows there", icon: .file(a.path), workspaces: [n],
@@ -660,51 +701,96 @@ final class LauncherModel: ObservableObject {
         actions.focusApp(app.processIdentifier, n)
     }
 
-    private func appItem(_ a: AppEntry, section: String, look: Bool = false) -> LauncherItem {
+    private func appItem(_ a: AppEntry, section: String) -> LauncherItem {
         let on = running[a.path] ?? []
         var where_ = on.isEmpty ? a.folder : on.count == 1 ? "Open on workspace \(on[0])" : "Open on workspaces \(on.map(String.init).joined(separator: ", "))"
-        if opensHere(a, look: look) { where_ += " · Return opens a new window here" }
+        if let note = hereNote(a) { where_ += " · " + note }
         return LauncherItem(id: "app:\(a.path)", section: section, title: a.name, subtitle: where_, icon: .file(a.path),
                             workspaces: on,
                             run: { [weak self] in self?.open(a) }, reveal: URL(fileURLWithPath: a.path))
     }
 
-    /// Apps found to have a New Window command, by path. Only a yes is kept: a no can be an app
-    /// that was busy, still building its menus, or showing a sheet.
-    private var newWindowCommand: Set<String> = []
+    /// The apps found to have a New Window command, with the process it was found in. Only a yes is kept,
+    /// and only for that process: a no can be an app that was busy, still building its menus or showing a
+    /// sheet, and a restarted app is asked again. Asked in the background when the launcher opens
+    /// (`probeWindowCommands`): reading an app's menus takes 15–130 ms, which must never sit between a
+    /// keystroke and the list.
+    private var windowYes: [String: pid_t] = [:]
+    private static let probeQueue = DispatchQueue(label: "BaneySpaces launcher menus", qos: .userInitiated)
 
-    /// An app open only on other workspaces that can open a window here: opening it does that,
-    /// as opening an app on a Mac desktop where it has no window would. `look` reads the app's
-    /// menus, 15–130 ms an app, so rows only look for the few best matches of a search.
-    private func opensHere(_ a: AppEntry, look: Bool = true) -> Bool {
-        guard let on = running[a.path], !on.contains(actions.current()), let app = runningApp(a) else { return false }
-        if newWindowCommand.contains(a.path) { return true }
-        guard look, actions.canOpenWindow(app.processIdentifier) else { return false }
-        newWindowCommand.insert(a.path)
-        return true
+    /// What Return does to an app open somewhere other than the workspace this launcher is for, in
+    /// words for its subtitle; nil when it just opens or the answer isn't known yet.
+    private func hereNote(_ a: AppEntry) -> String? {
+        guard actions.openMode() == .here, let target, let on = running[a.path], !on.isEmpty, !on.contains(target) else { return nil }
+        switch windowCommand(for: a) {
+        case .yes: return "Return opens a new window on workspace \(target) · ⌥↩ goes there"
+        case .no: return "Return brings it to workspace \(target) · ⌥↩ goes there"
+        case .unknown: return nil
+        }
     }
 
+    /// Asks the running apps that are open only elsewhere whether they can make a window, off the
+    /// main thread, then redraws the rows that mention it.
+    private func probeWindowCommands() {
+        guard let target else { return }
+        let agents = actions.agentPids()
+        let todo: [(path: String, pid: pid_t)] = running.compactMap { path, on in
+            guard !on.contains(target),
+                  let pid = NSWorkspace.shared.runningApplications.first(where: { $0.bundleURL?.path == path && !agents.contains($0.processIdentifier) })?.processIdentifier,
+                  windowYes[path] != pid, !NewWindowLedger.shared.knownSingleWindow(forApp: path)
+            else { return nil }
+            return (path, pid)
+        }
+        guard !todo.isEmpty else { return }
+        let actions = actions
+        Self.probeQueue.async { [weak self] in
+            var found: [String: pid_t] = [:]
+            for item in todo where actions.canOpenWindow(item.pid) { found[item.path] = item.pid }
+            DispatchQueue.main.async {
+                guard let self, !found.isEmpty else { return }
+                self.windowYes.merge(found) { _, new in new }
+                self.rebuildKeepingSelection()
+            }
+        }
+    }
+
+    /// The user's copy of an app. A process BaneySpaces started for an agent is not it: open here never
+    /// moves, focuses or makes windows in one, and if that is all that is running, a copy of its own starts.
     private func runningApp(_ a: AppEntry) -> NSRunningApplication? {
-        NSWorkspace.shared.runningApplications.first { $0.bundleURL?.path == a.path }
+        let agents = actions.agentPids()
+        return NSWorkspace.shared.runningApplications.first { $0.bundleURL?.path == a.path && !agents.contains($0.processIdentifier) }
     }
 
-    /// A running app opens a new window here when it's open only elsewhere and can; otherwise
-    /// it's gone to, wherever its windows are. Anything else opens here.
-    private func open(_ a: AppEntry) {
+    /// What is known about the app's New Window command without asking it: a yes found in this process,
+    /// a curated or three-days-of-evidence no, otherwise unknown (tried at the moment of opening).
+    private func windowCommand(for a: AppEntry) -> OpenHere.WindowCommand {
+        if let pid = runningApp(a)?.processIdentifier, windowYes[a.path] == pid { return .yes }
+        return NewWindowLedger.shared.knownSingleWindow(forApp: a.path) ? .no : .unknown
+    }
+
+    /// Opens an app on the workspace this launcher was opened for (`OpenHere`): started if it isn't
+    /// running, a new window if it can make one, its window brought over if it can't. ⌥ (⌥↩, or ⌥-click) and
+    /// `behavior.launcher.open = go` go to where the app already is.
+    private func open(_ a: AppEntry, remember: Bool = true) {
         close()
-        recents.used(a.path)
-        UserDefaults.standard.set(recents.paths, forKey: "launcherRecents")
-        let url = URL(fileURLWithPath: a.path)
-        if let app = runningApp(a), running[a.path] != nil {
-            if opensHere(a), actions.openWindowHere(app.processIdentifier) { return }
-            actions.focusApp(app.processIdentifier, nil)
-            return
+        // A check opens apps too, and mustn't change what the launcher lists first.
+        if remember {
+            recents.used(a.path)
+            UserDefaults.standard.set(recents.paths, forKey: "launcherRecents")
         }
-        let config = NSWorkspace.OpenConfiguration()
-        config.activates = true
-        NSWorkspace.shared.openApplication(at: url, configuration: config) { _, error in
-            if let error { NSLog("BaneySpaces: couldn't open %@: %@", a.path, error.localizedDescription) }
-        }
+        let modifier = NSEvent.modifierFlags.contains(.option)
+        let mode = actions.openMode()
+        let target = self.target ?? actions.current()
+        let app = runningApp(a)
+        // Read now, not when the list was drawn: windows move while the launcher is up.
+        let on = app == nil ? [] : actions.workspacesByApp()[a.path] ?? []
+        // No menu is read here: an unknown is tried as a new window when the open runs, and only a failed
+        // try falls back to moving the window (`Spaces.openWindowHere`).
+        let command = windowCommand(for: a)
+        let action = OpenHere.plan(.init(target: target, running: app != nil, windowsOn: on, windowCommand: command),
+                                   mode: mode, modifier: modifier)
+        Trace.log("launcher open: \(a.name) for workspace \(target) on=\(on) newWindow=\(command) mode=\(mode.rawValue) option=\(modifier) -> \(action)")
+        actions.openApp(URL(fileURLWithPath: a.path), app?.processIdentifier, action, target)
     }
 
     private func workspaceItems(_ q: String, all: Bool = false) -> [LauncherItem] {
@@ -948,28 +1034,33 @@ final class LauncherModel: ObservableObject {
 
     // MARK: Files
 
-    /// Spotlight, a moment after typing stops: the top five in the main search, more in Files.
-    /// A bang or a question is for the web, not a file name.
+    /// Files for what is typed: the top five in the main search, more in Files. The files you used or
+    /// changed lately answer on the keystroke; Spotlight's full answer follows a short pause, and the
+    /// query before it is stopped when you type again (`FileSearchFlow`). A bang or a question is for
+    /// the web, not a file name.
     private func searchFiles() {
-        fileWork?.cancel()
-        fileSearches += 1
         let q = query.trimmingCharacters(in: .whitespaces)
         let forFiles = scope == .files || scope == .root && !q.hasPrefix("!") && !q.hasPrefix("?") && Bangs.parse(q) == nil
         guard forFiles, FileSearch.spotlightQuery(q) != nil else {
+            fileFlow.cancel()
             if !fileResults.isEmpty { fileResults = []; rebuild() }
             return
         }
-        let search = fileSearches, inScope = scope
-        let work = DispatchWorkItem {
-            FileFinder.find(q, limit: inScope == .files ? 60 : 5, search: search) { [weak self] hits in
-                guard let self, self.fileSearches == search, self.scope == inScope else { return }
+        FileWarm.shared.refreshIfStale()
+        let inScope = scope
+        let started = CFAbsoluteTimeGetCurrent()
+        fileFlow.typed(q, limit: inScope == .files ? 60 : 5) { [weak self] stage, hits in
+            let show = { [weak self] in
+                guard let self, self.scope == inScope, self.query.trimmingCharacters(in: .whitespaces) == q else { return }
                 self.fileResults = hits
                 self.fileResultsQuery = q
                 self.rebuildKeepingSelection()
+                if stage == .warm {
+                    Trace.log("files warm q=\(q.count)ch shown=\(hits.count) ms=\(Int((CFAbsoluteTimeGetCurrent() - started) * 1000))")
+                }
             }
+            if Thread.isMainThread { show() } else { DispatchQueue.main.async(execute: show) }
         }
-        fileWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
     }
 
     private func fileItems() -> [LauncherItem] {
@@ -989,44 +1080,123 @@ final class LauncherModel: ObservableObject {
     }
 }
 
+/// The files you used or changed lately, kept in memory (`FileWarmIndex`) so a short search is answered
+/// on the keystroke. Read from Spotlight in the background: when the launcher is built, and again once
+/// the list is two minutes old and the launcher is used.
+final class FileWarm: @unchecked Sendable {
+    static let shared = FileWarm()
+    private let lock = NSLock()
+    private var current = FileWarmIndex.empty
+    private var builtAt = Date.distantPast
+    private var building = false
+    /// Files kept: used in the last 90 days or changed in the last 30, most recently used first.
+    static let size = 6_000
+    static let maxAge: TimeInterval = 120
+
+    var index: FileWarmIndex { lock.lock(); defer { lock.unlock() }; return current }
+
+    func refreshIfStale() {
+        lock.lock()
+        let stale = !building && Date().timeIntervalSince(builtAt) > Self.maxAge
+        if stale { building = true }
+        lock.unlock()
+        guard stale else { return }
+        DispatchQueue.global(qos: .utility).async { [self] in
+            let started = Date()
+            let home = FileManager.default.homeDirectoryForCurrentUser.path
+            let hits = FileFinder.recent(limit: Self.size)
+            let built = FileWarmIndex(hits, home: home)
+            lock.lock()
+            // A failed read keeps the list there was.
+            if built.count > 0 || current.count == 0 { current = built }
+            builtAt = Date()
+            building = false
+            lock.unlock()
+            Trace.log("files warm index: \(built.count) files in \(Int(Date().timeIntervalSince(started) * 1000)) ms")
+        }
+    }
+}
+
 /// Runs `FileSearch`'s query through Spotlight over your own folders (iCloud Drive and cloud
 /// drives included, the rest of Library left out), off the main thread, and ranks what it finds.
 enum FileFinder {
-    private static let queue = DispatchQueue(label: "BaneySpaces file search", qos: .userInitiated)
     /// Files kept per search for ranking. A two-letter search can match thousands; the ranking
     /// only needs enough to find the few worth showing.
     static let cap = 1000
     /// Matches Spotlight gathers per search, most recently used first. Noise is skipped as it's
     /// read, since Spotlight can't leave it out (it ignores kMDItemPath) and it can be most of
     /// the matches: 4,887 of 5,159 for "ind" in ~/Projects on Donovan's Mac were in node_modules.
-    /// Measured there: 6,000 takes 80–580 ms a search; 20,000 took up to 1.9 s.
+    /// Measured there: 6,000 takes 40–580 ms a search once Spotlight is warm and up to 1.4 s cold;
+    /// with no cap a two-letter search took 32 s.
     static let scanLimit = 6_000
     /// Reading each match's path costs about 0.3 ms, so reading stops after this long with what
     /// it has kept.
     static let readBudget: TimeInterval = 0.3
-    /// The newest search asked for. One queued behind it is stale and doesn't run.
-    private static let lock = NSLock()
-    nonisolated(unsafe) private static var newest = 0
-    private static func isNewest(_ n: Int) -> Bool { lock.lock(); defer { lock.unlock() }; return newest == n }
+    /// A query still running after this is stopped: its keystroke is long past, and the warm list stays.
+    static let giveUp: TimeInterval = 2.5
 
-    static func find(_ typed: String, limit: Int, search n: Int, done: @escaping ([FileSearch.Hit]) -> Void) {
-        guard let text = FileSearch.spotlightQuery(typed) else { return done([]) }
-        lock.lock(); newest = n; lock.unlock()
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        queue.async {
-            guard isNewest(n) else { return }
-            let start = Date()
-            let places = scopes(home)
-            let hits = search(text, in: places, stale: { !isNewest(n) }) + topLevel(typed, home)
-            guard isNewest(n) else { return }
-            let ranked = FileSearch.rank(typed, hits, home: home, limit: limit)
-            let ms = Int(Date().timeIntervalSince(start) * 1000)
-            DispatchQueue.main.async {
-                // One line a search, so an empty list can be told apart from a slow or blocked one.
-                Trace.log("files q=\(typed.count)ch places=\(places.count) kept=\(hits.count) shown=\(ranked.count) ms=\(ms)")
-                done(ranked)
+    /// One running search that can be stopped from any thread. A synchronous `MDQueryExecute` returns
+    /// at once when `MDQueryStop` is called on it (measured: 0–1 ms after the stop).
+    private final class Job {
+        private let lock = NSLock()
+        private var query: MDQuery?
+        private var finished = false
+        private(set) var cancelled = false
+        /// Called right before `MDQueryExecute`. False when a stop already came, so the query never starts.
+        func begin(_ q: MDQuery) -> Bool { lock.lock(); defer { lock.unlock() }; query = q; return !cancelled }
+        func end() { lock.lock(); finished = true; lock.unlock() }
+        func cancel() {
+            lock.lock()
+            cancelled = true
+            let q = query
+            lock.unlock()
+            guard let q else { return }
+            MDQueryStop(q)
+            // A stop that lands in the instant between `begin` and the query actually starting does
+            // nothing, so it is sent again until the query has returned.
+            for delay in [0.02, 0.06, 0.15, 0.4] {
+                DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + delay) { [weak self] in
+                    guard let self else { return }
+                    self.lock.lock(); let done = self.finished; self.lock.unlock()
+                    if !done { MDQueryStop(q) }
+                }
             }
         }
+        var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
+    }
+
+    /// Starts the search for `typed` and returns what stops it. `done` gets the hits, or nil when it was
+    /// stopped; it is not called after a stop.
+    static func start(_ typed: String, done: @escaping ([FileSearch.Hit]?) -> Void) -> () -> Void {
+        guard let text = FileSearch.spotlightQuery(typed) else { done(nil); return {} }
+        let job = Job()
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        DispatchQueue.global(qos: .userInitiated).async {
+            let start = Date()
+            guard !job.isCancelled else { return }
+            let places = scopes(home)
+            // A watchdog, not a timeout on the person: it frees Spotlight from a query nobody is waiting on.
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + giveUp) { job.cancel() }
+            let hits = search(text, in: places, job: job) + topLevel(typed, home)
+            guard !job.isCancelled else {
+                if Date().timeIntervalSince(start) >= giveUp { Trace.log("files q=\(typed.count)ch stopped after \(Int(Date().timeIntervalSince(start) * 1000)) ms") }
+                return
+            }
+            let ranked = FileSearch.rank(typed, hits, home: home, limit: 60)
+            let ms = Int(Date().timeIntervalSince(start) * 1000)
+            // One line a search, so an empty list can be told apart from a slow or blocked one.
+            Trace.log("files q=\(typed.count)ch places=\(places.count) kept=\(hits.count) shown=\(min(ranked.count, 5)) ms=\(ms)")
+            done(ranked)
+        }
+        return { job.cancel() }
+    }
+
+    /// The files used in the last 90 days or changed in the last 30, most recently used first, for `FileWarm`.
+    static func recent(limit: Int) -> [FileSearch.Hit] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let text = "(kMDItemLastUsedDate >= $time.today(-90) || kMDItemFSContentChangeDate >= $time.today(-30)) "
+            + "&& kMDItemContentType != \"com.apple.application-bundle\""
+        return search(text, in: scopes(home), job: Job(), maxCount: limit, keep: limit, budget: 2)
     }
 
     /// The home folder's own folders, without Library or hidden ones, plus iCloud Drive and the
@@ -1056,22 +1226,26 @@ enum FileFinder {
     /// isn't one it can (it isn't stored), so that one is asked of each item.
     private static let attributes = [kMDItemFSName, kMDItemLastUsedDate, kMDItemFSContentChangeDate] as [CFString]
 
-    private static func search(_ text: String, in scopes: [String], stale: () -> Bool) -> [FileSearch.Hit] {
+    private static func search(_ text: String, in scopes: [String], job: Job, maxCount: Int = scanLimit,
+                               keep: Int = cap, budget: TimeInterval = readBudget) -> [FileSearch.Hit] {
         guard !scopes.isEmpty,
               let q = MDQueryCreate(kCFAllocatorDefault, text as CFString, attributes as CFArray, [kMDItemLastUsedDate] as CFArray)
         else { return [] }
         MDQuerySetSearchScope(q, scopes as CFArray, 0)
-        MDQuerySetMaxCount(q, scanLimit)
-        guard MDQueryExecute(q, CFOptionFlags(kMDQuerySynchronous.rawValue)), !stale() else { return [] }
+        MDQuerySetMaxCount(q, maxCount)
+        guard job.begin(q) else { return [] }
+        let ran = MDQueryExecute(q, CFOptionFlags(kMDQuerySynchronous.rawValue))
+        job.end()
+        guard ran, !job.isCancelled else { return [] }
         func value<T>(_ attr: CFString, _ i: Int) -> T? {
             MDQueryGetAttributeValueOfResultAtIndex(q, attr, i).map { Unmanaged<AnyObject>.fromOpaque($0).takeUnretainedValue() } as? T
         }
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         var out: [FileSearch.Hit] = []
-        let until = Date().addingTimeInterval(readBudget)
-        for i in 0..<MDQueryGetResultCount(q) where out.count < cap {
+        let until = Date().addingTimeInterval(budget)
+        for i in 0..<MDQueryGetResultCount(q) where out.count < keep {
             if i % 200 == 199 {
-                if stale() { return [] }
+                if job.isCancelled { return [] }
                 if Date() > until { break }
             }
             guard let raw = MDQueryGetResultAtIndex(q, i),
@@ -1571,7 +1745,8 @@ struct LauncherView: View {
 
     private var footer: some View {
         HStack(spacing: 16) {
-            hint("↩", "Open")
+            hint("↩", model.target.map { "Open on workspace \($0)" } ?? "Open")
+            hint("⌥↩", "Go to app")
             hint("⌘↩", "Show in Finder")
             hint("⇥", "Open menu")
             if model.scope != .root { hint("⌫", "Back") }
@@ -1635,7 +1810,8 @@ private struct SearchField: NSViewRepresentable {
             switch sel {
             case #selector(NSResponder.moveDown(_:)): model.move(1)
             case #selector(NSResponder.moveUp(_:)): model.move(-1)
-            case #selector(NSResponder.insertNewline(_:)):
+            case #selector(NSResponder.insertNewline(_:)), #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)):
+                // ⌥↩ arrives as the second selector; `open` reads the ⌥ itself.
                 model.runSelected(reveal: NSEvent.modifierFlags.contains(.command))
             case #selector(NSResponder.insertTab(_:)): model.tab()
             case #selector(NSResponder.cancelOperation(_:)):
@@ -1646,5 +1822,45 @@ private struct SearchField: NSViewRepresentable {
             }
             return true
         }
+    }
+}
+
+/// What is known, for sure, about which apps have no New Window command (`NewWindowEvidence`), kept in
+/// the app's defaults. Written only by a complete menu read at the moment of opening.
+final class NewWindowLedger: @unchecked Sendable {
+    static let shared = NewWindowLedger()
+    private let lock = NSLock()
+    private let key = "openHereNoNewWindow"
+    private var evidence: NewWindowEvidence
+
+    private init() {
+        if let data = UserDefaults.standard.data(forKey: key), let e = try? JSONDecoder().decode(NewWindowEvidence.self, from: data) {
+            evidence = e
+        } else {
+            evidence = NewWindowEvidence()
+        }
+    }
+
+    /// The bundle identifier for an app at `path`, else the path.
+    static func id(forApp path: String) -> String { Bundle(url: URL(fileURLWithPath: path))?.bundleIdentifier ?? path }
+
+    func knownSingleWindow(forApp path: String) -> Bool {
+        let id = Self.id(forApp: path)
+        lock.lock(); defer { lock.unlock() }
+        return evidence.knownSingleWindow(id)
+    }
+
+    func sawNo(app id: String) {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        lock.lock(); evidence.sawNo(id, day: f.string(from: Date())); save(); lock.unlock()
+    }
+
+    func sawYes(app id: String) {
+        lock.lock(); evidence.sawYes(id); save(); lock.unlock()
+    }
+
+    private func save() {
+        if let data = try? JSONEncoder().encode(evidence) { UserDefaults.standard.set(data, forKey: key) }
     }
 }

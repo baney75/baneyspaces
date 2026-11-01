@@ -77,6 +77,10 @@ final class Spaces {
         let workspace: Int
         let until: Date
         let title: String?
+        /// Holds even when the app is in front. A window of the app you're in is yours (⌘N), but a
+        /// launch you made from a workspace is claimed for that workspace because the app was the
+        /// one you just opened: its slow first window, or one it restores, goes there too.
+        var honorsFront = false
     }
 
     /// The agent workspace (see `AgentWorkspace`), or nil when it's off.
@@ -314,9 +318,10 @@ final class Spaces {
     /// already using: that would take your windows.
     /// `title`: only a window whose title contains it (the file an agent opened), so a window
     /// you open in the same app meanwhile stays yours.
-    func claimNextWindow(of pid: pid_t, for n: Int, within: TimeInterval = 8, newProcess: Bool = false, title: String? = nil) {
+    func claimNextWindow(of pid: pid_t, for n: Int, within: TimeInterval = 8, newProcess: Bool = false, title: String? = nil,
+                         honorsFront: Bool = false) {
         // Added now, so `cancelClaim` right after always finds it.
-        let claim = Claim(workspace: n, until: Date().addingTimeInterval(within), title: title)
+        let claim = Claim(workspace: n, until: Date().addingTimeInterval(within), title: title, honorsFront: honorsFront)
         claims[pid, default: []].append(claim)
         look(for: claim, of: pid, within: within, newProcess: newProcess)
     }
@@ -387,10 +392,11 @@ final class Spaces {
         let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
         var away = false
         for id in added {
-            guard let w = windows[id], w.pid != front,
+            guard let w = windows[id],
                   // A brand-new window may not have its title yet.
                   let c = claims[w.pid]?.first(where: { c in
-                      c.title.map { w.title.isEmpty || w.title.localizedCaseInsensitiveContains($0) } ?? true
+                      (w.pid != front || c.honorsFront)
+                          && (c.title.map { w.title.isEmpty || w.title.localizedCaseInsensitiveContains($0) } ?? true)
                   }) else { continue }
             drop(c, of: w.pid)
             model.assign(id, to: c.workspace, focus: false)
@@ -694,6 +700,8 @@ final class Spaces {
         guard active, pid != getpid() else { return }
         defer { frontPid = pid }
         Windows.markResponsive(pid)
+        // A launch the launcher asked for, activating before its request has returned: held, not followed.
+        if let p = pendingLaunch, bindLaunch(p, p.arrival(bundle: app.bundleIdentifier, pid: pid, now: Date(), activation: true)) { return }
         // Asked for by `openWindowHere`: its window is on the way, here.
         if let o = opening, o.pid == pid, Date() < o.until { return }
         activatedAt = Date()
@@ -1140,8 +1148,30 @@ final class Spaces {
     /// focuses it once it exists. The app stays hidden until then, and its windows on other
     /// workspaces stay where they are. False when the app has no New Window command; an app
     /// that makes no window in time is gone to instead.
-    func openWindowHere(_ pid: pid_t) -> Bool {
-        guard active, let item = Windows.newWindowItem(pid) else { return false }
+    func openWindowHere(_ pid: pid_t, on target: Int? = nil) -> Bool {
+        // A process started for an agent is not the user's: open here never makes a window in it.
+        guard active, !AgentOwned.shared.pids.contains(pid) else { return false }
+        // Asked now, at the moment of opening, never from an answer kept earlier: an app that was busy,
+        // showing a sheet or still building its menus is `unknown`, which is asked again a moment later.
+        // Only a read that came back whole with no New Window item is a no, and only a few of those, on
+        // separate days, make an app a known single-window one.
+        var item: AXUIElement?
+        var verdict = Windows.NewWindowProbe.unknown
+        for attempt in 0..<3 {
+            verdict = Windows.newWindowProbe(pid)
+            if case .found(let found) = verdict { item = found; break }
+            if case .absent = verdict { break }
+            if attempt < 2 { usleep(80_000) }
+        }
+        let bundle = NSRunningApplication(processIdentifier: pid).flatMap { $0.bundleIdentifier ?? $0.bundleURL?.path }
+        switch verdict {
+        case .found: if let bundle { NewWindowLedger.shared.sawYes(app: bundle) }
+        case .absent: if let bundle { NewWindowLedger.shared.sawNo(app: bundle) }
+        case .unknown: break
+        }
+        guard let item else { return false }
+        // "Open here": the workspace asked from is the one you're on when the window appears.
+        if let target, target != model.current { switchTo(target, announce: false) }
         let known = Windows.standardIDs(of: pid)
         guard AXUIElementPerformAction(item, kAXPressAction as CFString) == .success else { return false }
         // An app that comes forward for it isn't asking to be followed to its workspace.
@@ -1152,6 +1182,109 @@ final class Spaces {
             self.finishOpening(pid, besides: known)
         }
         return true
+    }
+
+    /// "Open here" for an app that can't make a window (Photos, Music, App Store, System Settings,
+    /// Calculator, Messages), or whose New Window try failed: its existing window moves to workspace
+    /// `n`, takes focus there, and you stay on `n`. The window chosen is the one `focusApp` would go to,
+    /// so a second window of an app that has several stays where it is. The app comes forward before its
+    /// window has moved, and that activation isn't followed (`opening`). False when it has no window of
+    /// the user's to move. A process started for an agent, and anything on the agent workspace, are not
+    /// the user's: they are never moved, so the caller starts a copy of its own.
+    func moveWindowHere(_ pid: pid_t, to n: Int) -> Bool {
+        guard active, Workspaces.range.contains(n), !AgentOwned.shared.pids.contains(pid) else { return false }
+        if switching { enqueue { [weak self] in _ = self?.moveWindowHere(pid, to: n) }; return true }
+        refresh()
+        let agentWorkspace = Self.agentWorkspace
+        let mine = windows.values.filter { w in
+            w.pid == pid && model.workspace(of: w.id).map { $0 != agentWorkspace } == true
+        }
+        let order = [n] + recent.filter { $0 != n } + Array(Workspaces.range)
+        var pick: Window?
+        for ws in OpenHere.userWorkspaces(order, agentWorkspace: agentWorkspace) where pick == nil {
+            let here = mine.filter { model.workspace(of: $0.id) == ws }
+            pick = model.lastFocused[ws].flatMap { id in here.first { $0.id == id } } ?? here.first { !$0.isMinimized } ?? here.first
+        }
+        guard let w = pick else { return false }
+        // The app activates as its window moves; without this `followFocus` would take you after it.
+        opening = (pid, Date().addingTimeInterval(1.5))
+        Trace.log("open here: \(w.appName) window \(w.id) moves to workspace \(n)")
+        if model.workspace(of: w.id) != n { model.assign(w.id, to: n) }
+        lastKey[pid] = w.id
+        model.noteFocus(w.id)
+        // Already there: this one window comes into view and takes focus, and nothing else is hidden or
+        // shown again. A switch is for a workspace you aren't on, or a window that can't come alone.
+        if n == model.current, showAlone(w) { return true }
+        switchTo(n, announce: false)
+        return true
+    }
+
+    /// Brings one window that now belongs to the workspace you're on into view and focuses it, with no
+    /// hide or show of anything else. False when it can't be done alone (the window can't be moved, it is
+    /// minimized, or its app is hidden with windows of other workspaces that unhiding would expose).
+    private func showAlone(_ w: Window) -> Bool {
+        guard !w.isMinimized else { return false }
+        let screens = Windows.screens()
+        if let frame = saved.frames[w.id] {
+            guard restore(w, to: frame, screens: screens) else { return false }
+            saved.frames[w.id] = nil
+        }
+        if let app = NSRunningApplication(processIdentifier: w.pid), app.isHidden {
+            let exposed = windows.values.contains { $0.pid == w.pid && $0.id != w.id && model.workspace(of: $0.id).map(model.isShown) != true }
+            guard !exposed else { return false }
+            app.unhide()
+            saved.hiddenApps.remove(w.pid)
+        }
+        guard w.focus() else { return false }
+        persist()
+        return true
+    }
+
+    /// Where a launch from the launcher is expected, registered *before* the app is asked to start: it
+    /// activates before the request returns (and before its first window exists), and that activation
+    /// must not be followed to some other workspace. Keyed by bundle identifier and time; bound to the
+    /// process when it arrives, from the activation or the request's completion, whichever is first.
+    private var pendingLaunch: PendingLaunch?
+
+    func expectLaunch(bundle: String, on n: Int) {
+        guard active else { return }
+        let before = Set(NSRunningApplication.runningApplications(withBundleIdentifier: bundle).map(\.processIdentifier))
+        pendingLaunch = PendingLaunch(bundle: bundle, target: n, before: before, until: Date().addingTimeInterval(10))
+    }
+
+    /// The request failed or returned no app: nothing is expected any more.
+    func launchFailed() { pendingLaunch = nil }
+
+    /// The request returned `app`. Binds it if its activation didn't already.
+    func launched(_ app: NSRunningApplication) {
+        guard let p = pendingLaunch else { return }
+        bindLaunch(p, p.arrival(bundle: app.bundleIdentifier, pid: app.processIdentifier, now: Date(), activation: false))
+    }
+
+    /// True when the arrival was this launch's, which is then bound (and no longer pending).
+    @discardableResult
+    private func bindLaunch(_ p: PendingLaunch, _ arrival: PendingLaunch.Arrival) -> Bool {
+        switch arrival {
+        case .bind(let pid, let newProcess):
+            pendingLaunch = nil
+            // A process that was running before the request isn't a new one: its windows are the person's.
+            openingHere(pid, on: p.target, newProcess: newProcess)
+            return true
+        case .expired:
+            pendingLaunch = nil
+            return false
+        case .unrelated:
+            return false
+        }
+    }
+
+    /// "Open here" for an app that isn't running (or has no window): the activation it causes isn't
+    /// followed, and its first window, restored or slow, goes to workspace `n` (`claimNextWindow`
+    /// holds even while the app is in front).
+    func openingHere(_ pid: pid_t, on n: Int, newProcess: Bool) {
+        guard active else { return }
+        opening = (pid, Date().addingTimeInterval(8))
+        claimNextWindow(of: pid, for: n, within: 8, newProcess: newProcess, honorsFront: true)
     }
 
     private func finishOpening(_ pid: pid_t, besides known: Set<WindowID>) {

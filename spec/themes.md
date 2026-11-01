@@ -11,10 +11,12 @@ contract; this file says how to read them.
 | `appearance.theme` | `baneyspaces`, `omarchy`, `minimal` | `omarchy` on Omarchy, `baneyspaces` elsewhere |
 | `appearance.palette` | `auto`, or any name in `palettes.json` | `auto` |
 | `dock.enabled` | `true`, `false` | `true`; `false` on macOS (`default_by_platform`) |
+| `behavior.launcher.open` | `here`, `go` | `here` (see `config.md`, "Open here") |
 
-All three are in Settings on every platform and apply live: no restart, and the next frame after
+The first three are in Settings on every platform and apply live: no restart, and the next frame after
 the change already shows them (budget: 200 ms). The CLI sets them too:
-`baneyspaces set appearance.theme omarchy`, `baneyspaces set dock.enabled false`.
+`baneyspaces set appearance.theme omarchy`, `baneyspaces set dock.enabled false`. `behavior.launcher.open`
+is a CLI setting until the full config system lands.
 
 ## Themes
 

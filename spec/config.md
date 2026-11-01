@@ -189,6 +189,9 @@ previews = "live"                  # live (needs screen capture permission) | ic
 mode = "windows"                   # windows | apps
 hold_ms = 120
 
+[behavior.launcher]
+open = "here"                      # here | go
+
 [[rules]]                          # first match wins
 app = "Ghostty"                    # app name or bundle id; title = a regex
 workspace = 2
@@ -198,6 +201,29 @@ float = false
 on_switch = "~/.config/baneyspaces/hooks/switch.sh"
 on_window_open = ""
 ```
+
+**Open here.** `behavior.launcher.open` decides what opening an app does (Donovan, 2026-11-01: "if
+someone presses on a space and tries to open it it should open there"). With `here`, anything opened
+from a workspace lands on that workspace and you stay on it. The workspace is the one the open was
+asked from: the launcher's (the one its screen is showing when it opens), a dock "+" tile or tile
+menu, or the overview's empty slot or a tile.
+
+| The app is | `here` does |
+| --- | --- |
+| not running | starts it; its first window is claimed for that workspace, so a slow start or a restored window can't land elsewhere |
+| running, with a window there | brings that window forward |
+| running, able to make a window (Ghostty, Helium, TextEdit, Finder, Terminal, Word) | makes a new window with its own New Window menu item, on that workspace |
+| running, without a New Window item (Photos, Music, App Store, System Settings, Calculator, Messages) | moves its existing window to that workspace and focuses it |
+| running, with no window | asks it for one, claimed for that workspace |
+
+Clicking an empty workspace's "+" (the dock's tile, the overview's empty slot) goes to that workspace
+and opens the launcher for it, so the first thing opened lands there. A workspace with windows is only
+gone to. "Open an App Here…" in the dock's and the overview's menus does the same for any workspace.
+
+The app coming forward is never followed to its old workspace: it activates before its window
+exists. `go` is the old behavior: go to where the app already is. Holding ⌥ does that for one open
+(⌥↩, or ⌥-click on a row, in the launcher; the dock's and the overview's clicks never open an app, so ⌥ has nothing to change there), whatever the setting says. The setting is
+also `baneyspaces set behavior.launcher.open here|go`.
 
 Hooks run with your user's rights. An agent that sets a hook is shown in Settings › Hooks, and
 the change is recorded in `history/`, so nothing runs that you can't see.

@@ -182,7 +182,8 @@ number and Settings all follow the theme, live. From a terminal:
 baneyspaces set appearance.theme omarchy      # or baneyspaces, minimal
 baneyspaces set appearance.palette gruvbox    # or auto
 baneyspaces set dock.enabled false            # or true
-baneyspaces get                               # all three
+baneyspaces set behavior.launcher.open go     # or here (the default): see spec/config.md
+baneyspaces get                               # every setting
 ```
 
 Agents may change these too, from this Mac or, with the remote token, from another one
@@ -226,8 +227,16 @@ browser tabs and agent windows. **⌃⌘K** opens it from any app. You can also 
 Dock, or turn on **⌘Space opens the BaneySpaces launcher** in setup to use it in place of
 Spotlight. Turning that off gives ⌘Space back to Spotlight, and so does quitting BaneySpaces.
 
-- **Type** to search apps, files, commands and workspaces at once. An app that's already open
-  takes you to the workspace it's on.
+- **Type** to search apps, files, commands and workspaces at once. Apps are listed as you type;
+  files you used lately appear on the same keystroke, and the rest of Spotlight's answer follows.
+- **What you open lands on the workspace you opened the launcher on.** Open it on the empty
+  workspace 3 and pick Photos (open on 2): its window moves to 3 and you stay on 3. Pick Ghostty,
+  Helium, TextEdit or Finder, which can make a window: a new one opens on 3. An app that isn't
+  running starts there. **⌥Return** (or ⌥-click on its row) goes to the app where it already is, and
+  `baneyspaces set behavior.launcher.open go` makes that the default. Click an empty
+  workspace's "+" in the dock, or its empty slot in the overview, and you go there with the
+  launcher open for it. Right-click any dock tile, the "+" or an overview tile and choose
+  **Open an App Here…** for the same on that workspace.
 - **Terminals, tabs and agents.** Type part of a name and the launcher lists matching Ghostty,
   Terminal and iTerm tabs and splits, tabs in your default browser (Helium, Chrome, Arc, Brave,
   Edge or Vivaldi), and windows of Claude, ChatGPT, T3 Code, Cursor and Grok Bot. Return goes
