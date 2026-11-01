@@ -551,10 +551,17 @@ struct SetupView: View {
         section("See every workspace at once") {
             Toggle("Use BaneySpaces' overview instead of Mission Control", isOn: Binding(get: { model.viewerKeys }, set: { model.setViewerKeys($0) }))
             if model.viewerKeysFailed {
-                Text("macOS didn't let BaneySpaces watch the Mission Control key and ⌃↑, so they do nothing while Mission Control is off. Turn the switch off and on to try again. The overview is always in the menu bar menu (Show All Workspaces).")
-                    .font(.callout).foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Already switched on and still not working?").font(.callout.bold())
+                    Text("macOS wouldn't let BaneySpaces watch the Mission Control key and ⌃↑, so macOS's Mission Control stays on until it does. Usually macOS kept an old permission from an earlier copy of BaneySpaces. Fixing it removes the old entry and asks again. The overview is always in the menu bar menu (Show All Workspaces).")
+                        .font(.callout).foregroundStyle(.secondary)
+                    Button(model.fixing ? "Fixing…" : "Fix Permission", action: model.fixPermission)
+                        .disabled(model.fixing)
+                }
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.12)))
             } else {
-                Text("The Mission Control key, ⌃↑, a swipe up with three or four fingers (as your trackpad settings have it) and any hot corner set to Mission Control open the overview; a swipe down closes it. macOS's Mission Control is switched off in the Dock. Turn this off to get it back, with your hot corners as they were.")
+                Text("The Mission Control key, ⌃↑, a swipe up with three or four fingers (as your trackpad settings have it) and any hot corner set to Mission Control open the overview; a swipe down closes it. macOS's Mission Control is switched off in the Dock while BaneySpaces runs, and comes back, with your hot corners as they were, when you turn this off or quit. A Magic Mouse's two-finger double tap opens nothing while this is on.")
                     .font(.callout).foregroundStyle(.secondary)
             }
             if let problem = model.trackpadFailed {

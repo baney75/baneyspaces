@@ -27,8 +27,8 @@ final class MissionControlGuardTests: XCTestCase {
         XCTAssertTrue(app.contains("SystemMissionControl.takeOver()"))
         XCTAssertTrue(app.contains("MissionControlKeys.enabled"))
         // start(), then the Accessibility paths and the restore-dock command each give it back.
-        XCTAssertGreaterThanOrEqual(app.components(separatedBy: "SystemMissionControl.restore()").count - 1, 4,
-                                    "syncMissionControl, startWhenTrusted, stillTrusted and --restore-dock")
+        XCTAssertGreaterThanOrEqual(app.components(separatedBy: "SystemMissionControl.restore()").count - 1, 5,
+                                    "syncMissionControl, quit, startWhenTrusted, stillTrusted and --restore-dock")
         let restoreDock = try XCTUnwrap(app.range(of: "\"--restore-dock\""))
         XCTAssertTrue(app[restoreDock.upperBound...].prefix(400).contains("SystemMissionControl.restore()"))
         XCTAssertNotNil(app.range(of: "missionControlKeys.start()\n        syncMissionControl()"), "start() syncs it right after the key watcher")
@@ -38,7 +38,7 @@ final class MissionControlGuardTests: XCTestCase {
     func testTheSwipeAndTheCornersOpenTheOverview() throws {
         let app = try source("Sources/BaneySpaces/AppDelegate.swift")
         let sync = try XCTUnwrap(app.range(of: "private func syncMissionControl()").map { app[$0.lowerBound...].prefix(700) })
-        XCTAssertTrue(sync.contains("trackpadSwipe.start()") && sync.contains("hotCorners.start("))
+        XCTAssertTrue(sync.contains("trackpadSwipe.start()") && sync.contains("hotCorners.set("))
         XCTAssertTrue(sync.contains("trackpadSwipe.stop()") && sync.contains("hotCorners.stop()"))
         XCTAssertTrue(app.contains("case .up: if !self.viewer.isOpen { self.viewer.open() }"))
         XCTAssertTrue(app.contains("case .down: if self.viewer.isOpen { self.viewer.toggle() }"))
@@ -60,5 +60,49 @@ final class MissionControlGuardTests: XCTestCase {
         let keys = try source("Sources/BaneySpaces/MissionControlKeys.swift")
         XCTAssertTrue(keys.contains("MissionControlKey.matches("))
         XCTAssertFalse(keys.contains("code == missionControlKey"), "the key list lives in MissionControlKey")
+    }
+
+    /// A BaneySpaces that isn't running can't answer anything: quitting gives Mission Control back,
+    /// except for an update's quit, which the launch agent covers.
+    func testQuittingGivesMissionControlBackExceptForAnUpdate() throws {
+        let app = try source("Sources/BaneySpaces/AppDelegate.swift")
+        let quit = try XCTUnwrap(app.range(of: "func applicationWillTerminate").map { app[$0.lowerBound...].prefix(1200) })
+        XCTAssertTrue(quit.contains("SystemMissionControl.restore()"))
+        XCTAssertTrue(quit.contains("updatingTo") && quit.contains("SystemMissionControl.leaveForUpdate()"))
+        let over = try source("Sources/BaneySpaces/MissionControlOverride.swift")
+        XCTAssertTrue(over.contains("installWatchdog()"), "taking over installs the launch agent")
+        XCTAssertTrue(over.contains("removeWatchdog()"), "giving back removes it")
+        let script = MissionControlWatchdog.script
+        XCTAssertTrue(script.contains("--restore-mission-control") && script.contains("pgrep"))
+        let uninstall = try String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("uninstall.sh"), encoding: .utf8)
+        XCTAssertTrue(uninstall.contains("\"${1:-}\" = \"--restore-mission-control\""), "the agent's restore mode lives in uninstall.sh")
+    }
+
+    /// Nothing takes Mission Control off before something answers its key.
+    func testItIsOnlyTakenWhileTheKeyWatcherRuns() throws {
+        let app = try source("Sources/BaneySpaces/AppDelegate.swift")
+        XCTAssertTrue(app.contains("if started, MissionControlKeys.enabled, missionControlKeys.isActive {"))
+        XCTAssertTrue(app.contains("if self.missionControlKeys.isActive { self.syncMissionControl() }"), "retried watcher takes over")
+    }
+
+    /// The trackpads are listed once, then on IOKit's say-so; never on a timer, and by device id.
+    func testTrackpadsAreListedOnNoticeNotOnATimer() throws {
+        let text = try source("Sources/BaneySpaces/MissionControlOverride.swift")
+        let swipe = try XCTUnwrap(text.range(of: "final class TrackpadSwipe").map { String(text[$0.lowerBound...]) })
+        XCTAssertFalse(swipe.contains("Timer."), "no polling")
+        XCTAssertEqual(swipe.components(separatedBy: "api.create()").count - 1, 1, "one place lists devices")
+        XCTAssertTrue(swipe.contains("kIOFirstMatchNotification") && swipe.contains("kIOTerminatedNotification"))
+        XCTAssertTrue(swipe.contains("api.deviceID(d, &id)"), "devices are told apart by id, not by pointer")
+        XCTAssertTrue(swipe.contains("TrackpadDevice.isTrackpad("), "a Magic Mouse is never watched")
+    }
+
+    /// The release frame has no data and still has to reach the swipe; mouse gestures are left alone.
+    func testTheReleaseFrameIsDeliveredAndMouseGesturesAreLeftAlone() throws {
+        let text = try source("Sources/BaneySpaces/MissionControlOverride.swift")
+        XCTAssertTrue(text.contains("guard let device else { return 0 }"))
+        XCTAssertFalse(text.contains("count > 0 else"), "a zero-contact frame ends the gesture")
+        XCTAssertFalse(text.contains("MouseTwoFingerDoubleTapGesture"))
+        XCTAssertTrue(text.contains("addLocalMonitorForEvents(matching: .mouseMoved"), "corners work over BaneySpaces' own windows")
     }
 }

@@ -76,11 +76,18 @@ puts you back.
 "Desktop" view never opens from the trackpad, a hot corner or the keys, and it remaps any hot corner
 that was set to Mission Control to nothing and answers that corner itself. It saves what was there
 first. To get Mission Control back, turn off **Settings › Keys › Use BaneySpaces' overview instead of
-Mission Control**: every setting goes back exactly as it was. Uninstalling does the same, and the
-Dock restarts once each way. Quitting BaneySpaces doesn't put it back, so with BaneySpaces not
-running, nothing opens on those gestures until it starts again. App Exposé (⌃↓) goes with Mission
-Control. The trackpad swipe uses macOS's private trackpad framework, loaded when BaneySpaces starts;
-if macOS won't load it, Settings says so and the other ways in still work.
+Mission Control**: every setting goes back exactly as it was. Quitting BaneySpaces and uninstalling
+do the same, and the Dock restarts each time. If BaneySpaces stops without quitting (a crash, or
+the app dragged to the Trash), a small launch agent puts Mission Control back once no BaneySpaces
+has run for a minute (30 seconds after an update's restart that never came back). If you ever need
+it by hand: `defaults delete com.apple.dock mcx-expose-disabled; killall Dock`.
+
+App Exposé (⌃↓) goes with Mission Control, and so does a Magic Mouse's two-finger double tap,
+which opens nothing while this is on. The trackpad swipe uses macOS's private trackpad framework,
+loaded when BaneySpaces starts and checked against the touches it gets; if macOS won't load it or
+reports touches in a layout BaneySpaces doesn't read, Settings says so and the other ways in still
+work. Only trackpads are watched, with each trackpad's own finger settings, and Show Desktop and
+pinch gestures aren't taken for a swipe.
 
 - **Click a workspace,** or press its number, to go there. The arrow keys move the highlight
   and Return goes to it.

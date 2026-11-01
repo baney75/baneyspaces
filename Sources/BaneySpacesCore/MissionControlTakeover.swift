@@ -86,8 +86,10 @@ public struct MissionControlTakeover {
     public func restore() -> Bool {
         guard let saved = record.saved else { return false }
         var changed = false
-        // Only a setting still as BaneySpaces left it goes back.
-        if isOff() {
+        // Only a setting still as BaneySpaces left it goes back. A switch that was already on
+        // before BaneySpaces (a managed Mac, the person's own choice) is left on: writing the same
+        // value would only restart the Dock.
+        if isOff(), saved[Self.id(Self.flag)]?.boolValue != true {
             prefs.set(Self.domain, Self.flag, saved[Self.id(Self.flag)])
             changed = true
         }
@@ -100,12 +102,15 @@ public struct MissionControlTakeover {
         return changed
     }
 
-    /// The hot corners BaneySpaces answers: set to Mission Control before it took over, still set
-    /// to nothing, each with the modifier keys macOS wanted held (0 for none).
+    /// The hot corners BaneySpaces answers, each with the modifier keys macOS wanted held (0 for
+    /// none): the ones set to Mission Control before it took over and still set to nothing, and any
+    /// set to Mission Control since (in System Settings, while it ran). Those stay as the person set
+    /// them: with the Dock's switch on they open nothing, and the next launch remaps them.
     public func answeredCorners() -> [(corner: Corner, modifiers: Int)] {
         guard let saved = record.saved else { return [] }
         return Corner.allCases.compactMap { c in
-            guard saved[Self.id(c.key)] != nil, isNothing(c.key) else { return nil }
+            let taken = saved[Self.id(c.key)] != nil && isNothing(c.key)
+            guard taken || read(c.key)?.intValue == Self.missionControl else { return nil }
             return (c, read(c.modifierKey)?.intValue ?? 0)
         }
     }

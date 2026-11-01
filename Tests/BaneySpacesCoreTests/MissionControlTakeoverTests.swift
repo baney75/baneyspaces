@@ -130,10 +130,27 @@ final class MissionControlTakeoverTests: XCTestCase {
 
     func testAManagedMacsOwnSwitchIsGivenBackAsItWas() {
         prefs.values[flag] = true
-        takeover.takeOver()
+        XCTAssertFalse(takeover.takeOver(), "already off: nothing to change, no Dock restart")
         XCTAssertNotNil(record.saved, "recorded even when already on")
-        takeover.restore()
+        let writes = prefs.writes.count
+        XCTAssertFalse(takeover.restore(), "switching BaneySpaces' overview off must not restart the Dock for a switch that stays on")
         XCTAssertEqual(prefs.values[flag], true, "never removes a setting that was the person's or their admin's")
+        XCTAssertEqual(prefs.writes.count, writes, "and writes nothing over it")
+        XCTAssertNil(record.saved)
+    }
+
+    func testACornerSetToMissionControlWhileRunningIsAnsweredAtOnce() {
+        let bl = MissionControlTakeover.id("wvous-bl-corner")
+        takeover.takeOver()
+        XCTAssertTrue(takeover.answeredCorners().isEmpty)
+        // System Settings, while BaneySpaces runs: bottom left becomes Mission Control, with ⌘ held.
+        prefs.values[bl] = 2
+        prefs.values[MissionControlTakeover.id("wvous-bl-modifier")] = 1048576
+        let answered = takeover.answeredCorners()
+        XCTAssertEqual(answered.map(\.corner), [.bottomLeft])
+        XCTAssertEqual(answered.first?.modifiers, 1048576)
+        takeover.restore()
+        XCTAssertEqual(prefs.values[bl], 2, "never remapped by BaneySpaces, so left as the person set it")
     }
 
     // MARK: Keys

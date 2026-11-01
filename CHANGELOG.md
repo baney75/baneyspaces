@@ -8,8 +8,11 @@
   off in the Dock, and any hot corner that was Mission Control is remapped to nothing and answered by
   BaneySpaces. Settings › Keys › **Use BaneySpaces' overview instead of Mission Control** (on) turns it
   back off: every setting returns exactly as it was, as does uninstalling. The trackpad swipe uses
-  macOS's private trackpad framework, loaded at run time; if it can't load, Settings says so. Quitting
-  BaneySpaces leaves Mission Control off until it starts again.
+  macOS's private trackpad framework, loaded at run time and checked against the touches it gets; if
+  it can't load or isn't recognised, Settings says so. Mission Control comes back when BaneySpaces quits;
+  if it stops any other way (a crash, the app dragged to the Trash), a launch agent puts it back after
+  a minute, 30 seconds after an update's quit. A Magic Mouse's two-finger double tap opens nothing
+  while this is on.
 - **A drag out of the "+N" list ends cleanly if its app goes.** Closing the window or quitting the app
   mid-drag, or the list closing under the pointer, cancels the drag instead of leaving the dock in
   drag mode; a window that closed is never moved. Settings > Automation waits for BaneySpaces to

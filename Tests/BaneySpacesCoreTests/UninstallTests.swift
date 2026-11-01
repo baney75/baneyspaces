@@ -189,10 +189,18 @@ final class UninstallTests: XCTestCase {
     func testWithoutTheAppASwitchThatWasOnBeforeStaysOn() throws {
         let out = try uninstall(prefs: ["systemMissionControlSaved": ["com.apple.dock/mcx-expose-disabled": true]], macOS: "0",
                                 macOSKeys: ["mcx_expose_disabled": "1"])
-        XCTAssertTrue(out.contains("would run: defaults write com.apple.dock mcx-expose-disabled -bool true"), out)
+        XCTAssertFalse(out.contains("mcx-expose-disabled") || out.contains("killall Dock"), "left as it was: no write, no Dock restart\n" + out)
         let off = try uninstall(prefs: ["systemMissionControlSaved": ["com.apple.dock/mcx-expose-disabled": false]], macOS: "0",
                                 macOSKeys: ["mcx_expose_disabled": "1"])
         XCTAssertTrue(off.contains("would run: defaults write com.apple.dock mcx-expose-disabled -bool false"), off)
+    }
+
+    /// The launch agent and its files go with the app.
+    func testTheMissionControlWatchdogIsRemoved() throws {
+        try write("Library/LaunchAgents/com.baney.baneyspaces.mc-watchdog.plist", "<plist/>")
+        let out = try uninstall()
+        XCTAssertTrue(out.contains("would run: launchctl bootout gui/"), out)
+        XCTAssertFalse(fm.fileExists(atPath: path("Library/LaunchAgents/com.baney.baneyspaces.mc-watchdog.plist").path))
     }
 
     /// Settings changed since (the switch off, a corner given another job) are the person's.

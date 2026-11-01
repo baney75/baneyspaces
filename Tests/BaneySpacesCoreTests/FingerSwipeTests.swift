@@ -89,6 +89,36 @@ final class FingerSwipeTests: XCTestCase {
         XCTAssertEqual(swipe(&s, 1, from: 0.1, to: 0.9), [])
     }
 
+    /// Show Desktop: the thumb stays low while three fingers go up and away. The centre moves up,
+    /// but the hand spreads, so it isn't a four-finger swipe.
+    func testAShowDesktopSpreadIsNotASwipe() {
+        var s = FingerSwipe(fingers: [4])
+        var fired: [FingerSwipe.Direction] = []
+        for i in 0...10 {
+            let k = Float(i) / 10
+            let hand = [T(x: 0.2, y: 0.1),
+                        T(x: 0.5, y: 0.3 + 0.28 * k), T(x: 0.6 + 0.1 * k, y: 0.3 + 0.28 * k), T(x: 0.7 + 0.2 * k, y: 0.3 + 0.28 * k)]
+            if let d = s.frame(hand) { fired.append(d) }
+        }
+        XCTAssertEqual(fired, [])
+        // The same four fingers moving as one hand still swipe.
+        var together = FingerSwipe(fingers: [4])
+        XCTAssertEqual(swipe(&together, 4, from: 0.3, to: 0.8), [.up])
+    }
+
+    func testAPinchIsNotASwipe() {
+        var s = FingerSwipe(fingers: [4])
+        var fired: [FingerSwipe.Direction] = []
+        for i in 0...10 {
+            let k = Float(i) / 10
+            // Fingers close in on the middle while drifting up.
+            let hand = [T(x: 0.3 + 0.15 * k, y: 0.3 + 0.2 * k), T(x: 0.45 + 0.05 * k, y: 0.3 + 0.2 * k),
+                        T(x: 0.55 - 0.05 * k, y: 0.3 + 0.2 * k), T(x: 0.7 - 0.15 * k, y: 0.3 + 0.2 * k)]
+            if let d = s.frame(hand) { fired.append(d) }
+        }
+        XCTAssertEqual(fired, [])
+    }
+
     func testFingerCountsFollowTheTrackpadSettings() {
         XCTAssertEqual(FingerSwipe.fingerCounts(threeFingers: 2, fourFingers: 2, threeFingerDrag: false), [3, 4])
         XCTAssertEqual(FingerSwipe.fingerCounts(threeFingers: 0, fourFingers: 2, threeFingerDrag: false), [4])

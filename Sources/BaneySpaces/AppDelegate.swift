@@ -173,6 +173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         return s
     }()
+    private var missionControlTicks = 0
     private lazy var hotCorners: HotCornerWatcher = {
         let w = HotCornerWatcher()
         w.onOpen = { [weak self] in
@@ -251,12 +252,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// macOS's Mission Control is off while BaneySpaces' overview answers its keys, its trackpad
-    /// swipe and its hot corners; switched off, or without Accessibility, all of it goes back.
+    /// swipe and its hot corners; switched off, without Accessibility, or while macOS won't let the
+    /// key watcher run (nothing would answer the key), all of it goes back.
     private func syncMissionControl() {
-        if started, MissionControlKeys.enabled {
+        if started, MissionControlKeys.enabled, missionControlKeys.isActive {
             SystemMissionControl.takeOver()
             trackpadSwipe.start()
-            hotCorners.start(corners: SystemMissionControl.answeredCorners())
+            hotCorners.set(corners: SystemMissionControl.answeredCorners())
         } else {
             trackpadSwipe.stop()
             hotCorners.stop()
@@ -424,6 +426,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // The macOS Dock comes back with everything else; the next launch tucks it away again.
         dock.stop(restoreSystemDock: true)
         topDrag.stop()
+        trackpadSwipe.stop()
+        hotCorners.stop()
+        // Mission Control comes back with the Dock, so there's always a way to see the desktops.
+        // Quitting for an update is the exception: the new build takes over, and if it never
+        // starts the launch agent puts Mission Control back after 30 seconds.
+        if SystemMissionControl.isTakenByUs {
+            if UserDefaults.standard.dictionary(forKey: "updatingTo") != nil { SystemMissionControl.leaveForUpdate() }
+            else { SystemMissionControl.restore() }
+        }
         if started { spaces.restoreAll() }
         // ⌘Space goes back to Spotlight while BaneySpaces isn't running; the next launch takes it again.
         SystemShortcuts.spotlightQueue.sync { SystemShortcuts.restoreSpotlight() }
@@ -491,7 +502,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return }
             guard self.stillTrusted() else { return }
             // A key watcher macOS refused earlier gets another chance.
-            if (MissionControlKeys.enabled || MissionControlKeys.cmdTabEnabled) && !self.missionControlKeys.isActive { self.missionControlKeys.start() }
+            if (MissionControlKeys.enabled || MissionControlKeys.cmdTabEnabled) && !self.missionControlKeys.isActive {
+                self.missionControlKeys.start()
+                if self.missionControlKeys.isActive { self.syncMissionControl() }
+            }
+            // Every ten seconds: proof of life for the launch agent, and System Settings changes
+            // to hot corners and trackpad gestures. Nothing here lists devices.
+            self.missionControlTicks += 1
+            if self.missionControlTicks % 5 == 0, SystemMissionControl.isTakenByUs {
+                SystemMissionControl.beat()
+                self.trackpadSwipe.refreshSettings()
+                self.hotCorners.set(corners: SystemMissionControl.answeredCorners())
+            }
         }
     }
 

@@ -1,11 +1,13 @@
 import AppKit
 import BaneySpacesCore
+import IOKit
 
-/// macOS's Mission Control, kept off while BaneySpaces' overview takes its place. The settings
-/// are saved first and put back when the switch goes off, when BaneySpaces loses Accessibility,
-/// or when it's uninstalled (`MissionControlTakeover` has the rules; `uninstall.sh` reads the same
-/// record). Not on quit: with BaneySpaces gone the Dock's switch just leaves Mission Control off
-/// until the next launch, and putting it back would restart the Dock on every quit and update.
+/// macOS's Mission Control, kept off only while BaneySpaces is there to replace it. The settings
+/// are saved first and put back when the switch goes off, when BaneySpaces quits or loses
+/// Accessibility, and when it's uninstalled (`MissionControlTakeover` has the rules; `uninstall.sh`
+/// reads the same record). Two things cover a BaneySpaces that stops without doing it: a quit for
+/// an update leaves the settings for the new build, and a launch agent (`MissionControlWatchdog`)
+/// puts them back if no BaneySpaces has run for a minute (30 seconds after an update's quit).
 enum SystemMissionControl {
     private final class Prefs: PreferenceStore {
         func value(_ domain: String, _ key: String) -> NSNumber? {
@@ -40,13 +42,88 @@ enum SystemMissionControl {
             Trace.log("mission control: off at the Dock (corners answered: \(answeredCorners().map(\.corner.rawValue)))")
             restartDock()
         }
+        installWatchdog()
     }
 
     static func restore() {
-        if takeover.restore() {
+        let changed = takeover.restore()
+        removeWatchdog()
+        if changed {
             Trace.log("mission control: back as it was")
             restartDock()
         }
+    }
+
+    /// Quitting for an update: the new build takes over where this one left off, so nothing is
+    /// restored. A marker tells the launch agent to give it 30 seconds, not 60, to start.
+    static func leaveForUpdate() {
+        FileManager.default.createFile(atPath: folder.appendingPathComponent(MissionControlWatchdog.updating).path, contents: Data())
+        beat()
+        Trace.log("mission control: left to the update")
+    }
+
+    /// Proof that BaneySpaces is alive, for the launch agent.
+    static func beat() {
+        let url = folder.appendingPathComponent(MissionControlWatchdog.heartbeat)
+        if FileManager.default.fileExists(atPath: url.path) {
+            try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
+        } else {
+            FileManager.default.createFile(atPath: url.path, contents: Data())
+        }
+    }
+
+    private static var folder: URL { Spaces.folder.appendingPathComponent("BaneySpaces") }
+    private static var agentPlist: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/LaunchAgents/\(MissionControlWatchdog.plistName)")
+    }
+
+    /// The launch agent, its script, and the copy of uninstall.sh it restores with. Written at
+    /// every takeover so an updated build's copy replaces the old one.
+    private static func installWatchdog() {
+        let fm = FileManager.default
+        try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        try? fm.removeItem(at: folder.appendingPathComponent(MissionControlWatchdog.updating))
+        beat()
+        guard let uninstall = Bundle.main.url(forResource: "uninstall", withExtension: "sh") else {
+            return Trace.log("mission control: no uninstall.sh in the app, so no watchdog")
+        }
+        let restoreCopy = folder.appendingPathComponent(MissionControlWatchdog.restoreName)
+        try? fm.removeItem(at: restoreCopy)
+        try? fm.copyItem(at: uninstall, to: restoreCopy)
+        let script = folder.appendingPathComponent(MissionControlWatchdog.scriptName)
+        try? MissionControlWatchdog.script.write(to: script, atomically: true, encoding: .utf8)
+        let escaped = folder.path.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;")
+        let plist = MissionControlWatchdog.plist(folder: escaped)
+        let old = try? String(contentsOf: agentPlist, encoding: .utf8)
+        try? fm.createDirectory(at: agentPlist.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? plist.write(to: agentPlist, atomically: true, encoding: .utf8)
+        // Loaded once; a changed plist is loaded again.
+        if old != plist { launchctl(["bootout", "gui/\(getuid())/\(MissionControlWatchdog.label)"]) }
+        if !launchctl(["print", "gui/\(getuid())/\(MissionControlWatchdog.label)"]) {
+            launchctl(["bootstrap", "gui/\(getuid())", agentPlist.path])
+        }
+    }
+
+    private static func removeWatchdog() {
+        launchctl(["bootout", "gui/\(getuid())/\(MissionControlWatchdog.label)"])
+        let fm = FileManager.default
+        try? fm.removeItem(at: agentPlist)
+        for name in [MissionControlWatchdog.heartbeat, MissionControlWatchdog.updating] {
+            try? fm.removeItem(at: folder.appendingPathComponent(name))
+        }
+    }
+
+    /// Whether launchctl exited 0.
+    @discardableResult
+    private static func launchctl(_ args: [String]) -> Bool {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        p.arguments = args
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        do { try p.run() } catch { return false }
+        p.waitUntilExit()
+        return p.terminationStatus == 0
     }
 
     /// The Dock reads these settings when it starts; restarting it is how System Settings applies them.
@@ -60,26 +137,31 @@ enum SystemMissionControl {
 
 /// Hot corners that used to open Mission Control, now opening the overview. macOS's own are
 /// remapped to nothing (`SystemMissionControl`); this watches the pointer for them. It never
-/// moves or clicks the pointer, and a global mouse-moved watch needs no permission.
+/// moves or clicks the pointer, and a mouse-moved watch needs no permission. The pointer over
+/// BaneySpaces' own windows (the dock, the overview, Settings) is seen by the local watch.
 final class HotCornerWatcher {
     var onOpen: () -> Void = {}
     private var corners: [(corner: MissionControlTakeover.Corner, modifiers: Int)] = []
     private var dwell = HotCornerDwell()
-    private var monitor: Any?
+    private var monitors: [Any] = []
     private var timer: Timer?
 
-    var isRunning: Bool { monitor != nil }
+    var isRunning: Bool { !monitors.isEmpty }
 
-    func start(corners: [(corner: MissionControlTakeover.Corner, modifiers: Int)]) {
+    /// The corners to answer. The watch starts, stops or is left alone, whichever the list needs.
+    func set(corners new: [(corner: MissionControlTakeover.Corner, modifiers: Int)]) {
+        let same = new.count == corners.count && zip(new, corners).allSatisfy { $0.corner == $1.corner && $0.modifiers == $1.modifiers }
+        if same && isRunning == !new.isEmpty { return }
         stop()
-        self.corners = corners
-        guard !corners.isEmpty else { return }
-        monitor = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved) { [weak self] _ in self?.evaluate() }
+        corners = new
+        guard !new.isEmpty else { return }
+        if let g = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved, handler: { [weak self] _ in self?.evaluate() }) { monitors.append(g) }
+        if let l = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved, handler: { [weak self] e in self?.evaluate(); return e }) { monitors.append(l) }
     }
 
     func stop() {
-        if let monitor { NSEvent.removeMonitor(monitor) }
-        monitor = nil
+        monitors.forEach(NSEvent.removeMonitor)
+        monitors = []
         timer?.invalidate()
         timer = nil
         corners = []
@@ -111,6 +193,10 @@ final class HotCornerWatcher {
 /// MultitouchSupport framework at run time, as other trackpad apps do. If it can't be loaded, or
 /// reports touches in a layout this build doesn't know, the swipe is off and Settings says so
 /// (`problem`); with Mission Control off at the Dock the system view doesn't open either.
+///
+/// Trackpads are listed once at start and again only when IOKit says a multitouch device came or
+/// went, or after sleep. Each is told apart by the framework's own device id, because every
+/// listing makes new device objects. Only trackpads are watched, never a Magic Mouse.
 final class TrackpadSwipe {
     var onSwipe: (FingerSwipe.Direction) -> Void = { _ in }
 
@@ -123,56 +209,67 @@ final class TrackpadSwipe {
         let unregister: @convention(c) (Device, Frame) -> Void
         let start: @convention(c) (Device, Int32) -> Void
         let stop: @convention(c) (Device) -> Void
+        let deviceID: @convention(c) (Device, UnsafeMutablePointer<UInt64>) -> Int32
+        let isBuiltIn: @convention(c) (Device) -> Bool
+        let dimensions: @convention(c) (Device, UnsafeMutablePointer<Int32>, UnsafeMutablePointer<Int32>) -> Int32
 
         static func load() -> API? {
             guard let h = dlopen("/System/Library/PrivateFrameworks/MultitouchSupport.framework/MultitouchSupport", RTLD_LAZY),
                   let create = dlsym(h, "MTDeviceCreateList"), let register = dlsym(h, "MTRegisterContactFrameCallback"),
                   let unregister = dlsym(h, "MTUnregisterContactFrameCallback"), let start = dlsym(h, "MTDeviceStart"),
-                  let stop = dlsym(h, "MTDeviceStop")
+                  let stop = dlsym(h, "MTDeviceStop"), let id = dlsym(h, "MTDeviceGetDeviceID"),
+                  let builtIn = dlsym(h, "MTDeviceIsBuiltIn"), let dims = dlsym(h, "MTDeviceGetSensorSurfaceDimensions")
             else { return nil }
             return API(create: unsafeBitCast(create, to: (@convention(c) () -> Unmanaged<CFArray>?).self),
                        register: unsafeBitCast(register, to: (@convention(c) (Device, Frame) -> Void).self),
                        unregister: unsafeBitCast(unregister, to: (@convention(c) (Device, Frame) -> Void).self),
                        start: unsafeBitCast(start, to: (@convention(c) (Device, Int32) -> Void).self),
-                       stop: unsafeBitCast(stop, to: (@convention(c) (Device) -> Void).self))
+                       stop: unsafeBitCast(stop, to: (@convention(c) (Device) -> Void).self),
+                       deviceID: unsafeBitCast(id, to: (@convention(c) (Device, UnsafeMutablePointer<UInt64>) -> Int32).self),
+                       isBuiltIn: unsafeBitCast(builtIn, to: (@convention(c) (Device) -> Bool).self),
+                       dimensions: unsafeBitCast(dims, to: (@convention(c) (Device, UnsafeMutablePointer<Int32>, UnsafeMutablePointer<Int32>) -> Int32).self))
         }
     }
 
-    /// One touch is 96 bytes: the state at byte 20, the position (0...1 from the left and the
-    /// bottom) at bytes 32 and 36.
-    private static let touchSize = 96
-    private static let states: ClosedRange<Int32> = 3...4   // making a touch, touching
+    /// A trackpad being watched. `list` keeps its device object alive.
+    private struct Watched {
+        let device: Device
+        let list: CFArray
+        let builtIn: Bool
+        var reader = TouchFrameReader()
+        var swipe: FingerSwipe
+    }
 
     private static var shared: TrackpadSwipe?
     private static let callback: Frame = { device, data, count, _, _ in
-        guard let device, let data, count > 0 else { return 0 }
+        // A frame with no touches (every finger up) has no data: it still ends the gesture.
+        guard let device else { return 0 }
         shared?.frame(device, data, Int(count))
         return 0
     }
 
     private let lock = NSLock()
     private var api: API?
-    /// Every device list asked for, kept so the devices in `registered` stay valid until `detach`.
-    private var lists: [CFArray] = []
-    private var registered: [Device] = []
-    private var detectors: [Device: FingerSwipe] = [:]
-    private var fingers = Set<Int>()
-    private var layoutBad = false
-    private var sawFrame = false
+    private var watched: [UInt64: Watched] = [:]
+    private var idOf: [Device: UInt64] = [:]
+    private var skipped = Set<UInt64>()
     private var loadFailed = false
     private var running = false
-    private var timer: Timer?
     private var wake: NSObjectProtocol?
+    private var port: IONotificationPortRef?
+    private var iterators: [io_iterator_t] = []
+    private var pending: DispatchWorkItem?
 
     /// Why the swipe doesn't work, in words for Settings; nil while it works or isn't wanted.
     var problem: String? {
         lock.lock(); defer { lock.unlock() }
         guard running else { return nil }
+        let others = "The Mission Control key, ⌃↑, the hot corners and the menu bar menu open the overview."
         if loadFailed {
-            return "BaneySpaces couldn't load macOS's trackpad support, so a swipe up on the trackpad does nothing. The Mission Control key, ⌃↑, the hot corners and the menu bar menu open the overview."
+            return "BaneySpaces couldn't load macOS's trackpad support, so a swipe up on the trackpad does nothing. \(others)"
         }
-        if layoutBad {
-            return "This version of macOS reports trackpad touches in a way BaneySpaces doesn't read, so a swipe up on the trackpad does nothing. The Mission Control key, ⌃↑, the hot corners and the menu bar menu open the overview."
+        if watched.values.contains(where: { $0.reader.layout == .rejected }) {
+            return "This version of macOS reports trackpad touches in a way BaneySpaces doesn't read, so a swipe up on the trackpad does nothing. \(others)"
         }
         return nil
     }
@@ -180,22 +277,16 @@ final class TrackpadSwipe {
     func start() {
         guard !running else { return }
         TrackpadSwipe.shared = self
-        lock.lock()
-        running = true
-        layoutBad = false
-        sawFrame = false
-        loadFailed = false
-        lock.unlock()
+        lock.lock(); running = true; loadFailed = false; lock.unlock()
         guard let api = API.load() else {
             lock.lock(); loadFailed = true; lock.unlock()
             return Trace.log("trackpad swipe: MultitouchSupport didn't load")
         }
         self.api = api
         refresh()
-        // Trackpads come and go, and the settings change; both are looked at again every few seconds.
-        timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.refresh() }
+        watchForDevices()
         wake = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
-            // Devices stop reporting across sleep; start them again.
+            // Devices stop reporting across sleep; list and start them again.
             self?.detach()
             self?.refresh()
         }
@@ -203,8 +294,12 @@ final class TrackpadSwipe {
 
     func stop() {
         guard running else { return }
-        timer?.invalidate()
-        timer = nil
+        pending?.cancel()
+        pending = nil
+        for it in iterators { IOObjectRelease(it) }
+        iterators = []
+        if let port { IONotificationPortDestroy(port) }
+        port = nil
         if let wake { NSWorkspace.shared.notificationCenter.removeObserver(wake) }
         wake = nil
         detach()
@@ -212,93 +307,123 @@ final class TrackpadSwipe {
         api = nil
     }
 
+    /// The finger counts follow System Settings; called now and then, it only reads preferences.
+    func refreshSettings() {
+        lock.lock()
+        for (id, w) in watched { watched[id]?.swipe.fingers = TrackpadSwipe.fingerCounts(builtIn: w.builtIn) }
+        lock.unlock()
+    }
+
     private func detach() {
         guard let api else { return }
         lock.lock()
-        let devices = registered
-        registered = []
-        detectors = [:]
+        let devices = Array(watched.values.map(\.device))
+        watched = [:]
+        idOf = [:]
+        skipped = []
         lock.unlock()
         for d in devices { api.unregister(d, TrackpadSwipe.callback); api.stop(d) }
-        lists = []
     }
 
+    /// IOKit says when a multitouch device appears or goes, so nothing has to look on a timer.
+    private func watchForDevices() {
+        guard let notify = IONotificationPortCreate(kIOMainPortDefault) else { return }
+        IONotificationPortSetDispatchQueue(notify, .main)
+        port = notify
+        let handler: IOServiceMatchingCallback = { refcon, iterator in
+            // Arms the next notification.
+            while case let service = IOIteratorNext(iterator), service != 0 { IOObjectRelease(service) }
+            guard let refcon else { return }
+            Unmanaged<TrackpadSwipe>.fromOpaque(refcon).takeUnretainedValue().devicesChanged()
+        }
+        let me = Unmanaged.passUnretained(self).toOpaque()
+        for kind in [kIOFirstMatchNotification, kIOTerminatedNotification] {
+            var it: io_iterator_t = 0
+            guard IOServiceAddMatchingNotification(notify, kind, IOServiceMatching("AppleMultitouchDevice"), handler, me, &it) == KERN_SUCCESS else { continue }
+            iterators.append(it)
+            while case let service = IOIteratorNext(it), service != 0 { IOObjectRelease(service) }
+        }
+    }
+
+    /// A burst of notices (a trackpad is several services) makes one listing.
+    private func devicesChanged() {
+        pending?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.refresh() }
+        pending = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+    }
+
+    /// Lists the multitouch devices, watches the trackpads not yet watched and lets go of those gone.
     private func refresh() {
-        guard let api, running else { return }
-        let counts = TrackpadSwipe.fingerCounts()
-        lock.lock(); fingers = counts; lock.unlock()
-        guard !(counts.isEmpty && registered.isEmpty) else { return }
-        guard let found = api.create()?.takeRetainedValue() else { return }
+        guard let api, running, let found = api.create()?.takeRetainedValue() else { return }
+        var present = Set<UInt64>()
         var added = 0
         for i in 0..<CFArrayGetCount(found) {
             guard let raw = CFArrayGetValueAtIndex(found, i) else { continue }
             let d = UnsafeMutableRawPointer(mutating: raw)
-            lock.lock(); let known = registered.contains(d); lock.unlock()
+            var id: UInt64 = 0
+            guard api.deviceID(d, &id) == 0 else { continue }
+            present.insert(id)
+            lock.lock(); let known = watched[id] != nil || skipped.contains(id); lock.unlock()
             if known { continue }
-            lock.lock(); registered.append(d); detectors[d] = FingerSwipe(fingers: counts); lock.unlock()
+            let builtIn = api.isBuiltIn(d)
+            var w: Int32 = 0, h: Int32 = 0
+            _ = api.dimensions(d, &w, &h)
+            guard TrackpadDevice.isTrackpad(builtIn: builtIn, width: Int(w), height: Int(h)) else {
+                lock.lock(); skipped.insert(id); lock.unlock()
+                Trace.log("trackpad swipe: skipping a multitouch device that isn't a trackpad (\(w)x\(h))")
+                continue
+            }
+            let aspect = h > 0 ? Float(w) / Float(h) : FingerSwipe.defaultAspect
+            lock.lock()
+            watched[id] = Watched(device: d, list: found, builtIn: builtIn,
+                                  swipe: FingerSwipe(fingers: TrackpadSwipe.fingerCounts(builtIn: builtIn), aspect: aspect))
+            idOf[d] = id
+            lock.unlock()
             api.register(d, TrackpadSwipe.callback)
             api.start(d, 0)
             added += 1
         }
-        // The devices stay valid while the list that holds them does.
-        if added > 0 {
-            lists.append(found)
-            Trace.log("trackpad swipe: watching \(added) device(s), fingers \(counts.sorted())")
-        }
+        lock.lock()
+        let gone = watched.filter { !present.contains($0.key) }
+        for (id, w) in gone { watched[id] = nil; idOf[w.device] = nil }
+        skipped.formIntersection(present)
+        let count = watched.count
+        lock.unlock()
+        for (_, w) in gone { api.unregister(w.device, TrackpadSwipe.callback); api.stop(w.device) }
+        if added > 0 || !gone.isEmpty { Trace.log("trackpad swipe: watching \(count) trackpad(s) (+\(added) -\(gone.count))") }
     }
 
     /// Runs on the framework's thread for each frame of touches.
-    private func frame(_ device: Device, _ data: UnsafeRawPointer, _ count: Int) {
-        var touches: [FingerSwipe.Touch] = []
-        var odd = false
-        for i in 0..<count {
-            let base = data + i * TrackpadSwipe.touchSize
-            guard TrackpadSwipe.states.contains(base.load(fromByteOffset: 20, as: Int32.self)) else { continue }
-            let x = base.load(fromByteOffset: 32, as: Float.self), y = base.load(fromByteOffset: 36, as: Float.self)
-            if !(x.isFinite && y.isFinite && (-0.1...1.1).contains(x) && (-0.1...1.1).contains(y)) { odd = true }
-            touches.append(.init(x: x, y: y))
-        }
+    private func frame(_ device: Device, _ data: UnsafeRawPointer?, _ count: Int) {
         lock.lock()
-        if odd, !layoutBad {
-            layoutBad = true
-            lock.unlock()
-            DispatchQueue.main.async { Trace.log("trackpad swipe: touches don't read as positions; the swipe is off") }
-            return
-        }
-        guard !layoutBad, var detector = detectors[device] else { lock.unlock(); return }
-        let first = !sawFrame
-        sawFrame = true
-        detector.fingers = fingers
-        let direction = detector.frame(touches)
-        detectors[device] = detector
+        guard let id = idOf[device], var w = watched[id] else { lock.unlock(); return }
+        let before = w.reader.layout
+        let touches = w.reader.touches(in: data, count: count)
+        var direction: FingerSwipe.Direction?
+        if let touches { direction = w.swipe.frame(touches) }
+        watched[id] = w
+        let after = w.reader.layout
         lock.unlock()
-        if first { DispatchQueue.main.async { Trace.log("trackpad swipe: touches arriving") } }
+        if before != after {
+            DispatchQueue.main.async { Trace.log("trackpad swipe: touch layout \(after == .trusted ? "checked" : "not recognised")") }
+        }
         if let direction {
             DispatchQueue.main.async { [weak self] in
-                Trace.log("trackpad swipe \(direction == .up ? "up" : "down") with \(touches.count) fingers")
+                Trace.log("trackpad swipe \(direction == .up ? "up" : "down") with \(touches?.count ?? 0) fingers")
                 self?.onSwipe(direction)
             }
         }
     }
 
-    /// The finger counts macOS gives Mission Control, from the built-in trackpad's settings and a
-    /// Bluetooth trackpad's, whichever has them.
-    static func fingerCounts() -> Set<Int> {
-        let domains = ["com.apple.AppleMultitouchTrackpad", "com.apple.driver.AppleBluetoothMultitouch.trackpad"]
-        func read(_ key: String, _ domain: String) -> Int? {
-            CFPreferencesAppSynchronize(domain as CFString)
-            return (CFPreferencesCopyAppValue(key as CFString, domain as CFString) as? NSNumber)?.intValue
-        }
-        var set = Set<Int>()
-        var any = false
-        for d in domains {
-            let three = read("TrackpadThreeFingerVertSwipeGesture", d), four = read("TrackpadFourFingerVertSwipeGesture", d)
-            let drag = read("TrackpadThreeFingerDrag", d) ?? 0
-            // A trackpad with none of these set is macOS's defaults, not an extra opinion.
-            guard three != nil || four != nil else { continue }
-            any = true
-            set.formUnion(FingerSwipe.fingerCounts(threeFingers: three, fourFingers: four, threeFingerDrag: drag != 0))
-        }
-        return any ? set : FingerSwipe.fingerCounts(threeFingers: nil, fourFingers: nil, threeFingerDrag: false)
+    /// The finger counts macOS gives Mission Control for a trackpad, from that trackpad's own
+    /// settings (the built-in one's, or a Bluetooth or USB one's).
+    static func fingerCounts(builtIn: Bool) -> Set<Int> {
+        let domain = TrackpadDevice.preferenceDomain(builtIn: builtIn)
+        CFPreferencesAppSynchronize(domain as CFString)
+        func read(_ key: String) -> Int? { (CFPreferencesCopyAppValue(key as CFString, domain as CFString) as? NSNumber)?.intValue }
+        return FingerSwipe.fingerCounts(threeFingers: read("TrackpadThreeFingerVertSwipeGesture"),
+                                        fourFingers: read("TrackpadFourFingerVertSwipeGesture"),
+                                        threeFingerDrag: (read("TrackpadThreeFingerDrag") ?? 0) != 0)
     }
 }
