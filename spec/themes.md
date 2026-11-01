@@ -10,7 +10,7 @@ contract; this file says how to read them.
 | --- | --- | --- |
 | `appearance.theme` | `baneyspaces`, `omarchy`, `minimal` | `omarchy` on Omarchy, `baneyspaces` elsewhere |
 | `appearance.palette` | `auto`, or any name in `palettes.json` | `auto` |
-| `dock.enabled` | `true`, `false` | `true` |
+| `dock.enabled` | `true`, `false` | `false` on macOS, `true` elsewhere |
 
 All three are in Settings on every platform and apply live: no restart, and the next frame after
 the change already shows them (budget: 200 ms). The CLI sets them too:
@@ -73,8 +73,9 @@ working and done. Regenerate it with `scripts/gen-palettes.py`; never edit it by
 - **Omarchy**: the live Omarchy theme. Read `colors.toml` from the current theme (bundled under
   `/usr/share/omarchy/themes`, or your own under `~/.config/omarchy/themes`) with the same role
   mapping, and follow theme changes without a restart.
-- **macOS and Windows**: the system's light or dark mode and its accent color, over the
-  `baneyspaces` defaults the platform already draws.
+- **macOS**: the built-in dark palette below, with the accent from Settings.
+- **Windows**: the system's light or dark mode and its accent color, over the `baneyspaces`
+  defaults.
 
 ## Every surface uses the theme
 
@@ -89,6 +90,9 @@ Each platform has a check that fails when a surface ignores the theme: it render
 in all three themes and compares the tokens it used with `themes.json`.
 
 ## The dock switch
+
+On macOS the Workspace Dock replaces the macOS Dock, so it stays opt-in: a new install leaves
+the macOS Dock alone until you turn the Workspace Dock on. Elsewhere the dock starts on.
 
 With `dock.enabled` false:
 

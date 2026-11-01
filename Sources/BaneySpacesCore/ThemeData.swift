@@ -199,7 +199,12 @@ public enum ThemeData {
   },
   "dock.enabled": {
    "type": "bool",
-   "default": true
+   "default": {
+    "macos": false,
+    "windows": true,
+    "linux": true,
+    "omarchy": true
+   }
   }
  }
 }
