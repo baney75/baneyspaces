@@ -93,6 +93,12 @@ public enum OpenHere {
     /// its new window exists (Ghostty, measured), and following that is the bug.
     public static func followsActivation(_ action: Action) -> Bool { action == .goThere }
 
+    /// What a click on a workspace's tile does. On an empty workspace (the dock's "+" tile, the
+    /// overview's empty slot) it is what a "+" means: go there and open the launcher for it, so what
+    /// you open lands there. On a workspace with windows it only goes there.
+    public enum TileClick: Equatable, Sendable { case goTo, goToAndOpenLauncher }
+    public static func tileClick(empty: Bool) -> TileClick { empty ? .goToAndOpenLauncher : .goTo }
+
     /// Whether the person is on the target afterward: every action that opens here.
     public static func staysOnTarget(_ action: Action) -> Bool { action != .goThere }
 }

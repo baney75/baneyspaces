@@ -1233,6 +1233,15 @@ final class DockModel: ObservableObject {
     var onShowLauncher: (OpenHere.Entry?) -> Void = { _ in }
     var onTurnOff: () -> Void = {}
 
+    /// A click on workspace `n`'s tile or "+": an empty workspace is gone to and its launcher opened
+    /// (`OpenHere.tileClick`), so what you open lands there; any other is only gone to.
+    func clicked(_ n: Int, empty: Bool) {
+        switch OpenHere.tileClick(empty: empty) {
+        case .goTo: onPick(n)
+        case .goToAndOpenLauncher: onShowLauncher(.dockPlus(n))
+        }
+    }
+
     /// The first workspace with nothing on it, for the "new workspace" button.
     var firstEmpty: Int? { Workspaces.range.first { n in !tiles.contains { $0.id == n && !$0.apps.isEmpty } } }
 
@@ -1873,7 +1882,7 @@ struct DockView: View {
                     .overlay(shape.strokeBorder(tile.isCurrent || target ? Chrome.focusEdge(tint) : Chrome.edge(hovered ? 0.18 : 0.08),
                                                 lineWidth: target ? Chrome.width(.dockTile, focused: true) + 1 : Chrome.width(.dockTile, focused: tile.isCurrent)))
                     .onHover { model.setHover(.tile(tile.id), $0) }
-                    .onTapGesture { model.onPick(tile.id) }
+                    .onTapGesture { model.clicked(tile.id, empty: tile.apps.isEmpty) }
                 icons(tile).frame(width: tileSize, height: tileSize)
                 agentBadge(tile).frame(width: tileSize, height: tileSize, alignment: .topTrailing)
             }
@@ -1887,7 +1896,7 @@ struct DockView: View {
         .contextMenu { tileMenu(tile) }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(title(tile, shown: .max) + (tile.isCurrent ? ", current" : ""))
-        .accessibilityAction { model.onPick(tile.id) }
+        .accessibilityAction { model.clicked(tile.id, empty: tile.apps.isEmpty) }
     }
 
     /// A finished agent lights the tile's corner orange with a count; clicking it goes to the
@@ -2110,12 +2119,12 @@ struct DockView: View {
         }
         .contentShape(Rectangle())
         .onHover { model.setHover(.newWorkspace, $0) }
-        .onTapGesture { model.onPick(n) }
+        .onTapGesture { model.clicked(n, empty: true) }
         .contextMenu { Button("Open an App Here…") { model.onShowLauncher(.dockPlus(n)) } }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Go to empty workspace \(n)")
         .accessibilityAddTraits(.isButton)
-        .accessibilityAction { model.onPick(n) }
+        .accessibilityAction { model.clicked(n, empty: true) }
     }
 
     /// Find an app and show every workspace: two small buttons sharing one tile's room, so the

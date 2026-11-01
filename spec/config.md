@@ -216,6 +216,10 @@ menu, the overview's empty slot or a tile, or a dock app icon in the workspace y
 | running, without a New Window item (Photos, Music, App Store, System Settings, Calculator, Messages) | moves its existing window to that workspace and focuses it |
 | running, with no window | asks it for one, claimed for that workspace |
 
+Clicking an empty workspace's "+" (the dock's tile, the overview's empty slot) goes to that workspace
+and opens the launcher for it, so the first thing opened lands there. A workspace with windows is only
+gone to. "Open an App Here…" in the dock's and the overview's menus does the same for any workspace.
+
 The app coming forward is never followed to its old workspace: it activates before its window
 exists. `go` is the old behavior: go to where the app already is. Holding ⌥ does that for one open
 (⌥↩ in the launcher, ⌥-click in the dock and the overview), whatever the setting says. The setting is

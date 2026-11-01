@@ -136,6 +136,36 @@ final class OpenHereTests: XCTestCase {
         XCTAssertTrue(dock.contains(".dockTileMenu("), "a tile's context menu opens an app on that tile's workspace")
     }
 
+    // MARK: The "+" opens the launcher for its workspace (the coordinator, 2026-11-01)
+
+    func testClickingAnEmptyWorkspaceGoesThereAndOpensItsLauncher() {
+        XCTAssertEqual(OpenHere.tileClick(empty: true), .goToAndOpenLauncher)
+        XCTAssertEqual(OpenHere.tileClick(empty: false), .goTo, "a workspace with windows is only gone to")
+        // The launcher it opens is targeted at the workspace clicked, from the dock and the overview.
+        for n in Workspaces.range {
+            XCTAssertEqual(OpenHere.target(.dockPlus(n)), n)
+            XCTAssertEqual(OpenHere.target(.overviewSlot(n)), n)
+        }
+    }
+
+    func testTheDockAndOverviewPlusClicksOpenTheLauncherWithTheTargetSet() throws {
+        let dock = try Repo.code("Sources/BaneySpaces/WorkspaceDock.swift")
+        XCTAssertTrue(dock.contains("case .goToAndOpenLauncher: onShowLauncher(.dockPlus(n))"), "the dock's + opens the launcher for its workspace")
+        XCTAssertTrue(dock.contains("model.clicked(n, empty: true)"), "the + tile calls it")
+        XCTAssertTrue(dock.contains("model.clicked(tile.id, empty: tile.apps.isEmpty)"), "an empty tile does too")
+        XCTAssertFalse(dock.contains("onTapGesture { model.onPick("), "no tile click goes around it")
+        XCTAssertTrue(dock.contains("Button(\"Open an App Here…\")"), "the menu items stay")
+        let viewer = try Repo.code("Sources/BaneySpaces/Viewer.swift")
+        XCTAssertTrue(viewer.contains("case .goToAndOpenLauncher: onOpenHere(.overviewSlot(n))"), "the overview's empty slot opens the launcher for its workspace")
+        XCTAssertTrue(viewer.contains("model.tileClicked(n, empty: entries.isEmpty)"))
+        XCTAssertTrue(viewer.contains("Button(\"Open an App Here…\")"), "the menu item stays")
+        // Both end in LauncherController.show(entry:), which sets the model's target from the entry.
+        let delegate = try Repo.code("Sources/BaneySpaces/AppDelegate.swift")
+        XCTAssertTrue(delegate.contains("self?.launcher.show(entry: entry)"))
+        let launcher = try Repo.code("Sources/BaneySpaces/Launcher.swift")
+        XCTAssertTrue(launcher.contains("entry.flatMap(OpenHere.target)"), "the entry becomes the launcher's target")
+    }
+
     /// The activation an open causes is not followed: reuse of ledger row 3's fix.
     func testTheSpacesOpensDoNotFollowTheActivation() throws {
         let spaces = try Repo.code("Sources/BaneySpaces/Spaces.swift")

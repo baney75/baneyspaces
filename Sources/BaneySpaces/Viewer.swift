@@ -37,6 +37,15 @@ final class ViewerModel: ObservableObject {
     var onOpenHere: (OpenHere.Entry) -> Void = { _ in }
     var onClose: () -> Void = {}
 
+    /// A click on workspace `n`'s tile: an empty slot is gone to and its launcher opened
+    /// (`OpenHere.tileClick`); a tile with windows is only gone to.
+    func tileClicked(_ n: Int, empty: Bool) {
+        switch OpenHere.tileClick(empty: empty) {
+        case .goTo: onPick(n)
+        case .goToAndOpenLauncher: onOpenHere(.overviewSlot(n))
+        }
+    }
+
     func load(from spaces: Spaces) {
         spaces.refresh()
         // A drag in progress keeps its cards where they are; a reload would cancel the gesture.
@@ -180,7 +189,7 @@ struct ViewerView: View {
                 Color.clear.preference(key: TileFrames.self, value: [n: g.frame(in: .named("viewer"))])
             })
             .contentShape(Chrome.shape(.overviewTile, continuous: false))
-            .onTapGesture { model.onPick(n) }
+            .onTapGesture { model.tileClicked(n, empty: entries.isEmpty) }
             .onHover { inside in model.hover(n, inside) }
             .contextMenu {
                 Button("Open an App Here…") { model.onOpenHere(entries.isEmpty ? .overviewSlot(n) : .overviewTile(n)) }
