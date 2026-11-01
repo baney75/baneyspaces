@@ -96,3 +96,16 @@ public struct HandsEnvelope: Codable, Equatable, Sendable {
         try? JSONDecoder().decode(HandsEnvelope.self, from: Data(text.utf8))
     }
 }
+
+/// How an engine error's own retry verdict (`disposition.retry`: safe, unsafe, unknown, or missing) becomes ours.
+public enum EngineVerdict {
+    public static func retry(for code: HandsErrorCode, verdict: String?) -> HandsRetry {
+        var retry = code.defaultRetry
+        // An action that may have landed is never repeated blindly, whatever the code says.
+        if verdict == "unsafe" || verdict == "unknown", code != .staleRef { retry = .never }
+        if verdict == "safe", retry == .never, code != .notSupported { retry = .safe }
+        // A timeout or an unresponsive app without the engine's word that nothing was delivered may have landed.
+        if code == .timeout, verdict != "safe" { retry = .never }
+        return retry
+    }
+}

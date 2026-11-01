@@ -595,6 +595,26 @@ final class EngineRetryTests: XCTestCase {
         }
     }
 
+    /// The engine's own error JSON: a TIMEOUT or APP_UNRESPONSIVE with no disposition at all is not "safe".
+    func testATimeoutWithNoDispositionIsNeverRetriedAndNeverCalledSafe() throws {
+        let src = try HandsSourceTests.code("Sources/BaneySpaces/Hands/HandsEngine.swift")
+        XCTAssertTrue(src.contains("EngineVerdict.retry(for: mapped, verdict: err[\"disposition\"]?[\"retry\"]?.string)"), "translate uses the one rule")
+        // The engine's TIMEOUT and APP_UNRESPONSIVE with no disposition, an unknown one, or an unsafe one: never retried.
+        XCTAssertEqual(EngineVerdict.retry(for: .timeout, verdict: nil), .never)
+        XCTAssertEqual(EngineVerdict.retry(for: .timeout, verdict: "unknown"), .never)
+        XCTAssertEqual(EngineVerdict.retry(for: .timeout, verdict: "unsafe"), .never)
+        XCTAssertEqual(EngineVerdict.retry(for: .timeout, verdict: "safe"), .safe, "only the engine's own word")
+        XCTAssertEqual(EngineVerdict.retry(for: .staleRef, verdict: "unknown"), .afterSnapshot)
+        XCTAssertEqual(EngineVerdict.retry(for: .notSupported, verdict: "safe"), .never)
+        XCTAssertEqual(EngineVerdict.retry(for: .actionFailed, verdict: "safe"), .safe)
+        // ...and with that verdict the loop dispatches once.
+        var calls = 0
+        let e = HandsError(.timeout, "slow", suggestion: "x", retry: .never)
+        _ = EngineRetry.run(attempt: { calls += 1; return Result<Int, HandsError>.failure(e) }, stop: { nil }, cancelled: { false },
+                            giveUp: Date().addingTimeInterval(5), pause: {})
+        XCTAssertEqual(calls, 1)
+    }
+
     func testOnlyAFailureTheEngineCallsSafeIsRepeated() {
         let (r, calls) = run([.failure(timeout(.safe)), .failure(timeout(.safe)), .success(7)])
         XCTAssertEqual(calls, 3)

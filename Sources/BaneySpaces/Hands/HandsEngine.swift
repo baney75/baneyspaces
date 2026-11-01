@@ -175,11 +175,7 @@ final class HandsEngine {
         case "INVALID_ARGS": mapped = .badArguments
         default: mapped = .engineError
         }
-        var retry = mapped.defaultRetry
-        // An action that may have landed is never repeated blindly, whatever the code says.
-        let verdict = err["disposition"]?["retry"]?.string
-        if verdict == "unsafe" || verdict == "unknown", mapped != .staleRef { retry = .never }
-        if verdict == "safe", retry == .never, mapped != .notSupported { retry = .safe }
+        let retry = EngineVerdict.retry(for: mapped, verdict: err["disposition"]?["retry"]?.string)
         return HandsError(mapped, message, suggestion: suggestion, retry: retry)
     }
 
