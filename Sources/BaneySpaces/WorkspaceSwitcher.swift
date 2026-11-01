@@ -481,24 +481,14 @@ extension NSWindow {
 ///
 /// Each line also goes to the unified log (subsystem com.baney.baneyspaces), so a Shotate debug
 /// recording and `log show --predicate 'subsystem == "com.baney.baneyspaces"'` carry it next to
-/// what macOS logged. Lines hold workspace numbers, window ids and app names, never window titles,
-/// so they're public.
+/// what macOS logged. The file rotates at 200 KB (trace.log, .1, .2) instead of deleting history.
+/// Lines hold workspace numbers, window ids and app names, never window titles, so they're public.
 enum Trace {
     private static let unified = Logger(subsystem: "com.baney.baneyspaces", category: "trace")
 
     static func log(_ line: String) {
         unified.notice("\(line, privacy: .public)")
-        let url = Spaces.folder.appendingPathComponent("trace.log")
-        let text = "\(Date().timeIntervalSince1970) \(line)\n"
-        if let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int, size > 200_000 {
-            try? FileManager.default.removeItem(at: url)
-        }
-        if let h = try? FileHandle(forWritingTo: url) {
-            h.seekToEndOfFile()
-            h.write(Data(text.utf8))
-            try? h.close()
-        } else {
-            try? Data(text.utf8).write(to: url)
-        }
+        let stamped = "\(Date().timeIntervalSince1970) \(line)"
+        try? FileTrace.append(stamped, directory: Spaces.folder, maxBytes: FileTrace.defaultMaxBytes, maxFiles: FileTrace.defaultMaxFiles)
     }
 }
