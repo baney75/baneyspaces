@@ -30,11 +30,13 @@ public enum CrashLoopReport {
         }
     }
 
-    /// After a stop gave back what BaneySpaces takes. `missionControl` is whether Mission Control
-    /// was switched off by BaneySpaces and is back on now (false: it was already on).
+    /// After a stop gave back what BaneySpaces takes. `missionControl` is whether
+    /// `SystemMissionControl.restore` changed any saved setting (Dock switch or hot corners).
+    /// False means no saved setting changed — Mission Control may still be off if the person or
+    /// a managed Mac left it that way, or if there was no record to undo.
     public static func restored(missionControl: Bool) -> String {
         "crash loop: Dock and drag to the top restored, Mission Control "
-            + (missionControl ? "restored" : "was already on")
+            + (missionControl ? "saved settings restored" : "no saved settings changed")
     }
 
     public static let quit = "crash loop: Quit, staying stopped"

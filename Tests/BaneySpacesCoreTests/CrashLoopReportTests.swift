@@ -40,9 +40,9 @@ final class CrashLoopReportTests: XCTestCase {
 
     func testTheRestoreForgiveQuitAndEndLines() {
         XCTAssertEqual(CrashLoopReport.restored(missionControl: true),
-                       "crash loop: Dock and drag to the top restored, Mission Control restored")
+                       "crash loop: Dock and drag to the top restored, Mission Control saved settings restored")
         XCTAssertEqual(CrashLoopReport.restored(missionControl: false),
-                       "crash loop: Dock and drag to the top restored, Mission Control was already on")
+                       "crash loop: Dock and drag to the top restored, Mission Control no saved settings changed")
         XCTAssertEqual(CrashLoopReport.quit, "crash loop: Quit, staying stopped")
         XCTAssertEqual(CrashLoopReport.forgave(3), "crash loop: Start Anyway, 3 crashes forgiven")
         XCTAssertEqual(CrashLoopReport.ended(pid: 412, mode: .normal, recorded: true),

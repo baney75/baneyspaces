@@ -56,7 +56,7 @@ doesn't start. `--render` keeps its own `crash-ledger-render.json` and exits 75 
 
 Logs: every guarded launch writes `launch: BaneySpaces <version> (<commit>), normal|setup|render, pid N`,
 then `crash loop: start|stop (<mode>), N of 3 crashes in 5 minutes, ledger ~/…/crash-ledger.json`. A stop
-adds `crash loop: Dock and drag to the top restored, Mission Control restored|was already on` (its time is
+adds `crash loop: Dock and drag to the top restored, Mission Control saved settings restored|no saved settings changed` (its time is
 when Mission Control came back), then `Quit, staying stopped` or `Start Anyway, N crashes forgiven`; a clean
 quit writes `crash loop: clean quit (<mode>), pid N cleared from the ledger`. The text lives in
 `CrashLoopReport` (pinned by `CrashLoopReportTests`). Read it back from the file

@@ -1,0 +1,1 @@
+sol-review: ok thread=mcp:7b087b01-09b2-4c4a-a4b5-308b12fdc7d5 duration=39s verdict='I’ll review the diff at the pinned HEAD, focusing on crash-loop coverage, diagnostic value, privacy, and test preservation. I won’t edit files.' project_id=cf21b555-eeab-4bf6-9ad6-de2014aac7d7

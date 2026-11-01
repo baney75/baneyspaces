@@ -1,0 +1,1 @@
+I’ll review the diff at the pinned HEAD, focusing on crash-loop coverage, diagnostic value, privacy, and test preservation. I won’t edit files.

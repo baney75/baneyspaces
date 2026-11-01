@@ -1,0 +1,9 @@
+One P2 finding: [CrashLoopReport.swift:35](/home/baney75/luke-maint/wt/baneyspaces-crash-logging/Sources/BaneySpacesCore/CrashLoopReport.swift:35) interprets `restore()` returning false as “Mission Control was already on.” That return value means no setting changed. It also returns false when Mission Control remains disabled by an existing user or managed setting, or no saved record exists. True can mean only hot corners changed. This gives misleading evidence when diagnosing the crash storm.
+
+Concrete fix: report “saved settings restored” versus “no saved settings changed,” or inspect the actual Mission Control state separately. Update the documentation and tests to cover restoration while Mission Control remains disabled.
+
+Otherwise, launch/build/PID, modes, counts, ledgers, and user decisions provide useful diagnostics through both logging sinks. Added log fields are PII-safe; existing tests remain; scope is contained.
+
+`git diff --check origin/main...HEAD` passed. `swift test` could not run: `swift: command not found`. macOS checks are untested live. No files edited.
+
+REQUEST_CHANGES HEAD=1140e923ea94ca8a560abde6f69bc8d75d1f73ca with concrete fixes.
