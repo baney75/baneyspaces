@@ -1,0 +1,128 @@
+diff --git a/crates/ffi/include/agent_desktop.h b/crates/ffi/include/agent_desktop.h
+index 0fb7bed..6ceaa4e 100644
+--- a/crates/ffi/include/agent_desktop.h
++++ b/crates/ffi/include/agent_desktop.h
+@@ -1420,6 +1420,20 @@ AdResult ad_snapshot(const struct AdAdapter *adapter,
+                      bool compact,
+                      char **out);
+ 
++/**
++ * Like `ad_snapshot`, but for one exact window: `window_id` is the engine window id
++ * (`w-<CGWindowID>`). Never falls back to the app focused window.
++ * BaneySpaces addition (engine/patches/0001-ffi-snapshot-window.patch).
++ */
++AdResult ad_snapshot_window(const struct AdAdapter *adapter,
++                            const char *app,
++                            const char *window_id,
++                            int32_t surface,
++                            uint8_t max_depth,
++                            bool interactive_only,
++                            bool compact,
++                            char **out);
++
+ /**
+  * Returns the adapter's current health and permission state as a JSON
+  * envelope matching the `agent-desktop status` CLI output.
+diff --git a/crates/ffi/src/commands/mod.rs b/crates/ffi/src/commands/mod.rs
+index 7451320..2501a91 100644
+--- a/crates/ffi/src/commands/mod.rs
++++ b/crates/ffi/src/commands/mod.rs
+@@ -2,6 +2,7 @@ pub(crate) mod envelope_out;
+ pub(crate) mod execute_by_ref;
+ pub(crate) mod execute_by_ref_timeout;
+ pub(crate) mod snapshot;
++pub(crate) mod snapshot_window;
+ pub(crate) mod status;
+ pub(crate) mod timeout;
+ pub(crate) mod trace_export;
+diff --git a/crates/ffi/src/commands/snapshot_window.rs b/crates/ffi/src/commands/snapshot_window.rs
+new file mode 100644
+index 0000000..07cc22c
+--- /dev/null
++++ b/crates/ffi/src/commands/snapshot_window.rs
+@@ -0,0 +1,85 @@
++use crate::AdAdapter;
++use crate::commands::app_error_to_adapter;
++use crate::commands::envelope_out::write_command_envelope;
++use crate::convert::string::decode_optional_filter;
++use crate::convert::surface::snapshot_surface_from_c;
++use crate::error::{AdResult, set_last_error};
++use crate::ffi_try::trap_panic;
++use crate::pointer_guard::guard_non_null;
++use agent_desktop_core::commands::snapshot::SnapshotArgs;
++use std::ffi::c_char;
++use std::ptr;
++
++/// Like `ad_snapshot`, but for one exact window: `window_id` is the engine's window id
++/// (`w-<CGWindowID>`, as in `data.window.id` of a snapshot or a window listing). The
++/// snapshot never falls back to the app's focused window, and a window that is gone
++/// fails with WINDOW_NOT_FOUND. `app` may be null or narrow the lookup to one app.
++///
++/// BaneySpaces addition (patches/0001-ffi-snapshot-window.patch): upstream exposes
++/// `window_id` only on its CLI.
++///
++/// # Safety
++///
++/// Same as `ad_snapshot`; `window_id` must be a non-null NUL-terminated UTF-8 string.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn ad_snapshot_window(
++    adapter: *const AdAdapter,
++    app: *const c_char,
++    window_id: *const c_char,
++    surface: i32,
++    max_depth: u8,
++    interactive_only: bool,
++    compact: bool,
++    out: *mut *mut c_char,
++) -> AdResult {
++    guard_non_null!(out, c"out is null");
++    unsafe { *out = ptr::null_mut() };
++    trap_panic(|| {
++        guard_non_null!(adapter, c"adapter is null");
++        guard_non_null!(window_id, c"window_id is null");
++
++        let app_filter = unsafe { decode_optional_filter!(app, "app") };
++        let window_filter = unsafe { decode_optional_filter!(window_id, "window_id") };
++
++        let core_surface = match snapshot_surface_from_c(surface, "surface") {
++            Ok(s) => s,
++            Err(e) => {
++                set_last_error(&e);
++                return AdResult::ErrInvalidArgs;
++            }
++        };
++        let adapter_ref = crate::adapter::acquire_adapter!(adapter);
++        let context = match adapter_ref.command_context() {
++            Ok(ctx) => ctx,
++            Err(e) => {
++                let ae = app_error_to_adapter(e);
++                set_last_error(&ae);
++                return crate::error::last_error_code();
++            }
++        };
++
++        let args = SnapshotArgs {
++            app: app_filter,
++            window_id: window_filter,
++            max_depth,
++            include_bounds: false,
++            interactive_only,
++            compact,
++            surface: core_surface,
++            skeleton: false,
++            root_ref: None,
++            timeout_ms: None,
++            force_electron_a11y: false,
++        };
++
++        let scope = crate::commands::command_scope!(context, "snapshot");
++
++        let result = agent_desktop_core::commands::snapshot::execute(
++            args,
++            adapter_ref.inner.as_ref(),
++            &context,
++        );
++        crate::commands::complete_scope!(scope, &result);
++        unsafe { write_command_envelope("snapshot", result, out) }
++    })
++}
