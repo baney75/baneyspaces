@@ -91,7 +91,7 @@ class Safety(unittest.TestCase):
             if apps & tasks.ONCE_PER_USER:
                 self.assertEqual(t.get("place"), "sandbox", t["id"])
         sandbox = {t["id"] for t in self.tasks if t.get("place") == "sandbox"}
-        self.assertEqual(sandbox, {"notes-search-field", "safari-form", "firefox-form"})
+        self.assertEqual(sandbox, {"notes-search-field", "safari-form", "firefox-form", "settings-open-appearance", "settings-two-panes"})
 
     def test_every_host_task_guards_every_app_it_opens(self):
         for t in self.tasks:

@@ -16,6 +16,9 @@
     "quit_after": [
       "Calculator"
     ],
+    "restore_defaults": [
+      "com.apple.calculator"
+    ],
     "settle_s": 1.2,
     "open": [
       {

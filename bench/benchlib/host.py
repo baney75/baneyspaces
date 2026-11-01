@@ -10,6 +10,14 @@ APP_DIRS = ("/Applications", "/System/Applications", "/System/Applications/Utili
             "/Applications/Utilities", os.path.expanduser("~/Applications"))
 SANDBOX_AVAILABLE = False   # phase 2 of the design; until it exists every `place: sandbox` task is unavailable
 CHATGPT_ROUTE = None        # how ChatGPT's computer use would be run INSIDE the sandbox VM. None: there is none yet.
+# Columns that run only in the sandbox VM (#111), never on this Mac: ChatGPT's Sky, which can act on and read
+# the whole desktop, and agent-desktop in --headed mode, which takes focus and posts real keys and clicks onto
+# Donovan's live session. On the host only the background columns run: BaneySpaces and agent-desktop headless.
+SANDBOX_ONLY_TOOLS = ("chatgpt", "agent-desktop-headed")
+# What `baneyspaces agent open` starts on the host (phase 1, Policies.swift `separateInstance`): a new instance told
+# `-ApplePersistenceIgnoreState YES`, on a file from the handoff folder. Everything else answers needs_sandbox.
+AGENT_OPEN_HOST_APPS = {"TextEdit": "com.apple.TextEdit", "Calculator": "com.apple.calculator", "Preview": "com.apple.Preview"}
+HANDOFF = os.path.expanduser("~/Library/Application Support/BaneySpaces/hands/handoff")
 # ChatGPT's Sky/cua_repl never runs on this Mac: availability() refuses it for every task and codex_command()
 # refuses to build the command without a route. No flag or environment variable changes either.
 
@@ -68,10 +76,15 @@ def availability(task, state, tool=None, *, installed_fn=installed, running_fn=r
     requires.env             environment flags that must be 1 (e.g. the agent browser profile exists)
     A task is checked here at every level (scripted, agent and micro), before anything is opened.
     """
-    if tool == "chatgpt" and (CHATGPT_ROUTE is None or task.get("place", "host") != "sandbox"):
-        return "unavailable: needs sandbox (ChatGPT computer use runs only inside the sandbox VM, never on this Mac)"
+    if tool in SANDBOX_ONLY_TOOLS and (tool != "chatgpt" or CHATGPT_ROUTE is None or task.get("place", "host") != "sandbox"):
+        return (f"unavailable: sandbox_only: {tool} runs only inside the sandbox VM (needs sandbox, #111), never on this Mac")
     if task.get("place", "host") == "sandbox" and not (SANDBOX_AVAILABLE if sandbox is None else sandbox):
         return "unavailable: needs sandbox (phase 2)"
+    if task.get("place", "host") == "host":
+        refused = [o["app"] for o in task["setup"].get("open", []) if o["app"] not in AGENT_OPEN_HOST_APPS]
+        if refused:
+            return (f"unavailable: needs sandbox: `baneyspaces agent open` starts only {', '.join(sorted(AGENT_OPEN_HOST_APPS))} on the host "
+                    f"(it answers needs_sandbox for {refused[0]})")
     req = task["setup"].get("requires", {})
     for app in req.get("installed", []):
         if not installed_fn(app):
@@ -92,25 +105,32 @@ def availability(task, state, tool=None, *, installed_fn=installed, running_fn=r
 
 
 def micro_task(tool):
-    """The availability requirements of the micro level, as a pseudo task: its two windows are the bench's own."""
+    """The micro level as a task, so it goes through the runner's own setup path (drain, attribution, leak check,
+    window ownership, teardown): TextEdit on an empty file and Calculator, both the bench's own."""
     req = {"installed": ["TextEdit", "Calculator"], "exclusive": ["TextEdit"], "not_running": ["Calculator"]}
     if tool == "chatgpt":
         req["not_running"] = ["Calculator", "TextEdit"]   # Sky addresses an app, not a window: ours must be the only one
-    return {"id": f"micro-{tool}", "place": "host", "setup": {"requires": req}}
+    return {"id": f"micro-{tool}", "app": "TextEdit", "category": "micro", "place": "host", "goal": "per-action latency",
+            "setup": {"requires": req, "files": {"micro.txt": ""}, "restore_defaults": ["com.apple.calculator"],
+                      "quit_after": ["Calculator"], "settle_s": 1.0,
+                      "open": [{"app": "TextEdit", "as": "text", "targets": ["{tmp}/micro.txt"], "title": "micro.txt"},
+                               {"app": "Calculator", "as": "calc", "title": "Calculator"}]},
+            "steps": [{"do": "wait", "ms": 0}], "check": {"kind": "nothing"}}
 
 
 CAFFEINATE = ["caffeinate", "-dims"]
-# -d display, -i idle sleep, -m disk, -s system sleep. Not -u: that declares user activity, which would
-# reset the very idle clock the run's guard reads.
+# -d display, -i idle sleep, -m disk, -s system sleep. Not -u: that declares user activity, which would reset the
+# very idle clock the run's guard reads. Held with `-t <budget>` only for the level being run, so a stuck run lets go.
 
 
-def hold_awake(popen=subprocess.Popen):
-    """Keep the display and the system awake for the run. Returns the process (terminate it at the end)."""
-    return popen(CAFFEINATE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+def hold_awake(budget_s, popen=subprocess.Popen):
+    """Keep the display and the system awake for at most `budget_s` seconds. Returns the process (terminate it
+    when the level ends). Holding the display awake also holds off the screensaver lock, so it is bounded."""
+    return popen(CAFFEINATE + ["-t", str(int(budget_s))], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def session_gate(ok, state):
-    """-> (ok, message) from the monitor's session state (locked, asleep, off console, loginwindow in front)."""
+    """-> (ok, message) from the monitor's session state (locked, asleep, off console, loginwindow in front, secure input)."""
     if ok:
         return True, "screen awake and unlocked"
     why = [k for k in ("locked", "asleep", "loginwindow") if state.get(k)]

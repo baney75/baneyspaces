@@ -14,8 +14,9 @@ STEP_VERBS = {
 }
 CHECK_KINDS = {"file", "ax", "window_title", "window_gone", "answer", "form", "nothing", "all"}
 PLACES = {"host", "sandbox"}
-# Apps with one instance per user: they hold Donovan's data, so they only run in the sandbox.
-ONCE_PER_USER = {"Notes", "Safari", "Mail", "Calendar", "Messages", "Photos", "Reminders", "Contacts"}
+# Apps with one instance per user: they hold Donovan's data (System Settings changes his whole Mac and nothing
+# reverts it), so they only run in the sandbox.
+ONCE_PER_USER = {"Notes", "Safari", "Mail", "Calendar", "Messages", "Photos", "Reminders", "Contacts", "System Settings"}
 CATEGORIES = {
     "textedit", "finder", "notes", "settings", "calculator", "preview", "browser", "electron",
     "menu", "dialog", "scroll", "hidden", "two-window", "refusal",
@@ -80,6 +81,9 @@ def validate(task):
             bad("a host browser task needs setup.profile (a fresh --user-data-dir under the bench temp dir)")
         if task["category"] == "browser" and task["app"] not in req.get("not_running", []):
             bad("a host browser task needs requires.not_running for the browser")
+    for dom in setup.get("restore_defaults", []):
+        if not re.match(r"^[A-Za-z0-9._-]+$", dom):
+            bad(f"restore_defaults names an invalid preferences domain {dom!r}")
     for app in setup.get("quit_after", []):
         if app not in req.get("not_running", []):
             bad(f"quit_after {app} is only safe for an app required not_running")

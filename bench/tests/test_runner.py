@@ -13,11 +13,15 @@ from benchlib.execs import Aborted, Exec
 class FakeMonitor:
     """changes(t0, t1, settle) answers by call order: setup, task, teardown."""
 
-    def __init__(self, changes=0, hid=0, setup=0, teardown=0, lost=None, healthy=True, posted=0, windows=None):
+    def __init__(self, changes=0, hid=0, setup=0, teardown=0, lost=None, healthy=True, posted=0, windows=None, ambient_pids=()):
         self.c, self.h, self.s, self.td, self._lost, self._healthy, self.posted = changes, hid, setup, teardown, lost or [], healthy, posted
         self.calls = []
         self.losses = []
         self.windows = windows
+        self.ambient_pids = frozenset(ambient_pids)
+
+    def user_pids_now(self):
+        return self.ambient_pids
 
     def changes(self, t0, t1, settle=0.0):
         self.calls.append((t0, t1, settle))
@@ -42,23 +46,35 @@ class FakeOpener:
         self.ids = list(ids)
         self.opened = []
         self.listing = listing
+        self.apps = {}
+        self.given = []
+        self.closed = set()
 
     profile_ok = True
     verified = True
 
     def open(self, app, targets=()):
         self.opened.append((app, list(targets)))
-        return (self.ids.pop(0) if self.ids else None), 5
+        wid = self.ids.pop(0) if self.ids else None
+        if wid is not None:
+            self.given.append(wid)
+            self.apps[wid] = app
+        return wid, 5
 
     def supports_profile(self):
         return self.profile_ok
 
     def open_isolated(self, app, targets, profile_dir):
         self.opened.append((app, list(targets), profile_dir))
-        return (self.ids.pop(0) if self.ids else None), 5, self.verified
+        wid = self.ids.pop(0) if self.ids else None
+        if wid is not None:
+            self.given.append(wid)
+            self.apps[wid] = app
+        return wid, 5, self.verified
 
     def windows(self):
-        return {w: ("X", "t") for w in (self.listing if self.listing is not None else [5, 6, 7])}
+        ids = self.listing if self.listing is not None else [w for w in self.given if w not in self.closed]
+        return {w: (self.apps.get(w, "TextEdit"), "t") for w in ids}
 
 
 def tree(title, text):
@@ -72,16 +88,29 @@ TASK = {"id": "t1", "app": "TextEdit", "category": "textedit", "goal": "g",
 OK = lambda t, w, ti: {"ok": True, "log": [], "tool_ms": 12}
 
 
-def ctx(tmp, doing, **kw):
+def ctx(tmp, doing, created_ever=(), **kw):
     kw.setdefault("drain_s", 0)
     server = fixtures.FixtureServer().start()
     ref = FakeDriver({(5, None): kw.pop("ref_tree", None) or tree("a.txt", "x")})
+    closes = kw.pop("closes", True)
     args = dict(tool="baneyspaces", workdir=tmp, server=server, monitor=FakeMonitor(), opener=FakeOpener([5]),
                 referee_driver=ref, exec_fn=fake_exec([]), doing=doing, sleep=lambda s: None, watch_dirs=(),
-                availability_fn=lambda t, s, tool=None: None, running_fn=lambda a: False, settle_s=0)
+                availability_fn=lambda t, s, tool=None: None, running_fn=lambda a: False)
     args.update(kw)
     c = runner.Context(**args)
     c.ref, c.server_obj = ref, server
+    c.created_ever = set(created_ever)
+    if closes:
+        orig = ref.run
+        opener = args["opener"]
+
+        def run(verb, timeout=60, **kw2):
+            res = orig(verb, timeout, **kw2)
+            if verb == "click" and kw2.get("ref") == "@s:e2":       # the window's own Close button
+                ref.trees.clear()
+                opener.closed.add(5)
+            return res
+        ref.run = run
     return c
 
 
@@ -145,10 +174,9 @@ class RunTask(unittest.TestCase):
         """second-S7: half-open windows, settle only on the last."""
         rec, c = self.run_it(monitor=FakeMonitor())
         (s0, s1, ss), (k0, k1, ks), (d0, d1, ds) = c.monitor.calls
-        self.assertEqual((ss, ks), (0, 0))
+        self.assertEqual((ss, ks, ds), (0, 0, 0))
         self.assertEqual(s1, k0)          # setup ends where the task starts
         self.assertEqual(k1, d0)          # the task ends where teardown starts
-        self.assertGreater(ds, 0)
 
     def test_a_late_event_is_charged_once(self):
         rec, c = self.run_it(monitor=FakeMonitor(setup=1, changes=0))
@@ -156,7 +184,7 @@ class RunTask(unittest.TestCase):
 
     def test_a_window_from_one_of_donovans_background_apps_is_ambient_not_scored(self):
         """second-S9"""
-        mon = FakeMonitor(windows=[{"id": 9, "pid": 4, "owner": "Mail"}])
+        mon = FakeMonitor(windows=[{"id": 9, "pid": 4, "owner": "Mail"}], ambient_pids={4})
         rec, _ = self.run_it(monitor=mon)
         self.assertEqual(rec["ambient_changes"][0]["windows"][0]["owner"], "Mail")
         self.assertEqual(rec["changes"], [])
@@ -248,13 +276,44 @@ class RunTask(unittest.TestCase):
             self.assertTrue(clicks)
             self.assertTrue(all(call[1].get("ref") == "@s:e2" for call in clicks))
 
-    def test_a_window_that_left_the_agent_workspace_is_left_alone(self):
+    def test_a_window_the_bench_made_that_is_not_on_the_agent_workspace_stops_the_task_before_the_tool_runs(self):
+        called = []
+        rec, c = self.run_it(opener=FakeOpener([5], listing=[]), doing=lambda *a: called.append(1))
+        self.assertEqual(rec["status"], "infra_error")
+        self.assertIn("not on the agent workspace", rec["why"])
+        self.assertEqual(called, [])
+
+    def test_an_app_that_owns_a_window_the_bench_did_not_create_is_an_infra_error(self):
+        """second-S7: a restored session is Donovan's documents inside the run"""
+        op = FakeOpener([5], listing=[5, 77])
+        op.apps = {77: "TextEdit"}
+        called = []
+        rec, c = self.run_it(opener=op, doing=lambda *a: called.append(1))
+        self.assertEqual(rec["status"], "infra_error")
+        self.assertIn("did not create", rec["why"])
+        self.assertEqual(called, [])
+
+    def test_a_leftover_window_of_an_earlier_task_is_the_benches_own_not_foreign(self):
+        op = FakeOpener([5], listing=[5, 41])
+        op.apps = {41: "TextEdit"}
+        rec, c = self.run_it(opener=op, created_ever={41})
+        self.assertEqual(rec["status"], "pass")
+
+    def test_the_app_is_not_quit_while_any_of_its_windows_is_still_open(self):
+        """sol-F2: the quit would take a window that is outside the verified scope with it"""
+        state = {"up": False}
+
+        def doing(task, w, ti):
+            state["up"] = True
+            return {"ok": True, "log": []}
         with tempfile.TemporaryDirectory() as d:
-            c = ctx(d, OK, opener=FakeOpener([5], listing=[]))
+            c = ctx(d, doing, running_fn=lambda a: state["up"], closes=False)
+            c.exec = fake_exec([])
             rec = runner.run_task(TASK, c)
             c.server_obj.stop()
-            self.assertEqual([x for x in c.ref.calls if x[0] == "click"], [])
-            self.assertIn("5", rec["teardown_left"])
+        self.assertFalse(any('to quit' in " ".join(a) for a in c.exec.seen))
+        self.assertEqual(rec["teardown_pending"]["apps"], ["TextEdit"])
+        self.assertIn("not quit", rec["teardown_pending"]["error"])
 
     def test_teardown_is_skipped_after_an_abort_and_the_record_survives_an_aborted_task(self):
         """second-S6: an Aborted raised inside the task keeps teardown_pending and the setup disturbance."""
@@ -281,16 +340,31 @@ class RunTask(unittest.TestCase):
         self.assertEqual(rec["teardown_pending"]["windows"], [5])
         self.assertEqual([x for x in c.ref.calls if x[0] == "click"], [])
 
-    def test_windows_are_closed_even_when_the_run_raises(self):
+    def test_an_exception_in_the_task_is_an_infra_error_with_its_accounting_kept(self):
+        """second-S5: windows left and the setup disturbance must survive an exception in the body."""
+        def boom(*a):
+            raise RuntimeError("tool crashed")
+        with tempfile.TemporaryDirectory() as d:
+            c = ctx(d, boom, monitor=FakeMonitor(setup=1), closes=False)
+            rec = runner.run_task(TASK, c)
+            c.server_obj.stop()
+        self.assertEqual(rec["status"], "infra_error")
+        self.assertIn("RuntimeError", rec["why"])
+        self.assertEqual(len(rec["setup_changes"]), 1)
+        self.assertEqual(rec["teardown_left"], {"5": "still open after three close attempts"})
+        self.assertEqual(rec["teardown_pending"]["windows"], [5])
+        self.assertIn("teardown_changes", rec)
+        self.assertFalse(os.path.exists(os.path.join(d, "t1")))
+
+    def test_windows_are_closed_even_when_the_task_raises(self):
         def boom(*a):
             raise RuntimeError("tool crashed")
         with tempfile.TemporaryDirectory() as d:
             c = ctx(d, boom)
-            with self.assertRaises(RuntimeError):
-                runner.run_task(TASK, c)
+            rec = runner.run_task(TASK, c)
             c.server_obj.stop()
-            self.assertTrue(any(call[0] == "click" for call in c.ref.calls))
-            self.assertFalse(os.path.exists(os.path.join(d, "t1")))
+        self.assertTrue(any(call[0] == "click" for call in c.ref.calls))
+        self.assertNotIn("teardown_pending", rec)
 
     def test_new_entries_on_the_desktop_are_collateral(self):
         with tempfile.TemporaryDirectory() as desk:
@@ -403,6 +477,9 @@ class SetupLeaksAndProfiles(unittest.TestCase):
 
             def healthy(self):
                 return True, ""
+
+            def user_pids_now(self):
+                return frozenset()
         clock = iter([1.0, 5.0, 5.0, 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.7, 5.8])
         called = []
         rec, c = self.run_it(monitor=Late(), clock=lambda: next(clock), doing=lambda *a: called.append(1))
@@ -418,9 +495,21 @@ class SetupLeaksAndProfiles(unittest.TestCase):
                 if len(self.calls) == 1:
                     return [{"t": 1, "fields": ["user_window"], "windows": [{"id": 1, "pid": 2, "owner": "Mail"}]}]
                 return []
-        rec, _ = self.run_it(monitor=Bg())
+        rec, _ = self.run_it(monitor=Bg(ambient_pids={2}))
         self.assertEqual(rec["status"], "pass")
         self.assertEqual(rec["ambient_changes"][0]["windows"][0]["owner"], "Mail")
+
+    def test_a_window_from_an_app_the_tool_made_open_is_never_ambient(self):
+        """second-S1: Safari launched by a double-click is not Donovan's background app"""
+        class Made(FakeMonitor):
+            def changes(self, t0, t1, settle=0.0):
+                self.calls.append((t0, t1, settle))
+                if len(self.calls) == 2:
+                    return [{"t": 1, "fields": ["user_window"], "windows": [{"id": 1, "pid": 99, "owner": "Safari"}]}]
+                return []
+        rec, _ = self.run_it(monitor=Made(ambient_pids={2}))
+        self.assertEqual(len(rec["changes"]), 1)
+        self.assertNotIn("ambient_changes", rec)
 
     def test_a_profile_task_is_unavailable_until_agent_open_takes_a_user_data_dir(self):
         t = dict(TASK, setup=dict(TASK["setup"], profile="user-data-dir"))

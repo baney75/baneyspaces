@@ -3,13 +3,10 @@
   "app": "System Settings",
   "category": "settings",
   "goal": "In System Settings open Accessibility, then its Display pane. Change nothing.",
-  "place": "host",
+  "place": "sandbox",
   "setup": {
     "requires": {
       "installed": [
-        "System Settings"
-      ],
-      "exclusive": [
         "System Settings"
       ]
     },

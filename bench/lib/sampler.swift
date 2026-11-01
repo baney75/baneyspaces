@@ -7,14 +7,17 @@
 //                  (state.json), i.e. a window on one of Donovan's workspaces
 //   unplaced_window  a new on-screen normal window that state.json lists on no workspace for a full
 //                  second (a debounce: BaneySpaces writes state.json a moment after a window appears)
-// Every window event carries {id, pid, owner} so the harness can tell the tool's windows from Donovan's
-// own background apps. A sheet, alert or popover belongs to its parent window: a window that state.json
+// Every window event carries {id, pid, owner}. `user_pids` lists the processes that own a window on one of
+// Donovan's workspaces, so the harness can snapshot at the start of a task which windows are his own background
+// apps'. A delayed window event (unplaced_window) is its own line with its own first-seen time; it is never
+// merged into the current sample's changes. A sheet, alert or popover belongs to its parent window: a window that state.json
 // does not list, owned by a process that owns an agent-workspace window and lying inside that window's
 // frame (8 pt slack), is a child. It is neither `unplaced_window` nor the key window.
 //
 // Input: a listen-only event tap counts keyboard, mouse and scroll events and reads each one's source
-// process id. Pid 0 is real hardware (Donovan); any other pid is a program posting events, which is what
-// the tools under test do. `input` lines carry {real: n, posted: {pid: n}}. Needs Input Monitoring; when
+// process id. Pid 0 is real hardware (Donovan). A program's event counts as the column's own (`posted`) only if
+// the poster is in a process group the harness registered in --allow-file (or is the harness itself); an event
+// from ANY other pid is counted as real input, because a remapper or scroll tool of Donovan's looks the same. `input` lines carry {real: n, posted: {pid: n}}. Needs Input Monitoring; when
 // the tap cannot be created `tap` is false in the start line and the harness falls back to HID idle time.
 //
 // A tap the system disables is switched back on and reported (`tap_disabled`: a lost monitor). HID activity that
@@ -35,6 +38,27 @@ setvbuf(stdout, nil, _IOLBF, 0)
 var intervalMs = 50
 if let i = CommandLine.arguments.firstIndex(of: "--interval-ms"), i + 1 < CommandLine.arguments.count,
    let v = Int(CommandLine.arguments[i + 1]) { intervalMs = max(10, v) }
+var allowFile = ""
+if let i = CommandLine.arguments.firstIndex(of: "--allow-file"), i + 1 < CommandLine.arguments.count { allowFile = CommandLine.arguments[i + 1] }
+var allowStamp: Date? = nil
+var allowPgids = Set<Int>()
+var allowPids = Set<Int>()
+func refreshAllow() {
+    guard !allowFile.isEmpty else { return }
+    let stamp = (try? FileManager.default.attributesOfItem(atPath: allowFile))?[.modificationDate] as? Date
+    if stamp == allowStamp { return }
+    allowStamp = stamp
+    guard let data = FileManager.default.contents(atPath: allowFile),
+          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+    allowPgids = Set((obj["pgids"] as? [Int]) ?? [])
+    allowPids = Set((obj["pids"] as? [Int]) ?? [])
+}
+/// Is the poster one of the harness's own commands (its process group) or the harness?
+func ownPoster(_ pid: Int) -> Bool {
+    if allowPids.contains(pid) { return true }
+    let g = Int(getpgid(pid_t(pid)))
+    return g > 0 && allowPgids.contains(g)
+}
 let statePath = NSHomeDirectory() + "/Library/Application Support/BaneySpaces/state.json"
 
 struct Snap: Equatable {
@@ -54,6 +78,7 @@ var stateAgent = Set<Int>()   // window ids on the agent workspace
 var stateAll = Set<Int>()     // window ids on any workspace
 var agentWins: [Win] = []     // frames of the agent workspace's windows (refreshed once a second)
 var agentPids = Set<Int>()
+var userPids = Set<Int>()     // processes owning a window on one of Donovan's workspaces
 
 func workspace() -> Int {
     let attrs = try? FileManager.default.attributesOfItem(atPath: statePath)
@@ -97,8 +122,10 @@ func windows(onScreenOnly: Bool) -> [Win] {
 }
 
 func refreshAgentWindows() {
-    agentWins = windows(onScreenOnly: false).filter { stateAgent.contains($0.id) }
+    let all = windows(onScreenOnly: false)
+    agentWins = all.filter { stateAgent.contains($0.id) }
     agentPids = Set(agentWins.map { $0.pid })
+    userPids = Set(all.filter { stateUser.contains($0.id) }.map { $0.pid })
 }
 
 /// A sheet, alert or popover of an agent-workspace window: not listed, same process, inside the parent's frame.
@@ -164,7 +191,7 @@ let tapCallback: CGEventTapCallBack = { _, type, event, _ in
         return Unmanaged.passUnretained(event)
     }
     let pid = Int(event.getIntegerValueField(.eventSourceUnixProcessID))
-    if pid == 0 { realInputs += 1 } else { postedInputs[pid, default: 0] += 1; lastPostedAt = Date().timeIntervalSince1970 }
+    if pid == 0 || !ownPoster(pid) { realInputs += 1 } else { postedInputs[pid, default: 0] += 1; lastPostedAt = Date().timeIntervalSince1970 }
     return Unmanaged.passUnretained(event)
 }
 func installTap() {
@@ -188,8 +215,11 @@ var lastSession = sessionState(front: last.front)
 var knownUser = stateUser
 var knownOnScreen = Set(onScreen0.map { $0.id })
 var pendingUnplaced: [Int: Double] = [:]      // window id -> when it first appeared unlisted
+refreshAllow()
 emit(["event": "start", "t": Date().timeIntervalSince1970, "state": json(last), "interval_ms": intervalMs,
       "tap": tapOK, "idle": idleSeconds(), "session": lastSession])
+var lastUserPids = userPids
+emit(["event": "user_pids", "t": Date().timeIntervalSince1970, "pids": lastUserPids.sorted()])
 var samples = 0
 var prevTick = Date().timeIntervalSince1970
 var refreshedAt = prevTick
@@ -201,7 +231,9 @@ func tick() {
     let gap = now - prevTick
     prevTick = now
     samples += 1
+    refreshAllow()
     if now - refreshedAt >= 1 { refreshAgentWindows(); refreshedAt = now }
+    if userPids != lastUserPids { lastUserPids = userPids; emit(["event": "user_pids", "t": now, "pids": userPids.sorted()]) }
     let onScreen = windows(onScreenOnly: true)
     let cur = take(onScreen)
     var fields: [String] = []
@@ -221,26 +253,30 @@ func tick() {
     }
     knownUser = stateUser
 
-    // unplaced: unlisted for a full second, and still on screen, and not a sheet of an agent window
+    // unplaced: unlisted for a full second, still on screen, not a sheet of an agent window. Each is reported on
+    // its own line stamped with when it FIRST appeared, never merged into this sample's current changes.
     for w in onScreen where !knownOnScreen.contains(w.id) && !stateAll.contains(w.id) && pendingUnplaced[w.id] == nil {
         pendingUnplaced[w.id] = now
     }
     let ids = Set(onScreen.map { $0.id })
-    var stamp = now
+    var delayed: [(Double, Win)] = []
     for (id, since) in pendingUnplaced {
         if !ids.contains(id) || stateAll.contains(id) { pendingUnplaced[id] = nil; continue }
         if now - since >= 1.0 {
             pendingUnplaced[id] = nil
             if let w = onScreen.first(where: { $0.id == id }) {
                 refreshAgentWindows()
-                if !isChild(w) { newWindows.append(winJSON(w)); fields.append("unplaced_window"); stamp = min(stamp, since) }
+                if !isChild(w) { delayed.append((since, w)) }
             }
         }
     }
     knownOnScreen = ids
     if !fields.isEmpty {
-        emit(["event": "change", "windows": newWindows, "t": stamp, "fields": Array(Set(fields)).sorted(), "from": json(last), "to": json(cur)])
+        emit(["event": "change", "windows": newWindows, "t": now, "fields": Array(Set(fields)).sorted(), "from": json(last), "to": json(cur)])
         last = cur
+    }
+    for (since, w) in delayed.sorted(by: { $0.0 < $1.0 }) {
+        emit(["event": "change", "windows": [winJSON(w)], "t": since, "fields": ["unplaced_window"], "from": json(last), "to": json(cur)])
     }
 
     let tapSawInput = realInputs > 0 || !postedInputs.isEmpty

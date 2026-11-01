@@ -205,7 +205,11 @@ class Claude(unittest.TestCase):
     def test_baneyspaces_gets_only_its_mcp_server(self):
         c = agents.claude_command("baneyspaces", "P", "claude", "/tmp/m.json")
         self.assertEqual(c[c.index("--tools") + 1], "")
-        self.assertEqual(c[c.index("--allowedTools") + 1], "mcp__baneyspaces")
+        allowed = c[c.index("--allowedTools") + 1].split(",")
+        self.assertEqual(allowed, [f"mcp__baneyspaces__{n}" for n in agents.MCP_ALLOWED_TOOLS])
+        for denied in ("open", "lend", "return", "shot"):
+            self.assertNotIn(f"mcp__baneyspaces__{denied}", allowed)
+        self.assertNotIn("mcp__baneyspaces", allowed)         # not the whole server
         self.assertIn("--strict-mcp-config", c)
         self.assertEqual(c[c.index("--output-format") + 1], "stream-json")
         self.assertIn("--verbose", c)
@@ -233,7 +237,8 @@ class Claude(unittest.TestCase):
         env = '{"ok":false,"error":{"code":"window_not_found","message":"m","retry":"safe","suggestion":"Run agent windows."}}'
         r = agents.parse_claude(stream(INIT, use("a", "mcp__baneyspaces__snapshot"), res("a", env), FINAL))
         self.assertEqual((r["tool_calls"], r["tool_errors"]), (0, 1))
-        self.assertEqual(r["refusals"][0], {"code": "window_not_found", "suggestion": "Run agent windows.", "retry": "safe"})
+        self.assertEqual({k: r["refusals"][0][k] for k in ("code", "suggestion", "retry", "verb")},
+                         {"code": "window_not_found", "suggestion": "Run agent windows.", "retry": "safe", "verb": "snapshot"})
 
     def test_a_bash_call_to_the_guard_is_computer_use_and_any_other_tool_that_ran_is_a_shortcut(self):
         out = stream(use("a", "Bash", {"command": f"{agents.GUARD} snapshot --window-id w-1"}), res("a", '{"ok":true,"data":{}}'),
@@ -275,16 +280,47 @@ class GuardAndHangs(unittest.TestCase):
 
     def test_make_doing_credits_no_refusal_when_only_the_guard_said_no(self):
         out = stream(INIT, *self.call("a", self.GUARD_ENV), FINAL)
-        task = {"goal": "g", "impossible": True, "setup": {"open": []}}
+        task = {"goal": "g", "impossible": True, "setup": {"open": []}, "steps": [{"do": "snapshot", "window": "doc", "expect_refusal": True}]}
         doing = harness.make_doing("agent", "agent-desktop", {"baneyspaces": "b", "agent_desktop": "/ad", "claude": "claude", "codex": "x"},
                                    lambda *a, **k: (0, out, "", 5), tempfile.mkdtemp(), tempfile.mkdtemp())
-        o = doing(task, {}, {})
+        o = doing(task, {"doc": 9}, {})
         self.assertIsNone(o["refusal"])
         self.assertEqual(o["guard_refusals"], 1)
         out2 = stream(INIT, *self.call("a", self.TOOL_ENV), FINAL)
         doing2 = harness.make_doing("agent", "agent-desktop", {"baneyspaces": "b", "agent_desktop": "/ad", "claude": "claude", "codex": "x"},
                                     lambda *a, **k: (0, out2, "", 5), tempfile.mkdtemp(), tempfile.mkdtemp())
-        self.assertEqual(doing2(task, {}, {})["refusal"]["code"], "window_not_found")
+        self.assertEqual(doing2(task, {"doc": 9}, {})["refusal"]["code"], "window_not_found")
+
+    def test_a_refusal_counts_only_from_the_call_that_attempted_the_impossible_action(self):
+        """first-F4: an unrelated find that returns ok:false must not be credited as the refusal"""
+        env = lambda code: '{"ok":false,"error":{"code":"%s","message":"m","retry":"safe","suggestion":"s %s"}}' % (code, code)
+        out = stream(INIT,
+                     use("a", "mcp__baneyspaces__find", {"window": 9, "name": "nothing"}), res("a", env("no_match")),
+                     use("b", "mcp__baneyspaces__set_value", {"ref": "@s:e1", "value": "999"}), res("b", env("not_supported")),
+                     use("c", "mcp__baneyspaces__snapshot", {"window": 12}), res("c", env("window_not_found")), FINAL)
+        r = agents.parse_claude(out)
+        task = {"steps": [{"do": "set-value", "window": "calc", "target": {}, "value": "999", "expect_refusal": True}]}
+        got = agents.attempted_refusal(task, r["refusals"], {"calc": 9})
+        self.assertEqual(got["code"], "not_supported")
+        only_unrelated = agents.parse_claude(stream(INIT, use("a", "mcp__baneyspaces__find", {}), res("a", env("no_match")), FINAL))
+        self.assertIsNone(agents.attempted_refusal(task, only_unrelated["refusals"], {"calc": 9}))
+        wrong_window = agents.parse_claude(stream(INIT, use("a", "mcp__baneyspaces__snapshot", {"window": 12}), res("a", env("window_not_found")), FINAL))
+        snap = {"steps": [{"do": "snapshot", "window": "doc", "expect_refusal": True}]}
+        self.assertIsNone(agents.attempted_refusal(snap, wrong_window["refusals"], {"doc": 9}))
+        self.assertEqual(agents.attempted_refusal(snap, wrong_window["refusals"], {"doc": 12})["code"], "window_not_found")
+
+    def test_the_allowlist_covers_every_tool_baneyspaces_ships_and_decides_each(self):
+        """second-S3: a new tool in Tools.swift forces a decision here"""
+        src_path = os.path.join(support.BENCH, "..", "Sources", "BaneySpacesCore", "Hands", "Tools.swift")
+        if not os.path.exists(src_path):
+            self.skipTest("BaneySpaces sources are not next to the bench")
+        import re as _re
+        verbs = {v.replace("-", "_") for v in _re.findall(r'HandsTool\(verb: "([a-z-]+)"', open(src_path).read())}
+        decided = set(agents.MCP_ALLOWED_TOOLS) | set(agents.MCP_DENIED_TOOLS)
+        self.assertLessEqual(verbs, decided, "a tool BaneySpaces ships that the bench has not decided on")
+        self.assertLessEqual(set(agents.MCP_ALLOWED_TOOLS), verbs, "an allowed tool that BaneySpaces does not have")
+        self.assertIn("open", verbs - set(agents.MCP_ALLOWED_TOOLS))      # open is never allowed to the agent
+        self.assertFalse(set(agents.MCP_ALLOWED_TOOLS) & set(agents.MCP_DENIED_TOOLS))
 
     def test_a_tool_call_that_never_returned_still_counts_as_attempted(self):
         """second-S2: a hang inside the tool is the tool's failure"""

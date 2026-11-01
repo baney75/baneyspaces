@@ -64,12 +64,21 @@ def build_prompt(task, windows, titles, tool):
 
 # ---- claude -p ------------------------------------------------------------------------------------
 
+# The exact BaneySpaces MCP tools an agent in the bench may call. Not `open`, `lend`, `return` or `shot`: an agent that
+# follows a tool's suggestion ("lend it") could pull one of Donovan's windows onto the agent workspace, or start an
+# app there. The bench opens what the task needs before the agent starts. A test compares this list with the tools
+# BaneySpaces ships, so a new tool must be decided on here.
+MCP_ALLOWED_TOOLS = ("windows", "snapshot", "find", "get", "click", "type", "set_value", "press", "scroll", "select", "toggle")
+MCP_DENIED_TOOLS = ("open", "lend", "return", "shot")
+
+
 def claude_command(tool, prompt, claude_bin, mcp_config_path=None, guard_path=None):
     cmd = [claude_bin, "-p", prompt, "--model", CLAUDE_MODEL, "--output-format", "stream-json", "--verbose",
            "--max-turns", str(MAX_TURNS), "--no-session-persistence", "--disable-slash-commands",
            "--setting-sources", "", "--strict-mcp-config", "--permission-mode", "dontAsk"]
     if tool == "baneyspaces":
-        cmd += ["--mcp-config", mcp_config_path, "--tools", "", "--allowedTools", "mcp__baneyspaces"]
+        cmd += ["--mcp-config", mcp_config_path, "--tools", "",
+                "--allowedTools", ",".join(f"mcp__baneyspaces__{n}" for n in MCP_ALLOWED_TOOLS)]
     elif tool == "agent-desktop":
         cmd += ["--tools", "Bash", "--allowedTools", f"Bash({guard_path or GUARD}:*)", "--mcp-config", mcp_config_path]
     else:
@@ -110,6 +119,39 @@ def _envelope_error(content):
             e = o["error"]
             return {"code": str(e.get("code", "")).lower(), "suggestion": e.get("suggestion") or "", "retry": e.get("retry")}
     return None
+
+
+def _verb_of(name, inp, guard):
+    """The agent-desktop or BaneySpaces verb a computer-use tool_use performed (set-value, snapshot, ...)."""
+    if name.startswith("mcp__baneyspaces__"):
+        return name[len("mcp__baneyspaces__"):].replace("_", "-")
+    words = str(inp.get("command", "")).replace(guard, "", 1).split()
+    return words[0] if words else ""
+
+
+def attempted_refusal(task, refusals, windows):
+    """The last refusal that came from the call that ATTEMPTED the impossible action, or None.
+
+    Matches the verb of the task's expect_refusal step, and, where the call names a window, that window. An unrelated
+    call that happens to return ok:false (a find that matched nothing, a stale ref) is not the refusal the task asks for.
+    """
+    steps = [s for s in task.get("steps", []) if s.get("expect_refusal")]
+    out = None
+    for r in refusals:
+        for s in steps:
+            if r.get("verb") != s["do"]:
+                continue
+            inp = r.get("input") or {}
+            want = windows.get(s.get("window")) if s.get("window") else None
+            named = inp.get("window")
+            if named is None:
+                cmd = str(inp.get("command", ""))
+                m = __import__("re").search(r"--window-id[= ]w?-?(\d+)", cmd)
+                named = m.group(1) if m else None
+            if want is not None and named is not None and str(named).replace("w-", "") != str(want):
+                continue
+            out = r
+    return out
 
 
 def parse_claude(stdout, guard_path=None):
@@ -156,7 +198,7 @@ def parse_claude(stdout, guard_path=None):
                 guard_refusals += 1     # the bench's own guard said no; the tool's binary was never reached
             elif env_err:
                 errors += 1
-                refusals.append(env_err)
+                refusals.append(dict(env_err, verb=_verb_of(name, inp, guard), input=inp))
             elif not is_err and content is not None and _result_ok(content):
                 calls += 1
         elif not is_err and content is not None:

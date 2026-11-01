@@ -8,10 +8,10 @@ screen-change monitor, every tool, each in the same place. Design: [docs/agent-c
 | --- | --- |
 | `baneyspaces` | `baneyspaces agent ...` |
 | `agent-desktop` | vercel-labs/agent-desktop built from the pinned source (`bench/PIN`, the commit phase 1's engine uses), default strict-headless delivery |
-| `agent-desktop-headed` | the same binary with `--headed`: its best case for success, since it may take focus and the pointer |
+| `agent-desktop-headed` | the same binary with `--headed`: its best case for success, since it may take focus and the pointer. **Runs only in the sandbox (#111), never on this Mac**: on the host it reports `unavailable: sandbox_only` for every task, like ChatGPT |
 | `chatgpt` | ChatGPT/Codex computer use, driven by `codex exec` through ChatGPT.app's `cua_repl` server. **Runs only inside the sandbox VM, never on this Mac**: every task, at every level, is `unavailable: needs sandbox` until the sandbox exists |
 
-Cua's driver is removed from the fleet. A Cua column is only meaningful inside the sandbox (phase 2) and is **pending**.
+On the host only the background columns run: BaneySpaces, and agent-desktop in its non-headed mode. Cua's driver is removed from the fleet. A Cua column is only meaningful inside the sandbox (phase 2) and is **pending**.
 
 ## Run it
 
@@ -41,14 +41,24 @@ python3 -I bench/ratchet.py                  # fail if BaneySpaces regressed (se
 - **Awake and unlocked.** Before the run and before every task the sampler's session state must show an unlocked
   screen, an awake display, the console session, no `loginwindow` in front and **no secure keyboard input** (a password field
   or Secure Keyboard Entry hides keystrokes from the tap, so it counts as someone being there) (`not_run`, never a `fail`, otherwise).
-  The run holds `caffeinate -dims` (display, idle, disk and system sleep). Not `-u`: that declares user activity, which
-  would reset the idle clock this whole guard depends on. Display and lock state are recorded in every result file.
+  The run holds `caffeinate -dims -t <budget>` (display, idle, disk and system sleep) for ONE level at a time, with a budget
+  sized to that level's work (at most six hours), released between levels; the run stops when the budget ends. Not `-u`: that
+  declares user activity, which would reset the idle clock this whole guard depends on. **Exposure, so you opt in knowingly:**
+  keeping the display awake also holds off the screensaver and the lock that would follow it, so for the length of a level
+  the Mac stays unlocked and unattended. It is bounded by the budget, and the gate stops the run if the screen locks, but the
+  desktop is open while it runs. Display and lock state are recorded in every result file.
 - **Places.** A task has `place: host` (the agent workspace, 9) or `place: sandbox`. Once-per-user apps (Notes, Safari,
   Mail, Calendar, Messages, Photos, ...) hold his data and are always `sandbox`; so is Firefox. Until the phase 2 sandbox
   exists those tasks are `unavailable: needs sandbox (phase 2)` for every tool, so every tool always runs a task in the
   same place. A test fails if a task opens a once-per-user app on the host.
-- **Host tasks use only the bench's own copy of an app**: TextEdit and Preview on files in a per-run temp directory,
-  Finder only inside a temp folder, Calculator only if it is not already running. A browser or Electron app is launched
+- **Host tasks use only what `baneyspaces agent open` starts on the host** (phase 1, `AgentAppPolicy`): TextEdit, Preview and
+  Calculator, each a NEW instance started with `-ApplePersistenceIgnoreState YES` (so it restores nothing of Donovan's), on
+  fixture files in the agent handoff folder (`~/Library/Application Support/BaneySpaces/hands/handoff`, where this run makes a
+  directory of its own). Anything else (Finder, browsers, Electron apps, System Settings) answers `needs_sandbox` and the task
+  is `unavailable`. After an open, if the app owns a window the bench did not create, or a window the bench did create is not
+  on the agent workspace, the task is `infra_error` and the tool does not run. Calculator runs only if it is not already
+  running, and its preferences (`com.apple.calculator`) are saved before and restored after every Calculator task, so a
+  View > Scientific never reaches Donovan's Calculator. A browser or Electron app (sandbox only for now) is launched
   only with a fresh `--user-data-dir` under the bench temp dir (`baneyspaces agent open <app> --user-data-dir <dir>`),
   and the new window's process arguments are read back to verify it; a build whose `agent open` does not advertise that
   flag, or a launch that does not carry it, makes the task `unavailable` / `infra_error`. An environment flag alone never
@@ -62,7 +72,10 @@ python3 -I bench/ratchet.py                  # fail if BaneySpaces regressed (se
   abort and checks it before every action: after an abort nothing more is done and `teardown_pending` in the result
   lists what was left on the agent workspace.
 - **The agent columns are confined.** The BaneySpaces column reaches the Mac only through `baneyspaces mcp`, which
-  refuses windows outside the agent workspace. The agent-desktop column's Bash may run only `bench/agent-desktop-guard`,
+  refuses windows outside the agent workspace, and claude may call only the exact tools `windows snapshot find get click type
+  set_value press scroll select toggle`: not `open`, `lend`, `return` or `shot`, so an agent that follows a refusal's
+  suggestion cannot pull a window of Donovan's onto the agent workspace or start an app there (a test compares the list with
+  the tools BaneySpaces ships). The agent-desktop column's Bash may run only `bench/agent-desktop-guard`,
   which is an allowlist: per verb, only listed flags and positionals; every act verb must carry exactly one ref from a
   snapshot of an allowed window (so nothing is aimed at "whatever is focused"); it refuses every other window id, `--app`,
   `--headed`, desktop-wide surfaces, and filters `list-windows`. Its own refusals are code `guard_refused`: they are recorded
@@ -111,6 +124,12 @@ Statuses: `pass`, `fail`, `refused_ok` are scored. Everything else is counted an
 a setup that could not open the app), `monitor_lost`, `not_run`. A fatal infra error (cua_repl will not start, quota gone)
 stops that column and leaves it `n/a` instead of scoring nothing 30 times.
 
+- **Every query waits out the debounce.** A window that appears without a workspace is reported by the sampler a second
+  later, stamped with when it first appeared on its own line (never merged into the current sample's changes), and BaneySpaces
+  writes `state.json` a moment after a window exists. So the runner waits `drain_s` (1.5 s) before `t0`, before `tt0`, on every
+  early-return setup path and before the final teardown query; a window raised by the last action or by a teardown step is
+  counted in the window it belongs to. Real input from any process outside the column's own process groups (the sampler is
+  given them through a file the harness keeps) counts as Donovan's, so his remapper or scroll tool still stops the run.
 - **A window leaked by setup fails the task** (and the tool is not run). The runner waits out the sampler's one-second
   debounce before it takes `t0`, events are stamped with when the window first appeared, and a leak found in the setup window
   is `fail` with `setup_leak`, never a change the tool made. The "missing window" task uses a bench window that existed and was
@@ -121,8 +140,9 @@ stops that column and leaves it `n/a` instead of scoring nothing 30 times.
 - **Screen changes** are reported for the task, setup (a window dropped on Donovan's workspace by `agent open`, even if setup then
   failed) and teardown, in non-overlapping windows. The ratchet and the cross-tool gate use the **in-task** count: setup and
   teardown run the same harness code for every tool. A window that appears from one of Donovan's own background apps is
-  `ambient` (matched by the owner app against the task's apps and THIS column's own processes only, so another tool's window is
-  ambient too), recorded and never scored.
+  `ambient` only when the window belongs to a process that was already running **with a window on one of his workspaces before the
+  task began** (snapshotted at the task's start) and is not the task's app or this column's own process. A window from an app the
+  tool itself made open (Safari from a double-click) is charged.
 - **Monitor integrity.** The sampler prints a beat on every 50 ms sample. No beat for 200 ms, a beat reporting a longer
   gap, or the process exiting is a lost monitor: the run aborts and any task that ran then is `monitor_lost`, never a pass.
   A sheet or alert is part of its parent window (same process, inside its frame), not a new window.
@@ -189,7 +209,7 @@ Drop `bench/tasks/<id>.json` (the file name is the id). Fields:
 
 ## Status of this build
 
-Prepared and unit-tested (`bench/run_tests.sh`, 308 tests, fakes only). `bench/run.sh --dry-run --tool all` lists the 30 tasks
+Prepared and unit-tested (`bench/run_tests.sh`, 344 tests, fakes only). `bench/run.sh --dry-run --tool all` lists the 30 tasks
 and resolves every runner. agent-desktop builds from the pinned source. **No column has been measured and nothing has
 run live since the 2026-10-31 incident** (a Calculator and a TextEdit window landed on Donovan's workspace); the monitor's
 `user_window` and `unplaced_window` fields exist to catch that.

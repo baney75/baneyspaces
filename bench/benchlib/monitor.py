@@ -12,8 +12,9 @@ attributed: only a window owned by an app the task opened, or by the tool under 
 tool; one from Donovan's own background apps is recorded as ambient and never scored.
 
 Input: the sampler listens (listen-only tap) to keyboard and mouse events and reads each event's source
-process id. Pid 0 is real hardware; any other pid is a program posting synthetic input, which is what the
-tools under test do and is not Donovan. Only real input aborts the run. If the tap cannot be created
+process id. Pid 0 is real hardware. A program's posted event is the column's own input only when the poster is in a
+process group the harness started (or is the referee/cleanup); an event from any other pid is counted as real input,
+because a remapper or scroll tool of Donovan's looks exactly like that. Only real input aborts the run. If the tap cannot be created
 (no Input Monitoring permission) the sampler falls back to HID idle time, which cannot tell them apart; then
 the monitor reports `tap_ok = False` and the harness skips the tools that post input.
 
@@ -74,16 +75,19 @@ def changes_between(events, t0, t1, settle=0.0):
     return out
 
 
-def attribute(changes, owners):
-    """-> (charged, ambient). A window change whose windows all belong to apps outside `owners` (the
-    task's apps and THIS tool's own processes) is ambient: Donovan's own background apps, or another tool's."""
-    owners = set(owners)
+def attribute(changes, owners, ambient_pids=frozenset()):
+    """-> (charged, ambient). A window change is ambient only when EVERY window in it belongs to a process that was
+    already running and already had a window on one of Donovan's workspaces before the task began (`ambient_pids`,
+    snapshotted at ts0: his own Mail, Messages, an updater, ...) and is not one of this task's or this column's apps
+    (`owners`). Anything else is charged, so an app the tool itself caused to open (Safari, Notes, TextEdit from a
+    double-click) on his workspace is never scored as clean."""
+    owners, ambient_pids = set(owners), set(ambient_pids)
     charged, ambient = [], []
     for c in changes:
         wf = [f for f in c["fields"] if f in WINDOW_FIELDS]
         rest = [f for f in c["fields"] if f not in WINDOW_FIELDS]
         wins = c.get("windows") or []
-        if wf and wins and not any((w.get("owner") or "") in owners for w in wins):
+        if wf and wins and all(w.get("pid") in ambient_pids and (w.get("owner") or "") not in owners for w in wins):
             if rest:
                 charged.append(dict(c, fields=rest))
                 ambient.append(dict(c, fields=wf))
@@ -129,6 +133,7 @@ class Monitor:
         self.interval_ms = None
         self.tap_ok = False
         self.session = {}
+        self.user_pids = set()        # processes that own a window on one of Donovan's workspaces, as the sampler last said
         self.posted_total = 0
         self._start_t = None
         self._start_idle = 0.0
@@ -201,6 +206,8 @@ class Monitor:
                     self._real_last = time.time()
                 elif ev.kind == "tap_disabled":
                     tap_dead = True
+                elif ev.kind == "user_pids":
+                    self.user_pids = set(int(p) for p in ev.raw.get("pids") or [])
                 elif ev.kind == "session":
                     was_ok = self.session_ok_of(self.session)
                     self.session = dict(ev.raw.get("state") or {})
@@ -232,6 +239,11 @@ class Monitor:
         if self._real_last is not None:
             return now - self._real_last
         return self._start_idle + (now - (self._start_t or now))
+
+    def user_pids_now(self):
+        """Snapshot, taken at a task's ts0, of the processes that already have a window on Donovan's workspaces."""
+        with self._lock:
+            return frozenset(self.user_pids)
 
     def session_ok(self):
         return self.session_ok_of(self.session), dict(self.session)

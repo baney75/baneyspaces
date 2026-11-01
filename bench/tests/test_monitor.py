@@ -60,27 +60,30 @@ class Counting(unittest.TestCase):
                           json.dumps({"event": "input", "t": 10.2, "real": 1, "posted": {}})])
         self.assertEqual(monitor.input_between(ev, 10.0, 12.0), (1, 5, {"4242": 3, "77": 2}))
 
-    def test_a_window_from_an_app_outside_the_task_is_ambient(self):
-        """second-S9"""
-        win = lambda owner: {"t": 1, "fields": ["user_window"], "windows": [{"id": 1, "pid": 2, "owner": owner}]}
-        charged, ambient = monitor.attribute([win("Mail"), win("TextEdit"), win("BaneySpaces")], {"TextEdit", "BaneySpaces"})
-        self.assertEqual([c["windows"][0]["owner"] for c in charged], ["TextEdit", "BaneySpaces"])
+    def test_a_window_is_ambient_only_if_its_process_already_had_a_window_on_his_workspaces(self):
+        """second-S1"""
+        win = lambda owner, pid: {"t": 1, "fields": ["user_window"], "windows": [{"id": 1, "pid": pid, "owner": owner}]}
+        before = {100}          # Mail was running with a window on Donovan's workspace at ts0
+        charged, ambient = monitor.attribute([win("Mail", 100), win("Safari", 200), win("TextEdit", 100)], {"TextEdit"}, before)
+        self.assertEqual([c["windows"][0]["owner"] for c in charged], ["Safari", "TextEdit"])
         self.assertEqual([c["windows"][0]["owner"] for c in ambient], ["Mail"])
-        mixed = {"t": 1, "fields": ["front", "unplaced_window"], "windows": [{"id": 1, "pid": 2, "owner": "Mail"}]}
-        charged, ambient = monitor.attribute([mixed], {"TextEdit"})
-        self.assertEqual(charged[0]["fields"], ["front"])
-        self.assertEqual(ambient[0]["fields"], ["unplaced_window"])
+        self.assertEqual(monitor.attribute([win("Mail", 100)], set(), frozenset())[1], [])    # nothing known: nothing is ambient
+        mixed = {"t": 1, "fields": ["front", "unplaced_window"], "windows": [{"id": 1, "pid": 100, "owner": "Mail"}]}
+        charged, ambient = monitor.attribute([mixed], {"TextEdit"}, before)
+        self.assertEqual((charged[0]["fields"], ambient[0]["fields"]), (["front"], ["unplaced_window"]))
 
-    def test_another_tools_window_is_ambient_for_this_column(self):
-        """second-S4: Donovan's own ChatGPT.app window must not be charged to BaneySpaces, nor a BaneySpaces HUD to agent-desktop."""
-        win = lambda owner: {"t": 1, "fields": ["unplaced_window"], "windows": [{"id": 1, "pid": 2, "owner": owner}]}
+    def test_another_tools_window_from_a_process_that_was_not_there_before_is_charged(self):
+        win = lambda owner, pid: {"t": 1, "fields": ["unplaced_window"], "windows": [{"id": 1, "pid": pid, "owner": owner}]}
         own = monitor.TOOL_OWNERS["baneyspaces"] | {"TextEdit"}
-        charged, ambient = monitor.attribute([win("ChatGPT"), win("Codex Computer Use"), win("BaneySpaces")], own)
+        charged, ambient = monitor.attribute([win("BaneySpaces", 5), win("ChatGPT", 6)], own, {6})
         self.assertEqual([c["windows"][0]["owner"] for c in charged], ["BaneySpaces"])
-        self.assertEqual(len(ambient), 2)
-        own_ad = monitor.TOOL_OWNERS["agent-desktop"] | {"TextEdit"}
-        self.assertEqual(monitor.attribute([win("BaneySpaces")], own_ad)[0], [])
+        self.assertEqual([c["windows"][0]["owner"] for c in ambient], ["ChatGPT"])
         self.assertNotIn("BaneySpaces", monitor.TOOL_OWNERS["chatgpt"])
+
+    def test_the_user_pids_snapshot_comes_from_the_samplers_user_pids_events(self):
+        m = monitor.Monitor(["x"])
+        m.user_pids = {1, 2}
+        self.assertEqual(m.user_pids_now(), frozenset({1, 2}))
 
     def test_a_pointer_or_workspace_change_is_never_ambient(self):
         c = {"t": 1, "fields": ["pointer"]}
@@ -256,7 +259,11 @@ class SamplerSource(unittest.TestCase):
         self.assertIn("CGSessionCopyCurrentDictionary", src)
         self.assertIn("kCGWindowOwnerName", src)               # windows carry their owner for attribution
         self.assertIn("now - since >= 1.0", src)               # unplaced_window is debounced a second
-        self.assertIn("stamp = min(stamp, since)", src)        # ... but stamped with when it FIRST appeared
+        self.assertIn('"t": since, "fields": ["unplaced_window"]', src)    # its own line, stamped with when it FIRST appeared
+        self.assertNotIn("stamp = min(stamp, since)", src)                 # never merged into the current sample's fields
+        self.assertIn("--allow-file", src)                                 # only the column's own process groups may post
+        self.assertIn("ownPoster", src)
+        self.assertIn('"user_pids"', src)
         self.assertIn("tapDisabledByTimeout", src)             # a tap the system turns off is reported, not ignored
         self.assertIn("tapDisabledByUserInput", src)
         self.assertIn("IsSecureEventInputEnabled", src)

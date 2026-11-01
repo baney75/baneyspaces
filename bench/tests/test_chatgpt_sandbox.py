@@ -74,12 +74,36 @@ class SkyNeverRunsOnTheHost(unittest.TestCase):
 
     def test_micro_for_chatgpt_is_n_a_before_anything_opens(self):
         opened = []
-        opener = type("O", (), {"open": lambda s, *a, **k: opened.append(a), "windows": lambda s: {}})()
-        got = harness.run_micro_level("chatgpt", {"baneyspaces": "b", "agent_desktop": "a"}, lambda *a, **k: (0, "", "", 1), opener,
-                                      "/tmp/x", None, None, lambda: STATE, lambda: False, running_fn=lambda a: False)
+        from benchlib.runner import Context
+        from test_runner import FakeMonitor
+        from support import FakeDriver, fake_exec
+
+        class Opener:
+            def open(self, *a, **k):
+                opened.append(a)
+                return 1, 1
+
+            def windows(self):
+                return {}
+
+        with tempfile.TemporaryDirectory() as d:
+            ctx = Context(tool="chatgpt", workdir=d, server=type("S", (), {"base": "b", "port": 1, "reset": lambda s: None})(),
+                          monitor=FakeMonitor(), opener=Opener(), referee_driver=FakeDriver({}), exec_fn=fake_exec([]),
+                          doing=harness.micro_doing("chatgpt", {"baneyspaces": "b", "agent_desktop": "a"}, None),
+                          state_fn=lambda: STATE, running_fn=lambda a: False)
+            got = harness.run_micro_level("chatgpt", ctx)
         self.assertEqual(got["status"], "n/a")
         self.assertIn("needs sandbox", got["why"])
         self.assertEqual(opened, [])
+
+    def test_the_headed_column_is_sandbox_only_too(self):
+        """first-F7: --headed posts real keys and clicks onto the live session"""
+        for t in TASKS:
+            why = host.availability(t, STATE, "agent-desktop-headed", installed_fn=lambda a: True, running_fn=lambda a: False)
+            self.assertIn("sandbox_only", why, t["id"])
+        te = next(t for t in TASKS if t["id"] == "textedit-type")
+        self.assertIsNone(host.availability(te, STATE, "agent-desktop", installed_fn=lambda a: True, running_fn=lambda a: False))
+        self.assertIsNone(host.availability(te, STATE, "baneyspaces", installed_fn=lambda a: True, running_fn=lambda a: False))
 
     def test_the_harness_has_no_other_path_to_codex_or_sky(self):
         src = open(os.path.join(support.BENCH, "harness.py")).read()

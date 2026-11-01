@@ -8,6 +8,13 @@ Close button (a direct child of the window root) and, on a sheet or alert, "Don'
 from .script import find_all, ref_of
 
 DECLINE = ("Don't Save", "Don’t Save")
+GONE_CODES = ("window_not_found", "app_not_found")
+
+
+def is_gone(res):
+    """Only the tool saying the window or app does not exist counts as closed. A timeout, a crash or a permission
+    error says nothing about the window, which may well still be open."""
+    return (not res.ok) and res.code in GONE_CODES
 
 
 def window_close_button(tree):
@@ -41,10 +48,12 @@ def close_windows(driver, created, agent_windows, rounds=3, should_stop=lambda: 
             break
         if wid not in agent_windows():
             res = driver.snapshot(wid)
-            if not res.ok:
+            if is_gone(res):
                 closed.append(wid)          # already gone
-            else:
+            elif res.ok:
                 left[wid] = "not on the agent workspace any more; left alone"
+            else:
+                left[wid] = f"cannot tell whether it is open ({res.code}); left alone"
             continue
         interrupted = False
         for _ in range(rounds):
@@ -53,7 +62,7 @@ def close_windows(driver, created, agent_windows, rounds=3, should_stop=lambda: 
                 break
             res = driver.snapshot(wid)
             if not res.ok:
-                break
+                break           # gone, or unreadable: the check after the loop decides which
             tree = (res.data or {}).get("tree") or {}
             btn = window_close_button(tree)
             if btn is not None:
@@ -71,8 +80,12 @@ def close_windows(driver, created, agent_windows, rounds=3, should_stop=lambda: 
                 break
         if interrupted:
             left[wid] = "interrupted: the run was aborted"
-        elif driver.snapshot(wid).ok:
-            left[wid] = "still open after three close attempts"
         else:
-            closed.append(wid)
+            final = driver.snapshot(wid)
+            if is_gone(final):
+                closed.append(wid)
+            elif final.ok:
+                left[wid] = "still open after three close attempts"
+            else:
+                left[wid] = f"cannot tell whether it closed ({final.code})"
     return closed, left

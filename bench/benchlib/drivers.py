@@ -234,8 +234,11 @@ class Opener:
         if env and not env[0]:
             return None, ms
         for _ in range(40):  # plain-text build: the window arrives a moment later
-            new = [w for w in self.windows() if w not in before]
-            if new:
-                return max(new), ms
+            # only a new window OF THE APP WE OPENED; if several qualify we cannot tell which is ours, so none is
+            new = [w for w, (a, _t) in self.windows().items() if w not in before and a == app]
+            if len(new) == 1:
+                return new[0], ms
+            if len(new) > 1:
+                return None, ms
             time.sleep(0.15)
         return None, ms

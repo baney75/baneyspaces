@@ -34,7 +34,7 @@ sys.path.insert(0, HERE)
 from benchlib import agents, host, micro, monitor, report, scoring  # noqa: E402
 from benchlib.cleanup import close_windows  # noqa: E402
 from benchlib.drivers import AgentDesktopDriver, BaneySpacesDriver, Opener, which  # noqa: E402
-from benchlib.execs import Aborted, Exec  # noqa: E402
+from benchlib.execs import Aborted, Exec, PgidRegistry  # noqa: E402
 from benchlib.fixtures import FixtureServer  # noqa: E402
 from benchlib.runner import Context, run_task  # noqa: E402
 from benchlib.script import Interpreter  # noqa: E402
@@ -79,6 +79,8 @@ def resolve_plan(plan, p):
                 ok, d = ok2, f"{d}; claude -p: {p['claude'] if ok2 else 'not found'}"
         elif tool.startswith("agent-desktop"):
             ok, d = AgentDesktopDriver(None, p["agent_desktop"], headed=tool.endswith("headed")).resolve()
+            if ok and tool.endswith("headed"):
+                d += "; runs only in the sandbox: every task is unavailable (sandbox_only) on this Mac"
             if ok and level == "agent":
                 ok2 = bool(which(p["claude"])) and os.access(agents.GUARD, os.X_OK)
                 ok, d = ok2, f"{d}; claude -p: {p['claude'] if which(p['claude']) else 'not found'}; guard: {agents.GUARD}"
@@ -231,8 +233,8 @@ def make_doing(level, tool, p, exec_fn, workdir, cwd=None):
         if infra:
             return dict(base, ok=False, infra=infra[0], fatal_infra=infra[1], why=infra[0])
         if task.get("impossible"):
-            if parsed.get("refusals"):
-                r = parsed["refusals"][-1]          # the TOOL's own code and suggestion (never the guard's), not the agent's prose
+            r = agents.attempted_refusal(task, parsed.get("refusals", []), windows)
+            if r:       # the TOOL's own code and suggestion, from the call that attempted the impossible action
                 base["refusal"] = {"code": r["code"], "suggestion": r["suggestion"], "retry": r.get("retry")}
         return dict(base, ok=parsed["ok"] or base["refusal"] is not None, why=parsed.get("error") or "")
     return doing
@@ -265,6 +267,7 @@ class RunState:
         self.reason = {}
         self.stop = False
         self.stop_reason = ""
+        self.deadline = None          # monotonic time the caffeinate budget runs out; the run stops then
 
     def halt(self, why):
         self.stop, self.stop_reason = True, why
@@ -273,6 +276,9 @@ class RunState:
         """Before every task (and micro run): -> None, or why the run must stop. Real idle >= 600 s, screen usable."""
         if self.abort.is_set():
             return self.reason_text()
+        if self.deadline is not None and time.monotonic() > self.deadline:
+            self.reason.update(kind="budget")
+            return "the level's time budget ran out (the Mac is no longer held awake)"
         idle = self.idle_fn()
         if idle < self.required:
             self.reason.update(kind="input", idle=round(idle, 1))
@@ -291,6 +297,8 @@ class RunState:
             return f"the screen-change monitor was lost: {self.reason.get('why')}"
         if k == "locked":
             return "the screen locked or the display went to sleep"
+        if k == "budget":
+            return "the level's time budget ran out"
         return "aborted"
 
 
@@ -337,52 +345,57 @@ def run_group(tasks, ctxs, st, run_task_fn=run_task, progress=lambda level, tool
     return records, dead
 
 
-def run_micro_level(tool, p, exec_fn, opener, workdir, referee_driver, cleanup_driver, state_fn, aborted_fn,
-                    running_fn=host.running):
-    """-> result dict for the micro level of one tool. Same availability gate as a task; only windows
-    this function opened are touched, and Calculator is quit only if it was not running before."""
-    from benchlib import fixtures
-    why = host.availability(host.micro_task(tool), state_fn(), tool)
-    if why:
-        return {"status": "n/a", "why": why, "latency": None}
+def micro_doing(tool, p, exec_fn):
+    """The measured part of the micro level, run by the runner after its own setup (drain, attribution, leak check,
+    window ownership) so a window that landed on Donovan's workspace invalidates it before one action is sent."""
     if tool == "chatgpt":
-        raise agents.SandboxOnly("ChatGPT computer use runs only inside the sandbox VM, never on this Mac")
-    os.makedirs(workdir, exist_ok=True)
-    fixtures.write_files(workdir, {"micro.txt": ""})
-    created = []
-    started = [a for a in ("TextEdit", "Calculator") if not running_fn(a)]
-    try:
-        te, _ = opener.open("TextEdit", [os.path.join(workdir, "micro.txt")])
-        if te is not None:
-            created.append(te)
-        calc, _ = opener.open("Calculator", [])
-        if calc is not None:
-            created.append(calc)
-        if te is None or calc is None:
-            return {"status": "n/a", "why": "could not open TextEdit and Calculator on the agent workspace", "latency": None}
-        time.sleep(1.0)
-        if tool == "baneyspaces":
-            driver = BaneySpacesDriver(exec_fn, p["baneyspaces"])
-            noop = [p["baneyspaces"], "--version"]
-        else:
-            driver = AgentDesktopDriver(exec_fn, p["agent_desktop"])
-            noop = [p["agent_desktop"], "--version"]
+        def doing(task, windows, titles):
+            raise agents.SandboxOnly("ChatGPT computer use runs only inside the sandbox VM, never on this Mac")
+        return doing
+    if tool == "baneyspaces":
+        driver = BaneySpacesDriver(exec_fn, p["baneyspaces"])
+        noop = [p["baneyspaces"], "--version"]
+    else:
+        driver = AgentDesktopDriver(exec_fn, p["agent_desktop"])
+        noop = [p["agent_desktop"], "--version"]
+
+    def doing(task, windows, titles):
         noop_ms = micro.noop_spawn_ms(exec_fn, noop)
-        lat, errs = micro.run_micro(driver, te, calc, noop_ms)
+        lat, errs = micro.run_micro(driver, windows["text"], windows["calc"], noop_ms)
         problems = micro.invalid(lat, errs)
         # a measurement with failed actions or missing samples is kept as a diagnostic, never as a result
-        return {"status": "invalid" if problems else "ok", "latency": lat, "errors": errs, "problems": problems,
-                "noop_spawn_ms": noop_ms, "noop_command": noop, "method": micro.METHOD_CLI}
-    finally:
-        if not aborted_fn():       # after an abort the bench's own windows stay where they are
-            try:
-                if created:
-                    close_windows(cleanup_driver, created, opener.windows, should_stop=aborted_fn)
-                for app in started:
-                    if not aborted_fn() and running_fn(app):
-                        exec_fn(["osascript", "-e", f'tell application "{app}" to quit'], timeout=15)
-            except Aborted:
-                pass
+        return {"ok": True, "log": [], "micro": {"status": "invalid" if problems else "ok", "latency": lat, "errors": errs,
+                "problems": problems, "noop_spawn_ms": noop_ms, "noop_command": noop, "method": micro.METHOD_CLI}}
+    return doing
+
+
+def run_micro_level(tool, ctx, run_task_fn=run_task):
+    """-> the micro result dict for one tool. The micro level is a pseudo task (TextEdit on an empty file and
+    Calculator) run by the runner, so it has the runner's availability gate, drain, attribution, `setup_leak`,
+    window-ownership check, safe quit and defaults restore. A leak or any setup failure makes it invalid/n/a."""
+    task = host.micro_task(tool)
+    rec = run_task_fn(task, ctx)
+    out = {"setup_changes": rec.get("setup_changes", []), "changes": rec.get("changes", []),
+           "teardown_changes": rec.get("teardown_changes", []), "ambient_changes": rec.get("ambient_changes", [])}
+    for k in ("teardown_pending", "teardown_left"):
+        if k in rec:
+            out[k] = rec[k]
+    if rec["status"] == "unavailable":
+        return dict(out, status="n/a", why=rec["why"], latency=None)
+    if rec.get("setup_leak"):
+        return dict(out, status="invalid", why=rec["why"], setup_leak=rec["setup_leak"], latency=None)
+    if rec["status"] in ("infra_error", "monitor_lost", "not_run") or not rec.get("micro"):
+        return dict(out, status="n/a", why=rec.get("why", rec["status"]), latency=None)
+    m = rec["micro"]
+    if rec["changes"]:                      # the measured actions disturbed the screen: not a clean measurement
+        m = dict(m, status="invalid", problems=list(m.get("problems", [])) + ["screen changes during the measured actions"])
+    return dict(m, **out)
+
+
+def level_budget_s(level, n_tasks, n_tools):
+    """Wall-clock allowance for one level; caffeinate is held for no longer than this and the run stops when it ends."""
+    per = {"scripted": 90, "agent": agents.AGENT_TIMEOUT_S + 60, "micro": 600}[level]
+    return min(6 * 3600, 900 + per * (n_tasks if level != "micro" else 1) * max(1, n_tools))
 
 
 def real_run(args, p):
@@ -406,9 +419,15 @@ def real_run(args, p):
         print("not run: the BaneySpaces agent workspace is off or BaneySpaces is not running "
               "(baneyspaces agent on). Every app must open on workspace 9, never on Donovan's.")
         return 1
+    if not os.path.isdir(host.HANDOFF):
+        print(f"not run: the agent handoff folder {host.HANDOFF} does not exist; `baneyspaces agent open` takes files only from there "
+              "(is BaneySpaces phase 1 installed?).")
+        return 1
 
     abort = threading.Event()
-    exec_fn = Exec(abort=abort)             # the one abort: tools, teardown and quits all stop on it
+    sampler_dir = tempfile.mkdtemp(prefix="bench-sampler-")
+    registry = PgidRegistry(os.path.join(sampler_dir, "allow.json"))
+    exec_fn = Exec(abort=abort, registry=registry)      # the one abort: tools, teardown and quits all stop on it
     st = RunState(abort, lambda: 0.0)
 
     def on_hid(ev):
@@ -424,10 +443,9 @@ def real_run(args, p):
         abort.set()
 
     monitor.build_sampler(p["sampler_src"], p["sampler"])
-    mon = monitor.Monitor([p["sampler"]], on_hid=on_hid, on_lost=on_lost, on_session=on_session).start()
-    awake = None
+    mon = monitor.Monitor([p["sampler"], "--allow-file", registry.path], on_hid=on_hid, on_lost=on_lost, on_session=on_session).start()
     try:
-        # The sampler is up: re-check what was true before the (unmonitored) compile, then keep the Mac awake.
+        # The sampler is up: re-check what was true before the (unmonitored) compile.
         ok, msg = host.idle_gate(mon.real_idle())
         if not ok:
             print(msg)
@@ -437,21 +455,21 @@ def real_run(args, p):
         if not sok:
             print(smsg)
             return EXIT_USER_ACTIVE
-        awake = host.hold_awake()
         st.idle_fn, st.session_fn, st.tap_ok = mon.real_idle, mon.session_ok, mon.tap_ok
         if not mon.tap_ok:
-            print("note: the input tap is unavailable (grant Input Monitoring to the sampler); tools that post input will be skipped")
-        return _run_levels(args, p, tasks, plan, mon, st, abort, exec_fn, sess, awake is not None)
+            print("note: the input tap is unavailable (grant Input Monitoring to the sampler); the idle guard falls back to HID idle time")
+        return _run_levels(args, p, tasks, plan, mon, st, abort, exec_fn, sess)
     finally:
-        if awake is not None:
-            awake.terminate()
         mon.stop()
+        shutil.rmtree(sampler_dir, ignore_errors=True)
 
 
-def _run_levels(args, p, tasks, plan, mon, st, abort, exec_fn, sess, awake):
+def _run_levels(args, p, tasks, plan, mon, st, abort, exec_fn, sess):
     server = FixtureServer().start()
-    workdir = tempfile.mkdtemp(prefix="bench-run-")      # fixtures: private, never referenced in a prompt
-    cwd = tempfile.mkdtemp(prefix="bench-cwd-")          # agents' cwd: empty, no path to the fixtures
+    # Fixtures live in the agent handoff folder (the only place `agent open` takes files from), in a directory of this
+    # run's own. Nothing in a prompt names it.
+    workdir = tempfile.mkdtemp(prefix="bench-run-", dir=host.HANDOFF)
+    cwd = tempfile.mkdtemp(prefix="bench-cwd-")          # the agents' cwd: empty, no path to the fixtures
     opener = Opener(exec_fn, p["baneyspaces"])
     referee_driver = AgentDesktopDriver(exec_fn, p["agent_desktop"])
     cleanup_driver = AgentDesktopDriver(exec_fn, p["agent_desktop"])     # shares the abort
@@ -461,9 +479,10 @@ def _run_levels(args, p, tasks, plan, mon, st, abort, exec_fn, sess, awake):
     run_id = f"{date}-{hms}-{secrets.token_hex(2)}"
     results_dir = args.results_dir
     exit_code = 0
-    host_state = {"session": sess, "caffeinate": " ".join(host.CAFFEINATE) if awake else None, "input_tap": mon.tap_ok}
-    caveats = ["ChatGPT computer use runs only inside the sandbox VM and is not measured on this Mac",
-               "the BaneySpaces and agent-desktop agent columns are confined (MCP scope, agent-desktop-guard)"]
+    created_ever = set()
+    host_state = {"session": sess, "caffeinate": " ".join(host.CAFFEINATE) + " -t <level budget>", "input_tap": mon.tap_ok}
+    caveats = ["ChatGPT computer use and agent-desktop --headed run only inside the sandbox VM (#111) and are not measured on this Mac",
+               "the BaneySpaces and agent-desktop agent columns are confined (MCP allowlist, agent-desktop-guard)"]
 
     def finish(level, tool, recs, dead):
         aborted = dead.get(tool, "")
@@ -475,44 +494,53 @@ def _run_levels(args, p, tasks, plan, mon, st, abort, exec_fn, sess, awake):
             "versions": versions, "host": os.uname().nodename, "aborted": aborted or None, "tasks": recs,
             "summary": scoring.summarize(recs), "monitor": mon.health(), "host_state": host_state, "caveats": caveats})
 
+    def context(level, tool, doing):
+        wd = os.path.join(workdir, f"{level}-{tool}")
+        os.makedirs(wd, exist_ok=True)
+        c = Context(tool=tool, workdir=wd, server=server, monitor=mon, opener=opener, referee_driver=referee_driver,
+                    cleanup_driver=cleanup_driver, exec_fn=exec_fn, state_fn=_state, doing=doing, aborted_fn=abort.is_set,
+                    session_fn=mon.session_ok)
+        c.created_ever = created_ever
+        return c
+
     try:
         for level in [lv for lv in ("scripted", "agent", "micro") if any(l == lv for l, _ in plan)]:
             tools = [t for lv, t in plan if lv == level]
-            if level == "micro":
-                for tool in tool_order(tools, 0):
-                    why = st.gate() if not st.stop else st.stop_reason
-                    if why:
-                        st.halt(why)
-                        break
-                    if tool in SENDS_INPUT and not mon.tap_ok and tool != "chatgpt":
-                        m = {"status": "n/a", "why": "needs the sampler's input tap (Input Monitoring)", "latency": None}
-                    else:
+            # Awake only for this level and only for its budget; released between levels. This also holds off the
+            # screensaver lock, so the exposure is bounded and the run stops when the budget ends.
+            budget = level_budget_s(level, len(tasks), len(tools))
+            awake = host.hold_awake(budget)
+            st.deadline = time.monotonic() + budget
+            try:
+                if level == "micro":
+                    for tool in tool_order(tools, 0):
+                        why = st.gate() if not st.stop else st.stop_reason
+                        if why:
+                            st.halt(why)
+                            break
+                        ctx = context(level, tool, micro_doing(tool, p, exec_fn))
                         try:
-                            m = run_micro_level(tool, p, exec_fn, opener, os.path.join(workdir, "micro-" + tool), referee_driver,
-                                                cleanup_driver, _state, abort.is_set)
+                            m = run_micro_level(tool, ctx)
                         except Aborted:
                             m = {"status": "n/a", "why": "stopped: input seen, monitor lost or screen locked", "latency": None}
                         except Exception as e:  # noqa: BLE001
                             m = {"status": "n/a", "why": f"{type(e).__name__}: {e}"[:300], "latency": None}
-                    if abort.is_set() and not st.stop:
-                        st.halt(st.reason_text())
-                    report.write_result(results_dir, {"tool": tool, "level": level, "date": date, "hms": hms, "run_id": run_id,
-                                                      "only": None, "full": m.get("status") == "ok", "versions": versions,
-                                                      "micro": m, "aborted": None if m.get("status") == "ok" else m.get("why"),
-                                                      "monitor": mon.health(), "host_state": host_state})
-                continue
-            ctxs = {}
-            for tool in tools:
-                wd = os.path.join(workdir, f"{level}-{tool}")
-                os.makedirs(wd, exist_ok=True)
-                ctxs[tool] = Context(tool=tool, workdir=wd, server=server, monitor=mon, opener=opener,
-                                     referee_driver=referee_driver, cleanup_driver=cleanup_driver, exec_fn=exec_fn,
-                                     state_fn=_state, doing=make_doing(level, tool, p, exec_fn, wd, cwd),
-                                     aborted_fn=abort.is_set, session_fn=mon.session_ok)
-            records, dead = run_group(tasks, ctxs, st, level=level,
-                                      progress=lambda lv, tool, t, rec: print(f"  {lv:<8} {tool:<20} {t['id']:<34} {rec['status']}"))
-            for tool in tools:
-                finish(level, tool, records[tool], dead)
+                        if abort.is_set() and not st.stop:
+                            st.halt(st.reason_text())
+                        report.write_result(results_dir, {"tool": tool, "level": level, "date": date, "hms": hms, "run_id": run_id,
+                                                          "only": None, "full": m.get("status") == "ok", "versions": versions,
+                                                          "micro": m, "aborted": None if m.get("status") == "ok" else m.get("why"),
+                                                          "monitor": mon.health(), "host_state": host_state})
+                    continue
+                ctxs = {tool: context(level, tool, make_doing(level, tool, p, exec_fn, os.path.join(workdir, f"{level}-{tool}"), cwd))
+                        for tool in tools}
+                records, dead = run_group(tasks, ctxs, st, level=level,
+                                          progress=lambda lv, tool, t, rec: print(f"  {lv:<8} {tool:<20} {t['id']:<34} {rec['status']}"))
+                for tool in tools:
+                    finish(level, tool, records[tool], dead)
+            finally:
+                awake.terminate()
+                st.deadline = None
             if st.stop:
                 exit_code = EXIT_USER_ACTIVE
                 break

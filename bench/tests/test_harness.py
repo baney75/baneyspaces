@@ -48,7 +48,7 @@ class DryRun(unittest.TestCase):
 
     def test_sandbox_tasks_are_labelled(self):
         rc, out = self.run_dry("--tool", "baneyspaces", "--level", "scripted", env={"BENCH_BANEYSPACES": "/bin/echo", "BENCH_AGENT_DESKTOP": "/bin/echo"})
-        self.assertEqual(sum(1 for line in out.splitlines() if "[sandbox]" in line), 3)
+        self.assertEqual(sum(1 for line in out.splitlines() if "[sandbox]" in line), 5)
 
     def test_expected_failures_are_listed_not_skipped(self):
         rc, out = self.run_dry("--tool", "baneyspaces", "--level", "scripted", env={"BENCH_BANEYSPACES": "/bin/echo", "BENCH_AGENT_DESKTOP": "/bin/echo"})
@@ -198,10 +198,29 @@ class NoBypass(unittest.TestCase):
 
 
 class Awake(unittest.TestCase):
-    def test_hold_awake_starts_caffeinate_dims(self):
+    def test_hold_awake_is_capped_by_a_budget(self):
+        """first-F6"""
         got = {}
-        harness.host.hold_awake(popen=lambda argv, **kw: got.update(argv=argv) or "proc")
-        self.assertEqual(got["argv"], ["caffeinate", "-dims"])
+        harness.host.hold_awake(900, popen=lambda argv, **kw: got.update(argv=argv) or "proc")
+        self.assertEqual(got["argv"], ["caffeinate", "-dims", "-t", "900"])
+        self.assertNotIn("-u", got["argv"])
+
+    def test_the_level_budget_is_bounded_and_scales_with_the_work(self):
+        self.assertLessEqual(harness.level_budget_s("agent", 30, 3), 6 * 3600)
+        self.assertGreater(harness.level_budget_s("agent", 30, 2), harness.level_budget_s("scripted", 30, 2))
+        self.assertGreater(harness.level_budget_s("scripted", 30, 1), 900)
+
+    def test_the_run_stops_when_the_budget_ends(self):
+        import threading
+        st = harness.RunState(threading.Event(), lambda: 9999)
+        self.assertIsNone(st.gate())
+        st.deadline = harness.time.monotonic() - 1
+        self.assertIn("time budget", st.gate())
+
+    def test_caffeinate_is_released_between_levels(self):
+        src = open(os.path.join(support.BENCH, "harness.py")).read()
+        self.assertIn("awake = host.hold_awake(budget)", src)
+        self.assertIn("awake.terminate()", src)
 
     def test_session_gate_messages(self):
         from benchlib import host
