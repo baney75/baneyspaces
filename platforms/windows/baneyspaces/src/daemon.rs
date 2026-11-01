@@ -446,8 +446,10 @@ fn model_err(e: ModelError) -> Envelope {
 }
 
 /// Operations only you may ask for. An agent's process (one BaneySpaces started, or anything it
-/// started) is refused: agents never change your workspaces, your settings or the daemon.
-const USER_OPS: &[&str] = &["switch", "move", "focus_monitor", "overview", "agent_show", "agent_hide", "agent_toggle", "agent_move", "agent_bring", "set", "quit"];
+/// started) is refused: agents never change your workspaces, your windows or the daemon. The three
+/// appearance settings are the exception (Donovan, 2026-11-01): an agent may customize them, and
+/// every `set` is logged with who asked.
+const USER_OPS: &[&str] = &["switch", "move", "focus_monitor", "overview", "agent_show", "agent_hide", "agent_toggle", "agent_move", "agent_bring", "quit"];
 
 /// Is the process on the other end of the pipe an agent's? By pid, against the model and the jobs.
 fn peer_is_agent(c: &Core, pid: u32) -> bool {
@@ -528,6 +530,10 @@ pub fn handle(shared: &Shared, req: &Value) -> Envelope {
                     let text = serde_json::to_string_pretty(&Value::Object(c.settings.clone())).unwrap_or_default();
                     c.paths.write_atomic("settings.json", &text);
                     c.persist();
+                    // Who asked: the agent id and the pipe peer's pid, never the value.
+                    let peer = req["_peer_pid"].as_u64().map(|p| p as u32).filter(|p| *p != 0);
+                    let env = Envelope::ok(json!({}));
+                    c.paths.append("actions.jsonl", &ActionRecord::from_result(now(), &agent, "set", peer, None, None, &format!("settings:{k}"), &env).to_line());
                     Envelope::ok(json!({ k: val, "note": "stored; the themed UI and the dock arrive in Windows part 2" }))
                 }
             }

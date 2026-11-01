@@ -102,7 +102,7 @@ through to the engine. `press`, `key` and `pointer` are `not_supported` (phase 3
 - `agent run` is `needs_sandbox`: a console window belongs to Windows Terminal, not to the process we
   would start, so it cannot be tied to the agent.
 - An agent's own process (a pid in a job, or registered) is refused every user operation
-  (`switch`, `move`, `set`, `stop`, the agent workspace toggles...) with `not_in_scope`. The pipe's
+  (`switch`, `move`, `stop`, the agent workspace toggles, parking a window...) with `not_in_scope`. The pipe's
   client pid decides, never the request. The control pipe is `\\.\pipe\baneyspaces-<user>`, with an
   ACL for this user and SYSTEM only, and remote clients rejected.
 - The engine keeps its snapshots in `%LOCALAPPDATA%\BaneySpaces\engine-state` (`AGENT_DESKTOP_HOME`),
@@ -112,7 +112,9 @@ through to the engine. `press`, `key` and `pointer` are `not_supported` (phase 3
 
 `baneyspaces set|get` stores `appearance.theme` (`baneyspaces`, `omarchy`, `minimal`),
 `appearance.palette` (`auto` or a palette name) and `dock.enabled` in `settings.json` and returns them
-(`spec/themes.md`). Part 1 has no dock or themed UI, so they have no effect yet.
+(`spec/themes.md`). Part 1 has no dock or themed UI, so they have no effect yet. Agents may `set` these
+three too (Donovan, 2026-11-01); every `set` is logged with the agent id and the caller's pid (never the
+value). Workspace and window operations stay user-only.
 
 ## Build and test
 

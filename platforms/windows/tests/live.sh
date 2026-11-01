@@ -130,8 +130,10 @@ BSX='C:\bs\baneyspaces\target\release\baneyspaces.exe'
 vmx 'Remove-Item C:\bs\peer.txt -ErrorAction SilentlyContinue; Set-Content C:\bs\peer.cmd "@echo off`r`nC:\bs\baneyspaces\target\release\baneyspaces.exe set dock.enabled false > C:\bs\peer.txt 2>&1`r`nC:\bs\baneyspaces\target\release\baneyspaces.exe switch 2 >> C:\bs\peer.txt 2>&1"' >/dev/null
 cli agent open cmd.exe /c 'C:\bs\peer.cmd' >/dev/null; sleep 2
 PEER=$(vmx 'Get-Content C:\bs\peer.txt'); echo "$PEER" >> "$LOG"
-[[ "$(grep -c not_in_scope <<<"$PEER")" == 2 ]] && ok "set and switch from an agent's own process are refused (not_in_scope)" || bad "agent peer not refused: $PEER"
-cli get dock.enabled | grep -q true && ok "the agent's refused set changed nothing" || bad "dock.enabled changed"
+[[ "$(grep -c not_in_scope <<<"$PEER")" == 1 ]] && grep -q '"dock.enabled":false' <<<"$PEER" && ok "from an agent's own process: switch is refused (not_in_scope), set dock.enabled is accepted" || bad "agent peer: $PEER"
+cli get dock.enabled | grep -q false && ok "the agent's set took effect (agents may customize appearance)" || bad "dock.enabled did not change"
+cli agent log --since 120 | grep -q '"verb":"set"' && ok "the set was logged with its caller (verb set, route settings:dock.enabled)" || bad "no log record for the agent's set"
+cli set dock.enabled true >/dev/null
 cli stop >/dev/null; sleep 2; daemon_start
 
 say; say "RESULT: $([[ $fail == 0 ]] && echo PASS || echo FAIL)  passed=$pass failed=$fail   (log: $LOG, shots: $OUT)"
