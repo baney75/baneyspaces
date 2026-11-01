@@ -85,6 +85,22 @@ final class GlidePlannerTests: XCTestCase {
         XCTAssertLessThanOrEqual(GlidePlan(from: GlideState(position: .zero), target: CGPoint(x: 3000, y: 0), spring: slow).duration, 1.0)
     }
 
+    func testTheSlowestAllowedSpringStillSettlesWithoutASnap() {
+        for (response, damping) in [(0.6, 2.0), (0.6, 0.3), (0.6, 1.0), (0.04, 2.0), (0.6, 1.6)] {
+            let plan = GlidePlan(from: GlideState(position: .zero), target: CGPoint(x: 3000, y: 0), spring: GlideSpring(response: response, damping: damping))
+            let s = plan.samples()
+            XCTAssertLessThanOrEqual(plan.duration, GlidePlan.maxDuration)
+            let lastStep = hypot(s[s.count - 1].position.x - s[s.count - 2].position.x, s[s.count - 1].position.y - s[s.count - 2].position.y)
+            XCTAssertLessThan(lastStep, 3, "the last step is a few points, not a snap (response \(response), damping \(damping))")
+            let late = plan.state(at: plan.duration - 0.004).position
+            XCTAssertLessThan(abs(late.x - 3000), 3, "within 3 pt of the target at the end (response \(response), damping \(damping))")
+        }
+    }
+
+    func testTheDefaultSpringIsLeftAlone() {
+        XCTAssertEqual(GlideSpring.baneyspaces.clamped, .baneyspaces)
+    }
+
     func testPresetsAndSpeedShapeTheSpring() {
         XCTAssertEqual(GlideSpring.preset("baneyspaces"), .baneyspaces)
         XCTAssertNil(GlideSpring.preset("nonsense"))
@@ -259,7 +275,7 @@ final class CursorSettingsTests: XCTestCase {
         [other]
         enabled = true
         """)
-        XCTAssertEqual(f.enabled, false)
+        XCTAssertEqual(f.ignored, ["behavior.cursor.enabled"], "the file can't turn the cursor off")
         XCTAssertEqual(f.theme, "minimal")
         XCTAssertEqual(f.preset, "snappy")
         XCTAssertEqual(f.speed, 1.25)
@@ -267,18 +283,18 @@ final class CursorSettingsTests: XCTestCase {
         XCTAssertEqual(f.response, 0.2)
         XCTAssertEqual(f.damping, 0.9)
         let s = CursorSettings().applying(f)
-        XCTAssertFalse(s.enabled)
+        XCTAssertTrue(s.enabled, "enabled = false in config.toml is not honored: only Settings turns the cursor off")
         XCTAssertEqual(s.theme, "minimal")
     }
 
     func testABadLineNeverSwitchesTheCursorOff() {
-        let f = CursorConfigFile.parse("[behavior.cursor]\nenabled = maybe\ntheme = 7\nnonsense\n[behavior\nspeed = x\n")
+        let f = CursorConfigFile.parse("[behavior.cursor]\ntheme = 7\nnonsense\n[behavior\nspeed = x\n")
         XCTAssertTrue(f.isEmpty)
         XCTAssertEqual(CursorSettings().applying(f), CursorSettings())
     }
 
     func testDottedKeysAndTheConfigPath() {
-        XCTAssertEqual(CursorConfigFile.parse("behavior.cursor.enabled = false\n").enabled, false)
+        XCTAssertTrue(CursorSettings().applying(CursorConfigFile.parse("behavior.cursor.enabled = false\n")).enabled)
         XCTAssertEqual(CursorConfigFile.path(environment: ["XDG_CONFIG_HOME": "/x"], home: "/h"), "/x/baneyspaces/config.toml")
         XCTAssertEqual(CursorConfigFile.path(environment: [:], home: "/h"), "/h/.config/baneyspaces/config.toml")
     }
@@ -303,6 +319,7 @@ final class FakeSurface: CursorSurface {
         case jump(String, CGPoint)
         case act(String, CursorEffect, CGPoint, TimeInterval)
         case hide(String)
+        case remove(String)
     }
     private let lock = NSLock()
     private var log: [Call] = []
@@ -317,6 +334,7 @@ final class FakeSurface: CursorSurface {
     func jump(_ agent: String, to point: CGPoint) { note(.jump(agent, point)) }
     func act(_ agent: String, effect: CursorEffect, point: CGPoint, frame: CGRect, delay: TimeInterval) { note(.act(agent, effect, point, delay)) }
     func hide(_ agent: String) { note(.hide(agent)) }
+    func remove(_ agent: String) { note(.remove(agent)) }
 }
 
 final class CursorDirectorTests: XCTestCase {
@@ -483,6 +501,103 @@ final class CursorDirectorTests: XCTestCase {
         XCTAssertLessThanOrEqual(name.count, CursorDirector.maxNameLength)
     }
 
+    // MARK: displays, late frames, idle
+
+    func testACursorIsMadeAgainAfterTheDisplaysChange() {
+        let (d, s) = make()
+        d.handsWillAct(event(at: CGPoint(x: 400, y: 300))); drain()
+        let before = s.calls.count
+        // The overlay forgot its cursors (the worst case); the displays changed to a new, larger one.
+        let bigger = CGRect(x: 0, y: 0, width: 2560, height: 1440)
+        var env = CursorEnvironment(); env.current = 9; env.agentWorkspace = 9; env.displays = [bigger]
+        d.setEnvironment(env); drain()
+        let after = Array(s.calls[before...])
+        XCTAssertTrue(after.contains(.configure("a", "Claude")), "its look is sent again: \(after)")
+        XCTAssertTrue(after.contains(.appear("a", CGPoint(x: 400, y: 300))), "and it comes back where it stood: \(after)")
+        // And the next action works as before.
+        clock += 1
+        d.handsWillAct(event(at: CGPoint(x: 900, y: 600))); drain()
+        XCTAssertTrue(s.calls.contains(.move("a", CGPoint(x: 900, y: 600))))
+    }
+
+    func testACursorThatLostItsDisplayIsHiddenNotLeftBehind() {
+        let (d, s) = make()
+        d.handsWillAct(event(at: CGPoint(x: 1300, y: 800))); drain()
+        var env = CursorEnvironment(); env.current = 9; env.agentWorkspace = 9; env.displays = [CGRect(x: 0, y: 0, width: 800, height: 600)]
+        d.setEnvironment(env); drain()
+        XCTAssertFalse(s.calls.suffix(3).contains(.appear("a", CGPoint(x: 1300, y: 800))))
+        clock += 1
+        d.handsWillAct(event(at: CGPoint(x: 100, y: 100))); drain()
+        XCTAssertTrue(s.calls.contains(.appear("a", CGPoint(x: 100, y: 100))), "it reappears at the target, not at a place that is gone")
+    }
+
+    func testAFrameThatArrivesInTimeIsUsed() {
+        let (d, s) = make()
+        var e = event(at: .zero)
+        e.frame = nil; e.point = nil; e.id = 5; e.frameComing = true
+        d.handsWillAct(e); drain()
+        XCTAssertTrue(s.calls.isEmpty, "waiting for the frame, not drawing")
+        d.handsFrame(actionID: 5, frame: CGRect(x: 600, y: 400, width: 100, height: 40)); drain()
+        XCTAssertTrue(s.calls.contains(.appear("a", CGPoint(x: 650, y: 420))))
+    }
+
+    func testALateFrameLeavesTheCursorWhereItStoodAndDrawsTheEffectThere() {
+        let (d, s) = make()
+        d.handsWillAct(event(at: CGPoint(x: 200, y: 200))); drain()
+        let before = s.calls.count
+        var e = event(at: .zero, window: 7)
+        e.frame = nil; e.point = nil; e.id = 6; e.frameComing = true
+        d.handsWillAct(e)
+        Thread.sleep(forTimeInterval: CursorDirector.frameWait + 0.15); drain()
+        let after = Array(s.calls[before...])
+        XCTAssertEqual(after.count, 1, "no glide: \(after)")
+        guard case .act("a", .click, let p, 0)? = after.first else { return XCTFail("\(after)") }
+        XCTAssertEqual(p, CGPoint(x: 200, y: 200), "at the last known point")
+        d.handsFrame(actionID: 6, frame: CGRect(x: 900, y: 500, width: 10, height: 10)); drain()
+        XCTAssertEqual(s.calls.count, before + 1, "a frame that comes after the wait is dropped")
+    }
+
+    func testALateFrameWithNothingKnownDrawsNothing() {
+        let (d, s) = make()
+        var e = event(at: .zero)
+        e.frame = nil; e.point = nil; e.id = 7; e.frameComing = true
+        d.handsWillAct(e)
+        Thread.sleep(forTimeInterval: CursorDirector.frameWait + 0.15); drain()
+        XCTAssertTrue(s.calls.isEmpty)
+    }
+
+    func testLeavingAndComingBackForgetsWhereAnIdleCursorStood() {
+        let (d, s) = make(idle: 0.05)
+        d.handsWillAct(event(at: CGPoint(x: 200, y: 200))); drain()
+        Thread.sleep(forTimeInterval: 0.2); drain()
+        XCTAssertEqual(s.calls.last, .hide("a"), "idle")
+        var env = CursorEnvironment(); env.current = 2; env.agentWorkspace = 9; env.displays = [screen]
+        d.setEnvironment(env); drain()
+        env.current = 9
+        d.setEnvironment(env); drain()
+        clock += 30
+        d.handsWillAct(event(at: CGPoint(x: 800, y: 500))); drain()
+        let idleAt = s.calls.lastIndex(of: .hide("a"))!
+        let later = Array(s.calls[idleAt...])
+        XCTAssertTrue(later.contains(.appear("a", CGPoint(x: 800, y: 500))), "at the target: the windows were parked in between")
+        XCTAssertFalse(later.contains(.appear("a", CGPoint(x: 200, y: 200))))
+    }
+
+    func testAQuietSessionIsRemovedAfterAWhile() {
+        var host = CursorDirector.Host()
+        host.now = { [unowned self] in self.clock }
+        let s = FakeSurface()
+        let d = CursorDirector(surface: s, queue: queue, host: host, idleAfter: 0.03, pruneAfter: 0.05)
+        var env = CursorEnvironment(); env.current = 9; env.agentWorkspace = 9; env.displays = [screen]
+        d.setEnvironment(env)
+        d.handsWillAct(event(at: CGPoint(x: 200, y: 200))); drain()
+        Thread.sleep(forTimeInterval: 0.25); drain()
+        XCTAssertTrue(s.calls.contains(.remove("a")))
+        clock += 1000
+        d.handsWillAct(event(at: CGPoint(x: 300, y: 300))); drain()
+        XCTAssertEqual(s.calls.filter { if case .configure = $0 { return true } else { return false } }.count, 2, "a returning session is configured again")
+    }
+
     // MARK: the action never waits
 
     func testTheActionDoesNotWaitForTheGlide() {
@@ -570,6 +685,38 @@ final class CursorOverheadTests: XCTestCase {
     }
 }
 
+final class CursorOffIsDonovansTests: XCTestCase {
+    func req(_ args: [String]) -> Wire.Request { Wire.Request(op: .agent, text: "cursor", args: args) }
+
+    func testTheSocketRefusesCursorOff() {
+        XCTAssertNotNil(SocketPolicy.refusal(for: req(["off"])))
+        XCTAssertNotNil(SocketPolicy.refusal(for: req(["OFF"])))
+        XCTAssertNil(SocketPolicy.refusal(for: req(["on"])))
+        XCTAssertNil(SocketPolicy.refusal(for: req(["theme", "omarchy"])), "agents may pick the look")
+        XCTAssertNil(SocketPolicy.refusal(for: req(["status"])))
+    }
+
+    func testTheConfigFileCannotTurnItOffWhoeverWroteIt() {
+        var s = CursorSettings()
+        s = s.applying(CursorConfigFile.parse("[behavior.cursor]\nenabled = false\n"))
+        XCTAssertTrue(s.enabled)
+        XCTAssertEqual(CursorConfigFile.parse("[behavior.cursor]\nenabled = false\n").ignored, ["behavior.cursor.enabled"])
+    }
+
+    func testOnlySettingsTurnsItOffAndARefusalIsLogged() throws {
+        let c = try CursorSourceTests.code("Sources/BaneySpaces/Cursor/CursorController.swift")
+        let off = try XCTUnwrap(HandsSourceTests.between("case \"off\":", "case \"theme\":", in: c))
+        XCTAssertFalse(off.contains("setEnabled"), "the command never turns it off")
+        XCTAssertTrue(off.contains("Trace.log(\"cursor off refused"))
+        let setup = try CursorSourceTests.code("Sources/BaneySpaces/Setup.swift")
+        XCTAssertTrue(setup.contains("cursor.setEnabled($0)"), "Settings does")
+        let server = try CursorSourceTests.code("Sources/BaneySpaces/Deck/Server.swift")
+        XCTAssertTrue(server.contains("Trace.log(\"refused on the socket"))
+        let others = try ["Sources/BaneySpaces/Deck/DeckController.swift", "Sources/BaneySpaces/AppDelegate.swift", "Sources/baneyspaces-cli/main.swift"].map { try CursorSourceTests.code($0) }.joined()
+        XCTAssertFalse(others.contains("setEnabled(false)"))
+    }
+}
+
 final class CursorSourceTests: XCTestCase {
     static let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
     static func code(_ path: String) throws -> String {
@@ -629,9 +776,15 @@ final class CursorSourceTests: XCTestCase {
         let will = try XCTUnwrap(router.range(of: "HandsEvents.willAct("))
         let act = try XCTUnwrap(router.range(of: "HandsEngine.shared.act("))
         XCTAssertTrue(wants.lowerBound < will.lowerBound && will.lowerBound < act.lowerBound)
-        XCTAssertTrue(router.contains("frame: frame"))
+        XCTAssertTrue(router.contains("frameComing: wantsFrame"))
         XCTAssertTrue(router.contains("scope: scope.reason"))
-        XCTAssertTrue(router.contains("budget: HandsEngine.Budget.bounds"), "a hung app can't hold the cursor's measurement for long")
+        XCTAssertTrue(router.contains("HandsEngine.shared.measureBounds("), "the bounds are read on the process queue")
+        XCTAssertFalse(router.contains("property: \"bounds\""), "and never by a call this thread waits on")
+        XCTAssertTrue(router.contains("within: HandsEngine.Budget.bounds"))
+        let engine = try Self.code("Sources/BaneySpaces/Hands/HandsEngine.swift")
+        XCTAssertTrue(engine.contains("bounds: TimeInterval = 0.05"), "a read that can't start in 50 ms is dropped")
+        let measure = try XCTUnwrap(HandsSourceTests.block(after: "func measureBounds(", in: engine))
+        XCTAssertFalse(measure.contains("semaphore") || measure.contains(".wait("), "nobody waits for it")
     }
 
     func testAShotLeavesTheCursorOutUnlessAskedAndTheOverlayIsOutOfCaptures() throws {
@@ -642,6 +795,16 @@ final class CursorSourceTests: XCTestCase {
         XCTAssertFalse(shot?.params.first { $0.name == "cursor" }?.required ?? true)
     }
 
+    func testTheProbeCanFail() throws {
+        let probe = try Self.code("scripts/cursor-probe.swift")
+        XCTAssertTrue(probe.contains("HandsEvents.setListener(director)"), "the events reach the director")
+        XCTAssertTrue(probe.contains("let drew ="), "a run that drew nothing fails")
+        XCTAssertTrue(probe.contains("drawnPositions.count >= index"))
+        XCTAssertTrue(probe.contains("apply.count == index"))
+        XCTAssertFalse(probe.contains("--onscreen"), "it always runs on the display: an offscreen panel gets no display link")
+        XCTAssertFalse(probe.contains("let far ="))
+    }
+
     func testTheCursorHasASwitchInSettingsAndTheCommandLine() throws {
         let deck = try Self.code("Sources/BaneySpaces/Deck/DeckController.swift")
         XCTAssertTrue(deck.contains("case \"cursor\":"))
@@ -650,6 +813,7 @@ final class CursorSourceTests: XCTestCase {
         XCTAssertTrue(setup.contains("Show each agent's cursor"))
         let controller = try Self.code("Sources/BaneySpaces/Cursor/CursorController.swift")
         XCTAssertTrue(controller.contains("case \"on\":") && controller.contains("case \"off\":") && controller.contains("case \"theme\":"))
+        XCTAssertFalse(controller.contains("force"), "no dead parameter")
     }
 
     func testTheCursorHidesTheMomentYouLeaveTheAgentWorkspace() throws {

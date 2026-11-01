@@ -24,10 +24,16 @@ public struct HandsActionEvent: Equatable, Sendable {
     public var workspace: Int?
     /// For a scroll: `up`, `down`, `left` or `right`.
     public var direction: String?
+    /// Names this action, so a frame that is measured while the action runs can find it (`handsFrame`).
+    public var id: UInt64
+    /// The frame is being measured off the action's thread and follows as `handsFrame(actionID:frame:)`.
+    public var frameComing: Bool
     public init(kind: String, ref: String, window: UInt32, pid: Int32, app: String, point: CGPoint?, frame: CGRect? = nil,
-                session: String = "", scope: String = "", workspace: Int? = nil, direction: String? = nil) {
+                session: String = "", scope: String = "", workspace: Int? = nil, direction: String? = nil,
+                id: UInt64 = 0, frameComing: Bool = false) {
         self.kind = kind; self.ref = ref; self.window = window; self.pid = pid; self.app = app; self.point = point
         self.frame = frame; self.session = session; self.scope = scope; self.workspace = workspace; self.direction = direction
+        self.id = id; self.frameComing = frameComing
     }
 }
 
@@ -37,10 +43,13 @@ public protocol HandsEventListener: AnyObject {
     /// Whether the listener will use the target's frame: the hands measure it (an engine call) only if so.
     /// Called on the hands' thread, so it must be cheap and thread-safe.
     func handsWantsFrame(scope: String, workspace: Int?) -> Bool
+    /// The frame of an action announced with `frameComing`, from the thread that measured it; nil if it couldn't be read in time.
+    func handsFrame(actionID: UInt64, frame: CGRect?)
 }
 
 extension HandsEventListener {
     public func handsWantsFrame(scope: String, workspace: Int?) -> Bool { true }
+    public func handsFrame(actionID: UInt64, frame: CGRect?) {}
 }
 
 /// The one place every action handler reports its target through.
@@ -63,6 +72,16 @@ public enum HandsEvents {
     public static func wantsFrame(scope: String, workspace: Int?) -> Bool {
         lock.lock(); let l = listener; lock.unlock()
         return l?.handsWantsFrame(scope: scope, workspace: workspace) ?? false
+    }
+
+    private static var nextID: UInt64 = 0
+    /// A number for an action to be named by.
+    public static func newActionID() -> UInt64 { lock.lock(); defer { lock.unlock() }; nextID += 1; return nextID }
+
+    /// The measured frame of an action announced with `frameComing`.
+    public static func frameMeasured(actionID: UInt64, frame: CGRect?) {
+        lock.lock(); let l = listener; lock.unlock()
+        l?.handsFrame(actionID: actionID, frame: frame)
     }
 
     public static func willAct(_ event: @autoclosure () -> HandsActionEvent) {

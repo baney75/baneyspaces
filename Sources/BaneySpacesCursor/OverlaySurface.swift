@@ -8,14 +8,26 @@ public final class OverlaySurface: CursorSurface {
     private var displays: [CursorDisplay] = []
     private var cursors: [String: AgentCursor] = [:]
 
-    public init(displays specs: [CursorDisplaySpec]) { setDisplays(specs) }
+    private let ordersFront: Bool
 
-    /// The displays changed (or first time): the overlays are rebuilt and every cursor hides until its next action.
+    /// `ordersFront: false` builds the panels without ever putting one on screen (tests).
+    public init(displays specs: [CursorDisplaySpec], ordersFront: Bool = true) {
+        self.ordersFront = ordersFront
+        displays = specs.map { CursorDisplay($0, ordersFront: ordersFront) }
+    }
+
+    /// The displays changed: the overlays are rebuilt, and every cursor is kept. One that was shown comes back at
+    /// the same place if that place is still on a display (its marks and look intact), and is hidden if it is not.
     public func setDisplays(_ specs: [CursorDisplaySpec]) {
+        let shown = cursors.filter { $0.value.isShown }.map { ($0.value, $0.value.point) }
         cursors.values.forEach { $0.detach() }
         displays.forEach { $0.close() }
-        displays = specs.map(CursorDisplay.init)
-        cursors = [:]
+        displays = specs.map { CursorDisplay($0, ordersFront: ordersFront) }
+        for (c, p) in shown {
+            guard let d = display(containing: p) else { continue }
+            c.attach(to: d)
+            c.appear(at: p)
+        }
     }
 
     /// The displays' frames in the hands' coordinates.
@@ -39,11 +51,9 @@ public final class OverlaySurface: CursorSurface {
         guard let c = cursors[agent], let d = display(containing: motion.target) else { return }
         if c.display !== d {
             // Across displays the cursor lands instead of gliding over the gap.
-            let wasShown = c.isShown
             c.detach()
             c.attach(to: d)
             c.appear(at: motion.target)
-            _ = wasShown
             return
         }
         c.glide(motion)
@@ -61,11 +71,22 @@ public final class OverlaySurface: CursorSurface {
 
     public func hide(_ agent: String) { cursors[agent]?.hide() }
 
+    public func remove(_ agent: String) {
+        cursors[agent]?.detach()
+        cursors[agent] = nil
+    }
+
+    /// For checks: how many cursors the overlay holds, and whether one's marks are attached.
+    public var cursorCount: Int { cursors.count }
+    public func marksAreAttached(_ agent: String) -> Bool { cursors[agent]?.marksAreAttached ?? false }
+
     /// Where a cursor is drawn right now (its presentation layer), in the hands' coordinates: for the probe.
     public func presentedPoint(_ agent: String) -> CGPoint? {
         guard let c = cursors[agent], let d = c.display, let p = c.root.presentation()?.position else { return nil }
         return CGPoint(x: p.x + d.spec.globalFrame.minX, y: d.spec.globalFrame.maxY - p.y)
     }
+
+    public func isGliding(_ agent: String) -> Bool { cursors[agent]?.root.animation(forKey: AgentCursor.glideKey) != nil }
 
     public func isShown(_ agent: String) -> Bool { cursors[agent]?.isShown ?? false }
 

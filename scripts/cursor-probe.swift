@@ -1,12 +1,14 @@
 // The agent cursor's frame-timing probe (docs/agent-computer-use.md, phase 1b; spec/config.md, the animation bar).
 //
-//   swift run -c release cursor-probe              100 glides on an offscreen overlay
-//   swift run -c release cursor-probe --onscreen   the same on the main display (the cursor is visible)
+//   swift run -c release cursor-probe              100 glides on the main display, as if on the agent workspace
 //   swift run -c release cursor-probe --glides 40  fewer glides
 //
-// It drives the real director and the real overlay (Core Animation layers in a click-through panel), the way the
-// hands do, and records CADisplayLink frame times while 100 glides run (every fifth one is cut short by a new
-// target). Passing means: at most 1 frame in 200 over 1.5x the display's frame interval and none over 2x; the
+// It drives the real director (registered with HandsEvents, as the app does) and the real overlay (Core Animation
+// layers in a click-through panel), the way the hands do, and records CADisplayLink frame times while 100 glides run
+// (every fifth one is cut short by a new target). The overlay is ON the display, because a panel outside every
+// display gets no display link and is never composited: the cursor is visible while it runs, which is why it needs
+// Donovan away. A run that drew nothing fails: it needs the cursor's presentation layer to have moved, once per glide
+// at least, and one overlay update per action. Passing means: at most 1 frame in 200 over 1.5x the display's frame interval and none over 2x; the
 // real pointer never moved (CGEvent location sampled at 1 kHz, zero changes); the overlay never became key or
 // main and the front app never changed. It also reports how far the drawn cursor strays from the planned glide.
 //
@@ -36,6 +38,7 @@ final class TimedSurface: CursorSurface {
         applySeconds.append(pending); pending = 0
     }
     func hide(_ agent: String) { timed { inner.hide(agent) } }
+    func remove(_ agent: String) { timed { inner.remove(agent) } }
 }
 
 @main
@@ -50,7 +53,6 @@ final class CursorProbe: NSObject {
 
     let args = CommandLine.arguments
     var glides = 100
-    var onscreen = false
     let agentID = "probe"
     var surface: TimedSurface!
     var director: CursorDirector!
@@ -58,6 +60,9 @@ final class CursorProbe: NSObject {
     var stamps: [Double] = []
     var intervals: [Double] = []
     var errors: [Double] = []
+    struct Position: Hashable { var x: Int, y: Int }
+    /// Where the cursor layer was drawn, frame by frame: a run that drew nothing leaves this empty.
+    var drawnPositions = Set<Position>()
     var pointerStart = CGPoint.zero
     var pointerMoves = 0
     var interrupted = false
@@ -76,7 +81,6 @@ final class CursorProbe: NSObject {
 
     func start() {
         if let i = args.firstIndex(of: "--glides"), i + 1 < args.count, let n = Int(args[i + 1]), n > 0 { glides = n }
-        onscreen = args.contains("--onscreen")
         idleAtStart = idle()
         guard idleAtStart >= 600 else {
             print("cursor-probe: not run (Donovan has been idle \(Int(idleAtStart)) s; the probe needs 600 s)")
@@ -89,12 +93,8 @@ final class CursorProbe: NSObject {
         NSApplication.shared.setActivationPolicy(.accessory)
         let primary = NSScreen.screens[0]
         let top = primary.frame.maxY
-        let real = CursorDisplaySpec(globalFrame: CGRect(x: screen.frame.minX, y: top - screen.frame.maxY, width: screen.frame.width, height: screen.frame.height),
+        let spec = CursorDisplaySpec(globalFrame: CGRect(x: screen.frame.minX, y: top - screen.frame.maxY, width: screen.frame.width, height: screen.frame.height),
                                      panelFrame: screen.frame, scale: screen.backingScaleFactor)
-        // Offscreen: the same size, but the panel sits far to the right of every display.
-        let far = NSScreen.screens.map(\.frame.maxX).max()! + 6000
-        let off = CursorDisplaySpec(globalFrame: real.globalFrame, panelFrame: CGRect(x: far, y: 0, width: screen.frame.width, height: screen.frame.height), scale: screen.backingScaleFactor)
-        let spec = onscreen ? real : off
         let overlay = OverlaySurface(displays: [spec])
         surface = TimedSurface(overlay)
         var host = CursorDirector.Host()
@@ -103,6 +103,8 @@ final class CursorProbe: NSObject {
         var env = CursorEnvironment()
         env.current = 9; env.agentWorkspace = 9; env.displays = [spec.globalFrame]
         director.setEnvironment(env)
+        // The hands report through HandsEvents; without this nothing would ever reach the director.
+        HandsEvents.setListener(director)
         pointerStart = pointer() ?? .zero
         frontStart = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
 
@@ -133,7 +135,7 @@ final class CursorProbe: NSObject {
     /// One action: a new target at least 300 points away. Every fifth is sent 60 ms after the last, mid-glide.
     func step() {
         guard index < glides, !interrupted else { return finish() }
-        let size = onscreen ? NSScreen.main!.frame.size : CGSize(width: 1440, height: 900)
+        let size = NSScreen.main!.frame.size
         let kinds = ["click", "type", "scroll", "click"]
         let dirs = ["down", "up", "left", "right"]
         var p: CGPoint
@@ -161,6 +163,9 @@ final class CursorProbe: NSObject {
         if NSApp.keyWindow != nil || NSApp.mainWindow != nil || surface.inner.panels.contains(where: { $0.isKeyWindow || $0.isMainWindow || $0.canBecomeKey || $0.canBecomeMain }) { keyOrMain += 1 }
         if NSWorkspace.shared.frontmostApplication?.processIdentifier != frontStart { frontChanges += 1; frontStart = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0 }
         // How far the drawn cursor is from the planned glide right now.
+        if let drawn = surface.inner.presentedPoint(agentID) {
+            drawnPositions.insert(Position(x: Int(drawn.x.rounded()), y: Int(drawn.y.rounded())))
+        }
         if let m = surface.lastMotion, let drawn = surface.inner.presentedPoint(agentID) {
             let t = CACurrentMediaTime() - (m.start + (CACurrentMediaTime() - ProcessInfo.processInfo.systemUptime)) // seconds into the glide
             if t >= 0, t <= m.duration {
@@ -188,15 +193,19 @@ final class CursorProbe: NSObject {
         let over2 = deltas.filter { $0 > nominal * 2 }.count
         let frames = deltas.count
         let ms = { (x: Double) in String(format: "%.2f", x * 1000) }
-        print("cursor-probe: \(index) glides on \(onscreen ? "the main display" : "an offscreen overlay"), \(frames) frames, display \(String(format: "%.0f", 1 / max(nominal, 1e-6))) Hz (interval \(ms(nominal)) ms)")
+        print("cursor-probe: \(index) glides on the main display, \(frames) frames, display \(String(format: "%.0f", 1 / max(nominal, 1e-6))) Hz (interval \(ms(nominal)) ms)")
         print("  frame time: median \(ms(percentile(deltas, 0.5))) ms, p99 \(ms(percentile(deltas, 0.99))) ms, max \(ms(deltas.max() ?? 0)) ms")
         print("  frames over 1.5x the interval: \(over15) of \(frames) (limit 1 in 200 = \(frames / 200)); over 2x: \(over2) (limit 0)")
         let apply = surface.applySeconds
         print("  main thread, per action: median \(ms(percentile(apply, 0.5))) ms, max \(ms(apply.max() ?? 0)) ms (director + layers, off the hands' thread)")
         print("  drawn vs planned position: median \(String(format: "%.2f", percentile(errors, 0.5))) pt, p95 \(String(format: "%.2f", percentile(errors, 0.95))) pt, max \(String(format: "%.2f", errors.max() ?? 0)) pt over \(errors.count) frames")
         print("  real pointer: \(pointerMoves) changes (limit 0); overlay key/main frames: \(keyOrMain) (limit 0); front app changes: \(frontChanges) (limit 0)")
+        print("  drawn: \(drawnPositions.count) distinct positions of the cursor layer, \(apply.count) overlay updates for \(index) actions")
         if interrupted { print("cursor-probe: interrupted (input arrived; Donovan is back). Result discarded: not run"); exit(2) }
-        let ok = over15 <= frames / 200 && over2 == 0 && pointerMoves == 0 && keyOrMain == 0 && frontChanges == 0 && frames >= 100
+        // A run that drew nothing cannot pass: every action reached the overlay, and the cursor layer moved.
+        let drew = apply.count == index && drawnPositions.count >= index && errors.count >= index
+        if !drew { print("  nothing (or not enough) was drawn: expected \(index) overlay updates and at least \(index) distinct drawn positions, saw \(apply.count) and \(drawnPositions.count); \(errors.count) frames compared with the plan") }
+        let ok = drew && over15 <= frames / 200 && over2 == 0 && pointerMoves == 0 && keyOrMain == 0 && frontChanges == 0 && frames >= 100
         print(ok ? "cursor-probe: pass" : "cursor-probe: FAIL")
         exit(ok ? 0 : 1)
     }

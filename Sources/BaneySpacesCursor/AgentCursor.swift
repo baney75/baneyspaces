@@ -10,6 +10,8 @@ final class AgentCursor {
     private(set) var look: CursorLook
     private(set) weak var display: CursorDisplay?
     private(set) var isShown = false
+    /// Where the arrow's tip is (the hands' coordinates), for putting it back after the displays change.
+    private(set) var point: CGPoint = .zero
 
     /// The cursor itself: its position is the arrow's tip.
     let root = CALayer()
@@ -62,10 +64,20 @@ final class AgentCursor {
         applyScale()
     }
 
+    /// Takes the layers off the display. The mark shapes stay inside their containers (only the containers are on
+    /// the display's root), so they are still there when the cursor is attached again.
     func detach() {
         if isShown { display?.cursorHidden(); isShown = false }
-        ([focus, root] + ripples + markShapes + marks).forEach { $0.removeAllAnimations(); $0.removeFromSuperlayer() }
+        let top: [CALayer] = [focus, root] + ripples + marks
+        (top + markShapes).forEach { $0.removeAllAnimations() }
+        top.forEach { $0.removeFromSuperlayer() }
         display = nil
+    }
+
+    /// For checks: whether every mark shape is inside its container and every container on the display.
+    var marksAreAttached: Bool {
+        guard let d = display else { return false }
+        return zip(marks, markShapes).allSatisfy { $0.superlayer === d.root && $1.superlayer === $0 }
     }
 
     private func applyScale() {
@@ -173,6 +185,7 @@ final class AgentCursor {
         let first = !isShown
         if first { isShown = true; d.cursorShown() }
         let t = look.theme
+        point = p
         noActions {
             root.position = d.local(p)
             root.opacity = 1
@@ -192,6 +205,7 @@ final class AgentCursor {
 
     func jump(to p: CGPoint) {
         guard let d = display else { return }
+        point = p
         root.removeAnimation(forKey: Self.glideKey)
         noActions { root.position = d.local(p) }
     }
@@ -207,6 +221,7 @@ final class AgentCursor {
         anim.duration = m.duration
         anim.beginTime = layerTime(m.start)
         anim.isRemovedOnCompletion = true
+        point = m.target
         noActions { root.position = d.local(m.target) }
         root.add(anim, forKey: Self.glideKey)
     }

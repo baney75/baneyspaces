@@ -623,12 +623,15 @@ struct SetupView: View {
         }
 
         section("Agent cursor") {
-            Toggle("Show each agent's cursor on the agent workspace", isOn: Binding(get: { cursor.settings.enabled }, set: { cursor.set(enabled: $0) }))
-            Picker("Look", selection: Binding(get: { cursor.settings.resolvedTheme.name }, set: { cursor.set(theme: $0) })) {
+            Toggle("Show each agent's cursor on the agent workspace", isOn: Binding(get: { cursor.settings.enabled }, set: { cursor.setEnabled($0) }))
+            Picker("Look", selection: Binding(get: { cursor.settings.resolvedTheme.name }, set: { cursor.setTheme($0) })) {
                 ForEach(cursor.themeNames, id: \.self) { Text($0.capitalized).tag($0) }
             }
-            .fixedSize().disabled(!cursor.settings.enabled)
-            Text("A small cursor with the agent's name glides to what it is working on, so you can follow it. It is drawn only while you look at the agent workspace (or at an app you lent), never moves your pointer and never takes a click or a key. Its colors are its own. The same switch: baneyspaces agent cursor on|off|theme <name>.")
+            .fixedSize().disabled(!cursor.settings.enabled || cursor.themeSetInFile)
+            if cursor.themeSetInFile {
+                Text("The look is set in config.toml (behavior.cursor.theme).").font(.callout).foregroundStyle(.secondary)
+            }
+            Text("A small cursor with the agent's name glides to what it is working on, so you can follow it. It is drawn only while you look at the agent workspace (or at an app you lent), never moves your pointer and never takes a click or a key. Its colors are its own. Only you turn it off, here; agents can pick its look with baneyspaces agent cursor theme <name>.")
                 .font(.callout).foregroundStyle(.secondary)
         }
 

@@ -4,7 +4,12 @@ import Foundation
 /// config keys of spec/config.md: `behavior.cursor.enabled`, `behavior.cursor.theme`, and the glide's
 /// `animation.preset`, `animation.speed`, `animation.respect_reduce_motion` and `animation.cursor.glide.*`.
 /// Until the config file's own implementation lands, the choice is saved here, and a `config.toml` that sets
-/// any of those keys wins over the saved choice for that key (`CursorConfigFile`).
+/// the theme or the glide wins over the saved choice for that key (`CursorConfigFile`).
+///
+/// Whether the cursor is on is Donovan's alone: the cursor is how he sees agent activity, and an agent can write
+/// `config.toml` as easily as he can. So `enabled` comes only from what Settings saved. A `behavior.cursor.enabled`
+/// line in the file is ignored (and reported by `agent cursor status`) until the config system records who wrote
+/// each change, when it may count if the caller was `user` or `settings`.
 public struct CursorSettings: Codable, Equatable, Sendable {
     public var enabled = true
     public var theme = CursorTheme.defaultName
@@ -61,7 +66,6 @@ public struct CursorSettings: Codable, Equatable, Sendable {
     /// Keys a config file set, which win over what is saved.
     public func applying(_ file: CursorConfigFile) -> CursorSettings {
         var s = self
-        if let v = file.enabled { s.enabled = v }
         if let v = file.theme { s.theme = v }
         if let v = file.preset { s.preset = v }
         if let v = file.speed { s.speed = v }
@@ -76,13 +80,14 @@ public struct CursorSettings: Codable, Equatable, Sendable {
 /// `[table.headers]`, `key = value` and dotted keys, strings, numbers and booleans, `#` comments. Anything else is
 /// ignored, and a value of the wrong type is ignored too, so a bad line never switches the cursor off.
 public struct CursorConfigFile: Equatable, Sendable {
-    public var enabled: Bool?
     public var theme: String?
     public var preset: String?
     public var speed: Double?
     public var respectReduceMotion: Bool?
     public var response: Double?
     public var damping: Double?
+    /// Keys that were in the file but are not honored there (the cursor's on/off switch: see `CursorSettings`).
+    public var ignored: [String] = []
     public init() {}
 
     public var isEmpty: Bool { self == CursorConfigFile() }
@@ -115,7 +120,7 @@ public struct CursorConfigFile: Equatable, Sendable {
             let value = line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces)
             let path = table.isEmpty ? key : table + "." + key
             switch path {
-            case "behavior.cursor.enabled": out.enabled = bool(value)
+            case "behavior.cursor.enabled": out.ignored.append(path)
             case "behavior.cursor.theme": out.theme = string(value)
             case "animation.preset": out.preset = string(value)
             case "animation.speed": out.speed = Double(value)

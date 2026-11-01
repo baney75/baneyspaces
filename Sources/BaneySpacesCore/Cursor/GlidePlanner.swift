@@ -30,9 +30,19 @@ public struct GlideSpring: Equatable, Codable, Sendable {
     public static let instant = GlideSpring(response: 0, damping: 1)
     public var isInstant: Bool { response <= 0 }
 
+    /// The slowest the envelope may decay (per second): e^-8 is 0.03%, so a glide settles inside `GlidePlan.maxDuration`
+    /// and its last step never snaps. A response/damping pair slower than this is made quicker (response is lowered).
+    public static let minDecayRate = 8.0
+
     public var clamped: GlideSpring {
-        isInstant ? self : GlideSpring(response: min(Self.responseRange.upperBound, max(Self.responseRange.lowerBound, response)),
-                                       damping: min(Self.dampingRange.upperBound, max(Self.dampingRange.lowerBound, damping)))
+        if isInstant { return self }
+        let z = min(Self.dampingRange.upperBound, max(Self.dampingRange.lowerBound, damping))
+        var r = min(Self.responseRange.upperBound, max(Self.responseRange.lowerBound, response))
+        // The slow root of the spring: z*w when under-damped, w*(z - sqrt(z*z - 1)) when over-damped.
+        let factor = z < 1 ? z : z - (z * z - 1).squareRoot()
+        let w = 2 * Double.pi / r
+        if w * factor < Self.minDecayRate { r = 2 * Double.pi * factor / Self.minDecayRate }
+        return GlideSpring(response: r, damping: z)
     }
 }
 

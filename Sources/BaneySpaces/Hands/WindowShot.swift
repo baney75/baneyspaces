@@ -15,6 +15,8 @@ enum WindowShot {
         var sha256: String
         /// Whether the agent cursor was drawn in (`--cursor`).
         var cursorDrawn = false
+        /// With the cursor drawn in, the hash of the capture as taken, before anything was drawn on it.
+        var rawSha256: String?
     }
 
     static var folder: URL { HandsEngine.home.appendingPathComponent("shots", isDirectory: true) }
@@ -74,6 +76,10 @@ enum WindowShot {
                    let with = ShotComposite.draw(cursor, onto: image, windowFrame: frame, scale: CGFloat(image.width) / max(1, w.frame.width)) {
                     picture = with; drawn = true
                 }
+                var rawHash: String?
+                if drawn, let raw = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) {
+                    rawHash = SHA256.hash(data: raw).map { String(format: "%02x", $0) }.joined()
+                }
                 let rep = NSBitmapImageRep(cgImage: picture)
                 guard let png = rep.representation(using: .png, properties: [:]) else {
                     return outcome.set(.failure(HandsError(.engineError, "the capture couldn't be encoded", suggestion: "Try again.", retry: .safe)))
@@ -88,7 +94,7 @@ enum WindowShot {
                 _ = try? FileManager.default.removeItem(at: file)
                 try FileManager.default.moveItem(at: tmp, to: file)
                 let hash = SHA256.hash(data: png).map { String(format: "%02x", $0) }.joined()
-                outcome.set(.success(Result(path: file.path, width: picture.width, height: picture.height, sha256: hash, cursorDrawn: drawn)))
+                outcome.set(.success(Result(path: file.path, width: picture.width, height: picture.height, sha256: hash, cursorDrawn: drawn, rawSha256: rawHash)))
             } catch {
                 outcome.set(.failure(HandsError(.engineError, "the capture failed: \(error.localizedDescription)", suggestion: "Check Screen Recording access for BaneySpaces.", retry: .safe)))
             }

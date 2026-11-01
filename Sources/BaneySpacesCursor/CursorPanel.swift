@@ -70,9 +70,12 @@ final class CursorDisplay {
     let panel: CursorPanel
     let root: CALayer
     private(set) var shownCount = 0
+    /// Off in tests, which build panels but never put one on screen.
+    let ordersFront: Bool
 
-    init(_ spec: CursorDisplaySpec) {
+    init(_ spec: CursorDisplaySpec, ordersFront: Bool = true) {
         self.spec = spec
+        self.ordersFront = ordersFront
         panel = CursorPanel(frame: spec.panelFrame)
         root = panel.contentView!.layer!
     }
@@ -89,7 +92,7 @@ final class CursorDisplay {
 
     func cursorShown() {
         shownCount += 1
-        if shownCount == 1 { panel.setShown(true) }
+        if shownCount == 1, ordersFront { panel.setShown(true) }
     }
 
     func cursorHidden() {
@@ -97,7 +100,7 @@ final class CursorDisplay {
         // After the cursor's fade-out has played.
         if shownCount == 0 {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                guard let self, self.shownCount == 0 else { return }
+                guard let self, self.shownCount == 0, self.ordersFront else { return }
                 self.panel.setShown(false)
             }
         }

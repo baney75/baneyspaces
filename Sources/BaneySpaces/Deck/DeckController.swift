@@ -546,7 +546,7 @@ final class DeckController {
             }
             return .init(ok: true, info: ["workspace": "\(n)", "app": appName, "note": "starting a separate copy; its window opens there in a moment"])
         case "cursor":
-            // `agent cursor on|off|theme <name>|status`: the agent cursor's switch and theme (Settings has the same).
+            // `agent cursor on|theme <name>|status`: the agent cursor's look (only Settings turns it off).
             return CursorController.shared.command(args)
         case "lend-ask":
             // Not a grant: it shows Donovan a sheet in BaneySpaces and only a real click on it lends (see LendConsent).
@@ -577,7 +577,7 @@ final class DeckController {
             h.move(id, n)
             return .init(ok: true, info: ["workspace": "\(n)", "moved": "window \(id)"])
         default:
-            return .init(ok: false, error: "usage: baneyspaces agent status|on [N]|off|open <app> [file…]|lend <app>|run [--dir D] -- <cmd>|move <row>|cursor on|off|theme <name>")
+            return .init(ok: false, error: "usage: baneyspaces agent status|on [N]|off|open <app> [file…]|lend <app>|run [--dir D] -- <cmd>|move <row>|cursor on|theme <name>")
         }
     }
 

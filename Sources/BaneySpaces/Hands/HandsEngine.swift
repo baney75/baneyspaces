@@ -41,7 +41,7 @@ final class HandsEngine {
     /// Seconds each kind of call may take before the caller gets `timeout`.
     /// How long an action waits for its target to become actionable before it gives up.
     static let actionableWait: TimeInterval = 5
-    enum Budget { static let snapshot: TimeInterval = 25, get: TimeInterval = 10, act: TimeInterval = 20, bounds: TimeInterval = 1.5 }
+    enum Budget { static let snapshot: TimeInterval = 25, get: TimeInterval = 10, act: TimeInterval = 20, bounds: TimeInterval = 0.05 }
 
     /// BaneySpaces' own folder for agents (handoff files, shots), readable by this user only.
     static var home: URL { Wire.supportDir.appendingPathComponent("hands", isDirectory: true) }
@@ -198,13 +198,29 @@ final class HandsEngine {
     }
 
     /// One property of a ref, read from the live element.
-    func get(window w: HandsWindow, ref: String, property: String, budget: TimeInterval = Budget.get, check: @escaping Check) -> Reply {
-        run(window: w, budget: budget, mutating: false, check: check) { [self] cancelled in
+    func get(window w: HandsWindow, ref: String, property: String, check: @escaping Check) -> Reply {
+        run(window: w, budget: Budget.get, mutating: false, check: check) { [self] cancelled in
             if let e = ready() { return .failed(e) }
             guard let adapter else { return .failed(HandsError(.engineError, "the engine isn't ready", suggestion: "Check `baneyspaces doctor`.", retry: .never)) }
             var out: UnsafeMutablePointer<CChar>?
             let code = ref.withCString { r in property.withCString { p in ad_get_ref(adapter, r, p, &out) } }
             return finish(code, out)
+        }
+    }
+
+    /// The target's bounds for the agent cursor, read on the window's process queue and handed to `completion`; nobody
+    /// waits for it. Nil when the read couldn't start within `within` seconds of now (the app is busy: the cursor settles
+    /// for its last known point), when the scope check fails, or when the engine can't answer. The same scope check and
+    /// focus-guard mark as every other call; it only reads.
+    func measureBounds(window w: HandsWindow, ref: String, within: TimeInterval, check: @escaping Check, completion: @escaping (CGRect?) -> Void) {
+        let queued = ProcessInfo.processInfo.systemUptime
+        let token = AgentActivity.shared.begin(pid: w.pid, window: w.id)
+        queue(for: w.pid).async { [self] in
+            defer { AgentActivity.shared.end(token) }
+            guard ProcessInfo.processInfo.systemUptime - queued <= within, check() == nil, ready() == nil, let adapter else { return completion(nil) }
+            var out: UnsafeMutablePointer<CChar>?
+            let code = ref.withCString { r in "bounds".withCString { p in ad_get_ref(adapter, r, p, &out) } }
+            if case .ok(let v) = finish(code, out) { completion(HandsEvents.frame(ofBounds: v["value"])) } else { completion(nil) }
         }
     }
 

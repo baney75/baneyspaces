@@ -57,6 +57,8 @@ public protocol CursorSurface: AnyObject {
     /// The mark of an action at the target: `delay` seconds from now, when the cursor arrives.
     func act(_ agent: String, effect: CursorEffect, point: CGPoint, frame: CGRect, delay: TimeInterval)
     func hide(_ agent: String)
+    /// The agent is gone for good (idle for a long time): its layers are removed.
+    func remove(_ agent: String)
 }
 
 /// What the director needs to know about the world; the app updates it on the main thread.
@@ -77,6 +79,9 @@ public struct CursorMark: Equatable, Sendable {
     /// The window's frame when it acted, so the mark can be placed in a capture of that window.
     public var windowFrame: CGRect?
     public var at: TimeInterval
+    public init(look: CursorLook, point: CGPoint, windowFrame: CGRect?, at: TimeInterval) {
+        self.look = look; self.point = point; self.windowFrame = windowFrame; self.at = at
+    }
 }
 
 /// The agent cursor's brain. It listens to the hands (`HandsEvents`), decides whether the cursor is drawn,
@@ -105,18 +110,23 @@ public final class CursorDirector: HandsEventListener {
     }
 
     public static let maxNameLength = 18
+    /// How long an action waits for its target's frame to be measured before the cursor settles for its last known point.
+    public static let frameWait: TimeInterval = 0.05
     private let surface: CursorSurface
     private let queue: DispatchQueue
     private let host: Host
     private let idleAfter: TimeInterval
+    private let pruneAfter: TimeInterval
     private let lock = NSLock()
     private var env = CursorEnvironment()
     private var marks: [UInt32: CursorMark] = [:]
     // Touched only on `queue`.
     private var tracks: [String: Track] = [:]
+    private var pending: [UInt64: HandsActionEvent] = [:]
+    private var knownDisplays: [CGRect] = []
 
-    public init(surface: CursorSurface, queue: DispatchQueue, host: Host = Host(), idleAfter: TimeInterval = 6) {
-        self.surface = surface; self.queue = queue; self.host = host; self.idleAfter = idleAfter
+    public init(surface: CursorSurface, queue: DispatchQueue, host: Host = Host(), idleAfter: TimeInterval = 6, pruneAfter: TimeInterval = 300) {
+        self.surface = surface; self.queue = queue; self.host = host; self.idleAfter = idleAfter; self.pruneAfter = pruneAfter
     }
 
     // MARK: world
@@ -144,8 +154,25 @@ public final class CursorDirector: HandsEventListener {
     }
 
     /// On the hands' thread, before the action is sent. It only queues the event: the action never waits for the glide.
+    /// An event whose frame is still being measured waits here for up to `frameWait`, never on the hands' thread.
     public func handsWillAct(_ event: HandsActionEvent) {
-        queue.async { [self] in process(event) }
+        queue.async { [self] in
+            guard event.frameComing else { return process(event) }
+            pending[event.id] = event
+            queue.asyncAfter(deadline: .now() + Self.frameWait) { [self] in
+                // Late: draw at the last known point, if there is one. The action has long since gone.
+                guard let ev = pending.removeValue(forKey: event.id) else { return }
+                processLate(ev)
+            }
+        }
+    }
+
+    public func handsFrame(actionID: UInt64, frame: CGRect?) {
+        queue.async { [self] in
+            guard var ev = pending.removeValue(forKey: actionID) else { return }
+            ev.frame = frame; ev.point = frame.map { CGPoint(x: $0.midX, y: $0.midY) }; ev.frameComing = false
+            process(ev)
+        }
     }
 
     // MARK: on the queue
@@ -159,6 +186,14 @@ public final class CursorDirector: HandsEventListener {
     private func current(_ t: Track, _ now: TimeInterval) -> GlideState? {
         if let plan = t.plan, now - t.planStart < plan.duration { return plan.state(at: now - t.planStart) }
         return t.rest.map { GlideState(position: $0) }
+    }
+
+    /// The frame didn't arrive in time: the effect happens where the cursor already stands, with no glide and no focus box.
+    private func processLate(_ ev: HandsActionEvent) {
+        guard let rest = tracks[ev.session]?.rest, tracks[ev.session]?.shown == true else { return }
+        var late = ev
+        late.frame = CGRect(origin: rest, size: .zero); late.point = rest; late.frameComing = false
+        process(late)
     }
 
     private func process(_ ev: HandsActionEvent) {
@@ -189,20 +224,31 @@ public final class CursorDirector: HandsEventListener {
             if plan.duration > 0 {
                 surface.move(agent, motion: CursorMotion(plan: plan, start: now))
                 t.plan = plan; t.planStart = now; delay = plan.arrival
-            } else { surface.jump(agent, to: target); t.plan = nil }
+            } else {
+                if t.plan != nil { surface.jump(agent, to: target) }
+                t.plan = nil
+            }
         } else { surface.jump(agent, to: target); t.plan = nil }
         t.rest = target
         surface.act(agent, effect: effect, point: target, frame: frame, delay: delay)
         t.stamp += 1; t.scope = ev.scope; t.workspace = ev.workspace
         tracks[agent] = t
+        // The window server round trip happens before the lock, so the hands' thread never waits behind it.
+        let windowFrame = host.windowFrame(ev.window)
         lock.lock()
-        marks[ev.window] = CursorMark(look: look, point: target, windowFrame: host.windowFrame(ev.window), at: now)
+        marks[ev.window] = CursorMark(look: look, point: target, windowFrame: windowFrame, at: now)
         if marks.count > 64, let old = marks.min(by: { $0.value.at < $1.value.at })?.key { marks[old] = nil }
         lock.unlock()
         let stamp = t.stamp
         queue.asyncAfter(deadline: .now() + idleAfter) { [self] in
             guard tracks[agent]?.stamp == stamp else { return }
             hide(agent, forget: false)
+            // A session that stays quiet is forgotten, so many sessions over weeks don't pile up layers.
+            queue.asyncAfter(deadline: .now() + pruneAfter) { [self] in
+                guard let t = tracks[agent], t.stamp == stamp, !t.shown else { return }
+                tracks[agent] = nil
+                surface.remove(agent)
+            }
         }
     }
 
@@ -217,13 +263,35 @@ public final class CursorDirector: HandsEventListener {
 
     private func reconcile() {
         let env = environment()
-        for (agent, t) in tracks where t.shown {
+        let now = host.now()
+        // The displays changed: every cursor is made again from what the director knows (its look and where it stands),
+        // whatever the overlay kept. A cursor that is on a display that is still there comes back at once.
+        if env.displays != knownDisplays {
+            knownDisplays = env.displays
+            for (agent, var t) in tracks {
+                let pos = t.shown ? (current(t, now)?.position ?? t.rest) : nil
+                t.look = nil
+                if t.shown {
+                    t.shown = false; t.plan = nil
+                    if let pos, env.displays.contains(where: { $0.contains(pos) }), CursorVisibility.wantsFrame(enabled: env.settings.enabled, scope: t.scope, windowWorkspace: t.workspace, current: env.current, agent: env.agentWorkspace) {
+                        let l = look(for: agent, env)
+                        surface.configure(agent, look: l)
+                        surface.appear(agent, at: pos)
+                        t.look = l; t.shown = true; t.rest = pos
+                    } else { surface.hide(agent); t.rest = nil }
+                } else if let r = t.rest, !env.displays.contains(where: { $0.contains(r) }) { t.rest = nil }
+                tracks[agent] = t
+            }
+        }
+        for (agent, t) in tracks {
             if !CursorVisibility.wantsFrame(enabled: env.settings.enabled, scope: t.scope, windowWorkspace: t.workspace, current: env.current, agent: env.agentWorkspace) {
+                // Not watchable any more: hide it, and forget where it stood (idle ones too: the windows were parked).
                 hide(agent, forget: true)
                 continue
             }
+            guard t.shown else { continue }
             let l = look(for: agent, env)
-            if l != t.look { surface.configure(agent, look: l); tracks[agent]?.look = l }
+            if l != tracks[agent]?.look { surface.configure(agent, look: l); tracks[agent]?.look = l }
         }
     }
 }

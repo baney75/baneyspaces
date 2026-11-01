@@ -348,16 +348,20 @@ final class HandsRouter {
             var before: JSONValue?
             if !writes, kind != .toggle, case .success(let d) = read(w, interactive: false, compact: true, register: false) { before = d["tree"] }
             // Scope again, at the moment of dispatch: the window may have moved since resolving.
-            // Every action reports its target before dispatch. The target's frame is measured only when the agent cursor
-            // will draw it (it is on, and Donovan is looking at this window): an engine call, with a short budget of its own.
-            var frame: CGRect?
-            if HandsEvents.wantsFrame(scope: scope.reason, workspace: w.workspace),
-               case .ok(let b) = HandsEngine.shared.get(window: w, ref: ref, property: "bounds", budget: HandsEngine.Budget.bounds, check: check(w, ref: ref)) {
-                frame = HandsEvents.frame(ofBounds: b["value"])
-            }
+            // Every action reports its target before dispatch. When the agent cursor will draw it (it is on, and Donovan is
+            // looking at this window) the target's frame is measured on the process queue and follows as `frameMeasured`:
+            // this thread never waits for it, and a frame that is not there in 50 ms leaves the cursor where it was.
+            let wantsFrame = HandsEvents.wantsFrame(scope: scope.reason, workspace: w.workspace)
+            let actionID = wantsFrame ? HandsEvents.newActionID() : 0
             let scrollDirection = kind == .scroll ? ["up", "down", "left", "right"][max(0, min(3, Int(direction)))] : nil
-            HandsEvents.willAct(HandsActionEvent(kind: name, ref: ref, window: w.id, pid: w.pid, app: w.app, point: frame.map { CGPoint(x: $0.midX, y: $0.midY) },
-                                                 frame: frame, session: req.session ?? "", scope: scope.reason, workspace: w.workspace, direction: scrollDirection))
+            HandsEvents.willAct(HandsActionEvent(kind: name, ref: ref, window: w.id, pid: w.pid, app: w.app, point: nil, frame: nil,
+                                                 session: req.session ?? "", scope: scope.reason, workspace: w.workspace, direction: scrollDirection,
+                                                 id: actionID, frameComing: wantsFrame))
+            if wantsFrame {
+                HandsEngine.shared.measureBounds(window: w, ref: ref, within: HandsEngine.Budget.bounds, check: check(w, ref: ref)) {
+                    HandsEvents.frameMeasured(actionID: actionID, frame: $0)
+                }
+            }
             // The scope and ref checks run again on the process queue, at the moment the call executes.
             let reply = HandsEngine.shared.act(window: w, ref: ref, kind: kind, text: text, direction: direction, amount: amount, check: check(w, ref: ref))
             switch reply {
@@ -408,7 +412,10 @@ final class HandsRouter {
             case .success(let r):
                 return .success(.object([
                     "path": .string(r.path), "width": .int(r.width), "height": .int(r.height), "cursor": .bool(r.cursorDrawn),
-                    "evidence": .object(["kind": "capture_hash", "sha256": .string(r.sha256)]),
+                    // A capture with the cursor drawn in is an edited picture: it says so and keeps the hash of the raw capture.
+                    "evidence": r.cursorDrawn
+                        ? .object(["kind": "capture_hash_composited", "sha256": .string(r.sha256), "raw_sha256": r.rawSha256.map(JSONValue.string) ?? .null])
+                        : .object(["kind": "capture_hash", "sha256": .string(r.sha256)]),
                     "target": targetJSON(w, scope),
                 ]))
             }

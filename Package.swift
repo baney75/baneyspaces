@@ -42,5 +42,7 @@ let package = Package(
         .executableTarget(name: "cursor-probe", dependencies: ["BaneySpacesCore", "BaneySpacesCursor"],
                           path: "scripts", exclude: scriptsExceptTheProbe),
         .testTarget(name: "BaneySpacesCoreTests", dependencies: ["BaneySpacesCore"]),
+        // The overlay's real layers: marks attached, cursors surviving a display change, the panel never key or main.
+        .testTarget(name: "BaneySpacesCursorTests", dependencies: ["BaneySpacesCore", "BaneySpacesCursor"]),
     ]
 )

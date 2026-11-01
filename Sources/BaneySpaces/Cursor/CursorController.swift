@@ -42,7 +42,7 @@ final class CursorController: ObservableObject {
         observers.append(nc.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             guard let self, let surface = self.surface else { return }
             surface.setDisplays(CursorDisplaySpec.screens())
-            self.pushEnvironment(force: true)
+            self.pushEnvironment()
         })
         observers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             self?.pushEnvironment()
@@ -54,7 +54,7 @@ final class CursorController: ObservableObject {
     /// The workspace, a setting or a display changed: the director hides what must not be drawn any more.
     func environmentChanged() { pushEnvironment() }
 
-    private func pushEnvironment(force: Bool = false) {
+    private func pushEnvironment() {
         guard let director, let surface else { return }
         var e = CursorEnvironment()
         e.settings = settings
@@ -82,42 +82,62 @@ final class CursorController: ObservableObject {
         pushEnvironment()
     }
 
-    /// Settings' switch and picker, and `baneyspaces agent cursor`.
-    func set(enabled: Bool? = nil, theme: String? = nil) {
-        if let enabled { saved.enabled = enabled }
-        if let theme { saved.theme = theme }
+    /// The switch is Donovan's: this is called by Settings only (the socket refuses `agent cursor off`, see
+    /// `SocketPolicy`, and `command` below refuses it again).
+    func setEnabled(_ on: Bool) {
+        saved.enabled = on
         saved.save()
         settings = saved.applying(file)
         pushEnvironment()
     }
 
+    /// Settings' picker and `agent cursor theme`. False when `config.toml` holds the theme: it wins, so a change here
+    /// would snap back.
+    @discardableResult
+    func setTheme(_ theme: String) -> Bool {
+        guard file.theme == nil else { return false }
+        saved.theme = theme
+        saved.save()
+        settings = saved.applying(file)
+        pushEnvironment()
+        return true
+    }
+
+    /// Whether `config.toml` sets the theme (Settings shows the picker as set there).
+    var themeSetInFile: Bool { file.theme != nil }
+
     var themeNames: [String] { CursorTheme.names }
 
-    /// `baneyspaces agent cursor on|off|theme <name>|status`.
+    /// `baneyspaces agent cursor on|theme <name>|status`. `off` is refused, whoever sends it: the socket cannot tell
+    /// Donovan from an agent, and the cursor is how he sees agents work. Settings turns it off.
     func command(_ args: [String]) -> Wire.Reply {
-        func status(_ extra: [String: String] = [:]) -> Wire.Reply {
+        func status() -> Wire.Reply {
             var info = ["enabled": settings.enabled ? "on" : "off", "theme": settings.theme,
                         "themes": CursorTheme.names.joined(separator: ", "),
                         "glide": "response \(settings.spring.response) damping \(settings.spring.damping)" + (settings.spring.isInstant ? " (instant)" : "")]
-            var held: [String] = []
-            if file.enabled != nil { held.append("behavior.cursor.enabled") }
-            if file.theme != nil { held.append("behavior.cursor.theme") }
-            if !held.isEmpty { info["config_wins"] = held.joined(separator: ", ") + " in " + CursorConfigFile.path() }
-            return Wire.Reply(ok: true, info: info.merging(extra) { $1 })
+            if file.theme != nil { info["config_wins"] = "behavior.cursor.theme in " + CursorConfigFile.path() }
+            if !file.ignored.isEmpty { info["config_ignored"] = file.ignored.joined(separator: ", ") + " (only Settings turns the cursor off)" }
+            return Wire.Reply(ok: true, info: info)
         }
         switch args.first ?? "status" {
         case "status": return status()
-        case "on": set(enabled: true); return status()
-        case "off": set(enabled: false); return status()
+        case "on":
+            setEnabled(true)
+            return status()
+        case "off":
+            Trace.log("cursor off refused: asked on the command line")
+            return Wire.Reply(ok: false, error: "turning the agent cursor off is Donovan's to do, in BaneySpaces Settings")
         case "theme":
             guard let name = args.dropFirst().first else { return status() }
             guard let theme = CursorTheme.named(name) else {
                 return Wire.Reply(ok: false, error: "no cursor theme called \(name); themes: " + CursorTheme.names.joined(separator: ", "))
             }
-            set(theme: theme.name)
+            guard setTheme(theme.name) else {
+                return Wire.Reply(ok: false, error: "config.toml sets behavior.cursor.theme, which wins; change it there")
+            }
             return status()
         default:
-            return Wire.Reply(ok: false, error: "usage: baneyspaces agent cursor on|off|theme <name>|status")
+            return Wire.Reply(ok: false, error: "usage: baneyspaces agent cursor on|theme <name>|status")
         }
     }
 }
