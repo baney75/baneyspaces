@@ -23,6 +23,9 @@ A change is done when steps 1–3 pass on its branch and step 4 passes on `main`
    when Donovan has been idle 10 minutes; it needs `dockURLCommands` on and a tile with more than four apps).
    For anything that decides what each display shows (`Workspaces.shown`, `displays`, `carry`,
    `noteMovedAcrossDisplays`): `swift scripts/displays-probe.swift` with two displays (Sidecar counts).
+   For anything under `Sources/BaneySpacesCore/Sandbox/`: `swift scripts/sandbox-probe.swift` (headless, safe any time; needs
+   Tart, Softnet and the pinned image per `sandbox/PIN`). It must print "sandbox-probe PASS". `view` and Settings > Agents
+   put a window on screen: try them only when he has been idle 10 minutes.
 4. The gesture Donovan reported, done live on his Mac (the real keys, the real hold, the real
    click), with the result read back from the screen, `trace.log` or `state.json`. Pointer and key
    probes run only when he has been idle 10 minutes (`ioreg -c IOHIDSystem` HIDIdleTime); otherwise

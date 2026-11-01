@@ -28,6 +28,7 @@ usage: \(me) <command>
                               (only a real click on Lend lends it; running this lends nothing by itself)
   mcp                         the same commands as a stdio MCP server (claude mcp add baneyspaces -- baneyspaces mcp)
   agent move <id | words>     send a window there (only windows of apps started for an agent)
+  sandbox up|down|reset|status|view|guest   a throwaway macOS VM for agent work (sandbox help)
   phone ls|ui|shot|tap|swipe|type|key|shell|mirror   phones for agents (phone help)
   set <setting> <value>       appearance.theme omarchy|baneyspaces|minimal, appearance.palette auto|<name>,
                               dock.enabled true|false; applies at once, no restart
@@ -182,6 +183,9 @@ case "remote":
     let info = r.info ?? [:]
     if sub == "token" { out(info["token"] ?? ""); break }
     out("remote: \(info["remote"] ?? "?")" + (info["listening"].map { " (\($0))" } ?? ""))
+
+case "sandbox":
+    SandboxCommand.run(rest)
 
 case "phone", "phones":
     PhoneCommand.run(rest)

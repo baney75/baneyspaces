@@ -443,6 +443,12 @@ final class Spaces {
     /// Saves state.json now (a lend changed).
     func saveState() { persist() }
 
+    /// Every window of `pid` and the workspace each is on, for the sandbox's display window.
+    func windowsOf(pid: pid_t) -> [SandboxWindows.Window] {
+        refresh()
+        return windows.values.filter { $0.pid == pid }.map { SandboxWindows.Window(id: $0.id, pid: pid, title: $0.title, workspace: model.workspace(of: $0.id)) }
+    }
+
     /// Windows on the agent workspace, for `baneyspaces agent status`.
     func agentWindows() -> [(id: WindowID, app: String, title: String)] {
         guard let n = Self.agentWorkspace else { return [] }
