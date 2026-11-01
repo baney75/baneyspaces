@@ -13,8 +13,39 @@ enum Render {
         if Bundle.main.bundleURL.pathExtension != "app", let icon = NSImage(contentsOfFile: "docs/icon.png") {
             NSApp.applicationIconImage = icon
         }
-        // BANEYSPACES_RENDER_SAMPLE=reported draws seven windows on workspace 1 and none elsewhere.
-        let sample = ProductRenderPlan.windows(ProductRenderPlan.sample(named: ProcessInfo.processInfo.environment["BANEYSPACES_RENDER_SAMPLE"]))
+        var sample: [Int: [(String, String, String)]] = [
+            1: [("Safari", "/Applications/Safari.app", "Swift documentation"),
+                ("Notes", "/System/Applications/Notes.app", "Launch checklist"),
+                ("Terminal", "/System/Applications/Utilities/Terminal.app", "~/Projects/baneyspaces")],
+            2: [("Mail", "/System/Applications/Mail.app", "Inbox"),
+                ("Calendar", "/System/Applications/Calendar.app", "October 2026")],
+            3: [("Music", "/System/Applications/Music.app", "Deep Focus")],
+            4: [("Messages", "/System/Applications/Messages.app", "Messages")],
+            5: [("Photos", "/System/Applications/Photos.app", "Library"),
+                ("Preview", "/System/Applications/Preview.app", "Field notes.pdf")],
+            7: [("Maps", "/System/Applications/Maps.app", "Erie, Pennsylvania")],
+            9: [("System Settings", "/System/Applications/System Settings.app", "Keyboard")],
+        ]
+        // Where the sample windows are on a 1512 x 945 screen: two sit side by side, the rest overlap.
+        var frames: [String: CGRect] = [
+            "Mail": CGRect(x: 0, y: 38, width: 756, height: 907), "Calendar": CGRect(x: 756, y: 38, width: 756, height: 907),
+            "Safari": CGRect(x: 120, y: 80, width: 1100, height: 760), "Notes": CGRect(x: 300, y: 140, width: 800, height: 600),
+            "Terminal": CGRect(x: 560, y: 360, width: 760, height: 480),
+        ]
+        // BANEYSPACES_RENDER_SAMPLE=reported: Donovan's load of 2026-11-01, workspace 1 holding seven windows, the rest empty.
+        if ProcessInfo.processInfo.environment["BANEYSPACES_RENDER_SAMPLE"] == "reported" {
+            sample = [1: [("Microsoft Word", "/Applications/Microsoft Word.app", "Document1"),
+                          ("Helium", "/Applications/Helium.app", "Quiz question 1 of 13 - Helium"),
+                          ("Obsidian", "/Applications/Obsidian.app", "Dashboard - Notes - Obsidian"),
+                          ("T3 Code (Nightly)", "/Applications/T3 Code (Nightly).app", ""),
+                          ("Microsoft Excel", "/Applications/Microsoft Excel.app", "Lab_results_B_and_C"),
+                          ("Grok Bot", "/Applications/Grok Bot.app", ""),
+                          ("Terminal", "/System/Applications/Utilities/Terminal.app", "")]]
+            frames = ["Microsoft Word": CGRect(x: 40, y: 60, width: 1100, height: 760), "Helium": CGRect(x: 0, y: 38, width: 1512, height: 907),
+                      "Obsidian": CGRect(x: 120, y: 90, width: 1180, height: 800), "T3 Code (Nightly)": CGRect(x: 60, y: 60, width: 1300, height: 840),
+                      "Microsoft Excel": CGRect(x: 200, y: 120, width: 1100, height: 700), "Grok Bot": CGRect(x: 300, y: 150, width: 900, height: 640),
+                      "Terminal": CGRect(x: 520, y: 380, width: 760, height: 480)]
+        }
         // Product shots always show the default look, whatever this Mac has picked.
         Appearance.shared.useDefaultLookWithoutSaving()
         // BANEYSPACES_RENDER_THEME=omarchy|minimal draws the same shots in that theme (a check, saved nowhere).
@@ -28,15 +59,15 @@ enum Render {
         let model = ViewerModel()
         model.current = 1
         var id: WindowID = 100
-        model.tiles = ProductRenderPlan.tiles(from: sample.mapValues { windows in
-            windows.map { w in
+        for (n, windows) in sample {
+            model.tiles[n] = windows.map { app, path, title in
                 id += 1
-                model.icons[id] = NSWorkspace.shared.icon(forFile: w.path)
-                return Spaces.Entry(id: id, pid: 0, app: w.app, title: w.title)
+                model.icons[id] = NSWorkspace.shared.icon(forFile: path)
+                return Spaces.Entry(id: id, pid: 0, app: app, title: title, frame: frames[app])
             }
-        })
+        }
+        for n in 1...9 where model.tiles[n] == nil { model.tiles[n] = [] }
         let size = CGSize(width: 1512, height: 945)
-        // Tile frames as the live layout places them, so the drag image can light its target.
         // Drawn by AppKit in an offscreen window (never shown), so colors match the live app.
         func save(_ view: some View, _ name: String, _ size: CGSize) -> Bool {
             let height: CGFloat? = size.height == 0 ? nil : size.height
@@ -58,26 +89,31 @@ enum Render {
         }
         guard save(ViewerView(model: model, stillBackdrop: true), "overview.png", size) else { return 1 }
 
-        // The same overview mid-drag: Mail's window on its way to workspace 6. A sample with no
-        // window to drag skips the drag and carry shots and draws the rest.
-        if let source = ProductRenderPlan.dragSource(in: model.tiles) {
-            // Mirrors ViewerView's layout: 48pt padding, 20pt gaps, a 40pt footer.
-            let pad: CGFloat = 48, gap: CGFloat = 20, footer: CGFloat = 40
-            let gridWidth: CGFloat = min(size.width, 1600) - 2 * pad
-            let tileW: CGFloat = (gridWidth - 2 * gap) / 3
-            let tileH: CGFloat = (size.height - 2 * pad - footer - 2 * gap) / 3
-            let targetX: CGFloat = pad + 2 * (tileW + gap)
-            let targetY: CGFloat = pad + tileH + gap
-            let target = CGRect(x: targetX, y: targetY, width: tileW, height: tileH)
-            model.tileFrames = [6: target]
-            model.drag = ViewerModel.Drag(entry: source.entry, from: source.workspace, location: CGPoint(x: target.midX - 40, y: target.midY + 10))
-            guard save(ViewerView(model: model, stillBackdrop: true), "overview-drag.png", size) else { return 1 }
-            // A window carried up by its title bar opens the same view; the footer says what letting go does.
-            model.carrying = true
-            guard save(ViewerView(model: model, stillBackdrop: true), "overview-carry.png", size) else { return 1 }
-            model.carrying = false
-            model.drag = nil
-        }
+        // The same overview mid-drag: a window on its way to workspace 6, which opens from the strip to a full tile.
+        let mover = (model.tiles[2]?.first ?? model.tiles[1]?.first)!
+        let from = model.tiles[2]?.isEmpty == false ? 2 : 1
+        _ = model.layout(for: size)
+        let slot6 = model.lastLayout?.slot(6)?.frame ?? model.lastLayout?.tile(6)?.frame ?? CGRect(x: 700, y: 700, width: 60, height: 60)
+        model.drag = ViewerModel.Drag(entry: mover, from: from, location: CGPoint(x: slot6.midX, y: slot6.midY - 6))
+        model.dragMoved()
+        guard save(ViewerView(model: model, stillBackdrop: true), "overview-drag.png", size) else { return 1 }
+        // A window carried up by its title bar opens the same view.
+        model.carrying = true
+        guard save(ViewerView(model: model, stillBackdrop: true), "overview-carry.png", size) else { return 1 }
+        model.carrying = false
+        model.drag = nil
+        model.openSlot = nil
+
+        // Typing to find: "exc" lights Excel (or the first app of the sample) and dims the rest to a quarter.
+        let findable = model.tiles.values.flatMap { $0 }.first { $0.app.localizedCaseInsensitiveContains("exc") } ?? mover
+        model.query = String(findable.app.prefix(3)).lowercased()
+        guard save(ViewerView(model: model, stillBackdrop: true), "overview-find.png", size) else { return 1 }
+        model.query = ""
+
+        // With live previews (drawn here as stand-ins; the real ones come from Screen Recording).
+        for list in model.tiles.values { for e in list { model.previews[e.id] = Self.stand(in: e.frame?.size ?? CGSize(width: 1100, height: 700), title: e.app) } }
+        guard save(ViewerView(model: model, stillBackdrop: true), "overview-previews.png", size) else { return 1 }
+        model.previews = [:]
 
         let setup = SetupModel()
         setup.trusted = true
@@ -248,5 +284,25 @@ enum Render {
         guard save(SetupView(model: fresh, close: {}).background(Color(nsColor: .windowBackgroundColor)),
                    "setup-first-run.png", CGSize(width: 560, height: 0)) else { return 1 }
         return 0
+    }
+
+    /// A window-shaped picture: a title bar and lines of text, tinted by name. Stands in for a live preview in product shots.
+    static func stand(in size: CGSize, title: String) -> NSImage {
+        let hue = CGFloat(title.unicodeScalars.reduce(0) { ($0 &* 31 &+ Int($1.value)) % 360 }) / 360
+        let image = NSImage(size: size, flipped: true) { r in
+            NSColor(hue: hue, saturation: 0.25, brightness: 0.30, alpha: 1).setFill()
+            r.fill()
+            NSColor(hue: hue, saturation: 0.30, brightness: 0.42, alpha: 1).setFill()
+            NSRect(x: 0, y: 0, width: r.width, height: 36).fill()
+            NSColor(hue: hue, saturation: 0.15, brightness: 0.62, alpha: 1).setFill()
+            var y: CGFloat = 70
+            var k = 0
+            while y < r.height - 30 {
+                NSRect(x: 40, y: y, width: (r.width - 80) * (k % 3 == 0 ? 0.55 : k % 3 == 1 ? 0.85 : 0.7), height: 10).fill()
+                y += 28; k += 1
+            }
+            return true
+        }
+        return image
     }
 }

@@ -81,7 +81,8 @@ final class ThemeTests: XCTestCase {
         XCTAssertEqual(Surface.dockTile.shippedRadius, 16)
         XCTAssertEqual(Surface.switcherPanel.shippedRadius, 26)
         XCTAssertEqual(Surface.launcherPanel.shippedRadius, 22)
-        XCTAssertEqual(Surface.overviewTile.shippedBorder.focused, 3)
+        // Was 3 until the overview's rebuild (spec/overview.md): the workspace you're on is a soft glow with a fine line.
+        XCTAssertEqual(Surface.overviewTile.shippedBorder.focused, 1.5)
     }
 
     func testTheBaneySpacesThemeLeavesDurationsFontsAndGrowthAsTheyWere() {
