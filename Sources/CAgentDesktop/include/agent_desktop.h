@@ -1435,6 +1435,16 @@ AdResult ad_snapshot_window(const struct AdAdapter *adapter,
                             char **out);
 
 /**
+ * Reads one property (`text`, `value`, `title`, `bounds`, `role`, `states`) of a
+ * snapshot-qualified ref from the live element. `*out` is a JSON envelope; free it
+ * with `ad_free_string`. BaneySpaces addition (engine/patches/0001-ffi-snapshot-window.patch).
+ */
+AdResult ad_get_ref(const struct AdAdapter *adapter,
+                    const char *ref_id,
+                    const char *property,
+                    char **out);
+
+/**
  * Returns the adapter's current health and permission state as a JSON
  * envelope matching the `agent-desktop status` CLI output.
  *

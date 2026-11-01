@@ -1,8 +1,8 @@
 diff --git a/crates/ffi/include/agent_desktop.h b/crates/ffi/include/agent_desktop.h
-index 0fb7bed..6ceaa4e 100644
+index 0fb7bed..6158323 100644
 --- a/crates/ffi/include/agent_desktop.h
 +++ b/crates/ffi/include/agent_desktop.h
-@@ -1420,6 +1420,20 @@ AdResult ad_snapshot(const struct AdAdapter *adapter,
+@@ -1420,6 +1420,30 @@ AdResult ad_snapshot(const struct AdAdapter *adapter,
                       bool compact,
                       char **out);
  
@@ -20,15 +20,114 @@ index 0fb7bed..6ceaa4e 100644
 +                            bool compact,
 +                            char **out);
 +
++/**
++ * Reads one property (`text`, `value`, `title`, `bounds`, `role`, `states`) of a
++ * snapshot-qualified ref from the live element. `*out` is a JSON envelope; free it
++ * with `ad_free_string`. BaneySpaces addition (engine/patches/0001-ffi-snapshot-window.patch).
++ */
++AdResult ad_get_ref(const struct AdAdapter *adapter,
++                    const char *ref_id,
++                    const char *property,
++                    char **out);
++
  /**
   * Returns the adapter's current health and permission state as a JSON
   * envelope matching the `agent-desktop status` CLI output.
+diff --git a/crates/ffi/src/commands/get_ref.rs b/crates/ffi/src/commands/get_ref.rs
+new file mode 100644
+index 0000000..a362df6
+--- /dev/null
++++ b/crates/ffi/src/commands/get_ref.rs
+@@ -0,0 +1,81 @@
++use crate::AdAdapter;
++use crate::commands::app_error_to_adapter;
++use crate::commands::envelope_out::write_command_envelope;
++use crate::convert::string::try_c_to_string;
++use crate::error::{AdResult, set_last_error};
++use crate::ffi_try::trap_panic;
++use crate::pointer_guard::guard_non_null;
++use agent_desktop_core::commands::get::{GetArgs, GetProperty};
++use std::ffi::c_char;
++use std::ptr;
++
++/// Reads one property of a snapshot-qualified ref from the live element: `text`, `value`,
++/// `title`, `bounds`, `role` or `states`. The ref resolves strictly (a stale or ambiguous ref
++/// fails, it never reads a neighbor), and `value`, `bounds` and `states` come from the element
++/// as it is now, not from the snapshot.
++///
++/// BaneySpaces addition (engine/patches/0001-ffi-snapshot-window.patch): upstream exposes `get`
++/// only on its CLI. `*out` is a JSON envelope (command `"get"`), freed with `ad_free_string`.
++///
++/// # Safety
++///
++/// `adapter` must be from `ad_adapter_create[_with_session]`; `ref_id` and `property` must be
++/// non-null NUL-terminated UTF-8 strings; `out` must be writable.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn ad_get_ref(
++    adapter: *const AdAdapter,
++    ref_id: *const c_char,
++    property: *const c_char,
++    out: *mut *mut c_char,
++) -> AdResult {
++    guard_non_null!(out, c"out is null");
++    unsafe { *out = ptr::null_mut() };
++    trap_panic(|| {
++        guard_non_null!(adapter, c"adapter is null");
++        guard_non_null!(ref_id, c"ref_id is null");
++        guard_non_null!(property, c"property is null");
++
++        let (ref_id, property) = match unsafe { (try_c_to_string(ref_id), try_c_to_string(property)) } {
++            (Ok(Some(r)), Ok(Some(p))) => (r, p),
++            _ => {
++                set_last_error(&agent_desktop_core::AdapterError::new(
++                    agent_desktop_core::ErrorCode::InvalidArgs,
++                    "ref_id and property must be UTF-8 strings",
++                ));
++                return AdResult::ErrInvalidArgs;
++            }
++        };
++        let property = match property.as_str() {
++            "text" => GetProperty::Text,
++            "value" => GetProperty::Value,
++            "title" => GetProperty::Title,
++            "bounds" => GetProperty::Bounds,
++            "role" => GetProperty::Role,
++            "states" => GetProperty::States,
++            other => {
++                set_last_error(&agent_desktop_core::AdapterError::new(
++                    agent_desktop_core::ErrorCode::InvalidArgs,
++                    format!("unknown property '{other}': use text, value, title, bounds, role or states"),
++                ));
++                return AdResult::ErrInvalidArgs;
++            }
++        };
++        let adapter_ref = crate::adapter::acquire_adapter!(adapter);
++        let context = match adapter_ref.command_context() {
++            Ok(ctx) => ctx,
++            Err(e) => {
++                let ae = app_error_to_adapter(e);
++                set_last_error(&ae);
++                return crate::error::last_error_code();
++            }
++        };
++        let scope = crate::commands::command_scope!(context, "get");
++        let result = agent_desktop_core::commands::get::execute(
++            GetArgs { ref_id, property },
++            adapter_ref.inner.as_ref(),
++            &context,
++        );
++        crate::commands::complete_scope!(scope, &result);
++        unsafe { write_command_envelope("get", result, out) }
++    })
++}
 diff --git a/crates/ffi/src/commands/mod.rs b/crates/ffi/src/commands/mod.rs
-index 7451320..2501a91 100644
+index 7451320..712155f 100644
 --- a/crates/ffi/src/commands/mod.rs
 +++ b/crates/ffi/src/commands/mod.rs
-@@ -2,6 +2,7 @@ pub(crate) mod envelope_out;
+@@ -1,7 +1,9 @@
+ pub(crate) mod envelope_out;
  pub(crate) mod execute_by_ref;
++pub(crate) mod get_ref;
  pub(crate) mod execute_by_ref_timeout;
  pub(crate) mod snapshot;
 +pub(crate) mod snapshot_window;
