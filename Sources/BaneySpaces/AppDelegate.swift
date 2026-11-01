@@ -246,6 +246,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return c
     }()
 
+    private var mcBackAtDock = 0
+
+    /// While Mission Control is held off: the person may have turned it back on (the README's
+    /// `defaults delete`, a profile), and the launch agent may have been switched off (the
+    /// Background Item notice). Neither may leave BaneySpaces answering beside macOS's view, or
+    /// holding it off with no way back.
+    private func checkMissionControlHeld() {
+        if SystemMissionControl.isOffAtDock {
+            mcBackAtDock = 0
+        } else {
+            // Twice in a row, so one unlucky read of the Dock's settings doesn't undo it.
+            mcBackAtDock += 1
+            if mcBackAtDock >= 2 {
+                mcBackAtDock = 0
+                Trace.log("mission control: turned back on at the Dock; BaneySpaces' overview switched off")
+                return setup.model.setViewerKeys(false)
+            }
+        }
+        guard missionControlTicks % 15 == 0 else { return }
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard !SystemMissionControl.isArmed else { return }
+            DispatchQueue.main.async {
+                Trace.log("mission control: the launch agent is no longer loaded")
+                self?.syncMissionControl()
+            }
+        }
+    }
+
     /// The key watcher reads its settings when it starts, so a change restarts it.
     private func restartKeyWatcher() {
         missionControlKeys.stop()
@@ -437,12 +465,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             else { SystemMissionControl.restore() }
         }
         if started { spaces.restoreAll() }
-        // Last: a fault in the private framework while letting go must not skip what matters above.
-        trackpadSwipe.stop()
-        hotCorners.stop()
         // ⌘Space goes back to Spotlight while BaneySpaces isn't running; the next launch takes it again.
         SystemShortcuts.spotlightQueue.sync { SystemShortcuts.restoreSpotlight() }
         spaces.flushWrites()
+        // Last: a fault in the private framework while letting go must not skip anything above.
+        trackpadSwipe.stop()
+        hotCorners.stop()
     }
 
     // MARK: Accessibility
@@ -518,6 +546,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     SystemMissionControl.beat()
                     self.trackpadSwipe.refreshSettings()
                     self.hotCorners.set(corners: SystemMissionControl.answeredCorners())
+                    self.checkMissionControlHeld()
                 } else if self.started, MissionControlKeys.enabled, self.missionControlKeys.isActive,
                           SystemMissionControl.problem == nil || self.missionControlTicks % 30 == 0 {
                     // Taken back by the launch agent while this ran, or not armed yet: try again

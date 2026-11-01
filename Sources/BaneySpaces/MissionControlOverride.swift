@@ -20,19 +20,44 @@ enum SystemMissionControl {
         }
     }
 
+    /// The record lives in BaneySpaces' settings and, flushed to disk, in a file of its own that the
+    /// launch agent reads too: if the app dies before its settings reach the disk, the file is
+    /// still there (and is read back as the record on the next launch).
     private final class Record: SavedRecord {
+        private var file: URL { Spaces.folder.appendingPathComponent(DurableRecord.fileName) }
+
         var saved: [String: NSNumber]? {
-            get { UserDefaults.standard.dictionary(forKey: MissionControlTakeover.recordKey) as? [String: NSNumber] }
+            get {
+                (UserDefaults.standard.dictionary(forKey: MissionControlTakeover.recordKey) as? [String: NSNumber])
+                    ?? DurableRecord.read(from: file)
+            }
             set {
                 if let newValue { UserDefaults.standard.set(newValue, forKey: MissionControlTakeover.recordKey) }
-                else { UserDefaults.standard.removeObject(forKey: MissionControlTakeover.recordKey) }
+                else {
+                    UserDefaults.standard.removeObject(forKey: MissionControlTakeover.recordKey)
+                    DurableRecord.remove(file)
+                }
             }
+        }
+
+        func flush() -> Bool {
+            let record = UserDefaults.standard.dictionary(forKey: MissionControlTakeover.recordKey) as? [String: NSNumber]
+            CFPreferencesAppSynchronize(kCFPreferencesCurrentApplication)
+            guard let record else { DurableRecord.remove(file); return true }
+            return DurableRecord.write(record, to: file)
         }
     }
 
     private static var takeover: MissionControlTakeover { MissionControlTakeover(prefs: Prefs(), record: Record()) }
 
     static var isTakenByUs: Bool { takeover.isTakenByUs }
+
+    /// Whether the Dock's switch is still on. Off while BaneySpaces holds Mission Control means the
+    /// person (or a profile) turned it back on.
+    static var isOffAtDock: Bool { takeover.isOffAtDock }
+
+    /// Whether the launch agent is still loaded. Safe off the main thread.
+    static var isArmed: Bool { installer.isArmed() }
 
     /// The hot corners that opened Mission Control, which BaneySpaces answers now.
     static func answeredCorners() -> [(corner: MissionControlTakeover.Corner, modifiers: Int)] { takeover.answeredCorners() }
@@ -90,7 +115,8 @@ enum SystemMissionControl {
     /// Proof that BaneySpaces is alive, for the launch agent.
     static func beat() { try? installer.beatNow(pid: getpid()) }
 
-    /// Whether launchctl exited 0.
+    /// Whether launchctl exited 0. A launchd that doesn't answer in three seconds counts as no, so
+    /// it can't hold the app up.
     @discardableResult
     private static func launchctl(_ args: [String]) -> Bool {
         let p = Process()
@@ -98,8 +124,13 @@ enum SystemMissionControl {
         p.arguments = args
         p.standardOutput = FileHandle.nullDevice
         p.standardError = FileHandle.nullDevice
+        let done = DispatchSemaphore(value: 0)
+        p.terminationHandler = { _ in done.signal() }
         do { try p.run() } catch { return false }
-        p.waitUntilExit()
+        if done.wait(timeout: .now() + 3) == .timedOut {
+            p.terminate()
+            return false
+        }
         return p.terminationStatus == 0
     }
 

@@ -51,6 +51,8 @@ macos_pref() {
 restore_mission_control() {
   local mc_saved mc_changed corner was
   mc_saved=$(pref systemMissionControlSaved)
+  # The app also keeps the record in a file of its own, which survives a crash that its settings don't.
+  [ -n "$mc_saved" ] || mc_saved=$(defaults read "$DATA/mc-record" 2>/dev/null || true)
   [ -n "$mc_saved" ] || return 0
   mc_changed=""
   if [ "$(macos_pref com.apple.dock mcx-expose-disabled)" = "1" ]; then
@@ -89,7 +91,7 @@ remove_watchdog() {
 if [ "${1:-}" = "--restore-mission-control" ]; then
   restore_mission_control
   sys defaults delete "$ID" systemMissionControlSaved >/dev/null 2>&1 || true
-  rm -f "$DATA/mc-heartbeat" "$DATA/mc-updating"
+  rm -f "$DATA/mc-heartbeat" "$DATA/mc-updating" "$DATA/mc-record.plist"
   remove_watchdog
   exit 0
 fi

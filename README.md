@@ -80,9 +80,15 @@ Mission Control**: every setting goes back exactly as it was. Quitting BaneySpac
 do the same, and the Dock restarts each time. If BaneySpaces stops without quitting (a crash, or
 the app dragged to the Trash), a small launch agent puts Mission Control back once no BaneySpaces
 has run for a minute (30 seconds after an update's restart that never came back). BaneySpaces
-switches Mission Control off only after that agent is written, loaded and checked; if it can't be,
-Mission Control stays on and Settings says why. If you ever need
-it by hand: `defaults delete com.apple.dock mcx-expose-disabled; killall Dock`.
+switches Mission Control off only after that agent is written, loaded and checked, and after what
+was there is saved to disk; if either can't be done, Mission Control stays on and Settings says
+why. If the agent is switched off later (the Background Item notice), BaneySpaces gives Mission
+Control back instead of holding it off without a way back. Only a build that knows this takeover
+counts as running: an older BaneySpaces started later does not keep Mission Control off. To get
+Mission Control back yourself, turn off the Settings switch; if BaneySpaces isn't running, use
+`defaults delete com.apple.dock mcx-expose-disabled; killall Dock` (and set any hot corner you had
+on Mission Control back in System Settings). Doing that while BaneySpaces runs also works: it
+notices within 20 seconds and switches its own overview off.
 
 App Exposé (⌃↓) goes with Mission Control, and so does a Magic Mouse's two-finger double tap,
 which opens nothing while this is on. The trackpad swipe uses macOS's private trackpad framework,

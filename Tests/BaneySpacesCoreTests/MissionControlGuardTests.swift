@@ -72,10 +72,14 @@ final class MissionControlGuardTests: XCTestCase {
         let over = try source("Sources/BaneySpaces/MissionControlOverride.swift")
         XCTAssertTrue(over.contains("MissionControlSetup.takeOver(takeover, arm: { installer.install(pid: getpid()) })"), "nothing is switched off before the launch agent is armed")
         XCTAssertTrue(over.contains("installer.remove()"), "giving back removes it")
-        XCTAssertLessThan(try XCTUnwrap(quit.range(of: "SystemMissionControl.restore()")).lowerBound, try XCTUnwrap(quit.range(of: "trackpadSwipe.stop()")).lowerBound,
-                          "the private framework is let go of last, after what matters is restored")
+        let stop = try XCTUnwrap(quit.range(of: "trackpadSwipe.stop()")).lowerBound
+        for earlier in ["SystemMissionControl.restore()", "spaces.restoreAll()", "restoreSpotlight()", "spaces.flushWrites()"] {
+            XCTAssertLessThan(try XCTUnwrap(quit.range(of: earlier)).lowerBound, stop,
+                              "the private framework is let go of last: \(earlier) comes first")
+        }
         let script = MissionControlWatchdog.script
-        XCTAssertTrue(script.contains("--restore-mission-control") && script.contains("pgrep"))
+        XCTAssertTrue(script.contains("--restore-mission-control") && script.contains(MissionControlWatchdog.capability))
+        XCTAssertFalse(script.contains("pgrep"), "a running BaneySpaces that isn't the one that wrote the heartbeat doesn't count")
         let uninstall = try String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("uninstall.sh"), encoding: .utf8)
         XCTAssertTrue(uninstall.contains("\"${1:-}\" = \"--restore-mission-control\""), "the agent's restore mode lives in uninstall.sh")
@@ -110,5 +114,19 @@ final class MissionControlGuardTests: XCTestCase {
         XCTAssertFalse(text.contains("MouseTwoFingerDoubleTapGesture"))
         XCTAssertTrue(text.contains("addLocalMonitorForEvents(matching: kinds"), "corners work over BaneySpaces' own windows")
         XCTAssertTrue(text.contains("[.mouseMoved, .flagsChanged]"), "and when the key a corner wants goes down with the pointer already there")
+    }
+
+    /// Holding Mission Control off needs the agent loaded and the Dock's switch left alone.
+    func testTheTickGivesMissionControlBackWhenTheWayBackOrTheSwitchIsGone() throws {
+        let app = try source("Sources/BaneySpaces/AppDelegate.swift")
+        let check = try XCTUnwrap(app.range(of: "private func checkMissionControlHeld()").map { String(app[$0.lowerBound...].prefix(1500)) })
+        XCTAssertTrue(check.contains("SystemMissionControl.isOffAtDock"))
+        XCTAssertTrue(check.contains("setup.model.setViewerKeys(false)"), "the switch in Settings goes off too, so the next launch doesn't take it again")
+        XCTAssertTrue(check.contains("SystemMissionControl.isArmed") && check.contains("syncMissionControl()"))
+        XCTAssertTrue(check.contains("DispatchQueue.global"), "launchctl is asked off the main thread")
+        XCTAssertTrue(app.contains("self.checkMissionControlHeld()"))
+        let over = try source("Sources/BaneySpaces/MissionControlOverride.swift")
+        XCTAssertTrue(over.contains("done.wait(timeout: .now() + 3)"), "launchctl can't hold the app up")
+        XCTAssertTrue(over.contains("DurableRecord.write(record, to: file)") && over.contains("CFPreferencesAppSynchronize(kCFPreferencesCurrentApplication)"))
     }
 }

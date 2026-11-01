@@ -20,7 +20,8 @@ final class MissionControlWatchdogTests: XCTestCase {
         try fake("defaults", """
             echo "defaults $*" >> "$FAKE_LOG"
             case "$*" in
-              "read com.baney.baneyspaces systemMissionControlSaved") [ -f "$FAKE_RECORD" ] && cat "$FAKE_RECORD" || exit 1 ;;
+              "read com.baney.baneyspaces systemMissionControlSaved") [ "$FAKE_IN_DEFAULTS" = 1 ] && [ -f "$FAKE_RECORD" ] && cat "$FAKE_RECORD" || exit 1 ;;
+              "read "*"/mc-record") [ -f "$FAKE_RECORD" ] && cat "$FAKE_RECORD" || exit 1 ;;
               "read com.apple.dock mcx-expose-disabled") echo 1 ;;
               "read com.apple.dock wvous-tl-corner") echo 1 ;;
               "read "*) exit 1 ;;
@@ -49,24 +50,26 @@ final class MissionControlWatchdogTests: XCTestCase {
 
     /// Writes the heartbeat `age` seconds old (nil: none), holding the process id of a BaneySpaces
     /// that is long gone unless `pid` says otherwise.
-    private func beat(age: TimeInterval?, updating: Bool = false, pid: Int32 = 999_999) throws {
+    private func beat(age: TimeInterval?, updating: Bool = false, pid: Int32 = 999_999, capable: Bool = true) throws {
         if let age {
             let url = folder.appendingPathComponent(MissionControlWatchdog.heartbeat)
-            fm.createFile(atPath: url.path, contents: Data("\(pid)\n".utf8))
+            fm.createFile(atPath: url.path, contents: Data("\(pid)\n\(capable ? MissionControlWatchdog.capability + "\n" : "")".utf8))
             try fm.setAttributes([.modificationDate: Date().addingTimeInterval(-age)], ofItemAtPath: url.path)
         }
         if updating { fm.createFile(atPath: folder.appendingPathComponent(MissionControlWatchdog.updating).path, contents: Data()) }
     }
 
     /// Runs the agent's script once; what the fakes were asked to do.
-    private func tick(recorded: Bool = true, running: Bool = false, ps: String = "") throws -> String {
+    private func tick(recorded: Bool = true, running: Bool = false, ps: String = "", inDefaults: Bool = true, fileRecord: Bool = false) throws -> String {
+        if fileRecord { fm.createFile(atPath: folder.appendingPathComponent(DurableRecord.fileName).path, contents: Data("x".utf8)) }
         let recordFile = home.appendingPathComponent("record.txt")
         if recorded { try record.write(to: recordFile, atomically: true, encoding: .utf8) }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/bash")
         p.arguments = [folder.appendingPathComponent(MissionControlWatchdog.scriptName).path]
         p.environment = ["HOME": home.path, "PATH": bin.path + ":/usr/bin:/bin:/usr/sbin:/sbin", "FAKE_LOG": log.path,
-                         "FAKE_RECORD": recordFile.path, "FAKE_RUNNING": running ? "1" : "0", "FAKE_PS": ps]
+                         "FAKE_RECORD": recordFile.path, "FAKE_RUNNING": running ? "1" : "0", "FAKE_PS": ps,
+                         "FAKE_IN_DEFAULTS": inDefaults ? "1" : "0"]
         let out = Pipe()
         p.standardOutput = out
         p.standardError = out
@@ -114,9 +117,24 @@ final class MissionControlWatchdogTests: XCTestCase {
         XCTAssertFalse(fm.fileExists(atPath: home.appendingPathComponent("Library/LaunchAgents/\(MissionControlWatchdog.plistName)").path))
     }
 
-    func testARunningBaneySpacesIsNeverInterruptedEvenIfQuiet() throws {
+    /// An older build started since (no `mission-control` capability, not the process that wrote
+    /// the heartbeat) answers nothing and restores nothing: it doesn't keep Mission Control off.
+    func testAnOlderBuildThatIsRunningDoesNotKeepMissionControlOff() throws {
+        try beat(age: 600)   // the #107 build that wrote it is gone
+        XCTAssertTrue(try tick(running: true).contains("killall Dock"), "a BaneySpaces is running, but not that one")
+        try? fm.removeItem(at: log)
+        try beat(age: 600, pid: getpid(), capable: false)   // the pid is alive, the heartbeat isn't from a build that knows the takeover
+        XCTAssertTrue(try tick(running: true, ps: "/Applications/BaneySpaces.app/Contents/MacOS/BaneySpaces").contains("killall Dock"))
+    }
+
+    /// The record only reached the disk as a file (the app died before its settings did).
+    func testTheRecordFileAloneIsEnoughToPutItBack() throws {
         try beat(age: 600)
-        XCTAssertFalse(try tick(running: true).contains("killall"))
+        let calls = try tick(inDefaults: false, fileRecord: true)
+        XCTAssertTrue(calls.contains("defaults delete com.apple.dock mcx-expose-disabled"), calls)
+        XCTAssertTrue(calls.contains("defaults write com.apple.dock wvous-tl-corner -int 2"), calls)
+        XCTAssertTrue(calls.contains("killall Dock"), calls)
+        XCTAssertFalse(fm.fileExists(atPath: folder.appendingPathComponent(DurableRecord.fileName).path), "used up")
     }
 
     func testAnUpdateGetsThirtySecondsNotSixty() throws {
@@ -164,7 +182,8 @@ final class MissionControlWatchdogTests: XCTestCase {
         }
         XCTAssertNil(i.install(pid: 4242))
         XCTAssertEqual(calls.filter { $0.first == "bootstrap" }.count, 1)
-        XCTAssertEqual(try? String(contentsOf: i.folder.appendingPathComponent(MissionControlWatchdog.heartbeat), encoding: .utf8), "4242\n")
+        XCTAssertEqual(try? String(contentsOf: i.folder.appendingPathComponent(MissionControlWatchdog.heartbeat), encoding: .utf8),
+                       "4242\n\(MissionControlWatchdog.capability)\n", "the pid, and that this build holds Mission Control off")
         XCTAssertTrue(fm.fileExists(atPath: i.folder.appendingPathComponent(MissionControlWatchdog.restoreName).path))
         XCTAssertTrue(fm.fileExists(atPath: i.folder.appendingPathComponent(MissionControlWatchdog.scriptName).path))
         XCTAssertTrue(fm.fileExists(atPath: i.agentPlist.path))
@@ -239,5 +258,56 @@ final class MissionControlWatchdogTests: XCTestCase {
             .deletingLastPathComponent().appendingPathComponent("Sources/BaneySpaces/MissionControlOverride.swift"), encoding: .utf8)
         XCTAssertTrue(app.contains("folder: Spaces.folder,"), "Spaces.folder is Application Support/BaneySpaces already")
         XCTAssertFalse(app.contains("Spaces.folder.appendingPathComponent(\"BaneySpaces\")"))
+    }
+
+    // MARK: The agent being switched off while Mission Control is held
+
+    func testAnAgentSwitchedOffLaterIsNoLongerArmed() {
+        var loaded = false
+        let i = installer { args in
+            if args.first == "bootstrap" { loaded = true; return true }
+            return args.first == "print" ? loaded : true
+        }
+        XCTAssertNil(i.install(pid: 1))
+        XCTAssertTrue(i.isArmed())
+        loaded = false   // the Background Item notice, `launchctl bootout`
+        XCTAssertFalse(i.isArmed())
+        try? fm.removeItem(at: i.agentPlist)
+        loaded = true
+        XCTAssertFalse(i.isArmed(), "the plist is gone as well")
+    }
+
+    /// The next check finds it unloaded, runs the takeover again, and it either re-arms or gives
+    /// Mission Control back.
+    func testMissionControlIsGivenBackWhenTheAgentCannotBeLoadedAgain() {
+        var loaded = false, allowed = true
+        let i = installer { args in
+            if args.first == "bootstrap" { loaded = allowed; return allowed }
+            return args.first == "print" ? loaded : true
+        }
+        let (prefs, record, t) = takeover()
+        XCTAssertEqual(MissionControlSetup.takeOver(t) { i.install(pid: 1) }, .taken(changed: true))
+        XCTAssertTrue(i.isArmed())
+        // The person switches it off in Login Items; macOS then refuses to load it.
+        loaded = false
+        allowed = false
+        XCTAssertFalse(i.isArmed())
+        guard case .notArmed(_, let restored) = MissionControlSetup.takeOver(t, arm: { i.install(pid: 1) }) else { return XCTFail("still taken over without a way back") }
+        XCTAssertTrue(restored)
+        XCTAssertNil(prefs.values["com.apple.dock/mcx-expose-disabled"])
+        XCTAssertNil(record.saved)
+    }
+
+    /// Switched off and on again by hand (a profile, `launchctl bootstrap`): re-armed, nothing given back.
+    func testAnAgentLoadedAgainIsArmedAgain() {
+        var loaded = true
+        let i = installer { args in
+            if args.first == "bootstrap" { loaded = true }
+            return args.first == "print" ? loaded : true
+        }
+        XCTAssertNil(i.install(pid: 1))
+        loaded = false
+        XCTAssertNil(i.install(pid: 1))
+        XCTAssertTrue(i.isArmed())
     }
 }

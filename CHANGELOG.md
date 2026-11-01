@@ -12,7 +12,10 @@
   it can't load or isn't recognised, Settings says so. Mission Control comes back when BaneySpaces quits;
   if it stops any other way (a crash, the app dragged to the Trash), a launch agent puts it back after
   a minute, 30 seconds after an update's quit, and Mission Control is switched off only once that agent
-  is loaded; if it can't be, Mission Control stays on and Settings says why. A Magic Mouse's two-finger
+  is loaded and what was there is saved to disk (so a crash in between still leaves the way back); if
+  either can't be done, Mission Control stays on and Settings says why. The launch agent being
+  switched off later, or Mission Control turned back on by hand, makes BaneySpaces let go; an older
+  build started later doesn't keep it off. A Magic Mouse's two-finger
   double tap opens nothing while this is on.
 - **The "+N" list lets go, and the dock moves.** The window strip and the "+N" list are a panel of their
   own, so opening one no longer resizes or jumps the dock. The dock stays up only while the pointer is

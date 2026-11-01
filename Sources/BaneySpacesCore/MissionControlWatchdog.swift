@@ -16,6 +16,8 @@ public enum MissionControlWatchdog {
 
     /// Names inside BaneySpaces' Application Support folder.
     public static let heartbeat = "mc-heartbeat"
+    /// The heartbeat's second line. A build that doesn't write it doesn't replace Mission Control.
+    public static let capability = "mission-control=1"
     public static let updating = "mc-updating"
     public static let scriptName = "mc-watchdog.sh"
     public static let restoreName = "mc-restore.sh"
@@ -31,14 +33,18 @@ public enum MissionControlWatchdog {
         # BaneySpaces: puts macOS's Mission Control back if BaneySpaces has stopped running without doing it.
         D="$HOME/Library/Application Support/BaneySpaces"
         [ -f "$D/\(heartbeat)" ] || exit 0
-        defaults read com.baney.baneyspaces systemMissionControlSaved >/dev/null 2>&1 || exit 0
+        # The record is in BaneySpaces' settings, or in a file of its own if a crash kept it from them.
+        { defaults read com.baney.baneyspaces systemMissionControlSaved >/dev/null 2>&1 || [ -f "$D/\(DurableRecord.fileName)" ]; } || exit 0
         beat=$(stat -f %m "$D/\(heartbeat)" 2>/dev/null) || exit 0
         limit=\(limit)
         [ -f "$D/\(updating)" ] && limit=\(updateLimit)
         [ $(( $(date +%s) - beat )) -gt "$limit" ] || exit 0
+        # Running means the process that wrote the heartbeat, and a build that knows this takeover.
+        # Any other BaneySpaces (an older build started since) doesn't answer the swipe or the
+        # corners and doesn't give Mission Control back, so it doesn't count.
         pid=$(head -n 1 "$D/\(heartbeat)" 2>/dev/null)
-        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && ps -p "$pid" -o comm= 2>/dev/null | grep -q BaneySpaces; then exit 0; fi
-        pgrep -f "/Contents/MacOS/BaneySpaces$" >/dev/null && exit 0
+        if grep -qx '\(capability)' "$D/\(heartbeat)" 2>/dev/null && [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null \
+          && ps -p "$pid" -o comm= 2>/dev/null | grep -q BaneySpaces; then exit 0; fi
         [ -f "$D/\(restoreName)" ] || exit 0
         exec /bin/bash "$D/\(restoreName)" --restore-mission-control
         """ + "\n"
@@ -125,9 +131,17 @@ public struct WatchdogInstaller {
         _ = launchctl(["bootout", target])
     }
 
-    /// Proof that BaneySpaces, this process, is alive.
+    /// Proof that BaneySpaces, this process, is alive, and that it is a build that holds Mission Control off.
     public func beatNow(pid: Int32) throws {
-        try Data("\(pid)\n".utf8).write(to: file(MissionControlWatchdog.heartbeat))
+        try Data("\(pid)\n\(MissionControlWatchdog.capability)\n".utf8).write(to: file(MissionControlWatchdog.heartbeat))
+    }
+
+    /// Whether the agent is still there: its plist and script are in place and launchd has it
+    /// loaded. The person can switch it off from the Background Item notice or Login Items.
+    public func isArmed() -> Bool {
+        let fm = FileManager.default
+        return fm.fileExists(atPath: agentPlist.path) && fm.fileExists(atPath: file(MissionControlWatchdog.restoreName).path)
+            && fm.fileExists(atPath: file(MissionControlWatchdog.scriptName).path) && launchctl(["print", target])
     }
 
     /// Quitting for an update: the new build gets 30 seconds to start.
@@ -150,6 +164,11 @@ public enum MissionControlSetup {
     /// changed until it has; if it fails while Mission Control is already off, it is put back.
     public static func takeOver(_ takeover: MissionControlTakeover, arm: () -> String?) -> Result {
         if let reason = arm() { return .notArmed(reason: reason, restored: takeover.restore()) }
-        return .taken(changed: takeover.takeOver())
+        switch takeover.takeOverDurably() {
+        case .done(let changed):
+            return .taken(changed: changed)
+        case .recordNotSaved:
+            return .notArmed(reason: "BaneySpaces couldn't save what Mission Control was set to, and it needs that to put it back.", restored: false)
+        }
     }
 }

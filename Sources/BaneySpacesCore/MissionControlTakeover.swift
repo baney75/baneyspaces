@@ -11,6 +11,55 @@ public protocol PreferenceStore: AnyObject {
 /// Where BaneySpaces keeps what it saved before changing macOS, as its own setting. nil is no record.
 public protocol SavedRecord: AnyObject {
     var saved: [String: NSNumber]? { get set }
+    /// Makes what `saved` holds durable: on disk, where the launch agent can read it after a
+    /// crash. False when it couldn't be.
+    func flush() -> Bool
+}
+
+public extension SavedRecord {
+    func flush() -> Bool { true }
+}
+
+/// The record as a file of its own, which the launch agent and `uninstall.sh` read when the app's
+/// settings don't have it (a crash before they reached the disk). Written to a temporary file,
+/// flushed, then renamed over the old one, so it is whole or not there.
+public enum DurableRecord {
+    public static let fileName = "mc-record.plist"
+
+    public static func write(_ record: [String: NSNumber], to url: URL) -> Bool {
+        guard let data = try? PropertyListSerialization.data(fromPropertyList: record, format: .xml, options: 0) else { return false }
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let temp = url.appendingPathExtension("tmp")
+        let fd = open(temp.path, O_WRONLY | O_CREAT | O_TRUNC, 0o600)
+        guard fd >= 0 else { return false }
+        let wrote = data.withUnsafeBytes { raw -> Bool in
+            var done = 0
+            while done < raw.count {
+                let n = Darwin.write(fd, raw.baseAddress! + done, raw.count - done)
+                if n <= 0 { return false }
+                done += n
+            }
+            return true
+        }
+        // F_FULLFSYNC asks the drive to flush too; plain fsync where that isn't supported.
+        let flushed = wrote && (fcntl(fd, F_FULLFSYNC) == 0 || fsync(fd) == 0)
+        close(fd)
+        guard flushed, rename(temp.path, url.path) == 0 else { unlink(temp.path); return false }
+        let dir = open(url.deletingLastPathComponent().path, O_RDONLY)
+        if dir >= 0 { _ = fsync(dir); close(dir) }
+        return true
+    }
+
+    public static func read(from url: URL) -> [String: NSNumber]? {
+        guard let data = try? Data(contentsOf: url),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: NSNumber] else { return nil }
+        return plist
+    }
+
+    public static func remove(_ url: URL) {
+        try? FileManager.default.removeItem(at: url)
+        try? FileManager.default.removeItem(at: url.appendingPathExtension("tmp"))
+    }
 }
 
 /// Switches macOS's Mission Control off, so BaneySpaces' overview is the only one: the Dock's own
@@ -56,10 +105,27 @@ public struct MissionControlTakeover {
     private func isOff() -> Bool { read(Self.flag)?.boolValue == true }
     private func isNothing(_ key: String) -> Bool { read(key)?.intValue == Self.nothing }
 
+    public enum TakeOver: Equatable {
+        /// Off at the Dock; `changed` when a setting was written, so the Dock must restart to notice.
+        case done(changed: Bool)
+        /// What was there couldn't be saved durably, so nothing was touched.
+        case recordNotSaved
+    }
+
+    /// Whether the Dock's switch is on.
+    public var isOffAtDock: Bool { isOff() }
+
     /// Saves what's there and switches Mission Control off. True when a setting changed, so the
     /// Dock must restart to notice (it reads these when it starts).
     @discardableResult
     public func takeOver() -> Bool {
+        if case .done(let changed) = takeOverDurably() { return changed }
+        return false
+    }
+
+    /// Like `takeOver`, but the record is on disk before any Dock setting is touched, so a crash
+    /// between the two still leaves the way back; if it can't be saved, nothing is touched.
+    public func takeOverDurably() -> TakeOver {
         // A setting that wasn't there is saved as absent (no entry), so restoring removes it
         // again. One that isn't ours any more since the last launch was changed in System
         // Settings since: that's the person's newer choice, and the one to put back later.
@@ -70,15 +136,21 @@ public struct MissionControlTakeover {
             let v = read(c.key)
             if v?.intValue == Self.missionControl { saved[Self.id(c.key)] = v }
         }
-        // Written before the settings change: a crash in between still leaves a note to undo.
+        // Written, and on disk, before the settings change: a crash in between still leaves a note to undo.
+        let previous = record.saved
         record.saved = saved
+        guard record.flush() else {
+            record.saved = previous
+            _ = record.flush()
+            return .recordNotSaved
+        }
         var changed = false
         if !isOff() { prefs.set(Self.domain, Self.flag, true as NSNumber); changed = true }
         for c in Corner.allCases where saved[Self.id(c.key)] != nil && read(c.key)?.intValue == Self.missionControl {
             prefs.set(Self.domain, c.key, Self.nothing as NSNumber)
             changed = true
         }
-        return changed
+        return .done(changed: changed)
     }
 
     /// Puts back everything `takeOver` saved. True when a setting changed.
@@ -99,6 +171,7 @@ public struct MissionControlTakeover {
             changed = true
         }
         record.saved = nil
+        _ = record.flush()
         return changed
     }
 
