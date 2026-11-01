@@ -302,11 +302,15 @@ check "and back" wait_for 6 sh -c "[ \"\$(qs ipc -p '$QSD/shell.qml' call baneys
 
 echo "== agents may change anything in config.toml (and are logged); pressing your keys stays yours"
 AOUT="$TMP/agent-set.out"; rm -f "$AOUT"
-AR="$(baneyspaces agent run --agent-id looks -- sh -c "for kv in 'theme.name minimal' 'theme.palette nord' 'behavior.dock.enabled false' 'behavior.dock.enabled true' 'behavior.launcher.files false' 'animation.preset snappy'; do baneyspaces set \$kv; done > '$AOUT' 2>&1; baneyspaces switch 3 >> '$AOUT' 2>&1; sleep 600")"
+AR="$(baneyspaces agent run --agent-id looks -- sh -c "for kv in 'theme.name minimal' 'theme.palette nord' 'behavior.dock.enabled false' 'behavior.dock.enabled true' 'behavior.launcher.files false' 'animation.preset snappy'; do baneyspaces set \$kv; done > '$AOUT' 2>&1; baneyspaces switch 3 >> '$AOUT' 2>&1; baneyspaces ui >> '$AOUT' 2>&1; baneyspaces launcher search x >> '$AOUT' 2>&1; baneyspaces config >> '$AOUT' 2>&1; baneyspaces agent-status set working --window '$CL' >> '$AOUT' 2>&1; sleep 600")"
 check "an agent process started" test -n "$(echo "$AR" | jq -r '.data.pid // empty')"
-wait_for 8 test "$(wc -l < "$AOUT" 2>/dev/null || echo 0)" -ge 7
+wait_for 8 test "$(wc -l < "$AOUT" 2>/dev/null || echo 0)" -ge 11
 eq "an agent may set the theme, the palette, the dock switch, behavior and animation" "$(head -6 "$AOUT" | jq -r '.ok' | tr '\n' ' ')" "true true true true true true "
 eq "…and workspace operations stay yours" "$(sed -n 7p "$AOUT" | jq -r '.error.code')" "not_in_scope"
+eq "an agent does not get your window titles (ui)" "$(sed -n 8p "$AOUT" | jq -r '.error.code')" "not_in_scope"
+eq "…or your files and packages (launcher search)" "$(sed -n 9p "$AOUT" | jq -r '.error.code')" "not_in_scope"
+eq "…and reads the settings without the path of your config folder" "$(sed -n 10p "$AOUT" | jq -r '[.ok, (.data|has("path")), (.data.settings|has("path"))]|map(tostring)|join(",")')" "true,false,false"
+eq "…and cannot put a status badge on your window" "$(sed -n 11p "$AOUT" | jq -r '.error.code')" "not_in_scope"
 eq "the settings it made are in use" "$(baneyspaces config | jq -r '.data.settings.appearance.theme + "/" + .data.settings.appearance.palette + "/" + (.data.settings.launcher.files|tostring) + "/" + .data.settings.motion.preset')" "minimal/nord/false/snappy"
 eq "the action log has a record for each change, with the caller's process" "$(baneyspaces agent log | jq '[.data.records[]|select(.verb=="config_set" and .pid != null)]|length')" "6"
 baneyspaces set theme.name omarchy >/dev/null; baneyspaces set theme.palette auto >/dev/null; baneyspaces set behavior.launcher.files true >/dev/null; baneyspaces set animation.preset baneyspaces >/dev/null; baneyspaces agent-workspace hide >/dev/null
@@ -329,6 +333,100 @@ done
 baneyspaces set theme.name omarchy >/dev/null
 echo "  (the nested session draws with Qt's software renderer on a headless 60 Hz output, so these numbers are the probe working, not a verdict on a GPU: untested live)"
 echo "$FP" > "$TMP/frame-probe.json"
+
+echo "== a tap of Alt+Tab or Super+Tab never needs the overlay; a hold shows it; the compositor sees the release"
+check "the releases of Alt and Super are bound in the compositor" test "$(H binds | jq '[.[]|select(.release==true and ((.description//"")|startswith("BaneySpaces")))]|length')" = 8
+baneyspaces focus-monitor $M1 >/dev/null; baneyspaces switch 1 >/dev/null; sleep 0.4
+layer_up() { H layers | grep -c 'baneyspaces-switcher\|baneyspaces-overview'; }
+watch_layers() { # watch_layers <seconds> <outfile>: the overlay layers present, sampled every 20 ms
+  ( end=$(( $(date +%s%N) + $1 * 1000000000 )); : > "$2"; while [ "$(date +%s%N)" -lt "$end" ]; do layer_up >> "$2"; sleep 0.02; done ) &
+}
+expected_target() { baneyspaces switcher next >/dev/null; baneyspaces ui | jq -r '.data.switcher.items[1].window'; baneyspaces switcher cancel >/dev/null; }
+tap() { # tap <ms>: Alt+Tab pressed and let go after <ms>
+  hyprctl eval 'baneyspaces_press("alt", "switcher next")' >/dev/null; sleep "0.$(printf '%03d' $1)"; hyprctl eval 'baneyspaces_release("alt", "switcher commit")' >/dev/null
+}
+for ms in 30 120; do
+  sleep 0.4; WANT="$(expected_target)"; sleep 0.3
+  watch_layers 1.2 "$TMP/layers.txt"; tap $ms; sleep 0.7; wait
+  eq "a ${ms} ms tap of Alt+Tab goes to the window you used before" "$(active)" "$WANT"
+  eq "…with no overlay on screen at any moment" "$(sort -u "$TMP/layers.txt" | tr -d '\n')" "0"
+  eq "…and nothing left open" "$(baneyspaces ui | jq -r .data.switcher.open)" "false"
+done
+sleep 0.4; WANT="$(expected_target)"; sleep 0.3
+hyprctl eval 'baneyspaces_press("alt", "switcher next")' >/dev/null; sleep 0.5
+eq "held past the threshold, the overlay is drawn" "$(baneyspaces ui | jq -r .data.switcher.visible)" "true"
+check "…its layer is mapped" test "$(layer_up)" -ge 1
+hyprctl eval 'baneyspaces_release("alt", "switcher commit")' >/dev/null; sleep 0.8
+eq "letting go of Alt goes to the window" "$(active)" "$WANT"
+eq "…and the overlay is gone" "$(layer_up)" "0"
+sleep 0.4; WANT="$(expected_target)"; sleep 0.3
+baneyspaces switcher commit >/dev/null; baneyspaces switcher next >/dev/null; sleep 0.6
+eq "a release that overtook its press (two processes) still lands on the window" "$(active)" "$WANT"
+hyprctl eval 'baneyspaces_release("alt", "switcher commit")' >/dev/null; sleep 0.2
+eq "a release with no press of ours does nothing" "$(baneyspaces ui | jq -r .data.switcher.open)" "false"
+baneyspaces switch 1 >/dev/null; sleep 0.4
+watch_layers 1.0 "$TMP/layers.txt"; hyprctl eval 'baneyspaces_press("super", "overview next")' >/dev/null; sleep 0.04; hyprctl eval 'baneyspaces_release("super", "overview go")' >/dev/null; sleep 0.6; wait
+eq "a 40 ms tap of Super+Tab goes to the next workspace, as Omarchy's did" "$(mon_ws $M1)" "2"
+eq "…with no overview drawn" "$(sort -u "$TMP/layers.txt" | tr -d '\n')" "0"
+baneyspaces switch 1 >/dev/null; sleep 0.4
+hyprctl eval 'baneyspaces_press("super", "overview next")' >/dev/null; sleep 0.5
+eq "held, the overview is drawn on the next workspace" "$(baneyspaces ui | jq -c '[.data.overview.visible,.data.overview.cursor]')" "[true,1]"
+hyprctl eval 'baneyspaces_press("super", "overview next")' >/dev/null; sleep 0.3
+eq "Tab again steps to the one after" "$(baneyspaces ui | jq -r .data.overview.cursor)" "2"
+hyprctl eval 'baneyspaces_release("super", "overview go")' >/dev/null; sleep 0.8
+eq "letting go of Super goes there" "$(mon_ws $M1)-$(baneyspaces ui | jq -r .data.overview.shown)" "3-false"
+baneyspaces switch 1 >/dev/null; sleep 0.4
+baneyspaces overview go >/dev/null; baneyspaces overview next >/dev/null; sleep 0.5
+eq "a Super release that overtook its press lands on the next workspace" "$(mon_ws $M1)" "2"
+baneyspaces switch 1 >/dev/null; sleep 0.3
+baneyspaces overview next >/dev/null; sleep 0.3
+eq "a peek overview nobody finishes is on screen until it times out (15 s), never forever" "$(baneyspaces ui | jq -r .data.overview.peek)" "true"
+baneyspaces overview hide >/dev/null
+
+echo "== a surface that is switched off gives its keys back to Omarchy"
+baneyspaces focus-monitor $M1 >/dev/null; baneyspaces switch 1 >/dev/null; sleep 0.3
+baneyspaces set behavior.switcher.enabled false >/dev/null; sleep 0.4
+B4="$(active)"; SWF="$(baneyspaces switcher next)"
+eq "Alt+Tab with the switcher off runs Omarchy's own cycle (no dead key)" "$(echo "$SWF" | jq -r '.ok,.data.fallback' | tr '\n' ' ')" "true omarchy: cycle_next "
+sleep 0.4; check "…and the focused window changed" test "$(active)" != "$B4"
+baneyspaces set behavior.switcher.enabled true >/dev/null
+baneyspaces set behavior.launcher.enabled false >/dev/null; sleep 0.4
+eq "Super+Space with the launcher off runs Omarchy's menu" "$(baneyspaces launcher toggle | jq -r '.ok,.data.fallback' | tr '\n' ' ')" "true omarchy-menu toggle "
+baneyspaces set behavior.launcher.enabled true >/dev/null
+baneyspaces set behavior.overview.enabled false >/dev/null; sleep 0.4
+OVF="$(baneyspaces overview next)"
+eq "Super+Tab with the overview off runs Omarchy's next workspace" "$(echo "$OVF" | jq -r '.ok,.data.fallback' | tr '\n' ' ')" "true omarchy: next workspace "
+baneyspaces set behavior.overview.enabled true >/dev/null
+baneyspaces focus-monitor $M1 >/dev/null; baneyspaces switch 1 >/dev/null; sleep 0.3
+
+echo "== config.toml: a hand edit is kept, a broken file is never overwritten, a hand edit applies live"
+CFG="$XDG_CONFIG_HOME/baneyspaces/config.toml"
+printf '\n# my edit\n[behavior.launcher]\nfiles = false\n' >> "$CFG"
+baneyspaces set behavior.dock.size small >/dev/null
+eq "set right after a hand edit keeps the edit" "$(baneyspaces config | jq -r '[.data.settings.launcher.files,.data.settings.dock.size]|map(tostring)|join(",")')" "false,small"
+check "…and its comment" grep -q '# my edit' "$CFG"
+baneyspaces set behavior.launcher.files true >/dev/null; baneyspaces set behavior.dock.size medium >/dev/null
+cp "$CFG" "$TMP/config.good"
+printf '[behavior.dock\nsize = "large\n# my notes\n' > "$CFG"; cp "$CFG" "$TMP/config.broken"; sleep 1.3
+BR="$(baneyspaces set behavior.dock.size large)"
+eq "a file with a syntax error refuses set, naming the problem" "$(echo "$BR" | jq -r '.error.code')" "config_invalid"
+check "…with the parse error" sh -c "echo '$(echo "$BR" | jq -r .error.message | tr "'" ' ')' | grep -q 'syntax error'"
+check "…and the file is as the person left it" cmp -s "$CFG" "$TMP/config.broken"
+eq "the daemon keeps running on the last good settings" "$(baneyspaces config | jq -r '.data.settings.dock.size')" "medium"
+printf 'behavior = false\n' > "$CFG"; sleep 1.3
+SC="$(baneyspaces set behavior.dock.size large)"
+eq "a value where a table belongs is a typed error, not a crash" "$(echo "$SC" | jq -r '.error.code')" "config_invalid"
+check "…and the daemon answers afterwards" sh -c "baneyspaces ping 2>/dev/null; baneyspaces state | jq -e .ok"
+cp "$TMP/config.good" "$CFG"; sleep 1.3
+printf '\n[animation.workspace]\nstyle = "fade"\n' >> "$CFG"
+check "animation.workspace.style = fade, written by hand, reaches Hyprland within two seconds" wait_for 3 sh -c "[ \"\$(hyprctl -j animations | jq -r '[.[0][]|select(.name==\"workspaces\")|.enabled]|first')\" = true ]"
+/usr/bin/python3 -I "$HERE/cfg-drop.py" "$CFG" animation.workspace
+check "…and taking it out of the file puts it back" wait_for 3 sh -c "[ \"\$(hyprctl -j animations | jq -r '[.[0][]|select(.name==\"workspaces\")|.enabled]|first')\" = false ]"
+
+echo "== launcher results belong to the search that made them"
+S1="$(baneyspaces launcher search foot --mode apps | jq -r '.data.seq')"; S2="$(baneyspaces launcher search chrom --mode apps | jq -r '.data.seq')"
+check "each search has its own number, rising" test "$S2" -gt "$S1"
+eq "a result of the older search is refused once a newer one exists" "$(baneyspaces launcher run app:foot --dry-run --seq "$S1" 2>&1 | jq -r '.error.code // "ran"')" "not_found"
 
 echo "== the shell stayed healthy"
 check "quickshell is still running" kill -0 $QSPID

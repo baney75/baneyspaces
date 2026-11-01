@@ -237,7 +237,9 @@ impl Item {
 /// first (most recent) window of each app. The agent workspace is never offered.
 pub fn switcher_items(wins: &[(Win, u8)], mode: &str) -> Vec<Item> {
     let mut v: Vec<&(Win, u8)> = wins.iter().collect();
-    v.sort_by(|a, b| (a.0.focus_rank.max(0), &a.0.addr).cmp(&(b.0.focus_rank.max(0), &b.0.addr)));
+    // A window that was never focused has rank -1 in Hyprland (or none): it goes to the end, not in front of the window you are on.
+    let rank = |w: &Win| if w.focus_rank < 0 { i64::MAX } else { w.focus_rank };
+    v.sort_by(|a, b| (rank(&a.0), &a.0.addr).cmp(&(rank(&b.0), &b.0.addr)));
     let mut count: HashMap<&str, usize> = HashMap::new();
     for (w, _) in &v {
         *count.entry(w.app.as_str()).or_default() += 1;
@@ -261,7 +263,12 @@ pub struct Switcher {
     pub index: usize,
     pub items: Vec<Item>,
     pub opened_at: u64,
+    /// The overlay is not drawn before this: a quick tap of Alt+Tab goes straight to the window with no overlay at all.
+    pub show_at: u64,
 }
+
+/// A press and release of the modifier shorter than this never shows an overlay.
+pub const TAP_MS: u64 = 150;
 
 impl Switcher {
     /// A press of Alt+Tab (`dir` +1) or Alt+Shift+Tab (-1). Opens with the window you used before
@@ -278,12 +285,18 @@ impl Switcher {
             };
             self.items = fresh;
             self.open = true;
+            self.show_at = now_ms + TAP_MS;
         } else if !self.items.is_empty() {
+            self.show_at = self.show_at.min(now_ms); // a second press: you are holding it, so show it now
             let n = self.items.len() as i64;
             self.index = (self.index as i64 + dir.signum() as i64).rem_euclid(n) as usize;
         }
         self.opened_at = now_ms;
         true
+    }
+
+    pub fn visible(&self, now_ms: u64) -> bool {
+        self.open && now_ms >= self.show_at
     }
 
     pub fn select(&mut self, i: usize) {
@@ -307,8 +320,8 @@ impl Switcher {
         self.items.clear();
     }
 
-    pub fn json(&self) -> Value {
-        json!({ "open": self.open, "index": self.index, "items": self.items.iter().map(Item::json).collect::<Vec<_>>() })
+    pub fn json(&self, now_ms: u64) -> Value {
+        json!({ "open": self.open, "visible": self.visible(now_ms), "index": self.index, "items": self.items.iter().map(Item::json).collect::<Vec<_>>() })
     }
 }
 
@@ -517,6 +530,8 @@ pub struct Flags<'a> {
     /// The overview's highlighted workspace, 0-based, and whether it was opened by Super+Tab (let go of Super to go).
     pub overview_cursor: usize,
     pub overview_peek: bool,
+    /// Drawn: a peek opened by Super+Tab only after the tap threshold.
+    pub overview_visible: bool,
     pub settings: bool,
     pub launcher: bool,
     pub switcher: &'a Switcher,
@@ -630,8 +645,8 @@ pub fn build_state(
             "list_open": flags.dock.list_open(),
         },
         "agent": { "shown": view["agent"]["shown"], "windows": view["agent"]["windows"], "finished": badges.finished(), "badges": badges.all() },
-        "switcher": flags.switcher.json(),
-        "overview": { "shown": flags.overview, "cursor": flags.overview_cursor, "peek": flags.overview_peek },
+        "switcher": flags.switcher.json(flags.now_ms),
+        "overview": { "shown": flags.overview, "visible": flags.overview_visible, "cursor": flags.overview_cursor, "peek": flags.overview_peek },
         "launcher": { "open": flags.launcher },
         "settings": { "open": flags.settings },
         "config": cfg,
@@ -877,6 +892,30 @@ mod tests {
     }
 
     #[test]
+    fn a_window_never_focused_goes_to_the_end_of_the_switcher_not_the_front() {
+        let w = |a: &str, rank: i64, n: u8| (Win { addr: a.into(), app: "x".into(), title: a.into(), pid: 1, focus_rank: rank }, n);
+        // 0x1 is the window you are on (rank 0), 0x2 the one before it (rank 1), 0x0 was never focused (rank -1, and it sorts first by address)
+        let items = switcher_items(&[w("0x0", -1, 3), w("0x1", 0, 1), w("0x2", 1, 2)], "windows");
+        assert_eq!(items.iter().map(|i| i.window.as_str()).collect::<Vec<_>>(), ["0x1", "0x2", "0x0"]);
+        let mut s = Switcher::default();
+        s.press(items, 1, 0);
+        assert_eq!(s.commit().unwrap().window, "0x2", "Alt+Tab goes to the window you used before");
+    }
+
+    #[test]
+    fn a_tap_never_shows_the_overlay_and_a_hold_does() {
+        let mut s = Switcher::default();
+        let items = switcher_items(&[(Win { addr: "0x1".into(), app: "a".into(), title: "a".into(), pid: 1, focus_rank: 0 }, 1), (Win { addr: "0x2".into(), app: "b".into(), title: "b".into(), pid: 2, focus_rank: 1 }, 2)], "windows");
+        s.press(items, 1, 1000);
+        assert!(s.open && !s.visible(1000) && !s.visible(1000 + TAP_MS - 1), "within the tap threshold: no overlay");
+        assert!(s.visible(1000 + TAP_MS), "held past it: the overlay");
+        let mut t = Switcher::default();
+        t.press(vec![Item { window: "0x1".into(), app: "a".into(), title: "a".into(), workspace: 1, count: 1 }, Item { window: "0x2".into(), app: "b".into(), title: "b".into(), workspace: 2, count: 1 }], 1, 0);
+        t.press(vec![], 1, 40);
+        assert!(t.visible(40), "a second Tab press means you are holding it");
+    }
+
+    #[test]
     fn the_overview_grid_stops_at_its_edges_and_super_tab_wraps_over_nine() {
         assert_eq!((grid_step(0, "left"), grid_step(0, "right"), grid_step(2, "right"), grid_step(4, "up"), grid_step(7, "down")), (0, 1, 2, 1, 7));
         assert_eq!((cycle(8, 1), cycle(0, -1), cycle(3, 1), cycle(3, -1)), (0, 8, 4, 2));
@@ -981,6 +1020,7 @@ mod tests {
             overview: false,
             overview_cursor: 0,
             overview_peek: false,
+            overview_visible: false,
             settings: false,
             launcher: false,
             switcher: &sw,
@@ -1056,6 +1096,7 @@ mod tests {
             overview: false,
             overview_cursor: 0,
             overview_peek: false,
+            overview_visible: false,
             settings: false,
             launcher: false,
             switcher: &sw,

@@ -161,6 +161,11 @@ pub fn lock(s: &Shared) -> MutexGuard<'_, Core> {
     s.lock().unwrap_or_else(|p| p.into_inner())
 }
 
+/// The displays as Hyprland reports them, for a caller that does not hold the daemon's lock.
+pub fn monitors_of(hypr: &Hypr) -> Vec<Mon> {
+    hypr.json("monitors").map(|v| Core::parse_monitors(&v)).unwrap_or_default()
+}
+
 impl Core {
     pub fn monitors(&self) -> Vec<Mon> {
         self.try_monitors().unwrap_or_default()
@@ -326,6 +331,7 @@ impl Core {
             // The model has committed a state the compositor may not have reached. Re-read it
             // before anything else is accepted.
             self.log(&format!("dispatch failed ({err}); re-reading Hyprland"));
+            self.mark_dirty();
             self.resync();
             return Err(ApplyError::Compositor { err, delivered_any });
         }
@@ -871,6 +877,8 @@ const USER_ONLY: &[&str] = &[
     "switch", "move", "focus_monitor", "agent_show", "agent_hide", "agent_toggle", "agent_move", "agent_bring", "overview", "stop",
     // the shell plugin and your keys: an agent never drives your screen, windows, launcher or settings
     "focus", "move_windows", "window_close", "dock", "dock_bar", "switcher", "launcher", "launcher_run", "settings",
+    // they return your window titles, your files and packages: an agent does not get them (it has the agent workspace)
+    "ui", "launcher_search",
 ];
 
 impl Core {
@@ -1410,7 +1418,23 @@ fn serve_conn(shared: Shared, s: UnixStream) {
                 let _ = tx.send(first);
                 continue;
             }
-            Ok(req) => handle(&shared, req, peer),
+            Ok(req) => {
+                // Each request on its own thread: a slow one (a file search, a package lookup) never holds up the next, and
+                // replies carry the request's id, so their order does not matter.
+                let (shared, tx, req) = (shared.clone(), tx.clone(), req.clone());
+                std::thread::spawn(move || {
+                    let env = handle(&shared, &req, peer);
+                    let mut out = env.to_json();
+                    if let Some(id) = req.get("id") {
+                        if let Ok(mut v) = serde_json::from_str::<Value>(&out) {
+                            v["id"] = id.clone();
+                            out = v.to_string();
+                        }
+                    }
+                    let _ = tx.send(out);
+                });
+                continue;
+            }
             Err(e) => Envelope::err("invalid_args", format!("bad request: {e}"), Retry::Never, ""),
         };
         let mut out = env.to_json();

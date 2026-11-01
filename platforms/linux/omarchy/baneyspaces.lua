@@ -38,8 +38,9 @@ hl.unbind("SUPER + SHIFT + TAB")
 -- The shell plugin animates its own panels; the compositor must not add a second animation.
 hl.layer_rule({ match = { namespace = "^baneyspaces-.*" }, no_anim = true, animation = "none" })
 
--- Omarchy's own workspace switch animation stays. `baneyspaces set motion.workspace_animation off` makes
--- a switch instant (the daemon turns it off at runtime, so this file never has to).
+-- A workspace switch is instant, as in Omarchy's own looknfeel (its `workspaces` animation is off). The daemon keeps the
+-- `workspaces` leaf off unless `animation.workspace.style` in config.toml asks for fade or slide; it touches no other
+-- animation of Omarchy's.
 
 -- Apps may ask for focus; only you take it. The daemon guards the agent workspace as well.
 hl.config({ misc = { focus_on_activate = false } })
@@ -71,6 +72,19 @@ function baneyspaces_switch(n)
   end
 end
 
+
+baneyspaces_held = { alt = false, super = false }
+function baneyspaces_press(kind, action)
+  baneyspaces_held[kind] = true
+  hl.dispatch(hl.dsp.exec_raw("baneyspaces " .. action))
+end
+function baneyspaces_release(kind, action)
+  if baneyspaces_held[kind] then
+    baneyspaces_held[kind] = false
+    hl.dispatch(hl.dsp.exec_raw("baneyspaces " .. action))
+  end
+end
+
 hl.bind("SUPER + code:10", function() baneyspaces_switch(1) end, { description = "BaneySpaces: workspace 1" })
 hl.bind("SUPER + code:11", function() baneyspaces_switch(2) end, { description = "BaneySpaces: workspace 2" })
 hl.bind("SUPER + code:12", function() baneyspaces_switch(3) end, { description = "BaneySpaces: workspace 3" })
@@ -98,9 +112,17 @@ hl.bind("SUPER + SHIFT + ALT + code:15", hl.dsp.exec_raw("baneyspaces move 6 --s
 hl.bind("SUPER + SHIFT + ALT + code:16", hl.dsp.exec_raw("baneyspaces move 7 --stay"), { description = "BaneySpaces: send window to workspace 7, stay here" })
 hl.bind("SUPER + SHIFT + ALT + code:17", hl.dsp.exec_raw("baneyspaces move 8 --stay"), { description = "BaneySpaces: send window to workspace 8, stay here" })
 hl.bind("SUPER + SHIFT + ALT + code:18", hl.dsp.exec_raw("baneyspaces move 9 --stay"), { description = "BaneySpaces: send window to workspace 9, stay here" })
-hl.bind("SUPER + TAB", hl.dsp.exec_raw("baneyspaces overview next"), { description = "BaneySpaces: overview (next workspace)" })
-hl.bind("SUPER + SHIFT + TAB", hl.dsp.exec_raw("baneyspaces overview prev"), { description = "BaneySpaces: overview (previous workspace)" })
-hl.bind("ALT + TAB", hl.dsp.exec_raw("baneyspaces switcher next"), { description = "BaneySpaces: switch windows across workspaces" })
-hl.bind("ALT + SHIFT + TAB", hl.dsp.exec_raw("baneyspaces switcher prev"), { description = "BaneySpaces: switch windows backwards" })
+hl.bind("SUPER + TAB", function() baneyspaces_press("super", "overview next") end, { description = "BaneySpaces: overview (next workspace)" })
+hl.bind("SUPER + SHIFT + TAB", function() baneyspaces_press("super", "overview prev") end, { description = "BaneySpaces: overview (previous workspace)" })
+hl.bind("ALT + TAB", function() baneyspaces_press("alt", "switcher next") end, { description = "BaneySpaces: switch windows across workspaces" })
+hl.bind("ALT + SHIFT + TAB", function() baneyspaces_press("alt", "switcher prev") end, { description = "BaneySpaces: switch windows backwards" })
 hl.bind("SUPER + SPACE", hl.dsp.exec_raw("baneyspaces launcher toggle"), { description = "BaneySpaces: launcher" })
 hl.bind("SUPER + GRAVE", hl.dsp.exec_raw("baneyspaces agent-workspace toggle"), { description = "BaneySpaces: show or hide the agent workspace" })
+hl.bind("Alt_L", function() baneyspaces_release("alt", "switcher commit") end, { release = true, description = "BaneySpaces: ALT let go (switcher commit)" })
+hl.bind("ALT + Alt_L", function() baneyspaces_release("alt", "switcher commit") end, { release = true, description = "BaneySpaces: ALT let go (switcher commit)" })
+hl.bind("Alt_R", function() baneyspaces_release("alt", "switcher commit") end, { release = true, description = "BaneySpaces: ALT let go (switcher commit)" })
+hl.bind("ALT + Alt_R", function() baneyspaces_release("alt", "switcher commit") end, { release = true, description = "BaneySpaces: ALT let go (switcher commit)" })
+hl.bind("Super_L", function() baneyspaces_release("super", "overview go") end, { release = true, description = "BaneySpaces: SUPER let go (overview go)" })
+hl.bind("SUPER + Super_L", function() baneyspaces_release("super", "overview go") end, { release = true, description = "BaneySpaces: SUPER let go (overview go)" })
+hl.bind("Super_R", function() baneyspaces_release("super", "overview go") end, { release = true, description = "BaneySpaces: SUPER let go (overview go)" })
+hl.bind("SUPER + Super_R", function() baneyspaces_release("super", "overview go") end, { release = true, description = "BaneySpaces: SUPER let go (overview go)" })

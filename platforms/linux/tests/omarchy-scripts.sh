@@ -41,7 +41,7 @@ chk "the block is appended" grep -qF -- '>>> baneyspaces' "$M"
 chk "your own lines are intact" grep -q 'my own line' "$M"
 chk "the include is copied" test -f "$HOME/.config/hypr/baneyspaces/baneyspaces.lua"
 chk "the autostart is copied and runs the daemon by absolute path" grep -qF "exec_cmd(\"$HOME/.local/bin/baneyspaces daemon\")" "$HOME/.config/hypr/baneyspaces/baneyspaces-autostart.lua"
-chk "every bound key runs the binary by absolute path (24 commands and the Super+N helper's fallback)" test "$(grep -cF "exec_raw(\"$HOME/.local/bin/baneyspaces " "$HOME/.config/hypr/baneyspaces/baneyspaces.lua")" = 25
+chk "every bound key runs the binary by absolute path (20 commands and the helpers)" test "$(grep -cF "exec_raw(\"$HOME/.local/bin/baneyspaces " "$HOME/.config/hypr/baneyspaces/baneyspaces.lua")" = 23
 chk "no bare baneyspaces command is left in the include" test "$(grep -cE 'exec_(cmd|raw)\("baneyspaces ' "$HOME/.config/hypr/baneyspaces/baneyspaces.lua")" = 0
 chk "--no-binary works once the binary is installed" "$OM/install.sh" --no-binary --src "$T/src"
 chk "the binary is installed" test -x "$HOME/.local/bin/baneyspaces"
@@ -85,4 +85,10 @@ chk "an edited shell.json keeps the edit and loses our entry" sh -c "jq -e '.idl
 # No shell.json at all: start from Omarchy's defaults, not from an empty file.
 rm -f "$SJ"; "$OM/install.sh" --src "$T/src" >/dev/null 2>&1
 chk "with no shell.json the defaults are kept" sh -c "[ ! -d /usr/share/omarchy/config/omarchy ] || jq -e '.bar.layout != null and (.plugins|map(.id)|index(\"$PID\") != null)' '$SJ'"
+"$OM/uninstall.sh" >/dev/null 2>&1
+chk "uninstalling removes a shell.json the install made, so Omarchy's defaults apply again" test ! -e "$SJ"
+# ... but one you changed afterwards stays, with only our entry gone
+rm -f "$SJ"; "$OM/install.sh" --src "$T/src" >/dev/null 2>&1; jq '.idle = {"lock": 900}' "$SJ" > "$T/sj.tmp" && cat "$T/sj.tmp" > "$SJ"
+"$OM/uninstall.sh" >/dev/null 2>&1
+chk "a shell.json you changed after the install stays, without our entry" sh -c "jq -e '.idle.lock == 900 and ((.plugins // [])|map(.id)|index(\"$PID\") == null)' '$SJ'"
 echo "passed $((N-F)), failed $F"; [ "$F" = 0 ] && echo "PASS: omarchy-scripts.sh ($N checks)" || { echo "FAIL: omarchy-scripts.sh"; exit 1; }

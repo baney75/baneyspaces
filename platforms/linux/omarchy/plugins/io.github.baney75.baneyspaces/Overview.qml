@@ -49,7 +49,7 @@ Item {
       id: win
       required property var modelData
       readonly property var th: root.bs.theme
-      readonly property bool wanted: root.bs.st.overview !== undefined && root.bs.st.overview.shown === true
+      readonly property bool wanted: root.bs.st.overview !== undefined && root.bs.st.overview.visible === true
         && root.ocfg.enabled !== false && root.bs.st.focused_monitor === modelData.name
       property var cards: ({})
       screen: modelData

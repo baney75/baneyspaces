@@ -28,6 +28,17 @@ pub struct ShellState {
     pub launcher_open: bool,
     pub overview_cursor: usize,
     pub overview_peek: bool,
+    /// The peek overview is drawn from this time (a tap never draws it); when it opened (for its safety timeout).
+    pub overview_show_at: u64,
+    pub overview_opened_at: u64,
+    /// A release that arrived before its press was handled (the two are separate processes): when.
+    pub pending_commit: Option<u64>,
+    pub pending_go: Option<u64>,
+    /// The tap threshold has been published for the open switcher or overview.
+    pub tap_published: bool,
+    pub search_seq: u64,
+    pub last_seq: u64,
+    pub applied_style: String,
     pub settings_open: bool,
     pub apps: Vec<launcher::App>,
     apps_at: Option<Instant>,
@@ -58,6 +69,14 @@ impl ShellState {
             launcher_open: false,
             overview_cursor: 0,
             overview_peek: false,
+            overview_show_at: 0,
+            overview_opened_at: 0,
+            pending_commit: None,
+            pending_go: None,
+            tap_published: false,
+            search_seq: 0,
+            last_seq: 0,
+            applied_style: String::new(),
             settings_open: false,
             apps: vec![],
             apps_at: None,
@@ -125,6 +144,7 @@ impl Core {
             overview: self.overview_shown,
             overview_cursor: self.shell.overview_cursor,
             overview_peek: self.shell.overview_peek,
+            overview_visible: self.overview_shown && self.now_ms() >= self.shell.overview_show_at,
             settings: self.shell.settings_open,
             launcher: self.shell.launcher_open,
             switcher: &self.shell.switcher,
@@ -288,49 +308,77 @@ pub fn spawn_publisher(shared: Shared, dirty: Dirty) {
 
 /// Watches the pointer for the dock (Wayland clients cannot see it), expires stale badges and
 /// notices edits of config.toml. Idle when nobody is subscribed.
+fn screens_of(hypr: &crate::hypr::Hypr) -> Vec<Screen> {
+    crate::daemon::monitors_of(hypr).into_iter().map(|m| Screen { name: m.name, rect: m.rect }).collect()
+}
+
 pub fn spawn_pointer_loop(shared: Shared) {
+    let hypr = lock(&shared).hypr.clone();
     std::thread::spawn(move || {
         let mut last_housekeeping = Instant::now();
         loop {
             std::thread::sleep(Duration::from_millis(50));
-            let mut c = lock(&shared);
-            if c.shell.subs.is_empty() {
-                continue;
-            }
-            if last_housekeeping.elapsed() > Duration::from_secs(1) {
-                last_housekeeping = Instant::now();
+            // Housekeeping runs whether or not the plugin is subscribed: a hand edit of config.toml is picked up and
+            // applied (the compositor setting too), stale badges and unfinished switchers go.
+            let watch_pointer = {
+                let mut c = lock(&shared);
                 let now = c.now_ms();
-                let mut changed = c.shell.badges.expire(now);
-                changed |= c.shell.cfg.reload();
-                // A switcher nobody finished (the key release was lost) closes by itself.
-                if c.shell.switcher.open && now.saturating_sub(c.shell.switcher.opened_at) > 15_000
-                {
-                    c.shell.switcher.cancel();
+                let mut changed = false;
+                if last_housekeeping.elapsed() > Duration::from_secs(1) {
+                    last_housekeeping = Instant::now();
+                    changed |= c.shell.badges.expire(now);
+                    if c.shell.cfg.reload() {
+                        changed = true;
+                    }
+                    let style = c.shell.cfg.get_str("motion.workspace_style");
+                    if style != c.shell.applied_style {
+                        c.shell.applied_style = style;
+                        c.configure_hyprland(&[]);
+                    }
+                    // A switcher or peek overview nobody finished (the release was lost) closes by itself.
+                    if c.shell.switcher.open && now.saturating_sub(c.shell.switcher.opened_at) > 15_000 {
+                        c.shell.switcher.cancel();
+                        changed = true;
+                    }
+                    if c.overview_shown && c.shell.overview_peek && now.saturating_sub(c.shell.overview_opened_at) > 15_000 {
+                        c.overview_shown = false;
+                        c.shell.overview_peek = false;
+                        changed = true;
+                    }
+                    if c.shell.pending_commit.is_some_and(|t| now.saturating_sub(t) > 2000) {
+                        c.shell.pending_commit = None;
+                    }
+                    if c.shell.pending_go.is_some_and(|t| now.saturating_sub(t) > 2000) {
+                        c.shell.pending_go = None;
+                    }
+                }
+                // The overlay of a held Alt+Tab or Super+Tab appears when the tap threshold has passed.
+                let waiting = (c.shell.switcher.open && now < c.shell.switcher.show_at) || (c.overview_shown && now < c.shell.overview_show_at);
+                if waiting {
+                    c.shell.tap_published = false;
+                } else if !c.shell.tap_published && (c.shell.switcher.open || c.overview_shown) {
+                    c.shell.tap_published = true;
                     changed = true;
                 }
                 if changed {
                     c.mark_dirty();
                 }
-            }
-            if !c.shell.cfg.get_bool("dock.enabled") || !c.shell.cfg.get_bool("dock.auto_hide") {
-                continue;
-            }
-            let Ok(p) = c.hypr.json("cursorpos") else {
-                continue;
+                !c.shell.subs.is_empty() && c.shell.cfg.get_bool("dock.enabled") && c.shell.cfg.get_bool("dock.auto_hide")
             };
-            let pointer = (
-                p["x"].as_f64().unwrap_or(0.0),
-                p["y"].as_f64().unwrap_or(0.0),
-            );
-            let screens = c.screens();
+            if !watch_pointer {
+                continue;
+            }
+            // The compositor is asked without the daemon's lock held; the lock is taken only to decide.
+            let Ok(p) = hypr.json("cursorpos") else { continue };
+            let pointer = (p["x"].as_f64().unwrap_or(0.0), p["y"].as_f64().unwrap_or(0.0));
+            let screens = screens_of(&hypr);
+            let mut c = lock(&shared);
             let delay = c.shell.cfg.get_i64("dock.edge_delay_ms").max(0) as u64;
             c.shell.dock.away_ms = Some(c.shell.cfg.get_i64("dock.hide_ms").max(0) as u64);
             let in_fullscreen = c.shell.cfg.get_bool("dock.in_fullscreen");
             let now = c.now_ms();
             let mut dock = std::mem::take(&mut c.shell.dock);
-            let change = dock.tick(now, pointer, &screens, delay, &mut |m| {
-                !in_fullscreen && c.fullscreen_on(m)
-            });
+            let change = dock.tick(now, pointer, &screens, delay, &mut |m| !in_fullscreen && c.fullscreen_on(m));
             c.shell.dock = dock;
             if let Some(ch) = change {
                 if c.trace {
@@ -368,9 +416,13 @@ pub fn handle(shared: &Shared, op: &str, args: &Value, agent: &str, peer: Option
         "ui" => Envelope::ok(lock(shared).ui_state()),
         "config" => {
             let c = lock(shared);
-            Envelope::ok(
-                json!({ "settings": c.shell.cfg.effective(), "keys": Config::describe(), "path": c.shell.cfg.path().display().to_string() }),
-            )
+            let mut settings = c.shell.cfg.effective();
+            if peer.is_some_and(|p| c.is_agent_peer(p)) {
+                // An agent may read and change settings, but the path names your home folder: it does not get it.
+                settings.as_object_mut().map(|m| m.remove("path"));
+                return Some(Envelope::ok(json!({ "settings": settings, "keys": Config::describe() })));
+            }
+            Envelope::ok(json!({ "settings": settings, "keys": Config::describe(), "path": c.shell.cfg.path().display().to_string() }))
         }
         "config_set" => {
             let (Some(key), Some(v)) = (arg_s(args, "key"), args.get("value")) else {
@@ -426,11 +478,12 @@ pub fn handle(shared: &Shared, op: &str, args: &Value, agent: &str, peer: Option
         "launcher" => {
             let mut c = lock(shared);
             if !c.shell.cfg.get_bool("launcher.enabled") && action_of(args) != "hide" {
-                return Some(fail(
-                    "not_supported",
-                    "the launcher is switched off in config.toml",
-                    "baneyspaces config set launcher.enabled true",
-                ));
+                // Switched off: Super+Space is Omarchy's again (its menu), not a dead key.
+                let ran = c.spawn_user(&["omarchy-menu".to_string(), "toggle".to_string()], false);
+                return Some(match ran {
+                    Ok(_) => Envelope::ok(json!({ "shown": false, "fallback": "omarchy-menu toggle" })),
+                    Err(e) => Envelope::err("internal", e, Retry::Safe, "Is Hyprland running?"),
+                });
             }
             let a = action_of(args).to_string();
             let mut f = c.shell.launcher_open;
@@ -490,7 +543,7 @@ pub fn handle(shared: &Shared, op: &str, args: &Value, agent: &str, peer: Option
             }
             Envelope::ok(json!({ "closed": ok }))
         }
-        "badge" => badge_op(shared, args),
+        "badge" => badge_op(shared, args, peer),
         "launcher_search" => launcher_search(shared, args),
         "launcher_run" => launcher_run(shared, args, agent),
         _ => return None,
@@ -585,63 +638,89 @@ fn dock_op(shared: &Shared, args: &Value) -> Envelope {
     )
 }
 
+/// How long a release may arrive before the press that belongs to it has been handled (they are two processes started by
+/// the compositor, so they can overtake each other).
+const PENDING_MS: u64 = 500;
+
 fn switcher_op(shared: &Shared, args: &Value) -> Envelope {
     let mut c = lock(shared);
-    if !c.shell.cfg.get_bool("switcher.enabled") && action_of(args) != "cancel" {
-        return fail(
-            "not_supported",
-            "the switcher is switched off in config.toml",
-            "baneyspaces config set switcher.enabled true",
-        );
-    }
+    let a = action_of(args).to_string();
     let now = c.now_ms();
-    match action_of(args) {
+    if !c.shell.cfg.get_bool("switcher.enabled") && a != "cancel" {
+        // Switched off: Alt+Tab is Omarchy's again (focus the next window and bring it on top), not a dead key.
+        let r = match a.as_str() {
+            "next" | "toggle" => c.hypr.dispatch("hl.dsp.window.cycle_next()").and_then(|_| c.hypr.dispatch("hl.dsp.window.bring_to_top()")),
+            "prev" => c.hypr.dispatch("hl.dsp.window.cycle_next({ next = false })").and_then(|_| c.hypr.dispatch("hl.dsp.window.bring_to_top()")),
+            _ => Ok(()),
+        };
+        return match r {
+            Ok(()) => Envelope::ok(json!({ "open": false, "fallback": "omarchy: cycle_next" })),
+            Err(e) => Envelope::err("internal", e.to_string(), Retry::Safe, "Is Hyprland running?"),
+        };
+    }
+    match a.as_str() {
         "next" | "prev" | "toggle" => {
-            let dir = if action_of(args) == "prev" { -1 } else { 1 };
-            let items = if c.shell.switcher.open {
-                vec![]
-            } else {
-                ui::switcher_items(&c.user_windows(), &c.shell.cfg.get_str("switcher.items"))
-            };
+            let dir = if a == "prev" { -1 } else { 1 };
+            let release_first = !c.shell.switcher.open && c.shell.pending_commit.is_some_and(|t| now.saturating_sub(t) <= PENDING_MS);
+            c.shell.pending_commit = None;
+            let items = if c.shell.switcher.open { vec![] } else { ui::switcher_items(&c.user_windows(), &c.shell.cfg.get_str("switcher.items")) };
             if !c.shell.switcher.press(items, dir, now) {
                 return Envelope::ok(json!({ "open": false, "note": "no window to switch to" }));
             }
             c.overview_shown = false;
             c.shell.launcher_open = false;
+            c.shell.tap_published = false;
+            if release_first {
+                // The key was already up when this press was handled: a tap. Go straight there, no overlay.
+                let it = c.shell.switcher.commit();
+                c.mark_dirty();
+                if let Some(it) = it {
+                    let env = focus_window(&mut c, &it.window);
+                    return if env.ok { Envelope::ok(json!({ "open": false, "tap": true, "window": it.window, "workspace": it.workspace })) } else { env };
+                }
+            }
         }
         "select" => {
             let i = args.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
             c.shell.switcher.select(i);
         }
         "commit" => {
-            let was_open = c.shell.switcher.open;
+            if !c.shell.switcher.open {
+                // The release got here before the press did (or nothing is open): remember it for a moment.
+                c.shell.pending_commit = Some(now);
+                return Envelope::ok(json!({ "open": false, "committed": false }));
+            }
+            let was_visible = c.shell.switcher.visible(now);
             let it = c.shell.switcher.commit();
             c.mark_dirty();
             if let Some(it) = it {
-                // The switcher's surface lets go of the keyboard now; Hyprland hands focus back to the window you
-                // had, so the choice is made once that has settled (or it would be undone).
-                let w = it.window.clone();
-                later(shared, move |c| {
-                    let _ = focus_window(c, &w);
-                    c.mark_dirty();
-                });
-                return Envelope::ok(json!({ "open": false, "window": it.window, "workspace": it.workspace }));
+                if was_visible {
+                    // The overlay's surface lets go of the keyboard now; Hyprland hands focus back to the window you had, so the
+                    // choice is made once that has settled (or it would be undone).
+                    let w = it.window.clone();
+                    later(shared, move |c| {
+                        let _ = focus_window(c, &w);
+                        c.mark_dirty();
+                    });
+                } else {
+                    // A tap: the overlay never took the keyboard, so there is nothing to wait for.
+                    let env = focus_window(&mut c, &it.window);
+                    if !env.ok {
+                        return env;
+                    }
+                }
+                return Envelope::ok(json!({ "open": false, "tap": !was_visible, "window": it.window, "workspace": it.workspace }));
             }
-            return Envelope::ok(
-                json!({ "open": false, "committed": false, "was_open": was_open }),
-            );
+            return Envelope::ok(json!({ "open": false, "committed": false, "was_open": true }));
         }
-        "cancel" => c.shell.switcher.cancel(),
-        other => {
-            return fail(
-                "invalid_args",
-                format!("unknown switcher action {other:?}"),
-                "next, prev, commit, cancel or select",
-            )
+        "cancel" => {
+            c.shell.switcher.cancel();
+            c.shell.pending_commit = None;
         }
+        other => return fail("invalid_args", format!("unknown switcher action {other:?}"), "next, prev, commit, cancel or select"),
     }
     c.mark_dirty();
-    Envelope::ok(c.shell.switcher.json())
+    Envelope::ok(c.shell.switcher.json(now))
 }
 
 fn first_empty(c: &Core) -> Option<u8> {
@@ -750,10 +829,12 @@ fn ancestors(pid: u32) -> Vec<u32> {
     v
 }
 
-fn badge_op(shared: &Shared, args: &Value) -> Envelope {
+fn badge_op(shared: &Shared, args: &Value, peer: Option<u32>) -> Envelope {
     let mut c = lock(shared);
+    let from_agent = peer.is_some_and(|p| c.is_agent_peer(p));
     let now = c.now_ms();
     match arg_s(args, "action").unwrap_or("set") {
+        "list" if from_agent => fail("not_in_scope", "the badges name your windows", ""),
         "list" => Envelope::ok(json!({ "badges": c.shell.badges.all() })),
         "set" => {
             let state = arg_s(args, "state").unwrap_or("");
@@ -784,6 +865,9 @@ fn badge_op(shared: &Shared, args: &Value) -> Envelope {
             let Some(w) = window.filter(|w| c.client(w).is_some()) else {
                 return fail("not_found", "no window for that pid or id", "Pass --window <id> (baneyspaces ls) or --pid of a process inside the terminal.");
             };
+            if from_agent && !c.model.is_agent_window(&w) {
+                return fail("not_in_scope", "an agent may show its own status, not on your windows", "Use the window of the agent's own terminal on the agent workspace.");
+            }
             c.shell.badges.report(&w, parsed, now);
             c.mark_dirty();
             Envelope::ok(json!({ "window": w, "state": parsed.map(State::name) }))
@@ -918,8 +1002,10 @@ fn launcher_search(shared: &Shared, args: &Value) -> Envelope {
         arg_s(args, "query").unwrap_or(""),
         Mode::parse(arg_s(args, "mode").unwrap_or("all")),
     );
-    let (apps, wins, spaces, history, cfg, plan) = {
+    let (apps, wins, spaces, history, cfg, plan, my_seq) = {
         let mut c = lock(shared);
+        c.shell.search_seq += 1;
+        let my_seq = c.shell.search_seq;
         let apps = c.apps();
         let badges = c.shell.badges.all();
         let wins: Vec<LWin> = c
@@ -951,7 +1037,7 @@ fn launcher_search(shared: &Shared, args: &Value) -> Envelope {
             .collect();
         let cfg = c.shell.cfg.effective();
         let plan = launcher::plan(&query, &cfg);
-        (apps, wins, spaces, c.shell.history.clone(), cfg, plan)
+        (apps, wins, spaces, c.shell.history.clone(), cfg, plan, my_seq)
     };
     // Slow lookups run without the daemon's lock.
     let files = plan.files.as_deref().map(find_files).unwrap_or_default();
@@ -981,8 +1067,12 @@ fn launcher_search(shared: &Shared, args: &Value) -> Envelope {
     let hits = launcher::search(&ctx, &query);
     let rows: Vec<Value> = hits.iter().map(launcher::Hit::json).collect();
     let mut c = lock(shared);
-    c.shell.last = hits.into_iter().map(|h| (h.id, h.action)).collect();
-    Envelope::ok(json!({ "results": rows, "mode": arg_s(args, "mode").unwrap_or("all") }))
+    // A slow search that finishes after a newer one must not replace the newer one's results.
+    if my_seq > c.shell.last_seq {
+        c.shell.last_seq = my_seq;
+        c.shell.last = hits.into_iter().map(|h| (h.id, h.action)).collect();
+    }
+    Envelope::ok(json!({ "results": rows, "mode": arg_s(args, "mode").unwrap_or("all"), "seq": my_seq }))
 }
 
 fn launcher_run(shared: &Shared, args: &Value, agent: &str) -> Envelope {
@@ -997,6 +1087,11 @@ fn launcher_run(shared: &Shared, args: &Value, agent: &str) -> Envelope {
     let dry =
         args["dry_run"].as_bool().unwrap_or(false) || std::env::var("BANEYSPACES_DRY_RUN").is_ok();
     let mut c = lock(shared);
+    if let Some(seq) = args.get("seq").and_then(Value::as_u64) {
+        if seq != c.shell.last_seq {
+            return fail("not_found", "that list was replaced by a newer search", "Search again.");
+        }
+    }
     let Some(action) = c.shell.last.get(id).cloned() else {
         return fail(
             "not_found",
@@ -1096,8 +1191,16 @@ fn launcher_run(shared: &Shared, args: &Value, agent: &str) -> Envelope {
 fn overview_op(shared: &Shared, args: &Value) -> Envelope {
     let mut c = lock(shared);
     let a = action_of(args).to_string();
+    let now = c.now_ms();
     if !c.shell.cfg.get_bool("overview.enabled") && !matches!(a.as_str(), "hide" | "go") {
-        return fail("not_supported", "the overview is switched off in config.toml", "baneyspaces config set overview.enabled true");
+        // Switched off: Super+Tab and Super+Shift+Tab are Omarchy's again (next and previous workspace), not dead keys.
+        return match a.as_str() {
+            "next" | "prev" => match c.hypr.dispatch(&format!("hl.dsp.focus({{ workspace = \"e{}1\" }})", if a == "next" { "+" } else { "-" })) {
+                Ok(()) => Envelope::ok(json!({ "shown": false, "fallback": "omarchy: next workspace" })),
+                Err(e) => Envelope::err("internal", e.to_string(), Retry::Safe, "Is Hyprland running?"),
+            },
+            _ => fail("not_supported", "the overview is switched off in config.toml", "baneyspaces set behavior.overview.enabled true"),
+        };
     }
     let here = c.model.view()["current"].as_u64().map(|n| (n as usize).saturating_sub(1)).unwrap_or(0).min(8);
     match a.as_str() {
@@ -1105,10 +1208,22 @@ fn overview_op(shared: &Shared, args: &Value) -> Envelope {
             let dir = if a == "next" { 1 } else { -1 };
             if c.overview_shown {
                 c.shell.overview_cursor = ui::cycle(c.shell.overview_cursor, dir);
+                c.shell.overview_show_at = c.shell.overview_show_at.min(now); // Tab again: you are holding it, show it
+            } else if c.shell.pending_go.is_some_and(|t| now.saturating_sub(t) <= PENDING_MS) {
+                // Super was already up when this press was handled: a tap. Go straight there, no overview.
+                c.shell.pending_go = None;
+                let n = (ui::cycle(here, dir) + 1) as u8;
+                return match c.apply(Event::Switch { n }) {
+                    Ok(_) => Envelope::ok(json!({ "shown": false, "tap": true, "workspace": n })),
+                    Err(e) => e.envelope(),
+                };
             } else {
                 c.overview_shown = true;
                 c.shell.overview_peek = true;
                 c.shell.overview_cursor = ui::cycle(here, dir);
+                c.shell.overview_opened_at = now;
+                c.shell.overview_show_at = now + ui::TAP_MS;
+                c.shell.tap_published = false;
             }
         }
         "step" => {
@@ -1116,18 +1231,28 @@ fn overview_op(shared: &Shared, args: &Value) -> Envelope {
             c.shell.overview_cursor = ui::grid_step(c.shell.overview_cursor, k);
         }
         "go" => {
+            if !c.overview_shown {
+                c.shell.pending_go = Some(now);
+                return Envelope::ok(json!({ "shown": false, "went": false }));
+            }
             let n = (c.shell.overview_cursor + 1) as u8;
-            let was = c.overview_shown;
+            let was_visible = now >= c.shell.overview_show_at;
             c.overview_shown = false;
             c.shell.overview_peek = false;
             c.persist();
             c.mark_dirty();
-            if was {
+            if was_visible {
+                // The overview let go of the keyboard; once Hyprland has handed focus back, go.
                 later(shared, move |c| {
                     let _ = c.apply(Event::Switch { n });
                 });
+                return Envelope::ok(json!({ "shown": false, "workspace": n, "after_ms": SETTLE_MS }));
             }
-            return Envelope::ok(json!({ "shown": false, "workspace": n, "after_ms": SETTLE_MS }));
+            // A tap: the overview never took the keyboard, so there is nothing to wait for.
+            return match c.apply(Event::Switch { n }) {
+                Ok(_) => Envelope::ok(json!({ "shown": false, "tap": true, "workspace": n })),
+                Err(e) => e.envelope(),
+            };
         }
         _ => {
             let mut f = c.overview_shown;
@@ -1135,6 +1260,8 @@ fn overview_op(shared: &Shared, args: &Value) -> Envelope {
             if f && !c.overview_shown {
                 c.shell.overview_cursor = here;
                 c.shell.overview_peek = false;
+                c.shell.overview_opened_at = now;
+                c.shell.overview_show_at = now;
             }
             c.overview_shown = f;
             if !f {

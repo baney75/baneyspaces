@@ -127,12 +127,15 @@ w("Omarchy's own looknfeel turns the `workspaces` animation **off** (a workspace
   "The daemon no longer touches `specialWorkspace`, windows, layers, fades or the border (part 1 turned the scratchpad's slide off; that is gone). "
   + (f"Measured in the nested session with Omarchy's real looknfeel loaded: every Omarchy animation leaf is identical before and after the include and the daemon; a switch is one step with no third workspace; with the agent workspace up a switch closes it first, ends on the new workspace and the agent workspace never comes back ({a['method']}). That is the compositor's state; a pixel-level glitch check needs a person (untested live).\n" if a else "\n"))
 w("BaneySpaces' own surfaces (dock, lists, switcher, launcher, overview, settings) animate on the Qt Quick scene graph from the `animation` settings: presets `baneyspaces`, `omarchy` (Omarchy's curves in ms: pop-in 410, pop-out 149, layers 400 and 150), `snappy`, `smooth`, `off`, a speed, and your own time for a surface. Omarchy has no such knob for its own shell. "
-  "A frame-timing probe (Qt's `frameSwapped`, 20 transitions per surface) runs in the nested session:\n")
+  "A frame-timing probe (Qt's `frameSwapped`, 12 transitions per surface) runs in the nested session:\n")
 fp = nums.get("frame_probe")
 if fp:
     w("| Surface | frames | median frame | over 1.5x | over 2x | per 200 frames over 1.5x |\n| --- | --- | --- | --- | --- | --- |")
     for k, v in fp.items():
         w(f"| {k} | {v.get('frames')} | {v.get('median_ms', '?')} ms | {v.get('late_1_5x', '?')} | {v.get('late_2x', '?')} | {v.get('late_per_200', '?')} |")
+    over = [k for k, v in fp.items() if v.get("late_per_200", 0) > 1]
+    if over:
+        w("\n**Known miss:** " + ", ".join(f"{k} ({fp[k]['late_per_200']} per 200)" for k in over) + " is over the bar of 1 frame in 200 past 1.5x in the nested software renderer; nothing in nested.sh gates it, because that renderer is not the one a seat runs.")
     w("\nThe nested session draws with Qt's software renderer on a headless 60 Hz output: these numbers show the probe works, they are not a verdict on a GPU, and the bar (at most 1 frame in 200 over 1.5x, none over 2x, 120 Hz included) is **untested live**.\n")
 
 w("## Switch latency, key to compositor\n")

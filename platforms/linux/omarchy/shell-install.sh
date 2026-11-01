@@ -56,7 +56,9 @@ else
       else jq -n --arg id "$ID" '{version: 1, plugins: [{id: $id}]}' > "$tmp"; fi
       cat "$tmp" > "$SJ"; rm -f "$tmp"
       mkdir -p "$STATE"; sha256sum "$SJ" | cut -d' ' -f1 > "$STATE/shell-json.sha"
-      [ -f "$BK/shell.json" ] && echo "$BK/shell.json" > "$STATE/shell-json.backup" || rm -f "$STATE/shell-json.backup"
+      # There was no shell.json before this run: say so, so that uninstall removes the file instead of leaving a copy of
+      # Omarchy's defaults that later Omarchy updates would no longer reach.
+      if [ -f "$BK/shell.json" ]; then echo "$BK/shell.json" > "$STATE/shell-json.backup"; else echo "absent" > "$STATE/shell-json.backup"; fi
     fi
   fi
 fi

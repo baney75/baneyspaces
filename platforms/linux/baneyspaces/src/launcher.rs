@@ -1280,7 +1280,7 @@ pub fn search(ctx: &Ctx, q: &Query) -> Vec<Hit> {
             hits.push(Hit {
                 id: "calc".into(), section: "Calculator", title: format!("= {v}"), subtitle: format!("{text}  ·  Return copies it"),
                 icon: "accessories-calculator".into(), score: 5000, badge: None,
-                action: Action::Run { argv: vec!["wl-copy".into(), v], terminal: false },
+                action: Action::Run { argv: vec!["wl-copy".into(), "--".into(), v], terminal: false },
             });
         }
     }
@@ -1952,7 +1952,9 @@ mod tests {
         }
         let h = run("12*(3+4)", Mode::All, &[]);
         assert_eq!(h[0].title, "= 84");
-        assert_eq!(h[0].action, Action::Run { argv: vec!["wl-copy".into(), "84".into()], terminal: false });
+        assert_eq!(h[0].action, Action::Run { argv: vec!["wl-copy".into(), "--".into(), "84".into()], terminal: false });
+        let neg = run("-4/8", Mode::All, &[]);
+        assert_eq!(neg[0].action, Action::Run { argv: vec!["wl-copy".into(), "--".into(), "-0.5".into()], terminal: false }, "a negative answer is not an option of wl-copy");
     }
 
     #[test]

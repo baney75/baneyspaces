@@ -15,6 +15,7 @@ Item {
   property string query: ""
   property var results: []
   property int sel: 0
+  property int resultSeq: 0
   property int seq: 0
   property var confirm: null       // { id, message, command }
   property string note: ""
@@ -37,6 +38,7 @@ Item {
       if (root.tReady === 0) root.tReady = Date.now()
       if (root.tType > 0 && root.tTyped === 0 && r.data.results.length > 0) root.tTyped = Date.now()
       results = r.data.results
+      resultSeq = r.data.seq
       sel = Math.min(sel, Math.max(0, results.length - 1))
       scrollRequest(rowIndexOf(sel))
     })
@@ -49,7 +51,7 @@ Item {
   function run(i, confirmed) {
     var r = results[i]
     if (!r) return
-    bs.call("launcher_run", { id: r.id, confirm: confirmed === true }, function (rep) {
+    bs.call("launcher_run", { id: r.id, seq: resultSeq, confirm: confirmed === true }, function (rep) {
       if (!rep.ok) { note = rep.error ? rep.error.message : "failed"; return }
       if (rep.data.needs_confirm) confirm = { id: r.id, message: rep.data.message, command: rep.data.command }
       else { confirm = null; bs.call("launcher", { action: "hide" }) }

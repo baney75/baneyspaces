@@ -192,7 +192,7 @@ fi
 echo "== key bindings (Omarchy defaults replaced)"
 BINDS="$(H binds)"
 [ -n "${DEBUG:-}" ] && echo "$BINDS" | jq -c '[.[]|select((.description//"")|startswith("BaneySpaces"))]|first'
-eq "33 BaneySpaces bindings" "$(echo "$BINDS" | jq '[.[]|select((.description//"")|startswith("BaneySpaces"))]|length')" "33"
+eq "41 BaneySpaces bindings" "$(echo "$BINDS" | jq '[.[]|select((.description//"")|startswith("BaneySpaces"))]|length')" "41"
 eq "no Omarchy workspace binding is left for 1-9" "$(echo "$BINDS" | jq '[.[]|select((.description//"")|startswith("Omarchy: workspace") or startswith("Omarchy: move"))]|length')" "0"
 eq "the overview key is BaneySpaces'" "$(echo "$BINDS" | jq -r '[.[]|select(.key=="TAB" and .modmask==64)|.description]|first')" "BaneySpaces: overview (next workspace)"
 # Run the command a key is bound to, as the key would.
@@ -200,6 +200,8 @@ press() { # press "<description>": runs what the include binds to that key's des
   local line; line="$(grep -F "description = \"$1\"" "$REPO/platforms/linux/omarchy/baneyspaces.lua")"
   local n; n="$(echo "$line" | sed -n 's/.*baneyspaces_switch(\([0-9]*\)).*/\1/p')"
   if [ -n "$n" ]; then hyprctl eval "baneyspaces_switch($n)" >/dev/null; return; fi   # a function bind: run its body
+  local pr; pr="$(echo "$line" | sed -n 's/.*function() \(baneyspaces_press("[a-z]*", "[a-z ]*")\) end.*/\1/p')"
+  if [ -n "$pr" ]; then hyprctl eval "$pr" >/dev/null; return; fi
   local cmd; cmd="$(echo "$line" | sed -n 's/.*exec_raw("\([^"]*\)").*/\1/p')"
   [ -n "$cmd" ] && sh -c "$cmd" >/dev/null 2>&1
 }

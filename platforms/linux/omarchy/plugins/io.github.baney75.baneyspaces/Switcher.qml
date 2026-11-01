@@ -21,7 +21,7 @@ Item {
       readonly property var th: root.bs.theme
       readonly property var sw: root.bs.st.switcher || ({})
       readonly property bool wanted: root.bs.cfg.switcher !== undefined && root.bs.cfg.switcher.enabled !== false
-        && sw.open === true && root.bs.st.focused_monitor === modelData.name
+        && sw.visible === true && root.bs.st.focused_monitor === modelData.name
       readonly property var items: sw.items || []
       readonly property int cell: 124
 
@@ -63,7 +63,7 @@ Item {
           x: win.sp; y: win.sp
           opacity: win.wanted ? 1 : 0
           scale: win.wanted ? 1 : root.bs.motion.listFrom
-          Behavior on opacity { NumberAnimation { duration: win.wanted ? 100 * (root.bs.reduceMotion ? 0 : 1) : 80 * (root.bs.reduceMotion ? 0 : 1) } }
+          Behavior on opacity { NumberAnimation { duration: win.wanted ? root.bs.motion.listIn : root.bs.motion.listOut } }
           Behavior on scale { NumberAnimation { duration: win.wanted ? root.bs.motion.listIn : root.bs.motion.listOut; easing.type: Easing.OutCubic } }
           width: flow.width + 28
           height: flow.height + title.height + 40

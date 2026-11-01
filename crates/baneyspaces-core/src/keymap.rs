@@ -86,6 +86,24 @@ end
 
 "#;
 
+/// Alt+Tab and Super+Tab are held keys. The overlay they open cannot be trusted to see the key come up (a quick tap is over
+/// before any surface could take the keyboard), so the compositor remembers the press and acts on the release: a tap goes
+/// straight to the window or workspace with no overlay at all, a hold shows the overlay and the release commits it.
+pub const HOLD_HELPER: &str = r#"
+baneyspaces_held = { alt = false, super = false }
+function baneyspaces_press(kind, action)
+  baneyspaces_held[kind] = true
+  hl.dispatch(hl.dsp.exec_raw("baneyspaces " .. action))
+end
+function baneyspaces_release(kind, action)
+  if baneyspaces_held[kind] then
+    baneyspaces_held[kind] = false
+    hl.dispatch(hl.dsp.exec_raw("baneyspaces " .. action))
+  end
+end
+
+"#;
+
 /// The text of `platforms/linux/omarchy/baneyspaces.lua`. A test keeps the committed file equal to this.
 pub fn render_hypr_lua(binary: &str) -> String {
     let mut s = String::new();
@@ -97,16 +115,31 @@ pub fn render_hypr_lua(binary: &str) -> String {
     }
     s.push_str("\n-- The shell plugin animates its own panels; the compositor must not add a second animation.\n");
     s.push_str("hl.layer_rule({ match = { namespace = \"^baneyspaces-.*\" }, no_anim = true, animation = \"none\" })\n");
-    s.push_str("\n-- Omarchy's own workspace switch animation stays. `baneyspaces set motion.workspace_animation off` makes\n");
-    s.push_str("-- a switch instant (the daemon turns it off at runtime, so this file never has to).\n\n");
+    s.push_str("\n-- A workspace switch is instant, as in Omarchy's own looknfeel (its `workspaces` animation is off). The daemon keeps the\n");
+    s.push_str("-- `workspaces` leaf off unless `animation.workspace.style` in config.toml asks for fade or slide; it touches no other\n");
+    s.push_str("-- animation of Omarchy's.\n\n");
     s.push_str("-- Apps may ask for focus; only you take it. The daemon guards the agent workspace as well.\n");
     s.push_str("hl.config({ misc = { focus_on_activate = false } })\n\n");
     s.push_str(SWITCH_HELPER);
+    s.push_str(HOLD_HELPER);
     for b in linux_binds() {
         if let Some(n) = b.args.strip_prefix("switch ") {
             s.push_str(&format!("hl.bind(\"{}\", function() baneyspaces_switch({n}) end, {{ description = \"{}\" }})\n", b.keys, b.description));
+        } else if b.args.starts_with("switcher ") || b.args.starts_with("overview ") {
+            // Held keys: the compositor remembers that the modifier is down and acts on its release.
+            let kind = if b.args.starts_with("switcher ") { "alt" } else { "super" };
+            s.push_str(&format!("hl.bind(\"{}\", function() baneyspaces_press(\"{kind}\", \"{}\") end, {{ description = \"{}\" }})\n", b.keys, b.args, b.description));
         } else {
             s.push_str(&format!("hl.bind(\"{}\", hl.dsp.exec_raw(\"{} {}\"), {{ description = \"{}\" }})\n", b.keys, binary, b.args, b.description));
+        }
+    }
+    // The releases. Which spelling Hyprland matches (the modifier alone, or the modifier together with itself) is not
+    // guaranteed across versions, so both are bound; the first one that runs consumes the "held" mark.
+    for (kind, names, mod_name, action) in [("alt", ["Alt_L", "Alt_R"], "ALT", "switcher commit"), ("super", ["Super_L", "Super_R"], "SUPER", "overview go")] {
+        for name in names {
+            for keys in [name.to_string(), format!("{mod_name} + {name}")] {
+                s.push_str(&format!("hl.bind(\"{keys}\", function() baneyspaces_release(\"{kind}\", \"{action}\") end, {{ release = true, description = \"BaneySpaces: {mod_name} let go ({action})\" }})\n"));
+            }
         }
     }
     s

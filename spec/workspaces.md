@@ -33,9 +33,9 @@ a display that comes back shows what it showed.
 
 ### R-S1 Workspaces 1 to 9, instantly
 `switch n` for n outside 1 to 9 is `invalid_args`. A switch never animates by BaneySpaces' own doing, and a
-platform that cannot turn its animation off for a switch does not ship. A desktop that has its own
-workspace-switch animation which people already live with (Omarchy) keeps it by default; the setting
-`motion.workspace_animation = off` makes the switch instant there, and a conformance run uses `off`.
+platform that cannot turn its animation off for a switch does not ship. A switch is instant by default
+(Omarchy's own looknfeel turns its `workspaces` animation off too). `animation.workspace.style` in
+config.toml (spec/config.md) can turn on `fade` or `slide`; a conformance run uses the default.
 
 ### R-S2 Switch shows the workspace on the display you are on
 The display you last clicked into, moved to, or switched to. The other displays keep what they show.

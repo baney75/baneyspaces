@@ -14,7 +14,10 @@ if [ "$VIA" = 1 ]; then
   say "omarchy plugin disable $ID"; do_ "omarchy plugin disable '$ID' || true"
 elif [ -f "$SJ" ] && command -v jq >/dev/null && jq -e --arg id "$ID" '(.plugins // []) | map(.id) | index($id) != null' "$SJ" >/dev/null 2>&1; then
   BK="$(cat "$STATE/shell-json.backup" 2>/dev/null || true)"
-  if [ -n "$BK" ] && [ -f "$BK" ] && [ "$(sha256sum "$SJ" | cut -d' ' -f1)" = "$(cat "$STATE/shell-json.sha" 2>/dev/null)" ]; then
+  UNCHANGED=0; [ "$(sha256sum "$SJ" | cut -d' ' -f1)" = "$(cat "$STATE/shell-json.sha" 2>/dev/null)" ] && UNCHANGED=1
+  if [ "$BK" = "absent" ] && [ "$UNCHANGED" = 1 ]; then
+    say "remove $SJ (there was none before the install; Omarchy's defaults apply again)"; do_ "rm -f '$SJ'"
+  elif [ -n "$BK" ] && [ -f "$BK" ] && [ "$UNCHANGED" = 1 ]; then
     say "restore $SJ from $BK (unchanged since install)"; do_ "cat '$BK' > '$SJ'"
   else
     say "remove the $ID entry from $SJ"
