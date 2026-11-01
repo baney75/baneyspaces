@@ -2,6 +2,7 @@
 //! to, `state.json`, the agent workspace and the agent action log.
 
 use crate::apps;
+use crate::bus;
 use crate::hands;
 use crate::hypr::{parse_event, Hypr, HyprError, HyprEvent};
 use crate::paths::Paths;
@@ -52,6 +53,8 @@ pub struct TokenInfo {
     pub agent: String,
     pub app: String,
     pub at: u64,
+    /// The private session bus this launch's processes use.
+    pub bus: Option<bus::BusInfo>,
 }
 
 pub struct Core {
@@ -78,6 +81,8 @@ pub struct Core {
     pub deferred: Vec<Effect>,
     /// Test only: how long a hands call waits between finding the window and acting on it.
     pub stall_ms: u64,
+    /// The private bus daemons we started, by token (the handle, to reap them).
+    pub bus_children: HashMap<String, Vec<std::process::Child>>,
 }
 
 pub type Shared = Arc<Mutex<Core>>;
@@ -133,15 +138,29 @@ impl ApplyError {
     }
 }
 
+/// Leaving the daemon takes every agent bus stack with it. (A stack is the daemon's child: it dies
+/// too if the daemon is killed outright.)
+pub fn exit_daemon(code: i32) -> ! {
+    bus::kill_all();
+    std::process::exit(code)
+}
+
 pub fn lock(s: &Shared) -> MutexGuard<'_, Core> {
     s.lock().unwrap_or_else(|p| p.into_inner())
 }
 
 impl Core {
     pub fn monitors(&self) -> Vec<Mon> {
-        let Ok(v) = self.hypr.json("monitors") else {
-            return vec![];
-        };
+        self.try_monitors().unwrap_or_default()
+    }
+
+    /// The displays, or the error: a failed query is not an empty list.
+    pub fn try_monitors(&self) -> Result<Vec<Mon>, String> {
+        let v = self.hypr.json("monitors")?;
+        Ok(Self::parse_monitors(&v))
+    }
+
+    fn parse_monitors(v: &Value) -> Vec<Mon> {
         v.as_array()
             .map(|a| {
                 a.iter()
@@ -161,9 +180,15 @@ impl Core {
     }
 
     pub fn clients(&self) -> Vec<Client> {
-        let Ok(v) = self.hypr.json("clients") else {
-            return vec![];
-        };
+        self.try_clients().unwrap_or_default()
+    }
+
+    pub fn try_clients(&self) -> Result<Vec<Client>, String> {
+        let v = self.hypr.json("clients")?;
+        Ok(Self::parse_clients(&v))
+    }
+
+    fn parse_clients(v: &Value) -> Vec<Client> {
         v.as_array()
             .map(|a| {
                 a.iter()
@@ -200,18 +225,19 @@ impl Core {
 
     /// Turns workspace animations off, stops apps taking focus by asking, and gives a display that
     /// shows nothing of ours a workspace. Run at start and after every config reload.
-    pub fn configure_hyprland(&self, new: &[String]) {
+    pub fn configure_hyprland(&self, new: &[String]) -> bool {
         let _ = self.hypr.eval("hl.animation({ leaf = \"workspaces\", enabled = false })");
         let _ = self.hypr.eval("hl.animation({ leaf = \"specialWorkspace\", enabled = false })");
         let _ = self.hypr.eval("hl.config({ misc = { focus_on_activate = false } })");
-        self.adopt_monitors(new);
+        self.adopt_monitors(new)
     }
 
     /// A display showing an empty, non-persistent workspace that is not one of the nine (the
     /// default Hyprland gives a new monitor) shows the workspace the model picked for it (R-M2).
     /// A display showing anything you keep (workspace 10 with the work dashboard) is left alone.
-    fn adopt_monitors(&self, new: &[String]) {
-        let Ok(spaces) = self.hypr.json("workspaces") else { return };
+    fn adopt_monitors(&self, new: &[String]) -> bool {
+        let Ok(spaces) = self.hypr.json("workspaces") else { return false };
+        let mut ok = true;
         let spaces = spaces.as_array().cloned().unwrap_or_default();
         let before = self.monitors().into_iter().find(|m| m.focused).map(|m| m.name);
         let mut moved = false;
@@ -228,12 +254,13 @@ impl Core {
             if ws["windows"].as_u64().unwrap_or(1) != 0 || ws["ispersistent"].as_bool().unwrap_or(true) {
                 continue;
             }
-            let _ = self.show_workspace(&m.name, want);
+            ok &= self.show_workspace(&m.name, want).is_ok();
             moved = true;
         }
         if let (true, Some(b)) = (moved, before) {
-            let _ = self.hypr.dispatch(&format!("hl.dsp.focus({{ monitor = {} }})", lua_str(&b)));
+            ok &= self.hypr.dispatch(&format!("hl.dsp.focus({{ monitor = {} }})", lua_str(&b))).is_ok();
         }
+        ok
     }
 
     /// Makes `monitor` show workspace `n`: brings the workspace there if Hyprland keeps it on
@@ -269,11 +296,22 @@ impl Core {
         Ok(effects)
     }
 
-    /// Before a command: if the last failure left the model unsure, learn the compositor's state first.
-    pub fn ensure_fresh(&mut self) {
+    /// Before a command: if the last failure left the model unsure, learn the compositor's state
+    /// first. If it is still unsure, the command is refused (`compositor_error`, retry `after`)
+    /// rather than run against a model that may be wrong.
+    pub fn ensure_fresh(&mut self) -> Result<(), Envelope> {
         if self.dirty {
             self.resync();
         }
+        if self.dirty {
+            return Err(Envelope::err(
+                "compositor_error",
+                "BaneySpaces could not read Hyprland's state after the last failure, so it will not act on a guess",
+                Retry::After,
+                "Wait a moment and send it again; check `baneyspaces doctor` if it keeps failing.",
+            ));
+        }
+        Ok(())
     }
 
     /// Carries out effects. Every one is idempotent: Hyprland may already be there. A failure stops
@@ -325,7 +363,12 @@ impl Core {
                 return Err((err, i > 0 || partial));
             }
         }
-        // A switch on a monitor you are not on must not take you there.
+        // A switch on a monitor you are not on must not take you there. Only after effects this
+        // command sent: an observed event (you moved the pointer, clicked a workspace) is the user's
+        // doing and is never undone.
+        if effects.is_empty() {
+            return Ok(());
+        }
         if let Some(want) = self.model.focused_monitor().map(String::from) {
             if self.monitors().iter().find(|m| m.focused).is_some_and(|m| m.name != want) {
                 self.hypr.dispatch(&format!("hl.dsp.focus({{ monitor = {} }})", lua_str(&want))).map_err(|e| (e, true))?;
@@ -425,16 +468,25 @@ impl Core {
     /// focus it finds: the effects the rules ask for are collected and run once at the end. (Setup,
     /// turning animations off and giving an empty foreign display a workspace, is its own step.)
     pub fn resync(&mut self) {
+        // Read the compositor before touching the model: if it cannot be read, the old model stays,
+        // and stays marked dirty (a failed query is not an empty desktop).
+        let (mut mons, clients) = match (self.try_monitors(), self.try_clients()) {
+            (Ok(m), Ok(c)) => (m, c),
+            (m, c) => {
+                self.log(&format!("cannot re-read Hyprland: {:?} {:?}", m.err(), c.err()));
+                self.dirty = true;
+                return;
+            }
+        };
         self.resyncing = true;
         self.model = Model::new();
-        let mut mons = self.monitors();
         let order = self.paths.read("monitors.json").and_then(|t| serde_json::from_str::<Vec<String>>(&t).ok()).unwrap_or_default();
         mons.sort_by_key(|m| (order.iter().position(|o| *o == m.name).unwrap_or(usize::MAX), m.id));
         for m in &mons {
             let _ = self.model.apply(Event::MonitorAdded { monitor: m.name.clone() });
         }
         self.paths.write_atomic("monitors.json", &json!(mons.iter().map(|m| m.name.clone()).collect::<Vec<_>>()).to_string());
-        self.configure_hyprland(&[]);
+        let set_up = self.configure_hyprland(&[]);
         self.observe_monitors(false);
         for (pid, start) in self
             .paths
@@ -449,8 +501,8 @@ impl Core {
             }
         }
         self.load_tokens();
-        for c in self.clients() {
-            self.open_client(&c, true);
+        for c in &clients {
+            self.open_client(c, true);
         }
         if self.special_shown() {
             let _ = self.model.apply(Event::AgentShow);
@@ -464,7 +516,7 @@ impl Core {
         // What the rules want done about what was found (an agent process's window on your
         // workspace, say) runs now. A failure here is recorded: the next command re-reads again.
         let todo = std::mem::take(&mut self.deferred);
-        self.dirty = self.monitors().is_empty();
+        self.dirty = !set_up;
         if !todo.is_empty() {
             if let Err((err, _)) = self.exec(&todo) {
                 self.log(&format!("corrective effects after a re-read failed: {err}"));
@@ -477,7 +529,7 @@ impl Core {
     /// The launch tokens we issued, kept (0600) so a restart still knows the terminal an agent is
     /// running in. A token with no live process and older than a minute is dropped.
     pub fn save_tokens(&self) {
-        let m: serde_json::Map<String, Value> = self.tokens.iter().map(|(t, i)| (t.clone(), json!({ "agent": i.agent, "app": i.app, "at": i.at }))).collect();
+        let m: serde_json::Map<String, Value> = self.tokens.iter().map(|(t, i)| (t.clone(), json!({ "agent": i.agent, "app": i.app, "at": i.at, "bus": i.bus.as_ref().map(|b| json!({ "addr": b.addr, "pid": b.pid, "start": b.start })) }))).collect();
         self.paths.write_atomic("tokens.json", &Value::Object(m).to_string());
     }
 
@@ -485,12 +537,57 @@ impl Core {
         let Some(Value::Object(m)) = self.paths.read("tokens.json").and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { return };
         for (tok, v) in m {
             let at = v["at"].as_u64().unwrap_or(0);
+            let bus = v["bus"].as_object().map(|b| bus::BusInfo { addr: b.get("addr").and_then(Value::as_str).unwrap_or("").into(), pid: b.get("pid").and_then(Value::as_u64).unwrap_or(0) as u32, start: b.get("start").and_then(Value::as_u64).unwrap_or(0) });
+            // The stacks die with the daemon that started them, so after a restart there is none to remember.
+            let bus = bus.filter(|b| proc::start_time(b.pid) == Some(b.start));
+            let info = TokenInfo { agent: v["agent"].as_str().unwrap_or("agent").into(), app: v["app"].as_str().unwrap_or("").into(), at, bus };
             if now().saturating_sub(at) > 60 && proc::pids_with_token(&tok).is_empty() {
+                // Nothing runs under it any more: its bus and profile go too.
+                self.tokens.insert(tok.clone(), info);
+                self.drop_token(&tok);
                 continue;
             }
-            self.tokens.entry(tok).or_insert(TokenInfo { agent: v["agent"].as_str().unwrap_or("agent").into(), app: v["app"].as_str().unwrap_or("").into(), at });
+            self.tokens.entry(tok).or_insert(info);
         }
         self.save_tokens();
+    }
+
+    /// A launch token whose processes are all gone: stop its private bus, delete its profile.
+    fn drop_token(&mut self, tok: &str) {
+        let info = self.tokens.remove(tok);
+        let mut child = self.bus_children.remove(tok);
+        bus::stop(&self.paths.run, tok, child.as_mut(), info.as_ref().and_then(|i| i.bus.as_ref()));
+        let _ = std::fs::remove_dir_all(apps::profile_dir(&self.paths.state, tok));
+    }
+
+    /// Upkeep for launch tokens: those with no live process (and older than a minute) are dropped,
+    /// and agent profiles older than a week that no live token owns are deleted.
+    pub fn reap_tokens(&mut self) {
+        let t = now();
+        let gone: Vec<String> = self.tokens.iter().filter(|(tok, i)| t.saturating_sub(i.at) > 60 && proc::pids_with_token(tok).is_empty()).map(|(tok, _)| tok.clone()).collect();
+        for tok in &gone {
+            self.drop_token(tok);
+        }
+        if !gone.is_empty() {
+            self.save_tokens();
+        }
+        let live: HashSet<String> = self.tokens.keys().map(|t| t[..8.min(t.len())].to_string()).collect();
+        apps::prune_profiles(&self.paths.state, std::time::SystemTime::now(), 7 * 86_400, &live);
+    }
+
+    /// Windows the compositor has and the model lacks (an event missed), and the other way round.
+    pub fn reconcile_windows(&mut self) {
+        let Ok(clients) = self.try_clients() else { return };
+        for c in &clients {
+            if !self.model.is_tracked(&c.addr) {
+                self.open_client(c, true);
+            }
+        }
+        let live: HashSet<&str> = clients.iter().map(|c| c.addr.as_str()).collect();
+        let gone: Vec<String> = self.model.window_ids().into_iter().filter(|w| !live.contains(*w)).map(String::from).collect();
+        for w in gone {
+            let _ = self.apply(Event::Close { window: w });
+        }
     }
 
     /// R-F2 on Linux rests on `misc:focus_on_activate = false`: with it, an app asking for focus
@@ -576,7 +673,9 @@ impl Core {
                         v.into_iter().map(|x| x.1).collect()
                     };
                     self.paths.write_atomic("monitors.json", &json!(order).to_string());
-                    self.configure_hyprland(std::slice::from_ref(&name));
+                    if !self.configure_hyprland(std::slice::from_ref(&name)) {
+                        self.dirty = true;
+                    }
                 }
                 self.observe_monitors(true);
                 self.persist();
@@ -610,9 +709,11 @@ impl Core {
                 if Self::include_installed() == Some(false) {
                     eprintln!("baneyspaces daemon: the BaneySpaces include is gone from hyprland.lua; exiting");
                     let _ = std::fs::remove_file(self.paths.ctl_socket());
-                    std::process::exit(0);
+                    exit_daemon(0);
                 }
-                self.configure_hyprland(&[]);
+                if !self.configure_hyprland(&[]) {
+                    self.dirty = true;
+                }
                 self.observe_monitors(true);
             }
             HyprEvent::Other => {}
@@ -667,6 +768,12 @@ fn which(app: &str) -> Option<std::path::PathBuf> {
         .find(|p| ok(p))
 }
 
+/// Whether a caller is refused the operations that belong to the user. Fails closed: with no peer
+/// pid the caller is not known to be you.
+pub fn refuses_user_op(peer: Option<u32>, is_agent: impl Fn(u32) -> bool) -> bool {
+    peer.is_none_or(is_agent)
+}
+
 /// Operations that belong to you. A peer that is an agent (it carries a launch token we issued, or
 /// is a registered agent process) is refused them. This guards against accidents, such as an
 /// agent shell running `baneyspaces switch 3`; it is not a boundary against a hostile process of
@@ -689,7 +796,8 @@ pub fn handle(shared: &Shared, req: &Value, peer: Option<u32>) -> Envelope {
     let agent = req["agent"].as_str().unwrap_or("agent").to_string();
     if USER_ONLY.contains(&op) {
         let mut c = lock(shared);
-        if peer.is_some_and(|p| c.is_agent_peer(p)) {
+        // An unknown peer (SO_PEERCRED failed) is treated as an agent: the real CLI always has a pid.
+        if refuses_user_op(peer, |p| c.is_agent_peer(p)) {
             let env = Envelope::err(
                 "not_in_scope",
                 format!("{op} is for you, not for an agent"),
@@ -699,7 +807,9 @@ pub fn handle(shared: &Shared, req: &Value, peer: Option<u32>) -> Envelope {
             record(&c, &agent, op, peer, None, None, "ctl", &env);
             return env;
         }
-        c.ensure_fresh();
+        if let Err(env) = c.ensure_fresh() {
+            return env;
+        }
     }
     if op.starts_with("test_") && !lock(shared).test_ops {
         return Envelope::err("invalid_args", "test operations are off", Retry::Never, "");
@@ -711,7 +821,7 @@ pub fn handle(shared: &Shared, req: &Value, peer: Option<u32>) -> Envelope {
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_millis(150));
                 let _ = std::fs::remove_file(&sock);
-                std::process::exit(0);
+                exit_daemon(0);
             });
             Envelope::ok(json!({ "stopping": true }))
         }
@@ -800,6 +910,16 @@ pub fn handle(shared: &Shared, req: &Value, peer: Option<u32>) -> Envelope {
         "agent_status" | "agent_windows" => Envelope::ok(agent_status(&lock(shared))),
         "agent_open" => agent_open(shared, &agent, &args, false),
         "test_open" => agent_open(shared, &agent, &args, true),
+        "test_reap" => {
+            // Test only: pretend every token is old, then run the upkeep that drops dead ones.
+            let mut c = lock(shared);
+            for t in c.tokens.values_mut() {
+                t.at = 0;
+            }
+            c.reap_tokens();
+            c.save_tokens();
+            Envelope::ok(json!({ "tokens_left": c.tokens.len() }))
+        }
         "test_stall" => {
             lock(shared).stall_ms = args["ms"].as_u64().unwrap_or(0);
             Envelope::ok(json!({ "stall_ms": args["ms"] }))
@@ -890,53 +1010,159 @@ fn hypr_failure(e: &HyprError, what: &str) -> Envelope {
     Envelope::err("compositor_error", format!("{what}: {e}"), retry, "Is Hyprland running? Check `baneyspaces doctor`.")
 }
 
-/// Starts `argv` as a new process on the agent workspace, then waits for a window of its own.
-/// Before launching it refuses an app that would hand the request to a copy you already run.
-fn launch_on_agent(shared: &Shared, agent: &str, label: &str, mut argv: Vec<String>, allow_unlisted: bool) -> Envelope {
+/// What an agent launch is: the named app with files, a command in a terminal, or (tests only) a
+/// raw command that skips the allowlist.
+enum Plan {
+    Open { app: String, files: Vec<String> },
+    Run { cmd: Vec<String>, dir: Option<String> },
+    Test { app: String, args: Vec<String>, private_bus: bool },
+}
+
+struct Prepared {
+    label: String,
+    argv: Vec<String>,
+}
+
+fn bad_args(msg: impl Into<String>) -> Envelope {
+    Envelope::err(
+        "bad_arguments",
+        msg,
+        Retry::Never,
+        "Name an allowlisted app, then files inside the handoff folder. No flags, no paths to programs, no URLs.",
+    )
+}
+
+fn needs_sandbox(label: &str, why: &str) -> Envelope {
+    Envelope::err(
+        "needs_sandbox",
+        format!("{label}: {why}"),
+        Retry::Never,
+        "Deny by default: an app that is not known to run as its own process could hand your launches to the agent's copy, or take the agent's request into yours. Use the app's files or command line instead; a sandbox for apps like this comes later.",
+    )
+    .with_data(json!({ "allowed": apps::allowed() }))
+}
+
+/// The system binary for an allowlisted name, or the refusal.
+fn system_binary(app: &str) -> Result<std::path::PathBuf, Envelope> {
+    let path = std::env::var("PATH").unwrap_or_default();
+    match apps::resolve_system(app, &path) {
+        apps::Resolve::Ok(p) => Ok(p),
+        apps::Resolve::NotFound => Err(Envelope::err("not_found", format!("{app} is not installed"), Retry::Never, "Install it, or use another app on the list.")),
+        apps::Resolve::NotSystem(p) => Err(needs_sandbox(app, &format!("what {app} resolves to here ({}) is not the system binary", p.display()))),
+    }
+}
+
+/// Turns a plan into the command to run. Every flag in it was put there by BaneySpaces.
+fn prepare(c: &Core, plan: &Plan, token: &str) -> Result<Prepared, Envelope> {
+    let profile = apps::profile_dir(&c.paths.state, token);
+    let with_policy = |name: &str, tail: Vec<String>| -> Result<Vec<String>, Envelope> {
+        let bin = system_binary(name)?;
+        let mut argv = vec![bin.to_string_lossy().into_owned()];
+        match apps::known(name, &profile) {
+            Some(apps::Launch::Separate) => {}
+            Some(apps::Launch::Flags(f)) => {
+                let _ = std::fs::create_dir_all(&profile);
+                argv.extend(f);
+            }
+            None => return Err(needs_sandbox(name, "is not on the list of apps BaneySpaces can start as a separate process for an agent")),
+        }
+        argv.extend(tail);
+        Ok(argv)
+    };
+    match plan {
+        Plan::Open { app, files } => {
+            if app.contains('/') || app.is_empty() || app.starts_with('-') {
+                return Err(bad_args("name the app (such as foot), not a path or a flag"));
+            }
+            if apps::known(app, &profile).is_none() {
+                return Err(needs_sandbox(app, "is not on the list of apps BaneySpaces can start as a separate process for an agent"));
+            }
+            let files = apps::check_files(files, &c.paths.handoff()).map_err(bad_args)?;
+            Ok(Prepared { label: app.clone(), argv: with_policy(app, files)? })
+        }
+        Plan::Run { cmd, dir } => {
+            let terminals: [(&str, &[&str]); 4] = [("foot", &["--"]), ("ghostty", &["-e"]), ("kitty", &[]), ("alacritty", &["-e"])];
+            let path = std::env::var("PATH").unwrap_or_default();
+            let Some((term, pre)) = terminals.iter().find(|(t, _)| matches!(apps::resolve_system(t, &path), apps::Resolve::Ok(_))) else {
+                return Err(Envelope::err("not_found", "no system terminal found (foot, ghostty, kitty or alacritty)", Retry::Never, "Install one of them."));
+            };
+            let mut tail: Vec<String> = vec![];
+            if let Some(d) = dir {
+                match *term {
+                    "foot" => tail.extend(["-D".into(), d.clone()]),
+                    "kitty" => tail.extend(["-d".into(), d.clone()]),
+                    "ghostty" => tail.push(format!("--working-directory={d}")),
+                    _ => tail.extend(["--working-directory".into(), d.clone()]),
+                }
+            }
+            tail.extend(pre.iter().map(|s| s.to_string()));
+            tail.extend(cmd.iter().cloned());
+            Ok(Prepared { label: (*term).to_string(), argv: with_policy(term, tail)? })
+        }
+        Plan::Test { app, args, .. } => {
+            let exe = which(app).ok_or_else(|| Envelope::err("not_found", format!("no program {app:?} on PATH"), Retry::Never, "Give an executable name or a full path."))?;
+            let mut argv = vec![exe.to_string_lossy().into_owned()];
+            argv.extend(args.iter().cloned());
+            Ok(Prepared { label: app.clone(), argv })
+        }
+    }
+}
+
+/// Starts the plan as a new process on the agent workspace, on a private session bus of its own,
+/// then waits for a window of its own.
+fn launch_on_agent(shared: &Shared, agent: &str, plan: Plan) -> Envelope {
     let token = match proc::random_token() {
         Ok(t) => t,
         Err(e) => return Envelope::err("internal", format!("no random bytes: {e}"), Retry::Never, ""),
     };
-    let known: HashSet<String>;
+    let private_bus = !matches!(plan, Plan::Test { private_bus: false, .. });
+    let (label, known): (String, HashSet<String>);
     {
         let mut c = lock(shared);
-        let profile = apps::profile_dir(&c.paths.state, &token);
-        match apps::known(&argv[0], &profile) {
-            Some(apps::Launch::Separate) => {}
-            Some(apps::Launch::Flags(flags)) => {
-                let _ = std::fs::create_dir_all(&profile);
-                for (i, f) in flags.into_iter().enumerate() {
-                    argv.insert(1 + i, f);
-                }
-            }
-            None if allow_unlisted => {} // test_open, behind BANEYSPACES_TEST_OPS
-            None => {
-                let env = Envelope::err(
-                    "needs_sandbox",
-                    format!("{label} is not on the list of apps BaneySpaces can start as a separate process for an agent"),
-                    Retry::Never,
-                    "Deny by default: an app that is not known to run as its own process could hand your launches to the agent's copy, or take the agent's request into yours. Use the app's files or command line instead; a sandbox for apps like this comes later.",
-                )
-                .with_data(json!({ "allowed": apps::allowed() }));
+        let prep = match prepare(&c, &plan, &token) {
+            Ok(p) => p,
+            Err(env) => {
                 record(&c, agent, "open", None, None, None, "preflight", &env);
                 return env;
             }
-        }
+        };
+        label = prep.label;
         known = c.model.window_ids().into_iter().map(String::from).collect();
+        // One session bus per launch: GApplication and friends forward over it, so with a bus of
+        // its own the agent's copy never meets yours, in either direction.
+        let mut bus_env = String::new();
+        let mut bus_info = None;
+        if private_bus {
+            match bus::start(&c.paths.run, &token) {
+                Ok((kids, info)) => {
+                    bus_env = format!("DBUS_SESSION_BUS_ADDRESS={} ", sh_quote(&info.addr));
+                    c.bus_children.insert(token.clone(), kids);
+                    bus_info = Some(info);
+                }
+                Err(e) => {
+                    let env = Envelope::err("not_supported", format!("cannot give the app a session bus of its own, so it is not started: {e}"), Retry::Never, "Install dbus and at-spi2-core.");
+                    record(&c, agent, "open", None, None, None, "preflight", &env);
+                    return env;
+                }
+            }
+        }
         let cmd = format!(
-            "env BANEYSPACES_AGENT_TOKEN={token} BANEYSPACES_AGENT_ID={} {}",
+            "env BANEYSPACES_AGENT_TOKEN={token} BANEYSPACES_AGENT_ID={} {bus_env}{}",
             sh_quote(agent),
-            argv.iter().map(|a| sh_quote(a)).collect::<Vec<_>>().join(" ")
+            prep.argv.iter().map(|a| sh_quote(a)).collect::<Vec<_>>().join(" ")
         );
-        c.tokens.insert(token.clone(), TokenInfo { agent: agent.into(), app: label.into(), at: now() });
+        c.tokens.insert(token.clone(), TokenInfo { agent: agent.into(), app: label.clone(), at: now(), bus: bus_info });
         c.save_tokens();
         let lua = format!("hl.dsp.exec_cmd({}, {{ workspace = \"{} silent\" }})", lua_str(&cmd), AGENT_SPECIAL);
         if let Err(e) = c.hypr.dispatch(&lua) {
+            c.drop_token(&token);
+            c.save_tokens();
             let env = hypr_failure(&e, "could not start the app");
             record(&c, agent, "open", None, None, None, "exec", &env);
             return env;
         }
     }
+    let label = label.as_str();
     let deadline = Instant::now() + Duration::from_secs(8);
     while Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
@@ -979,61 +1205,32 @@ fn launch_on_agent(shared: &Shared, agent: &str, label: &str, mut argv: Vec<Stri
     env
 }
 
-fn agent_open(shared: &Shared, agent: &str, args: &Value, allow_unlisted: bool) -> Envelope {
-    let Some(app) = arg_str(args, "app") else {
-        return Envelope::err("invalid_args", "an app is required", Retry::Never, "Example: baneyspaces agent open zenity --info");
-    };
-    let Some(exe) = which(app) else {
-        return Envelope::err("not_found", format!("no program {app:?} on PATH"), Retry::Never, "Give an executable name or a full path.");
-    };
-    let mut argv = vec![exe.to_string_lossy().into_owned()];
-    argv.extend(args.get("args").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(String::from));
-    launch_on_agent(shared, agent, app, argv, allow_unlisted)
+fn str_list(a: &Value, k: &str) -> Vec<String> {
+    a.get(k).and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(String::from).collect()
 }
 
-fn agent_run(shared: &Shared, agent: &str, args: &Value) -> Envelope {
-    let cmd: Vec<String> = args
-        .get("command")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .map(String::from)
-        .collect();
-    if cmd.is_empty() {
-        return Envelope::err(
-            "invalid_args",
-            "a command is required after --",
-            Retry::Never,
-            "Example: baneyspaces agent run --dir ~/Projects/x -- claude",
-        );
-    }
-    let terminals: [(&str, &[&str]); 4] = [
-        ("foot", &[]),
-        ("ghostty", &["-e"]),
-        ("kitty", &[]),
-        ("alacritty", &["-e"]),
-    ];
-    let Some((term, pre)) = terminals.iter().find(|(t, _)| which(t).is_some()) else {
-        return Envelope::err(
-            "not_found",
-            "no terminal found (foot, ghostty, kitty or alacritty)",
-            Retry::Never,
-            "Install one of them.",
-        );
+fn agent_open(shared: &Shared, agent: &str, args: &Value, test: bool) -> Envelope {
+    let Some(app) = arg_str(args, "app") else {
+        return Envelope::err("invalid_args", "an app is required", Retry::Never, "Example: baneyspaces agent open foot");
     };
-    let mut argv = vec![which(term).unwrap().to_string_lossy().into_owned()];
-    if let Some(d) = arg_str(args, "dir") {
-        match *term {
-            "foot" => argv.extend(["-D".into(), d.into()]),
-            "kitty" => argv.extend(["-d".into(), d.into()]),
-            "ghostty" => argv.push(format!("--working-directory={d}")),
-            _ => argv.extend(["--working-directory".into(), d.into()]),
-        }
+    let list = str_list(args, "args");
+    let plan = if test {
+        Plan::Test { app: app.into(), args: list, private_bus: args["private_bus"].as_bool().unwrap_or(true) }
+    } else {
+        Plan::Open { app: app.into(), files: list }
+    };
+    launch_on_agent(shared, agent, plan)
+}
+
+/// `agent run`: a command in a terminal on the agent workspace. It is a shell with your uid, so
+/// what it runs is not limited to the allowlist; the private session bus keeps its D-Bus apps from
+/// meeting yours. Accident-proofing, not a boundary.
+fn agent_run(shared: &Shared, agent: &str, args: &Value) -> Envelope {
+    let cmd = str_list(args, "command");
+    if cmd.is_empty() {
+        return Envelope::err("invalid_args", "a command is required after --", Retry::Never, "Example: baneyspaces agent run --dir ~/Projects/x -- claude");
     }
-    argv.extend(pre.iter().map(|s| s.to_string()));
-    argv.extend(cmd);
-    launch_on_agent(shared, agent, term, argv, false)
+    launch_on_agent(shared, agent, Plan::Run { cmd, dir: arg_str(args, "dir").map(String::from) })
 }
 
 // ---- serving --------------------------------------------------------------------------------
@@ -1076,6 +1273,7 @@ pub fn run(trace: bool) -> i32 {
         eprintln!("baneyspaces daemon: {e}");
         return 1;
     }
+    bus::install_signal_handlers();
     // One daemon at a time: the lock is held for the life of the process.
     let _lock = match take_lock(&paths) {
         Ok(f) => f,
@@ -1119,23 +1317,36 @@ pub fn run(trace: bool) -> i32 {
         resyncing: false,
         deferred: vec![],
         stall_ms: 0,
+        bus_children: HashMap::new(),
     };
     let shared: Shared = Arc::new(Mutex::new(core));
+    // Connect to Hyprland's events FIRST. They queue in the socket while the state is read, so a
+    // window that opens, closes or moves in between is replayed afterwards and is never missed.
+    let stream = match hypr.events() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("baneyspaces daemon: cannot read Hyprland events: {e}");
+            return 1;
+        }
+    };
     {
         let mut c = lock(&shared);
         prune_if_due(&c.paths, now(), &c.last_prune);
         c.resync();
+        c.reap_tokens();
+        // Buses left by an earlier daemon (its directory gone, or no live token owns them) are killed.
+        let tags: HashSet<String> = c.tokens.iter().filter(|(_, i)| i.bus.is_some()).map(|(t, _)| t[..8.min(t.len())].to_string()).collect();
+        let swept = bus::sweep(&c.paths.run, &tags);
+        bus::sweep_dirs(&c.paths.run, &tags);
+        if swept > 0 {
+            eprintln!("baneyspaces daemon: swept {swept} leftover bus process(es)");
+        }
     }
-    // Hyprland's events.
+    if let Some(ms) = std::env::var("BANEYSPACES_TEST_EVENT_DELAY_MS").ok().and_then(|v| v.parse::<u64>().ok()).filter(|_| std::env::var("BANEYSPACES_TEST_OPS").is_ok_and(|v| v == "1")) {
+        std::thread::sleep(Duration::from_millis(ms)); // test only: events pile up before they are read
+    }
     {
         let shared = shared.clone();
-        let stream = match hypr.events() {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("baneyspaces daemon: cannot read Hyprland events: {e}");
-                return 1;
-            }
-        };
         std::thread::spawn(move || {
             for line in BufReader::new(stream).lines() {
                 let Ok(line) = line else { break };
@@ -1145,19 +1356,27 @@ pub fn run(trace: bool) -> i32 {
                 }
             }
             eprintln!("baneyspaces daemon: Hyprland closed the event socket; exiting");
-            std::process::exit(0);
+            exit_daemon(0);
         });
     }
     // Upkeep: forget agent processes that died or whose pid was reused, keep the focus setting
     // R-F2 rests on, and let the action log shed old records.
     {
         let shared = shared.clone();
-        std::thread::spawn(move || loop {
+        std::thread::spawn(move || {
+          let mut tick = 0u32;
+          loop {
             std::thread::sleep(Duration::from_secs(2));
             let mut c = lock(&shared);
             c.reconcile_agents();
+            c.reconcile_windows();
             c.ensure_focus_setting();
+            tick += 1;
+            if tick % 5 == 0 {
+                c.reap_tokens();
+            }
             prune_if_due(&c.paths, now(), &c.last_prune);
+          }
         });
     }
     eprintln!("baneyspaces daemon: ready ({})", sock.display());
@@ -1248,6 +1467,7 @@ mod tests {
             resyncing: false,
             deferred: vec![],
             stall_ms: 0,
+            bus_children: HashMap::new(),
         }
     }
 
@@ -1256,8 +1476,8 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let mut a = test_core("tokens");
         let me = proc::random_token().unwrap();
-        a.tokens.insert("fresh".into(), TokenInfo { agent: "claude".into(), app: "foot".into(), at: now() });
-        a.tokens.insert("old-and-dead".into(), TokenInfo { agent: "x".into(), app: "y".into(), at: now() - 3600 });
+        a.tokens.insert("fresh".into(), TokenInfo { agent: "claude".into(), app: "foot".into(), at: now(), bus: None });
+        a.tokens.insert("old-and-dead".into(), TokenInfo { agent: "x".into(), app: "y".into(), at: now() - 3600, bus: None });
         let _ = me;
         a.save_tokens();
         let mode = std::fs::metadata(a.paths.state.join("tokens.json")).unwrap().permissions().mode() & 0o777;
@@ -1297,6 +1517,36 @@ mod tests {
         c.resyncing = false;
         let todo = std::mem::take(&mut c.deferred);
         assert!(c.exec(&todo).is_err());
+    }
+
+    #[test]
+    fn a_launch_profile_is_deleted_with_its_token() {
+        let mut c = test_core("profile");
+        let tok = "abcd1234efgh5678";
+        c.tokens.insert(tok.into(), TokenInfo { agent: "a".into(), app: "chromium".into(), at: 0, bus: None });
+        let prof = apps::profile_dir(&c.paths.state, tok);
+        std::fs::create_dir_all(prof.join("Default")).unwrap();
+        std::fs::write(prof.join("Default/Cookies"), "x").unwrap();
+        c.drop_token(tok);
+        assert!(!prof.exists(), "the profile goes with the token");
+        assert!(!c.tokens.contains_key(tok));
+    }
+
+    #[test]
+    fn a_model_that_cannot_be_refreshed_refuses_the_command() {
+        let mut c = test_core("dirty");
+        c.dirty = true; // Hyprland is unreachable behind this fake
+        let e = c.ensure_fresh().unwrap_err();
+        let er = e.error.unwrap();
+        assert_eq!((er.code.as_str(), er.retry), ("compositor_error", Retry::After));
+        assert!(c.dirty, "and it stays dirty: the next command re-reads again");
+    }
+
+    #[test]
+    fn an_unknown_caller_is_refused_the_users_operations() {
+        assert!(refuses_user_op(None, |_| false), "no peer pid: not known to be you");
+        assert!(refuses_user_op(Some(7), |p| p == 7));
+        assert!(!refuses_user_op(Some(8), |p| p == 7));
     }
 
     #[test]

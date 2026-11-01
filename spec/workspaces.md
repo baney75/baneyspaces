@@ -164,7 +164,11 @@ start time. Every pid check is start-time aware, and a registered process that d
 reused is forgotten (a window of a reused pid is never an agent window; conformance cases in
 `agent.json`). An app is started for an agent only if it is on the allowlist of apps with a verified
 separate-process launch; any other is refused before launch with `needs_sandbox`, whether or not you
-run a copy. If an allowed app forwards anyway, its window opens in your process on your workspace;
+run a copy. The app is named (never a path) and resolves to the system binary of that name; the only
+arguments are files inside the handoff folder, and the flags that isolate it are added by BaneySpaces
+(`bad_arguments` for anything else). Every agent process has a session bus of its own, so D-Bus
+single-instance forwarding cannot cross in either direction; `agent run` is a shell with your uid,
+so this is accident-proofing, not a boundary. If an allowed app forwards anyway, its window opens in your process on your workspace;
 it is left where it is and the `single_instance` error reports it in `error.data`. Every action leaves a record without content (agent id, verb, pid,
 window id, ref, route, result, refusal, screen_changed), kept 30 days.
 

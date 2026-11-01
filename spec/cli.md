@@ -15,7 +15,7 @@ window id, or a pid.
 | `agent-workspace show|hide|toggle` | the key | yes | yes |
 | `agent status` | yes | yes | yes |
 | `agent windows` | yes | yes | yes |
-| `agent open <app> [args...]` | yes | yes | yes |
+| `agent open <app> [file...]` | yes | yes: an allowlisted app by name, files from the handoff folder only | yes |
 | `agent run [--dir D] -- CMD` | yes | yes | yes |
 | `agent move <window>`, `agent bring <window>` | yes | yes | yes |
 | `agent snapshot|find|get|click|set-value|type|toggle|select|scroll|shot` | yes | yes (AT-SPI) | yes (UI Automation) |

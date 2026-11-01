@@ -25,12 +25,27 @@ if [ "${1:-}" != "--inner" ]; then
   HOST="$("$HERE/build-host.sh")" || { echo "FAIL: host compositor build"; exit 1; }
   real() { hyprctl -j "$1" 2>/dev/null | jq -S -c "$2" 2>/dev/null || echo "none"; }
   snap() { echo "ws=$(real activeworkspace '{id,name,monitor}') win=$(real activewindow '.address') mons=$(real monitors '[.[]|{name,id,aw:.activeWorkspace.id,sp:.specialWorkspace.name,focused}]')"; }
+  NESTED_TMP="$(mktemp -d /tmp/bs-nested.XXXXXX)"; chmod 700 "$NESTED_TMP"
   REAL_BEFORE="$(snap)"
   echo "real session before: $REAL_BEFORE"
   # The inner run gets a clean environment: nothing that names the real Hyprland or Wayland display.
-  env -i HOME="$HOME" PATH="$PATH" USER="${USER:-}" TERM="${TERM:-dumb}" LANG="${LANG:-C.UTF-8}" KEEP="${KEEP:-}" DEBUG="${DEBUG:-}" HOST="$HOST" \
+  env -i HOME="$HOME" PATH="$PATH" USER="${USER:-}" TERM="${TERM:-dumb}" LANG="${LANG:-C.UTF-8}" KEEP="${KEEP:-}" DEBUG="${DEBUG:-}" NESTED_ONLY="${NESTED_ONLY:-}" NESTED_TMP="$NESTED_TMP" HOST="$HOST" \
     dbus-run-session -- bash "$HERE/nested.sh" --inner
   RC=$?
+  # Nothing started inside the temp dir may outlive the run: not the nested Hyprland, not an agent's
+  # session bus (dbus-daemon with the run dir in its argv), not the accessibility stack.
+  sleep 1
+  LEFT="$(/usr/bin/python3 -I "$HERE/procs-under.py" "$NESTED_TMP" scan)"; SCAN_RC=$?
+  if [ "$SCAN_RC" -gt 1 ]; then
+    echo "no process left under the temp dir: UNKNOWN (the scan itself failed, status $SCAN_RC)"; RC=1
+  elif [ -z "$LEFT" ]; then
+    echo "no process left under the temp dir: yes"
+  else
+    echo "no process left under the temp dir: NO"; echo "$LEFT" | head -8
+    /usr/bin/python3 -I "$HERE/procs-under.py" "$NESTED_TMP" kill >/dev/null; RC=1
+  fi
+  awk -v t="$NESTED_TMP" 'index($2, t) == 1 { print $2 }' /proc/mounts | while read -r m; do fusermount3 -uz "$m" 2>/dev/null; done
+  [ -n "${KEEP:-}" ] || rm -rf "$NESTED_TMP"
   REAL_AFTER="$(snap)"
   echo "real session after:  $REAL_AFTER"
   if [ "$REAL_BEFORE" = "$REAL_AFTER" ]; then
@@ -44,7 +59,7 @@ if [ "${1:-}" != "--inner" ]; then
 fi
 
 # ------------------------------------ inner ------------------------------------
-TMP="$(mktemp -d /tmp/bs-nested.XXXXXX)"; chmod 700 "$TMP"
+TMP="${NESTED_TMP:-$(mktemp -d /tmp/bs-nested.XXXXXX)}"; chmod 700 "$TMP"
 mkdir -p "$TMP/run" "$TMP/home" "$TMP/state" "$TMP/config"; chmod 700 "$TMP/run"
 export XDG_RUNTIME_DIR="$TMP/run" HOME="$TMP/home" XDG_STATE_HOME="$TMP/state" XDG_CONFIG_HOME="$TMP/config"
 BIN="$REPO/target/debug"
@@ -70,6 +85,13 @@ PIDS=()
 cleanup() {
   # Children first: the host compositor's child is the nested Hyprland, and it must not outlive the test.
   for p in "${PIDS[@]}"; do pkill -TERM -P "$p" 2>/dev/null; kill "$p" 2>/dev/null; done
+  sleep 0.5
+  # Then anything else whose command line or XDG_RUNTIME_DIR points into the temp dir (the daemon's
+  # per-agent buses, the accessibility stack, gvfs).
+  /usr/bin/python3 -I "$HERE/procs-under.py" "$TMP" term >/dev/null 2>&1   # polite first: portals unmount their FUSE mounts
+  sleep 0.8
+  /usr/bin/python3 -I "$HERE/procs-under.py" "$TMP" kill >/dev/null 2>&1
+  awk -v t="$TMP" 'index($2, t) == 1 { print $2 }' /proc/mounts | while read -r m; do fusermount3 -uz "$m" 2>/dev/null; done
   sleep 0.3
   [ -n "${KEEP:-}" ] && echo "kept $TMP" || rm -rf "$TMP"
 }
@@ -126,7 +148,7 @@ cfg_errors() { hyprctl configerrors | grep -v '^$' | head -5; }
 M1=HEADLESS-1; M2=HEADLESS-2
 test_open() { # test_open <app> [args...]: like `agent open`, but allowed for an app that is not on the allowlist (a test op)
   local argv; argv="$(printf '%s\0' "${@:2}" | jq -Rsc 'split("\u0000")[:-1]')"
-  ctl "$(jq -nc --arg app "$1" --argjson argv "$argv" '{op:"test_open",args:{app:$app,args:$argv}}')"
+  ctl "$(jq -nc --arg app "$1" --argjson argv "$argv" --argjson pb "${TEST_PRIVATE_BUS:-true}" '{op:"test_open",args:{app:$app,args:$argv,private_bus:$pb}}')"
 }
 ctl() { echo "$1" | socat -t 60 - UNIX-CONNECT:"$XDG_RUNTIME_DIR/baneyspaces/ctl.sock"; }
 
@@ -144,6 +166,8 @@ eq "first monitor is slot 0, second slot 1" "$(baneyspaces state | jq -r ".data.
 eq "workspace animations are off" "$(H animations | jq -r '[.[0][]|select(.name=="workspaces")|.enabled]|first')" "false"
 eq "apps cannot take focus by asking" "$(hyprctl getoption misc:focus_on_activate | head -1)" "bool: false"
 
+# Debugging aid: run one script inside the nested session instead of the tests.
+if [ -n "${NESTED_ONLY:-}" ]; then bash "$NESTED_ONLY"; exit $?; fi
 echo "== key bindings (Omarchy defaults replaced)"
 BINDS="$(H binds)"
 [ -n "${DEBUG:-}" ] && echo "$BINDS" | jq -c '[.[]|select((.description//"")|startswith("BaneySpaces"))]|first'
@@ -255,7 +279,7 @@ same_screen() { # same_screen "<desc>"
   [ "${2:-}" = nopointer ] || eq "$1: the pointer" "$(cursor)" "$USER_CURSOR"
   eq "$1: the agent workspace is not showing" "$(special)" "0"
 }
-OPEN="$(baneyspaces agent open foot -T agentfoot sleep 600)"
+OPEN="$(test_open /usr/bin/foot -T agentfoot sleep 600)"
 echo "$OPEN" | jq -c '{ok,error}'
 AW="$(echo "$OPEN" | jq -r '.data.window // empty')"; APID="$(echo "$OPEN" | jq -r '.data.pid // empty')"
 check "agent open returns a window" test -n "$AW"
@@ -272,10 +296,11 @@ same_screen "after something focused the agent window" nopointer
 USER_CURSOR="$(cursor)"
 check "the guard counted it" sh -c "[ \"\$(baneyspaces state | jq .data.guard.refused)\" -ge 1 ]"
 # An app that hands the request to a running instance has no window of its own process.
-eq "an app that is not on the allowlist is refused before it starts" "$(baneyspaces agent open /usr/bin/true | jq -r '.error.code + " " + .error.retry')" "needs_sandbox never"
+eq "an app that is not on the allowlist is refused before it starts" "$(baneyspaces agent open true | jq -r '.error.code + " " + .error.retry')" "needs_sandbox never"
 eq "an app that opens no window of its own is single_instance (test op skips the allowlist)" "$(test_open /usr/bin/true | jq -r .error.code)" "single_instance"
 same_screen "after the refused open"
-eq "an unknown program is not_found" "$(baneyspaces agent open /nonexistent/x | jq -r .error.code)" "not_found"
+eq "a path to a program is bad_arguments" "$(baneyspaces agent open /nonexistent/x | jq -r .error.code)" "bad_arguments"
+eq "the test op reports a missing program as not_found" "$(test_open /nonexistent/x | jq -r .error.code)" "not_found"
 # Showing and hiding is yours.
 baneyspaces agent-workspace show >/dev/null; sleep 0.4
 eq "agent-workspace show opens it" "$(special)" "1"

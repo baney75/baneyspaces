@@ -12,6 +12,9 @@ pub enum Retry {
     Safe,
     /// Take a new snapshot first; refs from the old one no longer hold.
     AfterSnapshot,
+    /// Nothing was delivered, but not yet: wait, then send it again (the daemon is re-reading the
+    /// compositor, or a queue ahead of this call is full).
+    After,
     /// Do not repeat: it was refused, or it may already have landed.
     Never,
 }
@@ -39,7 +42,7 @@ pub struct Envelope {
 /// Every error code the envelope may carry (`spec/envelope.md`).
 pub const CODES: &[&str] = &[
     "invalid_args", "not_found", "ambiguous", "not_in_scope", "needs_lend", "in_use", "not_supported", "daemon_down",
-    "stale_ref", "single_instance", "needs_sandbox", "window_unmatched", "timeout", "engine_missing", "engine_error", "agent_window", "no_monitor", "compositor_error", "internal",
+    "stale_ref", "single_instance", "needs_sandbox", "bad_arguments", "window_unmatched", "timeout", "engine_missing", "engine_error", "agent_window", "no_monitor", "compositor_error", "internal",
 ];
 
 impl Envelope {
@@ -97,7 +100,7 @@ mod tests {
 
     #[test]
     fn retry_values_match_the_spec_names() {
-        for (r, s) in [(Retry::Safe, "safe"), (Retry::AfterSnapshot, "after_snapshot"), (Retry::Never, "never")] {
+        for (r, s) in [(Retry::Safe, "safe"), (Retry::AfterSnapshot, "after_snapshot"), (Retry::After, "after"), (Retry::Never, "never")] {
             assert_eq!(serde_json::to_value(r).unwrap(), json!(s));
         }
     }

@@ -27,12 +27,17 @@ impl Paths {
     }
 
     pub fn ensure(&self) -> Result<(), String> {
-        for d in [&self.state, &self.run] {
+        for d in [&self.state, &self.run, &self.handoff()] {
             fs::create_dir_all(d).map_err(|e| format!("cannot create {}: {e}", d.display()))?;
             fs::set_permissions(d, fs::Permissions::from_mode(0o700))
                 .map_err(|e| format!("cannot protect {}: {e}", d.display()))?;
         }
         Ok(())
+    }
+
+    /// The one folder an agent may hand files to an app from.
+    pub fn handoff(&self) -> PathBuf {
+        self.state.join("handoff")
     }
 
     pub fn ctl_socket(&self) -> PathBuf {

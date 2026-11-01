@@ -141,71 +141,76 @@ fn refuses_headed(args: &[String]) -> bool {
     args.iter().take_while(|a| a.as_str() != "--").any(|a| a == "--headed" || a.starts_with("--headed="))
 }
 
-/// Runs the engine with a hard timeout. No `--headed`, ever.
-fn run_engine(
-    engine: &std::path::Path,
-    args: &[String],
-    timeout: Duration,
-) -> Result<Value, Envelope> {
+/// Runs the engine with a hard deadline. No `--headed`, ever. The engine gets a process group of
+/// its own. The call ends when the engine itself exits, not when its stdout closes: a helper it
+/// leaves behind (the Linux clipboard owner) can hold the pipe open for as long as it lives. After
+/// a short grace for the last bytes the group is killed, which also frees the reader thread.
+fn run_engine(engine: &std::path::Path, args: &[String], timeout: Duration, env: &[(String, String)]) -> Result<Value, Envelope> {
+    use std::os::unix::process::CommandExt;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
     // The engine is only ever run headless. This is a refusal at run time, not a debug check.
     if refuses_headed(args) {
         return Err(Envelope::err("not_supported", "BaneySpaces never runs the engine headed", Retry::Never, "Agents act through the accessibility API only."));
     }
-    let mut child = Command::new(engine)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| {
-            Envelope::err(
-                "engine_error",
-                format!("cannot start the engine: {e}"),
-                Retry::Safe,
-                "Rebuild it: platforms/linux/scripts/build-engine.sh",
-            )
-        })?;
-    let mut stdout = child.stdout.take();
-    let reader = std::thread::spawn(move || {
-        let mut s = String::new();
-        if let Some(o) = stdout.as_mut() {
-            let _ = o.take(32 << 20).read_to_string(&mut s);
-        }
-        s
-    });
+    let mut cmd = Command::new(engine);
+    cmd.args(args).envs(env.iter().map(|(k, v)| (k, v))).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).process_group(0);
+    let mut child = cmd.spawn().map_err(|e| Envelope::err("engine_error", format!("cannot start the engine: {e}"), Retry::Safe, "Rebuild it: platforms/linux/scripts/build-engine.sh"))?;
+    let group = child.id() as i32;
+    let kill_group = || {
+        // SAFETY: a signal to the process group this call created.
+        unsafe { libc::kill(-group, libc::SIGKILL) };
+    };
+    let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let done = Arc::new(AtomicBool::new(false));
+    if let Some(mut out) = child.stdout.take() {
+        let (buf, done) = (buf.clone(), done.clone());
+        std::thread::spawn(move || {
+            let mut chunk = [0u8; 8192];
+            loop {
+                match out.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        let mut b = buf.lock().unwrap_or_else(|p| p.into_inner());
+                        if b.len() + n > 32 << 20 {
+                            break;
+                        }
+                        b.extend_from_slice(&chunk[..n]);
+                    }
+                }
+            }
+            done.store(true, Ordering::SeqCst);
+        });
+    }
     let deadline = Instant::now() + timeout;
     loop {
         match child.try_wait() {
             Ok(Some(_)) => break,
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
             _ => {
-                let _ = child.kill();
+                kill_group();
                 let _ = child.wait();
-                return Err(Envelope::err(
-                    "timeout",
-                    "the engine did not answer in time",
-                    Retry::Never,
-                    "The app may be busy. Take a new snapshot before trying again.",
-                ));
+                return Err(Envelope::err("timeout", "the engine did not answer in time", Retry::Never, "The app may be busy. Take a new snapshot before trying again."));
             }
         }
     }
-    let out = reader.join().unwrap_or_default();
-    serde_json::from_str(out.trim()).map_err(|_| {
-        Envelope::err(
-            "engine_error",
-            "the engine printed something that is not JSON",
-            Retry::Never,
-            "",
-        )
-    })
+    // The engine has exited. Give its last bytes a moment, then stop waiting for a pipe a helper holds.
+    let grace = Instant::now() + Duration::from_millis(1500).min(deadline.saturating_duration_since(Instant::now()).max(Duration::from_millis(200)));
+    while !done.load(Ordering::SeqCst) && Instant::now() < grace {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    if !done.load(Ordering::SeqCst) {
+        kill_group();
+    }
+    let out = String::from_utf8_lossy(&buf.lock().unwrap_or_else(|p| p.into_inner())).into_owned();
+    serde_json::from_str(out.trim()).map_err(|_| Envelope::err("engine_error", "the engine printed something that is not JSON", Retry::Never, ""))
 }
 
 /// Which engine window is this Hyprland window: the one accessible window of the process whose title
 /// equals the compositor window's, and exactly one. No fallback to another window of the process
 /// (R-W1), and the process start time must agree.
-fn engine_window(engine: &std::path::Path, pid: u32, title: &str, start: u64, timeout: Duration) -> Result<String, Envelope> {
-    let r = run_engine(engine, &["list-windows".into()], timeout)?;
+fn engine_window(engine: &std::path::Path, pid: u32, title: &str, start: u64, timeout: Duration, env: &[(String, String)]) -> Result<String, Envelope> {
+    let r = run_engine(engine, &["list-windows".into()], timeout, env)?;
     let all = r["data"].as_array().cloned().unwrap_or_default();
     let mine: Vec<&Value> = all.iter().filter(|w| w["pid"].as_u64() == Some(pid as u64)).collect();
     let cands: Vec<(String, String)> = mine.iter().map(|w| (w["id"].as_str().unwrap_or("").to_string(), w["title"].as_str().unwrap_or("").to_string())).collect();
@@ -284,6 +289,9 @@ pub fn build_argv(verb: &str, args: &Value, window: Option<&str>, reference: &st
 }
 
 struct Plan {
+    /// The environment the engine runs in for this window: the launch's private session bus, so it
+    /// finds the agent's accessibility bus and not yours.
+    env: Vec<(String, String)>,
     window: String,
     pid: u32,
     start: u64,
@@ -324,7 +332,9 @@ fn guard(c: &Core, window: &str, expect: Option<&SnapInfo>) -> Result<Plan, Enve
         },
     )
     .map_err(|r| r.envelope())?;
+    let env = proc::token_of(cl.pid).and_then(|t| c.tokens.get(&t)).and_then(|i| i.bus.as_ref()).map(|b| vec![("DBUS_SESSION_BUS_ADDRESS".to_string(), b.addr.clone())]).unwrap_or_default();
     Ok(Plan {
+        env,
         window: window.into(),
         pid: cl.pid,
         start,
@@ -422,7 +432,7 @@ pub fn run(shared: &Shared, agent: &str, args: &Value) -> Envelope {
     let budget = Instant::now() + Duration::from_secs(BUDGET_SECS);
     let left = || budget.saturating_duration_since(Instant::now()).max(Duration::from_millis(500));
     let win_id = if window_verb {
-        match engine_window(&engine, plan.pid, &plan.title, plan.start, left().min(Duration::from_secs(15))) {
+        match engine_window(&engine, plan.pid, &plan.title, plan.start, left().min(Duration::from_secs(15)), &plan.env) {
             Ok(id) => Some(id),
             Err(env) => {
                 let c = crate::daemon::lock(shared);
@@ -457,7 +467,7 @@ pub fn run(shared: &Shared, agent: &str, args: &Value) -> Envelope {
         }
     };
     let t = left();
-    let raw = run_engine(&engine, &argv, t);
+    let raw = run_engine(&engine, &argv, t, &plan.env);
 
     // 3. Read back, record, answer.
     let mut c = crate::daemon::lock(shared);
@@ -594,6 +604,35 @@ mod tests {
             .is_none());
     }
 
+    fn script(name: &str, body: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let p = std::env::temp_dir().join(format!("bs-engine-{}-{name}", std::process::id()));
+        std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    }
+
+    #[test]
+    fn a_helper_holding_the_pipe_does_not_hold_the_call() {
+        // The engine prints its answer and exits, leaving a descendant that inherited stdout.
+        let e = script("helper", "echo '{\"ok\":true,\"data\":{}}'\nsleep 30 &\nexit 0");
+        let t = Instant::now();
+        let r = run_engine(&e, &[], Duration::from_secs(10), &[]).expect("the answer is read once the engine exits");
+        assert_eq!(r["ok"], true);
+        assert!(t.elapsed() < Duration::from_secs(5), "took {:?}", t.elapsed());
+        let _ = std::fs::remove_file(&e);
+    }
+
+    #[test]
+    fn a_stuck_engine_is_killed_with_its_group_at_the_deadline() {
+        let e = script("stuck", "sleep 30 &\nsleep 30");
+        let t = Instant::now();
+        let r = run_engine(&e, &[], Duration::from_millis(300), &[]).unwrap_err();
+        assert_eq!(r.error.unwrap().code, "timeout");
+        assert!(t.elapsed() < Duration::from_secs(3));
+        let _ = std::fs::remove_file(&e);
+    }
+
     #[test]
     fn the_engine_is_never_run_headed_not_even_by_a_value() {
         assert!(refuses_headed(&["click".into(), "--headed".into()]));
@@ -603,7 +642,7 @@ mod tests {
         assert!(!refuses_headed(&a), "{a:?}");
         assert!(a.contains(&"--name=--headed".to_string()));
         // And the check is a refusal at run time, before anything is spawned.
-        let e = run_engine(std::path::Path::new("/nonexistent"), &["--headed".into()], Duration::from_secs(1)).unwrap_err();
+        let e = run_engine(std::path::Path::new("/nonexistent"), &["--headed".into()], Duration::from_secs(1), &[]).unwrap_err();
         assert_eq!(e.error.unwrap().code, "not_supported");
     }
 

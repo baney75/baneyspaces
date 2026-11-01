@@ -2,6 +2,7 @@
 //! and prints the envelope; `baneyspaces mcp` serves the agent tools over stdio.
 
 mod apps;
+mod bus;
 mod daemon;
 mod hands;
 mod hypr;
@@ -24,7 +25,8 @@ const HELP: &str = "baneyspaces (Linux, Hyprland)
   overview                       show or hide the overview (drawn by the shell plugin, part 2)
   agent-workspace show|hide|toggle   show the agent workspace (you only; agents never do)
   agent status|windows           what is on the agent workspace
-  agent open <app> [args...]     start an app as its own process on the agent workspace
+  agent open <app> [file...]     start an allowlisted app (by name) on the agent workspace, with files
+                                 from the handoff folder only: no flags, no paths, no URLs
   agent run [--dir D] -- CMD...  run a command in a terminal on the agent workspace
   agent move <window>            park one of your windows there (not drivable)
   agent bring <window>           bring a window you parked back
@@ -253,7 +255,9 @@ fn agent_request(mut a: Vec<String>) -> Result<Value, Envelope> {
 }
 
 fn hands_request(verb: &str, mut a: Vec<String>) -> Result<Value, Envelope> {
-    let window = take(&mut a, "--window");
+    // `--window` belongs to the verbs that name a window. For the others everything after the ref is
+    // data (typed text may well contain it).
+    let window = if matches!(verb, "snapshot" | "find") { take(&mut a, "--window") } else { None };
     let mut args = json!({ "verb": verb });
     if let Some(w) = window {
         args["window"] = json!(w);
@@ -440,6 +444,17 @@ mod tests {
 
     fn v(a: &[&str]) -> Vec<String> {
         a.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn typed_text_keeps_a_window_flag_in_it() {
+        let req = request(v(&["agent", "type", "@sab:e3", "--window", "x"])).unwrap();
+        assert_eq!(req["args"]["text"], "--window x");
+        assert!(req["args"].get("window").is_none());
+        let req = request(v(&["agent", "set-value", "@sab:e1", "see", "--window", "docs"])).unwrap();
+        assert_eq!(req["args"]["value"], "see --window docs");
+        let req = request(v(&["agent", "snapshot", "--window", "0x1", "-i"])).unwrap();
+        assert_eq!(req["args"]["window"], "0x1");
     }
 
     #[test]

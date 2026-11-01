@@ -8,6 +8,9 @@ wait_for() { # wait_for <seconds> <command...>: poll until the command succeeds
   local t="$1"; shift
   for _ in $(seq 1 $((t*10))); do "$@" >/dev/null 2>&1 && return 0; sleep 0.1; done; return 1
 }
+free_ws() { # a workspace no monitor shows now
+  for n in 3 4 5 6 7 8 9; do H monitors | jq -e "[.[].activeWorkspace.id]|index($n) == null" >/dev/null && { echo $n; return; }; done
+}
 daemon_up() { baneyspaces state 2>/dev/null | jq -e .ok >/dev/null; }
 daemon_down() { ! daemon_up; }
 not_in_pids() { ! agent_pids | jq -e "index($1) != null" >/dev/null; }
@@ -40,7 +43,7 @@ eq "the model has it as your window" "$(baneyspaces state | jq -r ".data.windows
 check "and forgot the stale registration" not_in_pids $RP
 kill $RP 2>/dev/null; sleep 0.5; rebase
 # Death: an agent process that exits is forgotten without a restart.
-D1="$(baneyspaces agent open foot -T dies sleep 600)"; D1PID="$(echo "$D1" | jq -r '.data.pid')"
+D1="$(test_open /usr/bin/foot -T dies sleep 600)"; D1PID="$(echo "$D1" | jq -r '.data.pid')"
 eq "an agent process is registered" "$(agent_pids | jq "index($D1PID) != null")" "true"
 kill "$D1PID"
 check "its registration goes when it dies (no restart)" wait_for 8 not_in_pids "$D1PID"
@@ -77,10 +80,40 @@ same_screen "after a daemon restart and a window from an agent's shell" nopointe
 USER_CURSOR="$(cursor)"
 kill "$RTPID" 2>/dev/null; sleep 0.5
 
+echo "== a window that opens while the daemon starts is not missed"
+baneyspaces stop >/dev/null; wait_for 4 daemon_down
+BANEYSPACES_TEST_EVENT_DELAY_MS=5000 baneyspaces daemon --trace >>"$TMP/daemon.log" 2>&1 & DPID=$!; PIDS+=($DPID)
+sleep 1.5  # the state has been read; the events are not being read yet
+EVW="$(user_window evgap)"
+check "(setup) a window opened between the read and the first event" test -n "$EVW"
+check "the daemon comes up" wait_for 12 daemon_up
+sleep 1
+eq "and it knows the window: the event that was queued was replayed" "$(baneyspaces state | jq -r ".data.windows|has(\"$EVW\")")" "true"
+hyprctl dispatch "hl.dsp.window.close({ window = \"address:$EVW\" })" >/dev/null; sleep 0.5; rebase
+
+echo "== workspace and focus changes you make yourself are never undone"
+# A hidden workspace lives on monitor 2; you ask Hyprland (a waybar click does this) to show it.
+baneyspaces focus-monitor $M2 >/dev/null; sleep 0.2
+H2="$(mon_ws $M2)"
+HW2="$(free_ws)"
+baneyspaces switch $HW2 >/dev/null; sleep 0.3
+baneyspaces focus-monitor $M1 >/dev/null; sleep 0.3
+hyprctl dispatch "hl.dsp.focus({ workspace = \"$H2\" })" >/dev/null; sleep 0.8
+eq "Hyprland's own workspace click on the other monitor leaves focus there" "$(H monitors | jq -r '.[]|select(.focused)|.name')" "$M2"
+eq "and the daemon's model agrees" "$(baneyspaces state | jq -r .data.focused_monitor)" "$M2"
+eq "monitor 2 shows the workspace you asked for" "$(mon_ws $M2)" "$H2"
+# Focus another monitor and open a window in the same instant.
+baneyspaces focus-monitor $M1 >/dev/null; sleep 0.3
+hyprctl dispatch "hl.dsp.focus({ monitor = \"$M2\" })" >/dev/null
+hyprctl dispatch "hl.dsp.exec_cmd(\"foot -T samemoment sleep 600\")" >/dev/null
+sleep 1.5
+eq "moving to monitor 2 as a window opens is not undone" "$(H monitors | jq -r '.[]|select(.focused)|.name')" "$M2"
+eq "and the model agrees" "$(baneyspaces state | jq -r .data.focused_monitor)" "$M2"
+SMW="$(H clients | jq -r '.[]|select(.title=="samemoment")|.address')"
+hyprctl dispatch "hl.dsp.window.close({ window = \"address:$SMW\" })" >/dev/null; sleep 0.4
+baneyspaces focus-monitor $M1 >/dev/null; sleep 0.3; rebase
+
 echo "== a failing compositor is reported, never swallowed"
-free_ws() { # a workspace no monitor shows now
-  for n in 3 4 5 6 7 8 9; do H monitors | jq -e "[.[].activeWorkspace.id]|index($n) == null" >/dev/null && { echo $n; return; }; done
-}
 FOC="$(H monitors | jq -r '.[]|select(.focused)|.name')"
 N1="$(free_ws)"
 ctl '{"op":"test_fail_next","args":{"io":false}}' >/dev/null
@@ -124,7 +157,7 @@ ln -sf "$APP" "$TMP/linked_app.py"
 addrs() { H clients | jq -r '.[].address' | sort; }
 procs_with_token() { grep -l BANEYSPACES_AGENT_TOKEN /proc/[0-9]*/environ 2>/dev/null | wc -l; }
 BEFORE="$(addrs)"; TOK0="$(procs_with_token)"
-N0="$(baneyspaces agent open /usr/bin/python3 "$APP")"
+N0="$(baneyspaces agent open python3)"
 eq "with no copy of yours running, an unlisted app is needs_sandbox" "$(echo "$N0" | jq -r '.error.code + " " + .error.retry')" "needs_sandbox never"
 eq "the answer lists what is allowed" "$(echo "$N0" | jq -r '.error.data.allowed | index("foot") != null')" "true"
 sleep 1.5
@@ -138,17 +171,83 @@ sleep 1
 UW="$(comm -13 <(echo "$BEFORE") <(addrs) | head -1)"; UPID="$(H clients | jq -r ".[]|select(.address==\"$UW\")|.pid")"
 check "your own single-instance copy is running" test -n "$UW"
 rebase
-N="$(baneyspaces agent open /usr/bin/python3 "$APP" --unique)"
+N="$(baneyspaces agent open python3 "$APP")"
 eq "with a copy of yours running it is needs_sandbox too" "$(echo "$N" | jq -r '.error.code + " " + .error.retry')" "needs_sandbox never"
 eq "nothing new appeared" "$(addrs | wc -l)" "$(echo "$BEFORE" | wc -l | awk '{print $1+1}')"
 same_screen "after the second refused open"
-# The part the allowlist cannot see after the fact: a test-op launch (it skips the allowlist) of the
-# same app under another path forwards to your copy. Its window opens in YOUR process; it is left where
-# it is and the error says so.
+# Every agent launch has a session bus of its own, so the same app under another path (which the
+# allowlist skips: this is the test op) does NOT forward to your copy. It runs on its own.
 ST="$(test_open /usr/bin/python3 "$TMP/linked_app.py" --unique)"
-eq "a forwarded launch is single_instance" "$(echo "$ST" | jq -r .error.code)" "single_instance"
+eq "with a bus of its own the same app opens its own window instead of forwarding" "$(echo "$ST" | jq -r .ok)" "true"
+SPID="$(echo "$ST" | jq -r '.data.pid')"
+check "it is another process than your copy" test "$SPID" != "$UPID"
+eq "your copy did not get a second window" "$(H clients | jq "[.[]|select(.pid==$UPID)]|length")" "1"
+kill "$SPID" 2>/dev/null
+# The forward-and-report path still exists for a launch that shares your bus (test op only).
+ST="$(TEST_PRIVATE_BUS=false test_open /usr/bin/python3 "$TMP/linked_app.py" --unique)"
+eq "a launch that shares your bus forwards to your copy: single_instance" "$(echo "$ST" | jq -r .error.code)" "single_instance"
 eq "and reports the window that appeared in your process" "$(echo "$ST" | jq -r '.error.data.windows_that_appeared|length >= 1')" "true"
 SW="$(echo "$ST" | jq -r '.error.data.windows_that_appeared[0].window')"
 check "that window was left where it is (not moved to the agent workspace)" test "$(client_ws ${SW:-x})" != "special:agent"
 eq "the model treats it as yours" "$(baneyspaces state | jq -r ".data.windows[\"$SW\"].agent_owned")" "false"
 kill "$UPID" 2>/dev/null; sleep 1; rebase
+
+echo "== what an agent may pass to an allowlisted app"
+HO="$XDG_STATE_HOME/baneyspaces/handoff"
+procs_now() { ps -e -o pid= | wc -l; }
+BEFORE="$(addrs | wc -l)"
+for BAD in "-e nautilus" "--server" "-T x" "/etc/passwd" "https://example.com/" "../../etc/passwd" "nofile.txt"; do
+  R="$(baneyspaces agent open foot $BAD)"
+  eq "agent open foot $BAD is bad_arguments" "$(echo "$R" | jq -r .error.code)" "bad_arguments"
+done
+eq "an app is named, never a path (/usr/bin/foot)" "$(baneyspaces agent open /usr/bin/foot | jq -r .error.code)" "bad_arguments"
+eq "nor a relative path (./foot)" "$(baneyspaces agent open ./foot | jq -r .error.code)" "bad_arguments"
+eq "an unlisted app is still needs_sandbox, with a file" "$(baneyspaces agent open nautilus "$HO" | jq -r .error.code)" "needs_sandbox"
+sleep 0.5
+eq "none of them started anything" "$(addrs | wc -l)" "$BEFORE"
+printf '#!/bin/sh\nsleep 600\n' > "$HO/hold.sh"; chmod +x "$HO/hold.sh"
+FO="$(baneyspaces agent open foot "$HO/hold.sh")"
+eq "foot with a file from the handoff folder starts, on the agent workspace" "$(echo "$FO" | jq -r '.ok')" "true"
+FOW="$(echo "$FO" | jq -r '.data.window // empty')"
+eq "(it is on special:agent)" "$(client_ws ${FOW:-x})" "special:agent"
+FOPID="$(echo "$FO" | jq -r '.data.pid')"
+ln -sf /etc/passwd "$HO/out.txt"
+eq "a symlink out of the folder does not get through" "$(baneyspaces agent open foot "$HO/out.txt" | jq -r .error.code)" "bad_arguments"
+same_screen "after the argument tests"
+
+echo "== every agent launch has a session bus of its own"
+hyprctl dispatch "hl.dsp.exec_cmd(\"env TEST_APP_TITLE=usercopy /usr/bin/python3 $APP --unique\")" >/dev/null
+wait_for 8 sh -c "hyprctl -j clients | jq -e '.[]|select(.title==\"usercopy\")'"
+sleep 1
+UPID="$(H clients | jq -r '.[]|select(.title=="usercopy")|.pid')"
+check "your own single-instance copy is running" test -n "$UPID"
+rebase
+BEFORE="$(addrs)"
+baneyspaces agent run -- env TEST_APP_TITLE=agentcopy /usr/bin/python3 "$APP" --unique >/dev/null
+wait_for 10 sh -c "hyprctl -j clients | jq -e '.[]|select(.title==\"agentcopy\")'"
+sleep 1
+AGW="$(H clients | jq -r '.[]|select(.title=="agentcopy")|.address')"; AGPID="$(H clients | jq -r '.[]|select(.title=="agentcopy")|.pid')"
+check "the agent's copy opened its own window" test -n "$AGW"
+check "in a process of its own, not yours" test "$AGPID" != "$UPID"
+eq "it is on the agent workspace" "$(client_ws ${AGW:-x})" "special:agent"
+eq "your copy still has exactly one window (nothing was forwarded into it)" "$(H clients | jq "[.[]|select(.pid==$UPID)]|length")" "1"
+# Now you launch the same app: it must go to YOUR copy, not to the agent's.
+hyprctl dispatch "hl.dsp.exec_cmd(\"env TEST_APP_TITLE=usercopy /usr/bin/python3 $APP --unique\")" >/dev/null
+wait_for 8 sh -c "[ \"\$(hyprctl -j clients | jq '[.[]|select(.pid==$UPID)]|length')\" -ge 2 ]"
+sleep 0.5
+eq "your second launch opened a window in your copy" "$(H clients | jq "[.[]|select(.pid==$UPID)]|length")" "2"
+UW2="$(H clients | jq -r "[.[]|select(.pid==$UPID)|.address]|sort|last")"
+check "on a workspace of yours" test "$(client_ws ${UW2:-x})" != "special:agent"
+eq "the model has it as yours, not the agent's" "$(baneyspaces state | jq -r ".data.windows[\"$UW2\"] | \"\(.home != \"agent\") \(.agent_owned)\"")" "true false"
+eq "and the agent's window is still the only one the agent has" "$(H clients | jq "[.[]|select(.pid==$AGPID)]|length")" "1"
+BUSPID="$(pgrep -f "address=unix:path=$XDG_RUNTIME_DIR/baneyspaces/bus-" | head -1)"
+check "a private dbus-daemon is running for it" test -n "$BUSPID"
+kill "$UPID" "$AGPID" 2>/dev/null; sleep 1; rebase
+# Torn down with the token: once nothing runs under it, its bus and profile go.
+baneyspaces agent run -- sh -c 'sleep 2' >/dev/null; sleep 4
+NB_BEFORE="$(ls "$XDG_RUNTIME_DIR"/baneyspaces/bus-* 2>/dev/null | wc -l)"
+ctl '{"op":"test_reap","args":{}}' >/dev/null
+sleep 1
+NB_AFTER="$(ls "$XDG_RUNTIME_DIR"/baneyspaces/bus-* 2>/dev/null | wc -l)"
+check "a token's bus is torn down when its processes are gone (sockets $NB_BEFORE -> $NB_AFTER)" test "$NB_AFTER" -lt "$NB_BEFORE"
+kill "$FOPID" 2>/dev/null

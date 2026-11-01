@@ -23,16 +23,17 @@
       "name": "agent_windows"
     },
     {
-      "description": "Start an app as its own process on the agent workspace. You stay where you are. Only apps on the allowlist (terminals, viewers, browsers with a private profile) can be started; any other app is refused with needs_sandbox before it starts. An app that still forwards to a running instance is single_instance.",
+      "description": "Start an allowlisted app on the agent workspace, by name, as its own process with its own session bus. You stay where you are. Only files inside the handoff folder may be passed: no flags, no paths to programs, no URLs (bad_arguments). An app not on the allowlist is needs_sandbox before it starts.",
       "inputSchema": {
         "additionalProperties": false,
         "description": "",
         "properties": {
           "app": {
-            "description": "Executable name or path.",
+            "description": "The app's name, such as foot. Never a path.",
             "type": "string"
           },
           "args": {
+            "description": "Paths of files inside the handoff folder.",
             "items": {
               "type": "string"
             },

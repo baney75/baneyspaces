@@ -48,16 +48,36 @@ isolation line, drawn by process:
   whose process the daemon registered (pid and start time, so a reused pid fails);
 - every pid check is start-time aware: the daemon forgets an agent process when it dies or its pid
   is reused (on each window that opens and every 2 s), so a recycled pid is never an agent;
-- **deny by default.** An app may be started for an agent only if it is on the short allowlist of
-  apps with a verified way to run as their own process (terminals and viewers; Chromium and Firefox
-  with a private profile under BaneySpaces' own folder; Ghostty with `--gtk-single-instance=false`).
-  Anything else, such as nautilus or a GApplication, is refused **before launch** with
-  `needs_sandbox`, whether or not you happen to be running a copy. That closes both directions: the
-  agent's request cannot land in your process, and the agent's copy cannot become the instance your
-  later launches forward to (where your window would be taken for the agent's);
-- an app that is on the list but forwards anyway, or a launch the allowlist was skipped for (the
-  test-only `test_open`), has its forwarded window left where it is, and the `single_instance` error
-  lists it (`error.data.windows_that_appeared`). A known limit, in the ledger in `AGENTS.md`;
+- **deny by default, and the app is a name.** `agent open <app> [file...]` takes the *name* of an app
+  on the short allowlist (terminals and viewers; Chromium and Firefox with a private profile under
+  BaneySpaces' own folder; Ghostty with `--gtk-single-instance=false`), never a path (`/` is
+  `bad_arguments`). The name is resolved through PATH and its realpath must equal the system binary
+  of that name (`/usr/bin`, `/bin`, `/usr/local/bin`), so a wrapper script or a symlink earlier on PATH
+  or in a project does not pass. The only arguments are files, and every one must resolve (realpath)
+  inside the handoff folder (`$XDG_STATE_HOME/baneyspaces/handoff`); a flag, a URL, `..` or a symlink
+  out of the folder is `bad_arguments`. The isolation flags are the only flags, and BaneySpaces
+  adds them. Anything off the list, such as nautilus or a GApplication, is `needs_sandbox` before
+  launch, whether or not you run a copy;
+- **every agent process (`open` and `run`) has a session bus of its own.** One `dbus-daemon
+  --session` per launch, with its own runtime directory, so GApplication and D-Bus single-instance
+  forwarding cannot cross between the agent's copy and yours in either direction. It comes with its
+  own accessibility bus (`at-spi-bus-launcher` and `at-spi2-registryd` under that runtime
+  directory): GTK4 asks the session bus where the accessibility bus is and ignores
+  `AT_SPI_BUS_ADDRESS`, so an app on a private session bus would otherwise start a launcher that takes
+  over the socket of *your* accessibility bus. The hands engine is pointed at the launch's session
+  bus when it works on that launch's windows. The stack is a process group, a child of the daemon:
+  it is torn down when the token's last process exits, when the daemon exits (`stop`, `SIGTERM`,
+  `SIGINT`, `SIGHUP`, the include being removed), and, if the daemon is killed outright or crashes,
+  by `PR_SET_PDEATHSIG`; the next daemon also sweeps any stack whose directory is gone or which no
+  live token owns. What does not carry over: your notification daemon, tray and portal backends.
+  xdg-desktop-portal starts a second instance on the private bus, so file choosers and capture
+  portals may not open; the clipboard and display are Wayland and untouched; GSettings reads work.
+  `agent run` is a shell with your uid, so this is accident-proofing, not a boundary (the host threat
+  model; a process of yours can still find your bus address);
+- an app that is on the list but forwards anyway (the allowlist does not see every wrapper) or a
+  launch with the allowlist skipped (the test-only `test_open`) has its forwarded window left where
+  it is, and the `single_instance` error lists it (`error.data.windows_that_appeared`). A known limit,
+  in the ledger in `AGENTS.md`;
 - an accessible window is matched to the compositor window by its title, and exactly one must carry
   it (`window_unmatched` otherwise): there is no fallback to "the only window of the process";
 - scope is checked again right before the engine's command: window, pid, start time and workspace
@@ -106,6 +126,14 @@ cleanly before anything moved; a timeout, or a failure after an earlier step wen
 `never`. The CLI waits 90 s for the daemon; one hands call has a 50 s budget inside that. A
 connection failure is `daemon_down` (safe); silence after the request was sent is `timeout` with
 retry `never`.
+
+If the daemon cannot re-read Hyprland after a failure, it does not act on a guess: the next command
+is refused `compositor_error` with retry `after` until it can. The daemon connects to Hyprland's
+event socket before it reads the state, so a window that opens during start-up is replayed, not lost,
+and every few seconds it reconciles its windows against Hyprland's. Changes you make yourself, such
+as a click on an Omarchy waybar workspace button on the other monitor or Super+scroll, are mirrored
+and never undone: the daemon corrects focus only after a command it ran itself. A caller whose pid
+cannot be read is treated as an agent for the operations that belong to you.
 
 With no daemon running (a reload before it started, a crash) the bound workspace keys fall back to
 Hyprland's own dispatch for `switch` and `move`, so they never go dead. The autostart file starts the
