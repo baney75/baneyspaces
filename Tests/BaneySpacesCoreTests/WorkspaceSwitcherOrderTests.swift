@@ -222,6 +222,23 @@ final class SwitcherWiringTests: XCTestCase {
         XCTAssertTrue(switcher.contains("SwitcherLayout.panelSize(tileCount: model.tiles.count, maxWidth: model.maxWidth)"))
     }
 
+    func testSameAppFocusStampsBeforeTheDockReloads() throws {
+        let spaces = try Repo.code("Sources/BaneySpaces/Spaces.swift")
+        let helper = try XCTUnwrap(spaces.range(of: "private func noteFocusAndReload"))
+        let body = String(spaces[helper.lowerBound...].prefix(260))
+        let stamp = try XCTUnwrap(body.range(of: "noteFocus(id)"))
+        let reload = try XCTUnwrap(body.range(of: "noteFocusedDisplay(of: id)"))
+        XCTAssertLessThan(stamp.lowerBound, reload.lowerBound, "stamp the activation, then reload the dock")
+        XCTAssertTrue(body.contains("onChange?()"), "same focused display still reloads")
+        let within = try XCTUnwrap(spaces.range(of: "private func focusMovedWithin").flatMap { s in
+            spaces.range(of: "private func parkedPids").map { String(spaces[s.lowerBound..<$0.lowerBound]) }
+        })
+        XCTAssertTrue(within.contains("return noteFocusAndReload(w.id)"))
+        XCTAssertFalse(within.contains("noteFocusedDisplay("), "no reload before the stamp")
+        let stay = try XCTUnwrap(spaces.range(of: "private func stay(on").map { String(spaces[$0.lowerBound...].prefix(400)) })
+        XCTAssertTrue(stay.contains("noteFocusAndReload(w.id)") && !stay.contains("noteFocusedDisplay("))
+    }
+
     func testTabShiftTabAndArrowsShareOneStepper() throws {
         let switcher = try Repo.code("Sources/BaneySpaces/WorkspaceSwitcher.swift")
         XCTAssertEqual(switcher.components(separatedBy: "SwitcherSelection.advance(").count - 1, 2, "list and window bar")

@@ -736,15 +736,22 @@ final class Spaces {
         activations.note("\(pid)", on: n, at: Date().timeIntervalSinceReferenceDate)
     }
 
+    /// Stamps the activation, then tells the dock. The stamp comes first so the reload reads the new
+    /// order: a same-app window change sends no `didActivateApplication` to reload it later. A
+    /// display change already notifies; any other case notifies here.
+    private func noteFocusAndReload(_ id: WindowID) {
+        noteFocus(id)
+        if !noteFocusedDisplay(of: id) { onChange?() }
+    }
+
     /// An app that quit loses its place in the order: its process id may come back as another app.
     func appQuit(_ pid: pid_t) { activations.forget("\(pid)") }
 
     /// Focuses a window on this workspace, marking the activation as BaneySpaces' own.
     private func stay(on w: Window) {
-        noteFocusedDisplay(of: w.id)
         expectedFront = w.pid
         settleUntil = Date().addingTimeInterval(0.3)
-        noteFocus(w.id)
+        noteFocusAndReload(w.id)
         // Only a raise that landed makes this the window you were in.
         if w.focus() { lastKey[w.pid] = w.id }
     }
@@ -924,8 +931,7 @@ final class Spaces {
         let previous = lastKey[pid]
         lastKey[pid] = w.id
         guard !model.isShown(n) || saved.frames[w.id] != nil else {
-            noteFocusedDisplay(of: w.id)
-            return noteFocus(w.id)
+            return noteFocusAndReload(w.id)
         }
         // A window minimized or closed (even one an app only hid) is one you left, not chose from.
         let chosen = previous.map { $0 != w.id && windows[$0].map { !$0.isMinimized } == true && Windows.lists($0, pid: pid) } ?? false
@@ -1663,11 +1669,14 @@ final class Spaces {
     }
 
     /// The window with focus is on display `d`'s workspace: that display is the one ⌘N changes.
-    private func noteFocusedDisplay(of id: WindowID) {
+    /// Returns whether the focused display changed (and `onChange` fired).
+    @discardableResult
+    private func noteFocusedDisplay(of id: WindowID) -> Bool {
         guard model.shown.count > 1, let n = model.workspace(of: id), n != Self.agentWorkspace,
-              let d = model.display(showing: n), d != model.focusedDisplay else { return }
+              let d = model.display(showing: n), d != model.focusedDisplay else { return false }
         model.focus(display: d)
         onChange?()
+        return true
     }
 
     /// Windows you dragged onto another display join the workspace that display shows. Parked

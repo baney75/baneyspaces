@@ -62,7 +62,7 @@ final class WorkspaceSwitcher {
         checkHold(pressedAt: time)
         model.windowBar = nil
         model.mode = MissionControlKeys.cmdTabMode == .workspaces ? .workspaces : .apps
-        model.maxWidth = activeVisibleFrame()?.width ?? SwitcherLayout.narrowScreen
+        model.maxWidth = activeVisibleFrame().map { Double($0.width) } ?? SwitcherLayout.narrowScreen
         if model.mode == .workspaces {
             let order = spaces.switcherOrder()
             let current = spaces.model.current
