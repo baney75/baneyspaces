@@ -17,7 +17,15 @@ agent-desktop (Apache License 2.0)
   The Rust crates it depends on keep their own licenses; `cargo tree` in
   engine/.src after scripts/build-engine.sh lists them.
 
-cua-driver (MIT License), trycua
-  https://github.com/trycua/cua. BaneySpaces ports no code from it. The background-input
-  rules in docs/agent-computer-use.md (every action carries an exact process and window;
-  routes in order; no global input) follow its macos-background-input-v1-plan.
+cua-driver (MIT License, Copyright (c) 2025 Cua AI, Inc.), trycua
+  https://github.com/trycua/cua. The background-input rules in docs/agent-computer-use.md
+  (every action carries an exact process and window; routes in order; no global input)
+  follow its macos-background-input-v1-plan. Phase 4 ports logic from
+  libs/cua-driver/rust/crates/platform-macos/src/input/ (keyboard.rs, mouse.rs, skylight.rs)
+  to Swift: the key table and explicit-flags key events posted without an authentication
+  envelope, the mouse event field recipe (window number in fields 51, 91 and 92, target pid in
+  field 40, one gesture id in field 58, CGEventSetWindowLocation), and loading SkyLight's
+  SLEventPostToPid by name with the public per-process call as the fallback. The code is in
+  Sources/BaneySpaces/Hands/BackgroundPoster.swift and Sources/BaneySpacesCore/Hands/BackgroundInput.swift.
+  The license text is in LICENSES/cua-driver-MIT.txt and in the app at
+  Contents/Resources/licenses/cua-driver-MIT.txt.

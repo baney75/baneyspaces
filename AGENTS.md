@@ -21,6 +21,9 @@ A change is done when steps 1–3 pass on its branch and step 4 passes on `main`
    For the dock's own motion or the "+N" list/strip panel (`DockSide`, `DockMotion`, `WorkspaceDock.show/hide/syncSide`):
    `swift scripts/dock-motion-probe.swift` (no pointer; it shows the dock for about four seconds, so run it
    when Donovan has been idle 10 minutes; it needs `dockURLCommands` on and a tile with more than four apps).
+   For anything that posts keys or pointer events to agent windows (`BackgroundPoster`, `HandsRouter+Background`,
+   `BackgroundPlanner`): `swift scripts/agent-keys-probe.swift`, only when Donovan has been idle 10 minutes (it prints
+   "untested live" and exits 3 otherwise); it needs the build under test installed, so it runs on `main` right after merge.
    For anything that decides what each display shows (`Workspaces.shown`, `displays`, `carry`,
    `noteMovedAcrossDisplays`): `swift scripts/displays-probe.swift` with two displays (Sidecar counts).
 4. The gesture Donovan reported, done live on his Mac (the real keys, the real hold, the real

@@ -228,6 +228,28 @@ final class BackgroundScopeAtExecutionTests: XCTestCase {
     }
 }
 
+final class ProbeAppPolicyTests: XCTestCase {
+    func testTheProbeAppStartsOnlyFromItsOwnFolder() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("probe-policy-\(UUID().uuidString)")
+        let folder = root.appendingPathComponent("probe-apps"), other = root.appendingPathComponent("elsewhere")
+        for d in [folder, other] { try fm.createDirectory(at: d, withIntermediateDirectories: true) }
+        defer { try? fm.removeItem(at: root) }
+        let inside = folder.appendingPathComponent("CanvasProbe.app"), outside = other.appendingPathComponent("CanvasProbe.app")
+        let b = AgentAppPolicy.canvasProbeBundle
+        XCTAssertNil(AgentAppPolicy.refusal(app: "CanvasProbe", bundle: b, appURL: inside, probeApps: folder))
+        XCTAssertEqual(AgentAppPolicy.refusal(app: "CanvasProbe", bundle: b, appURL: outside, probeApps: folder)?.code, .needsSandbox, "another app claiming the id")
+        XCTAssertNotNil(AgentAppPolicy.refusal(app: "CanvasProbe", bundle: b), "no location, no start")
+        // A link out of the folder is followed.
+        let link = folder.appendingPathComponent("Link.app")
+        try fm.createSymbolicLink(at: link, withDestinationURL: outside)
+        XCTAssertNotNil(AgentAppPolicy.refusal(app: "Link", bundle: b, appURL: link, probeApps: folder))
+        // Nothing else gains from the folder.
+        XCTAssertNotNil(AgentAppPolicy.refusal(app: "Safari", bundle: "com.apple.Safari", appURL: inside, probeApps: folder))
+        XCTAssertTrue(AgentAppPolicy.needsSeparateInstance(bundle: b))
+    }
+}
+
 final class DeliveryProofTests: XCTestCase {
     let target: UInt32 = 77
     func el(_ value: String, window: UInt32? = 77, id: String = "AXTextArea|0,0,100,40", sel: (Int, Int)? = nil) -> ElementReading {

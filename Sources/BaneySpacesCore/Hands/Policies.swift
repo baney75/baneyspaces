@@ -12,8 +12,20 @@ public enum AgentAppPolicy {
     public static let documentRequired: Set<String> = ["com.apple.TextEdit", "com.apple.Preview"]
     // Finder is not on the list: it runs once per user and shows his folders, and agents use files directly.
 
+    /// BaneySpaces' own test app for the pointer probe (`scripts/agent-keys-probe.swift` builds it): a window that
+    /// draws where the mouse is dragged and reads no files. It is allowed only from BaneySpaces' own probe-apps
+    /// folder, so no other app can claim its bundle id and be started as an agent's.
+    public static let canvasProbeBundle = "com.baney.baneyspaces.canvasprobe"
+
     public static func allowed(bundle: String) -> Bool { separateInstance.contains(bundle) }
-    public static func needsSeparateInstance(bundle: String) -> Bool { separateInstance.contains(bundle) }
+    public static func needsSeparateInstance(bundle: String) -> Bool { separateInstance.contains(bundle) || bundle == canvasProbeBundle }
+
+    /// The probe app is allowed when the bundle id is its own and the app sits inside `probeApps`.
+    public static func isProbeApp(bundle: String, at appURL: URL?, in probeApps: URL?) -> Bool {
+        guard bundle == canvasProbeBundle, let appURL, let probeApps else { return false }
+        let app = appURL.standardizedFileURL.resolvingSymlinksInPath().path
+        return app.hasPrefix(probeApps.standardizedFileURL.resolvingSymlinksInPath().path + "/")
+    }
 
     static let kinds: [(prefixes: [String], why: String)] = [
         (["com.google.Chrome", "org.mozilla.firefox", "company.thebrowser.Browser", "com.brave.Browser", "com.microsoft.edgemac", "com.apple.Safari", "net.imput.helium", "org.chromium.Chromium", "com.operasoftware.Opera", "com.vivaldi.Vivaldi"],
@@ -27,8 +39,8 @@ public enum AgentAppPolicy {
     ]
 
     /// nil when the app may start; else `needs_sandbox`, saying why.
-    public static func refusal(app: String, bundle: String) -> HandsError? {
-        if allowed(bundle: bundle) { return nil }
+    public static func refusal(app: String, bundle: String, appURL: URL? = nil, probeApps: URL? = nil) -> HandsError? {
+        if allowed(bundle: bundle) || isProbeApp(bundle: bundle, at: appURL, in: probeApps) { return nil }
         let why = kinds.first { k in k.prefixes.contains { bundle == $0 || bundle.hasPrefix($0.hasSuffix(".") ? $0 : $0 + ".") } }?.why
             ?? "no one has checked that it starts a separate instance that restores nothing of Donovan's"
         return HandsError(.needsSandbox, "\(app): \(why)",
@@ -40,8 +52,8 @@ public enum AgentAppPolicy {
 /// `agent open`'s one gate, used by the router and by the deck's raw `open` (which other callers on the socket reach).
 public enum AgentOpenGate {
     /// The files to hand over (resolved), or why not.
-    public static func check(app: String, bundle: String, targets: [String], handoff: URL) -> Result<[String], HandsError> {
-        if let e = AgentAppPolicy.refusal(app: app, bundle: bundle) { return .failure(e) }
+    public static func check(app: String, bundle: String, targets: [String], handoff: URL, appURL: URL? = nil, probeApps: URL? = nil) -> Result<[String], HandsError> {
+        if let e = AgentAppPolicy.refusal(app: app, bundle: bundle, appURL: appURL, probeApps: probeApps) { return .failure(e) }
         var files: [String] = []
         for t in targets {
             if t.contains("://") {
