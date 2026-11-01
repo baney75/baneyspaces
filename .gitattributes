@@ -1,0 +1,4 @@
+# Files the Rust tests compare byte for byte with what the core generates: LF on every platform,
+# or the Windows CI checkout (autocrlf) turns them into CRLF and the comparison fails.
+spec/** text eol=lf
+platforms/linux/omarchy/*.lua text eol=lf
