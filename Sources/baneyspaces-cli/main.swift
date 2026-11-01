@@ -24,6 +24,8 @@ usage: \(me) <command>
                               read and act on apps on the agent workspace (or lent ones) without touching
                               your screen; each prints one JSON envelope (agent <command> with no
                               arguments shows its usage). `agent open` prints one too.
+  agent cursor on|off|theme <name>|status   each agent's cursor on the agent workspace (default, minimal, classic, omarchy)
+  agent shot --window ID --cursor   draw the agent's cursor into the capture (off by default)
   agent lend <app|pid> [--for 30m]   asks you, in a sheet in BaneySpaces, whether agents may use an app you have open
                               (only a real click on Lend lends it; running this lends nothing by itself)
   mcp                         the same commands as a stdio MCP server (claude mcp add baneyspaces -- baneyspaces mcp)

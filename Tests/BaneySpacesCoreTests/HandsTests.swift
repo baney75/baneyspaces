@@ -1005,7 +1005,7 @@ final class HandsSourceTests: XCTestCase {
         XCTAssertEqual(shot.components(separatedBy: "if outcome.isCancelled { return }").count - 1, 3, "a capture whose caller gave up is dropped")
         XCTAssertTrue(shot.contains("outcome.cancel()"))
         let router = try Self.code("Sources/BaneySpaces/Hands/HandsRouter.swift")
-        XCTAssertTrue(router.contains("WindowShot.capture(window: w.id, named: req.string(\"out\"), check: check(w))"))
+        XCTAssertTrue(router.contains("WindowShot.capture(window: w.id, named: req.string(\"out\"), cursor: req.bool(\"cursor\") ? host.cursorMark(w.id) : nil, check: check(w))"))
     }
 
     func testEveryWindowOfAnAgentProcessIsInspectedOnEveryUse() throws {

@@ -17,6 +17,8 @@ struct HandsHost {
     var agentOwned: () -> Set<Int32> = { [] }
     /// Asks Donovan, in a sheet, whether to lend an app; true only for a real click on "Lend".
     var askToLend: (_ app: String, _ minutes: Int, _ takeBack: Bool) -> Bool = { _, _, _ in false }
+    /// Where the agent cursor last acted in a window, for `agent shot --cursor`.
+    var cursorMark: (UInt32) -> CursorMark? = { _ in nil }
     /// The deck's `agent open <app> [files…]`.
     var open: ([String]) -> Wire.Reply = { _ in .init(ok: false, error: "not ready") }
 }
@@ -346,10 +348,16 @@ final class HandsRouter {
             var before: JSONValue?
             if !writes, kind != .toggle, case .success(let d) = read(w, interactive: false, compact: true, register: false) { before = d["tree"] }
             // Scope again, at the moment of dispatch: the window may have moved since resolving.
-            // Every action reports its target before dispatch; the point is measured only for a listener.
-            var point: CGPoint?
-            if HandsEvents.hasListener, case .ok(let b) = HandsEngine.shared.get(window: w, ref: ref, property: "bounds", check: check(w, ref: ref)) { point = HandsEvents.center(ofBounds: b["value"]) }
-            HandsEvents.willAct(HandsActionEvent(kind: name, ref: ref, window: w.id, pid: w.pid, app: w.app, point: point))
+            // Every action reports its target before dispatch. The target's frame is measured only when the agent cursor
+            // will draw it (it is on, and Donovan is looking at this window): an engine call, with a short budget of its own.
+            var frame: CGRect?
+            if HandsEvents.wantsFrame(scope: scope.reason, workspace: w.workspace),
+               case .ok(let b) = HandsEngine.shared.get(window: w, ref: ref, property: "bounds", budget: HandsEngine.Budget.bounds, check: check(w, ref: ref)) {
+                frame = HandsEvents.frame(ofBounds: b["value"])
+            }
+            let scrollDirection = kind == .scroll ? ["up", "down", "left", "right"][max(0, min(3, Int(direction)))] : nil
+            HandsEvents.willAct(HandsActionEvent(kind: name, ref: ref, window: w.id, pid: w.pid, app: w.app, point: frame.map { CGPoint(x: $0.midX, y: $0.midY) },
+                                                 frame: frame, session: req.session ?? "", scope: scope.reason, workspace: w.workspace, direction: scrollDirection))
             // The scope and ref checks run again on the process queue, at the moment the call executes.
             let reply = HandsEngine.shared.act(window: w, ref: ref, kind: kind, text: text, direction: direction, amount: amount, check: check(w, ref: ref))
             switch reply {
@@ -395,11 +403,11 @@ final class HandsRouter {
             if let e = gate(w) { return .failure(e) }
             let token = AgentActivity.shared.begin(pid: w.pid, window: w.id)
             defer { AgentActivity.shared.end(token) }
-            switch WindowShot.capture(window: w.id, named: req.string("out"), check: check(w)) {
+            switch WindowShot.capture(window: w.id, named: req.string("out"), cursor: req.bool("cursor") ? host.cursorMark(w.id) : nil, check: check(w)) {
             case .failure(let e): return .failure(e)
             case .success(let r):
                 return .success(.object([
-                    "path": .string(r.path), "width": .int(r.width), "height": .int(r.height),
+                    "path": .string(r.path), "width": .int(r.width), "height": .int(r.height), "cursor": .bool(r.cursorDrawn),
                     "evidence": .object(["kind": "capture_hash", "sha256": .string(r.sha256)]),
                     "target": targetJSON(w, scope),
                 ]))

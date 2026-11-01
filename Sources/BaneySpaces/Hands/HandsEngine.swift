@@ -41,7 +41,7 @@ final class HandsEngine {
     /// Seconds each kind of call may take before the caller gets `timeout`.
     /// How long an action waits for its target to become actionable before it gives up.
     static let actionableWait: TimeInterval = 5
-    enum Budget { static let snapshot: TimeInterval = 25, get: TimeInterval = 10, act: TimeInterval = 20 }
+    enum Budget { static let snapshot: TimeInterval = 25, get: TimeInterval = 10, act: TimeInterval = 20, bounds: TimeInterval = 1.5 }
 
     /// BaneySpaces' own folder for agents (handoff files, shots), readable by this user only.
     static var home: URL { Wire.supportDir.appendingPathComponent("hands", isDirectory: true) }
@@ -198,8 +198,8 @@ final class HandsEngine {
     }
 
     /// One property of a ref, read from the live element.
-    func get(window w: HandsWindow, ref: String, property: String, check: @escaping Check) -> Reply {
-        run(window: w, budget: Budget.get, mutating: false, check: check) { [self] cancelled in
+    func get(window w: HandsWindow, ref: String, property: String, budget: TimeInterval = Budget.get, check: @escaping Check) -> Reply {
+        run(window: w, budget: budget, mutating: false, check: check) { [self] cancelled in
             if let e = ready() { return .failed(e) }
             guard let adapter else { return .failed(HandsError(.engineError, "the engine isn't ready", suggestion: "Check `baneyspaces doctor`.", retry: .never)) }
             var out: UnsafeMutablePointer<CChar>?

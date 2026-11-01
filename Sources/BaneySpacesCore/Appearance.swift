@@ -1,7 +1,7 @@
 import Foundation
 
 /// A color as three 0...1 channels, so the look can be saved, compared and tested without AppKit.
-public struct RGB: Codable, Equatable, Hashable {
+public struct RGB: Codable, Equatable, Hashable, Sendable {
     public var r: Double
     public var g: Double
     public var b: Double

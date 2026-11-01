@@ -1,5 +1,6 @@
 import AppKit
 import BaneySpacesCore
+import BaneySpacesCursor
 import CryptoKit
 import ScreenCaptureKit
 
@@ -12,6 +13,8 @@ enum WindowShot {
         var width: Int
         var height: Int
         var sha256: String
+        /// Whether the agent cursor was drawn in (`--cursor`).
+        var cursorDrawn = false
     }
 
     static var folder: URL { HandsEngine.home.appendingPathComponent("shots", isDirectory: true) }
@@ -28,7 +31,7 @@ enum WindowShot {
         func get() -> Swift.Result<Result, HandsError>? { lock.lock(); defer { lock.unlock() }; return value }
     }
 
-    static func capture(window id: UInt32, named name: String?, check: @escaping () -> HandsError?) -> Swift.Result<Result, HandsError> {
+    static func capture(window id: UInt32, named name: String?, cursor: CursorMark? = nil, check: @escaping () -> HandsError?) -> Swift.Result<Result, HandsError> {
         if let name, !HandoffPath.isPlainFileName(name) {
             return .failure(HandsError(.badArguments, "out must be a file name, not a path", suggestion: "Pass just a name like `page.png`; shots are written in \(folder.path).", retry: .safe))
         }
@@ -39,11 +42,11 @@ enum WindowShot {
         guard #available(macOS 14, *) else {
             return .failure(HandsError(.notSupported, "window captures need macOS 14 or later", suggestion: "Use `baneyspaces agent snapshot` to read the window instead.", retry: .never))
         }
-        return captureWithKit(id, name, check)
+        return captureWithKit(id, name, cursor, check)
     }
 
     @available(macOS 14, *)
-    private static func captureWithKit(_ id: UInt32, _ name: String?, _ check: @escaping () -> HandsError?) -> Swift.Result<Result, HandsError> {
+    private static func captureWithKit(_ id: UInt32, _ name: String?, _ cursor: CursorMark?, _ check: @escaping () -> HandsError?) -> Swift.Result<Result, HandsError> {
         let outcome = Outcome()
         let done = DispatchSemaphore(value: 0)
         Task.detached {
@@ -65,7 +68,13 @@ enum WindowShot {
                 let image = try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(desktopIndependentWindow: w), configuration: cfg)
                 if outcome.isCancelled { return }
                 if let e = check() { return outcome.set(.failure(e)) }   // before the bytes are published
-                let rep = NSBitmapImageRep(cgImage: image)
+                // `--cursor`: the capture is of the window alone, so the overlay is never in it; the arrow is drawn in on request.
+                var picture = image, drawn = false
+                if let cursor, let frame = cursor.windowFrame,
+                   let with = ShotComposite.draw(cursor, onto: image, windowFrame: frame, scale: CGFloat(image.width) / max(1, w.frame.width)) {
+                    picture = with; drawn = true
+                }
+                let rep = NSBitmapImageRep(cgImage: picture)
                 guard let png = rep.representation(using: .png, properties: [:]) else {
                     return outcome.set(.failure(HandsError(.engineError, "the capture couldn't be encoded", suggestion: "Try again.", retry: .safe)))
                 }
@@ -79,7 +88,7 @@ enum WindowShot {
                 _ = try? FileManager.default.removeItem(at: file)
                 try FileManager.default.moveItem(at: tmp, to: file)
                 let hash = SHA256.hash(data: png).map { String(format: "%02x", $0) }.joined()
-                outcome.set(.success(Result(path: file.path, width: image.width, height: image.height, sha256: hash)))
+                outcome.set(.success(Result(path: file.path, width: picture.width, height: picture.height, sha256: hash, cursorDrawn: drawn)))
             } catch {
                 outcome.set(.failure(HandsError(.engineError, "the capture failed: \(error.localizedDescription)", suggestion: "Check Screen Recording access for BaneySpaces.", retry: .safe)))
             }
