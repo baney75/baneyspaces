@@ -1,0 +1,38 @@
+[package]
+name = "baneyspaces-windows"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "BaneySpaces for Windows: the `baneyspaces` CLI and `baneyspaces daemon`"
+
+[[bin]]
+name = "baneyspaces"
+path = "src/main.rs"
+
+[dependencies]
+baneyspaces-core = { path = "../../../crates/baneyspaces-core" }
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Dwm",
+  "Win32_Graphics_Gdi",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Com",
+  "Win32_System_Console",
+  "Win32_System_JobObjects",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Pipes",
+  "Win32_System_Threading",
+  "Win32_System_IO",
+  "Win32_System_SystemInformation",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_UI_Accessibility",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+] }
