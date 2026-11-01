@@ -2,21 +2,21 @@ import BaneySpacesCore
 import Darwin
 import Foundation
 
-// `baneyspaces`: the command line side of BaneySpaces' Deck engine, for you, for agents and for hooks.
+// `baneyspaces`: the command line side of BaneySpaces' the session engine, for you, for agents and for hooks.
 // Foundation only, no AppKit, so a hook costs a few milliseconds. Talks to the running app over
-// its socket. Also installed as `ghostdeck`, the Deck's old name.
+// its socket. Also installed as `ghostdeck`, the name of the Ghostdeck app BaneySpaces replaced.
 
 let me = (CommandLine.arguments.first as NSString?)?.lastPathComponent ?? "baneyspaces"
 
 let usage = """
 usage: \(me) <command>
 
-  ls [--json]                 everything the Deck wraps: terminals, agents, browser tabs
+  ls [--json]                 everything the session engine wraps: terminals, agents, browser tabs
   focus <id | words>          bring it forward (an ID from ls, or a fuzzy search)
   open <url>                  open in your default browser
   send <id | words> <text>    type text into a Ghostty terminal, as if pasted
   notify [message]            flag the terminal this runs in as needing you
-  state                       the Deck's live state as JSON
+  state                       the session engine's live state as JSON
   agent status|on [N]|off     the agent workspace: agents drive apps there while you work here
   agent open <app> [file…]    open an app (or files in it) there, without switching you
   agent run [--dir D] -- CMD  run a command (claude, grok…) in a Ghostty window there
@@ -198,7 +198,7 @@ case "mcp":
 case "agent" where HandsTools.userOnly.contains(rest.first ?? ""):
     HandsCLI.lendOrReturn(rest)
 
-// `--on HOST agent open …` is the deck's own op (the hands run on this Mac only): it falls through to the arm below.
+// `--on HOST agent open …` is the session engine's own op (the hands run on this Mac only): it falls through to the arm below.
 case "agent" where HandsTools.tool(verb: rest.first ?? "") != nil && !(remoteHost != nil && rest.first == "open"):
     HandsCLI.run(rest)
 
@@ -266,7 +266,7 @@ case "skill":
 
 case "doctor":
     let reply = Wire.call(Wire.Request(op: .ping), timeout: 1)
-    out("deck:   " + (reply?.ok == true ? "running (\(reply?.info?["version"] ?? "?"))" : "not running"))
+    out("app:    " + (reply?.ok == true ? "running (\(reply?.info?["version"] ?? "?"))" : "not running"))
     for (k, v) in (reply?.info ?? [:]).sorted(by: { $0.key < $1.key }) where k != "version" { out("  \(k): \(v)") }
     out("hooks:  " + Hooks.status())
     out("skill:  " + (FileManager.default.fileExists(atPath: Skill.dest.path) ? "installed at \(Skill.dest.path)" : "not installed (\(me) skill install)"))

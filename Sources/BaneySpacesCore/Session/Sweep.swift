@@ -1,6 +1,6 @@
 import Foundation
 
-/// Which scripted apps the Deck engine reads on its own. Each read is an AppleScript round trip
+/// Which scripted apps the session engine reads on its own. Each read is an AppleScript round trip
 /// that wakes the app too: Ghostty and the browser were read at least 24 times a minute with
 /// nothing happening (BaneySpaces averaged 0.7% CPU over a day, 2026-10-30). Accessibility already
 /// announces what's in front, and the launcher reads every app as it opens. The timer is only for

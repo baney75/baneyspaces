@@ -18,7 +18,7 @@ BIN=$(swift build -c release "${ARCHS[@]}" --show-bin-path)/BaneySpaces
 cp "$BIN" "$APP/Contents/MacOS/BaneySpaces"
 # swift build points a dev binary at engine/lib; the bundle finds its library in Contents/Frameworks.
 install_name_tool -delete_rpath "$PWD/engine/lib" "$APP/Contents/MacOS/BaneySpaces"
-# The Deck's command. It lives in Resources: the file system ignores case, so "baneyspaces" can't sit
+# The session engine's command. It lives in Resources: the file system ignores case, so "baneyspaces" can't sit
 # beside "BaneySpaces" in MacOS.
 cp "$(dirname "$BIN")/baneyspaces-cli" "$APP/Contents/Resources/bin/baneyspaces"
 cp skill/SKILL.md "$APP/Contents/Resources/skill/SKILL.md"

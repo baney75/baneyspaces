@@ -469,7 +469,7 @@ claude mcp add baneyspaces -- baneyspaces mcp   # the same tools over MCP, for C
 You, not an agent, lend an app from your workspaces. `baneyspaces agent lend Excel --for 20m` shows a sheet in BaneySpaces
 (Don't Lend is the default button) and only a real click on **Lend** lends it: a click posted by a program, or an
 accessibility press, is refused, and running the command (or an agent running it) lends nothing by itself. Nothing sent
-to the deck socket lends. Run the command again for an app that is lent and the sheet offers **Take Back**. A lend names
+to the BaneySpaces socket lends. Run the command again for an app that is lent and the sheet offers **Take Back**. A lend names
 that process and its windows as they are then, is refused while you use the app (`in_use`: in front, or used in the last 30
 seconds), ends after 30 minutes (up to 8 hours) or, if you gave `--session`, when that session ends, and is listed in
 `state.json` and `baneyspaces doctor`. Agents can't lend: the MCP server has no such tool and an agent's `lend` answers

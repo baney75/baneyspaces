@@ -8,7 +8,7 @@ window id, or a pid.
 | --- | --- | --- | --- |
 | `switch <n>` | yes | yes | yes |
 | `move <n> [--stay]` | yes | yes | yes |
-| `ls` | yes (Deck rows) | yes (windows by workspace) | yes |
+| `ls` | yes (session rows) | yes (windows by workspace) | yes |
 | `state` | yes (`state.json`) | yes (`state.json`) | yes |
 | `overview` | yes | records the request; the shell plugin shows it (part 2) | yes |
 | `agent on|off` | yes | not needed (the agent workspace always exists) | yes |

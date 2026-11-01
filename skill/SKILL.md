@@ -1,12 +1,12 @@
 ---
 name: baneyspaces
-description: See and drive what's open on Donovan's Mac through BaneySpaces - the Deck (every terminal split, browser tab and agent app in one list, with the workspace each is on) and the hands (`baneyspaces agent snapshot|click|type|…`, which read and act on desktop apps on the agent workspace without touching his screen). Use to find which terminal or tab holds something, open a URL, type into another Ghostty terminal, flag a terminal as needing him, or to operate a desktop app (TextEdit, Preview, Calculator) the way a person would. Faster and safer than screenshots or GUI clicks.
+description: See and drive what's open on Donovan's Mac through BaneySpaces - the session engine (every terminal split, browser tab and agent app in one list, with the workspace each is on) and the hands (`baneyspaces agent snapshot|click|type|…`, which read and act on desktop apps on the agent workspace without touching his screen). Use to find which terminal or tab holds something, open a URL, type into another Ghostty terminal, flag a terminal as needing him, or to operate a desktop app (TextEdit, Preview, Calculator) the way a person would. Faster and safer than screenshots or GUI clicks.
 ---
 
-# BaneySpaces Deck
+# BaneySpaces
 
-BaneySpaces is the workspace manager on Donovan's Mac. Its Deck wraps Donovan's terminals, browser and coding apps into one
-list. `baneyspaces` is its command (`ghostdeck` still works as an alias). It answers in milliseconds and never moves the pointer or
+BaneySpaces is the workspace manager on Donovan's Mac. It wraps Donovan's terminals, browser and coding apps into one
+list. `baneyspaces` is its command (`ghostdeck`, the old Ghostdeck app's name, still works as an alias). It answers in milliseconds and never moves the pointer or
 takes focus unless the command is meant to (`focus`).
 
 ## Look before you act
@@ -27,7 +27,7 @@ BaneySpaces workspace.
 | Want | Command |
 | --- | --- |
 | Bring something forward | `baneyspaces focus <id or words>` (fuzzy: `baneyspaces focus helium github`) |
-| Open a page | `baneyspaces open https://…` (default browser, stays in the deck) |
+| Open a page | `baneyspaces open https://…` (default browser, stays in the session engine) |
 | Type into another Ghostty terminal | `baneyspaces send <id or words> "text"` (pasted, no Return unless you include a newline) |
 | Tell Donovan this terminal needs him | `baneyspaces notify "Tests failed, need a decision"` |
 | Report your own state (non-Claude agents) | `baneyspaces event --state working\|waiting\|idle\|end --agent <name>` (add `--started` with `working` when a prompt was just submitted in the window in front; `--at <unix seconds>` says when it happened, default now) |

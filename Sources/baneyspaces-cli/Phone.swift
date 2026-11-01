@@ -3,7 +3,7 @@ import Darwin
 import Foundation
 
 /// `baneyspaces phone …`: phones for agents. Android runs through adb directly, so it works even
-/// with the Deck off; an iPhone is driven through its iPhone Mirroring window with `baneyspaces agent`.
+/// with the session engine off; an iPhone is driven through its iPhone Mirroring window with `baneyspaces agent`.
 enum PhoneCommand {
     static let usage = """
     usage: baneyspaces phone <command> [-s SERIAL]
@@ -98,7 +98,7 @@ enum PhoneCommand {
             for p in phones { print("\(p.id)\t\(p.label)\t\(p.detail)") }
             exit(0)
         }
-        // The Deck is off: ask adb itself.
+        // The session engine is off: ask adb itself.
         guard let adb else { fail("BaneySpaces isn't running and adb isn't installed") }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: adb)

@@ -1,7 +1,7 @@
 import Foundation
 
-/// What an app is to Ghostdeck. The role picks the kind of row; the adapter picks how deep
-/// Ghostdeck can see into it.
+/// What an app is to BaneySpaces. The role picks the kind of row; the adapter picks how deep
+/// BaneySpaces can see into it.
 public enum Role: String, Codable, Sendable, CaseIterable {
     case terminal, agent, browser, device, other
 
@@ -16,7 +16,7 @@ public enum Role: String, Codable, Sendable, CaseIterable {
     }
 }
 
-/// How Ghostdeck reads an app. Scripted adapters see tabs and splits; `.windows` sees only windows,
+/// How BaneySpaces reads an app. Scripted adapters see tabs and splits; `.windows` sees only windows,
 /// through Accessibility, and works for any app at all.
 public enum Adapter: String, Codable, Sendable {
     /// Ghostty's AppleScript dictionary (1.3+): windows, tabs, splits, folders.
@@ -42,8 +42,8 @@ public struct AppSpec: Equatable, Sendable, Codable {
     }
 }
 
-/// The apps Ghostdeck wraps without being told. Anything else can be added by bundle ID in
-/// `~/.config/ghostdeck/config.json`, and the default browser joins automatically.
+/// The apps BaneySpaces wraps without being told. Anything else can be added by bundle ID in
+/// `~/.config/baneyspaces/session.json`, and the default browser joins automatically.
 public enum Catalog {
     public static let known: [AppSpec] = [
         AppSpec(bundleID: "com.mitchellh.ghostty", name: "Ghostty", role: .terminal, adapter: .ghostty),
@@ -74,7 +74,7 @@ public enum Catalog {
         AppSpec(bundleID: "org.mozilla.firefox", name: "Firefox", role: .browser, adapter: .windows),
     ]
 
-    /// The apps to wrap: every terminal and agent app Ghostdeck knows, only the default browser
+    /// The apps to wrap: every terminal and agent app BaneySpaces knows, only the default browser
     /// (so a second installed browser doesn't crowd the list), then whatever the config adds.
     public static func wrapped(defaultBrowser: String?, extra: [AppSpec] = [], excluded: Set<String> = []) -> [AppSpec] {
         var out = known.filter { $0.role != .browser || $0.bundleID == defaultBrowser }
@@ -89,7 +89,7 @@ public enum Catalog {
     }
 }
 
-/// One thing the Deck lists: a terminal split, a browser tab, or a whole window.
+/// One thing the session engine lists: a terminal split, a browser tab, or a whole window.
 public struct Item: Identifiable, Equatable, Codable, Sendable {
     public enum Kind: String, Codable, Sendable { case terminal, tab, window, device }
 

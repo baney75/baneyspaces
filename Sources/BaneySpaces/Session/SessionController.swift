@@ -57,11 +57,13 @@ final class AgentOwned {
     }
 }
 
-/// The Deck: the engine behind every terminal split, browser tab and coding agent BaneySpaces
+/// The session engine: the engine behind every terminal split, browser tab and coding agent BaneySpaces
 /// knows about. It feeds the launcher's rows, the Workspace Dock's agent badges and the
 /// `baneyspaces` command, reads agent state from hooks, and toasts when an agent finishes while
 /// you're elsewhere. BaneySpaces' app delegate owns it and starts it once Accessibility is allowed.
-final class DeckController {
+final class SessionController {
+    /// Legacy keys from the removed sidebar (2026-10-30), cleared on every start.
+    static let legacySidebarKeys = ["deckPinned", "deckLayout", "deckEdgeOpens", "deckEnabled"]
     let engine = Engine()
     let server = Server()
     let phones = PhoneWatcher()
@@ -75,7 +77,7 @@ final class DeckController {
     lazy var toast = ToastPanel()
     /// ⌘⇧U, held only while a terminal is in front.
     let terminalKeys = ScopedHotkeys(signature: "BSTM")
-    /// Set by the app delegate: opens the launcher, where the Deck's rows are searched. ⌃⌘K calls it.
+    /// Set by the app delegate: opens the launcher, where the launcher's session rows are searched. ⌃⌘K calls it.
     var onSearch: () -> Void = {}
     /// The rows changed, so an open launcher can show them.
     var onItemsChange: () -> Void = {}
@@ -117,8 +119,8 @@ final class DeckController {
         return agents.sorted { rank($0) < rank($1) }
     }
 
-    /// The name and status the agent cursor wears for a hands session (its terminal): the Deck's row for that tty.
-    /// A session the Deck doesn't know (an MCP caller) is "Agent", working.
+    /// The name and status the agent cursor wears for a hands session (its terminal): the session engine's row for that tty.
+    /// A session the session engine doesn't know (an MCP caller) is "Agent", working.
     func cursorAgent(_ session: String) -> (name: String, status: DockAgent.State) {
         guard started, !session.isEmpty, let item = engine.items.first(where: { $0.tty == session }) else { return ("Agent", .working) }
         let name = item.agent.isEmpty ? item.appName : item.agent.prefix(1).uppercased() + item.agent.dropFirst()
@@ -127,7 +129,7 @@ final class DeckController {
     }
 
     /// Goes to an agent's own row: its tab or split selected, and a finished one marked seen.
-    /// False when the Deck no longer has it.
+    /// False when the session engine no longer has it.
     func focusAgent(_ id: String) -> Bool {
         guard started, let item = engine.item(id) else { return false }
         focus(item)
@@ -156,8 +158,7 @@ final class DeckController {
         server.start()
         remote.handle = { [weak self] in self?.handle($0) ?? Wire.Reply(ok: false) }
         if Self.remoteEnabled { startRemote() }
-        // The sidebar's settings, from before it was removed (2026-10-30).
-        for key in ["deckPinned", "deckLayout", "deckEdgeOpens", "deckEnabled"] { UserDefaults.standard.removeObject(forKey: key) }
+        for key in Self.legacySidebarKeys { UserDefaults.standard.removeObject(forKey: key) }
 
         let cmdShift = cmdKey | shiftKey
         if !keysAdded {
@@ -207,8 +208,8 @@ final class DeckController {
         writeState()
     }
 
-    /// What the Deck believes, for checks, agents and bug reports:
-    /// ~/Library/Application Support/BaneySpaces/deck.json.
+    /// What the session engine believes, for checks, agents and bug reports:
+    /// ~/Library/Application Support/BaneySpaces/session.json.
     func writeState() {
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -349,12 +350,12 @@ final class DeckController {
         let unseen = engine.attention.unseen
         let rows = q.isEmpty
             ? unseen.compactMap { engine.item($0) }
-            : DeckRank.rank(q, engine.items) { [$0.label, "\($0.appName) \($0.label)", $0.detail] }
+            : SessionRank.rank(q, engine.items) { [$0.label, "\($0.appName) \($0.label)", $0.detail] }
         return rows.map { item in
             let done = unseen.contains(item.id)
             var sub = [item.appName]
             if !item.notice.isEmpty { sub.append(item.notice) } else if !item.detail.isEmpty { sub.append(item.detail) }
-            return LauncherItem(id: "deck:" + item.id, section: done ? "Needs You" : "Terminals, Tabs and Agents",
+            return LauncherItem(id: "session:" + item.id, section: done ? "Needs You" : "Terminals, Tabs and Agents",
                                 title: item.label, subtitle: sub.joined(separator: " · "), icon: .file(Self.appPath(item.bundleID)),
                                 badge: done ? "Done" : item.activity == .working ? "Working" : "",
                                 workspaces: item.workspace > 0 ? [item.workspace] : [],
@@ -393,7 +394,7 @@ final class DeckController {
     }
 
     func handle(_ r: Wire.Request) -> Wire.Reply {
-        // Looks and the dock switch need no Accessibility, so they answer before the Deck has started.
+        // Looks and the dock switch need no Accessibility, so they answer before the session engine has started.
         if r.op == .setting { return setting(r) }
         guard started else { return .init(ok: false, error: "BaneySpaces hasn't finished starting (it needs Accessibility)") }
         switch r.op {
@@ -654,7 +655,7 @@ final class DeckController {
         let parent = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         let sub = NSMenu()
         for (id, label) in finishedRows() {
-            let i = NSMenuItem(title: label, action: #selector(DeckMenuTarget.focusRow(_:)), keyEquivalent: "")
+            let i = NSMenuItem(title: label, action: #selector(SessionMenuTarget.focusRow(_:)), keyEquivalent: "")
             i.representedObject = id
             i.target = menuTarget
             sub.addItem(i)
@@ -663,13 +664,13 @@ final class DeckController {
         return parent
     }
 
-    private lazy var menuTarget = DeckMenuTarget(owner: self)
+    private lazy var menuTarget = SessionMenuTarget(owner: self)
 }
 
-/// Menu items need an Objective-C target; this one forwards to the Deck.
-final class DeckMenuTarget: NSObject {
-    weak var owner: DeckController?
-    init(owner: DeckController) { self.owner = owner }
+/// Menu items need an Objective-C target; this one forwards to the session engine.
+final class SessionMenuTarget: NSObject {
+    weak var owner: SessionController?
+    init(owner: SessionController) { self.owner = owner }
     @objc func focusRow(_ item: NSMenuItem) {
         guard let id = item.representedObject as? String else { return }
         owner?.focusFinished(id)
@@ -693,7 +694,7 @@ final class ToastPanel: NSPanel {
         hasShadow = true
         hidesOnDeactivate = false
         title = "BaneySpaces Agent Notice"
-        setAccessibilityIdentifier("deck.toast")
+        setAccessibilityIdentifier("session.toast")
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         contentView = Self.chrome(text, radius: 12)
     }

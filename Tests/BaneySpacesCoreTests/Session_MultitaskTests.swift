@@ -1,11 +1,11 @@
 import XCTest
 @testable import BaneySpacesCore
 
-final class DeckRankTests: XCTestCase {
+final class SessionRankTests: XCTestCase {
     func testUsesTheLauncherMatcher() {
-        XCTAssertEqual(DeckRank.rank("hel", ["shell", "Helium"]) { [$0] }.first, "Helium")
-        XCTAssertEqual(DeckRank.rank("", ["b", "a"]) { [$0] }, ["b", "a"])
-        XCTAssertEqual(DeckRank.rank("zzz", ["b", "a"]) { [$0] }, [])
+        XCTAssertEqual(SessionRank.rank("hel", ["shell", "Helium"]) { [$0] }.first, "Helium")
+        XCTAssertEqual(SessionRank.rank("", ["b", "a"]) { [$0] }, ["b", "a"])
+        XCTAssertEqual(SessionRank.rank("zzz", ["b", "a"]) { [$0] }, [])
     }
 }
 
@@ -638,7 +638,7 @@ final class ClaudeDeskTests: XCTestCase {
 
     func testTheTileScriptFocusesEvenWhenEqualizeFailsAndTheCallerRecoversATimeout() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let scripts = try String(contentsOf: root.appendingPathComponent("Sources/BaneySpaces/Deck/Scripts.swift"), encoding: .utf8)
+        let scripts = try String(contentsOf: root.appendingPathComponent("Sources/BaneySpaces/Session/Scripts.swift"), encoding: .utf8)
         let tile = try XCTUnwrap(scripts.range(of: "on claudeTile").map { String(scripts[$0.lowerBound...]) })
         // `equalize_splits` and `focus` each sit in a try block of their own.
         let lines = tile.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
@@ -663,7 +663,7 @@ final class ClaudeDeskTests: XCTestCase {
         XCTAssertTrue(tile.contains("property tileToken") || scripts.contains("property tileToken"))
         XCTAssertEqual(tile.components(separatedBy: "set my tileStep to \"creating\"").count - 1, 3, "each of the three ways to open a pane")
         XCTAssertEqual(tile.components(separatedBy: "set my tileStep to \"done\"").count - 1, 3)
-        let controller = try String(contentsOf: root.appendingPathComponent("Sources/BaneySpaces/Deck/DeckController.swift"), encoding: .utf8)
+        let controller = try String(contentsOf: root.appendingPathComponent("Sources/BaneySpaces/Session/SessionController.swift"), encoding: .utf8)
         XCTAssertTrue(controller.contains("r.error == ClaudeDesk.timedOut"), "a timeout reads the front tab")
         XCTAssertFalse(controller.contains("windowCount"))
         XCTAssertTrue(controller.contains("ClaudeDesk.paneMayLand(progress:"), "recovery only when a pane may still land")

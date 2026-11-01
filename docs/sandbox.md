@@ -13,7 +13,7 @@ baneyspaces sandbox guest status       # ask the guest hands daemon (today: the 
 baneyspaces sandbox --local probe      # up, reset x3, down, timed; no app needed (scripts/sandbox-probe.swift)
 ```
 
-The commands go to the running app over the deck socket and are answered off the main thread, so a VM
+The commands go to the running app over the BaneySpaces socket and are answered off the main thread, so a VM
 booting never stalls the dock or the hotkeys. They are local only: `Remote.allows` refuses the sandbox
 from another machine. The sandbox is off until Settings > Agents turns it on.
 

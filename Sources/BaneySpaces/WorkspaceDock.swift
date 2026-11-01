@@ -1205,10 +1205,10 @@ final class DockModel: ObservableObject {
     var onLayoutChange: () -> Void = {}
     var menuOpen = false
     var onPick: (Int) -> Void = { _ in }
-    /// The Deck's agents that are working or finished unseen, on every workspace.
+    /// The session engine's agents that are working or finished unseen, on every workspace.
     var agents: () -> [DockAgent] = { [] }
     var onFocusApp: (pid_t, Int) -> Void = { _, _ in }
-    /// An agent's own tab or window, through the Deck, which also marks a finished one seen.
+    /// An agent's own tab or window, through the session engine, which also marks a finished one seen.
     var onFocusAgent: (DockAgent, Int) -> Void = { _, _ in }
     var onSendHere: (Int) -> Void = { _ in }
     var onMove: ([WindowID], Int) -> Void = { _, _ in }

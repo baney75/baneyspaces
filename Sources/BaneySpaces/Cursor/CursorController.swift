@@ -24,7 +24,7 @@ final class CursorController: ObservableObject {
 
     init() { settings = saved.applying(file) }
 
-    /// Called once the app and the Deck are up. `agent` is the Deck's name and status for an agent session.
+    /// Called once the app and the session engine are up. `agent` is the session engine's name and status for an agent session.
     func start(shown: @escaping () -> Set<Int>, agentWorkspace: @escaping () -> Int?,
                agent: @escaping (String) -> (name: String, status: DockAgent.State), windowFrame: @escaping (UInt32) -> CGRect?) {
         guard director == nil else { return }

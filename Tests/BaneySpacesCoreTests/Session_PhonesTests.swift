@@ -45,7 +45,7 @@ final class PhonesTests: XCTestCase {
         XCTAssertEqual(DeviceCtl.phones(Data("garbage".utf8)), [])
     }
 
-    /// Donovan's Deck on 2026-10-16: wayside1 sat on the same Wi-Fi with its tunnel idle and read
+    /// Donovan's Mac on 2026-10-16: wayside1 sat on the same Wi-Fi with its tunnel idle and read
     /// "not connected", though devicectl reached it in 3 s. The iPad was off the network.
     func testIdleWiFiTunnelIsReadyAndAnIPadIsAnIPad() {
         let json = #"""

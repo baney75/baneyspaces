@@ -16,7 +16,7 @@ public enum HandsErrorCode: String, Codable, CaseIterable, Sendable {
     /// An app name matched more than one running process; name a window or a pid.
     case ambiguous = "ambiguous"
     /// The app belongs to the user, not the agent workspace, and nobody has lent it. Lending is Donovan's
-    /// to do (the menu, the Deck, or a terminal he types in); an agent can only ask.
+    /// to do (the menu, the launcher, or a terminal he types in); an agent can only ask.
     case needsLend = "needs_lend"
     /// The app exists once per user and holds his data (Safari, Notes, Mail…): agent work on it belongs in
     /// the sandbox (phase 2), never on his Mac.

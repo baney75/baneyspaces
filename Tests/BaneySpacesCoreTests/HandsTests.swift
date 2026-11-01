@@ -702,15 +702,15 @@ final class FinalRoundSourceTests: XCTestCase {
         XCTAssertTrue(consent.contains("\"Keep Lent\""))
     }
 
-    func testRemoteOpenStillReachesTheDeckOp() throws {
+    func testRemoteOpenStillReachesTheSessionOp() throws {
         let main = try HandsSourceTests.code("Sources/baneyspaces-cli/main.swift")
         XCTAssertTrue(main.contains("!(remoteHost != nil && rest.first == \"open\")"))
         XCTAssertTrue(Remote.allows(Wire.Request(op: .agent, text: "open", args: ["TextEdit"])))
     }
 
     func testAgentOnRefusesAWorkspaceInUse() throws {
-        let deck = try HandsSourceTests.code("Sources/BaneySpaces/Deck/DeckController.swift")
-        let on = try XCTUnwrap(HandsSourceTests.between("let n = args.first.flatMap(Int.init)", "case \"off\":", in: deck))
+        let session = try HandsSourceTests.code("Sources/BaneySpaces/Session/SessionController.swift")
+        let on = try XCTUnwrap(HandsSourceTests.between("let n = args.first.flatMap(Int.init)", "case \"off\":", in: session))
         XCTAssertTrue(on.contains("h.occupied(n)"))
         XCTAssertTrue(on.range(of: "h.occupied(n)")!.lowerBound < on.range(of: "h.setWorkspace(n)")!.lowerBound)
     }
@@ -916,16 +916,16 @@ final class HandsSourceTests: XCTestCase {
     }
 
     func testTheSocketCannotLendAndLendingNeedsARealClick() throws {
-        let server = try Self.code("Sources/BaneySpaces/Deck/Server.swift")
+        let server = try Self.code("Sources/BaneySpaces/Session/Server.swift")
         let serve = try XCTUnwrap(Self.block(after: "private func serve(_ client: Int32)", in: server))
         let policy = try XCTUnwrap(serve.range(of: "SocketPolicy.refusal(for: req)"))
         let dispatch = try XCTUnwrap(serve.range(of: "handleHands(req)"))
         XCTAssertTrue(policy.lowerBound < dispatch.lowerBound, "screened before anything runs")
-        let deck = try Self.code("Sources/BaneySpaces/Deck/DeckController.swift")
-        XCTAssertFalse(deck.contains("case \"lend\":"), "no lend case on the socket")
-        XCTAssertFalse(deck.contains("case \"return\":"))
-        XCTAssertFalse(deck.contains("userLend") || deck.contains("userReturn"))
-        XCTAssertTrue(deck.contains("case \"lend-ask\":"))
+        let session = try Self.code("Sources/BaneySpaces/Session/SessionController.swift")
+        XCTAssertFalse(session.contains("case \"lend\":"), "no lend case on the socket")
+        XCTAssertFalse(session.contains("case \"return\":"))
+        XCTAssertFalse(session.contains("userLend") || session.contains("userReturn"))
+        XCTAssertTrue(session.contains("case \"lend-ask\":"))
         let router = try Self.code("Sources/BaneySpaces/Hands/HandsRouter.swift")
         let ask = try XCTUnwrap(Self.block(after: "func askToLend(", in: router))
         let sheet = try XCTUnwrap(ask.range(of: "host.askToLend(name, Int(seconds / 60), false)"))
@@ -945,18 +945,18 @@ final class HandsSourceTests: XCTestCase {
     }
 
     func testMovingAWindowToTheAgentWorkspaceNeedsAnAgentsOwnProcess() throws {
-        let deck = try Self.code("Sources/BaneySpaces/Deck/DeckController.swift")
-        let move = try XCTUnwrap(Self.between("case \"move\":", "default:\n            return .init(ok: false, error: \"usage", in: deck))
+        let session = try Self.code("Sources/BaneySpaces/Session/SessionController.swift")
+        let move = try XCTUnwrap(Self.between("case \"move\":", "default:\n            return .init(ok: false, error: \"usage", in: session))
         XCTAssertTrue(move.contains("SocketPolicy.mayMove(windowPid: h.pidOf(id), startedForAgents: AgentOwned.shared.pids)"))
         XCTAssertTrue(move.contains("needs_lend"))
         XCTAssertTrue(move.range(of: "mayMove")!.lowerBound < move.range(of: "h.move(id, n)")!.lowerBound)
-        XCTAssertTrue(deck.contains("AgentOwned.shared.add(app.processIdentifier)"))
-        XCTAssertTrue(deck.contains("AgentOwned.shared.add(pid)"), "agent run terminals count")
+        XCTAssertTrue(session.contains("AgentOwned.shared.add(app.processIdentifier)"))
+        XCTAssertTrue(session.contains("AgentOwned.shared.add(pid)"), "agent run terminals count")
     }
 
     func testHandsRequestsNeverRunOnTheMainThread() throws {
-        let deck = try Self.code("Sources/BaneySpaces/Deck/DeckController.swift")
-        let handle = try XCTUnwrap(Self.block(after: "func handle(_ r: Wire.Request)", in: deck))
+        let session = try Self.code("Sources/BaneySpaces/Session/SessionController.swift")
+        let handle = try XCTUnwrap(Self.block(after: "func handle(_ r: Wire.Request)", in: session))
         let hands = try XCTUnwrap(handle.range(of: "case .hands:"))
         XCTAssertFalse(handle[hands.upperBound...].prefix(200).contains("hands.handleWire"))
     }
@@ -982,7 +982,7 @@ final class HandsSourceTests: XCTestCase {
         XCTAssertTrue(engine.contains("done.wait(timeout: .now() + budget) == .timedOut"))
         XCTAssertTrue(engine.contains("queue(for: w.pid).async"))
         XCTAssertFalse(engine.contains("queue.sync"), "no single queue that one slow app can hold")
-        let server = try Self.code("Sources/BaneySpaces/Deck/Server.swift")
+        let server = try Self.code("Sources/BaneySpaces/Session/Server.swift")
         XCTAssertTrue(server.contains("req.op == .hands ? handleHands(req)"), "hands requests don't go through the main thread")
     }
 
@@ -1030,13 +1030,13 @@ final class HandsSourceTests: XCTestCase {
         XCTAssertTrue(dispatch.contains("HandsTools.userOnly.contains(req.verb)"))
         let cli = try Self.code("Sources/baneyspaces-cli/Agent.swift")
         let mcpCommand = try XCTUnwrap(Self.block(after: "enum MCPCommand", in: cli))
-        XCTAssertFalse(mcpCommand.contains("op: .agent"), "the MCP server sends no deck op: it can't lend or return")
+        XCTAssertFalse(mcpCommand.contains("op: .agent"), "the MCP server sends no session op: it can't lend or return")
     }
 
     func testKeepUsableNoLongerStartsWithCua() throws {
         let keys = try Self.code("Sources/BaneySpaces/Keys.swift")
         XCTAssertTrue(keys.contains("private static let initial: [String] = []"))
-        for f in ["Sources/BaneySpaces/Keys.swift", "Sources/BaneySpaces/AppDelegate.swift", "Sources/BaneySpaces/Spaces.swift", "Sources/BaneySpaces/Deck/DeckController.swift"] {
+        for f in ["Sources/BaneySpaces/Keys.swift", "Sources/BaneySpaces/AppDelegate.swift", "Sources/BaneySpaces/Spaces.swift", "Sources/BaneySpaces/Session/SessionController.swift"] {
             let text = try String(contentsOf: Self.root.appendingPathComponent(f), encoding: .utf8)
             XCTAssertFalse(text.lowercased().contains("cua-driver"), f)
         }
@@ -1057,7 +1057,7 @@ final class HandsSourceTests: XCTestCase {
 /// Regression (2026-10-31): `agent open TextEdit` left the app's launch window on the user's workspace.
 final class AgentOpenLaunchTests: XCTestCase {
     func testALaunchedAppsWindowsAreClaimedAtTheFirstSightingOfTheLaunch() throws {
-        let src = try HandsSourceTests.code("Sources/BaneySpaces/Deck/DeckController.swift")
+        let src = try HandsSourceTests.code("Sources/BaneySpaces/Session/SessionController.swift")
         let launch = try XCTUnwrap(HandsSourceTests.block(after: "func claimLaunch(", in: src))
         // Old behavior: only a New Window press 1.5 s later, so the app's own launch window stayed put.
         XCTAssertTrue(launch.contains("h.claim(app.processIdentifier, n, true, nil)"), "every window the launch opens is claimed")

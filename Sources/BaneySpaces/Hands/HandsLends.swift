@@ -3,7 +3,7 @@ import BaneySpacesCore
 
 /// The apps lent to agents right now, shared between the hands (which check scope against it) and
 /// Spaces (which parks a lent app's windows instead of hiding them, and writes state.json). Only
-/// Donovan lends: the menu, the Deck, or `baneyspaces agent lend` from a terminal he types in.
+/// Donovan lends: the menu, the launcher, or `baneyspaces agent lend` from a terminal he types in.
 final class HandsLends {
     static let shared = HandsLends()
     private let lock = NSLock()

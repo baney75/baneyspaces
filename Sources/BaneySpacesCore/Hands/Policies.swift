@@ -51,7 +51,7 @@ public enum AgentAppPolicy {
     }
 }
 
-/// `agent open`'s one gate, used by the router and by the deck's raw `open` (which other callers on the socket reach).
+/// `agent open`'s one gate, used by the router and by the session engine's raw `open` (which other callers on the socket reach).
 public enum AgentOpenGate {
     /// The files to hand over (resolved), or why not.
     public static func check(app: String, bundle: String, targets: [String], handoff: URL, appURL: URL? = nil, probeFolder: URL? = nil, probeTrusted: Bool = false) -> Result<[String], HandsError> {
@@ -187,7 +187,7 @@ public enum UserEventSource {
     }
 }
 
-/// What the deck socket refuses outright. Any process of this user can write to it, so the socket is not a place
+/// What the session socket refuses outright. Any process of this user can write to it, so the socket is not a place
 /// where Donovan's decisions can be made: lending and returning an app, and any grant of access, happen only
 /// through a consent sheet the app shows and a real click on it.
 public enum SocketPolicy {

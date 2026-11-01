@@ -11,10 +11,10 @@ not a public issue.
   press's code to spot those two and acts on nothing else. Keys are never recorded or stored.
 - **Keyboard shortcuts.** Setup's Free Them button changes macOS's own screenshot or desktop
   switching shortcuts, only when you click it.
-- **Automation (Apple Events).** The Deck reads Ghostty's, Terminal's, iTerm2's and Chromium
+- **Automation (Apple Events).** The session engine reads Ghostty's, Terminal's, iTerm2's and Chromium
   browsers' windows and tabs through AppleScript, and asks macOS for permission once per app.
   It types into a terminal only when you or an agent run `baneyspaces send`.
-- **A local socket.** `deck.sock` in `~/Library/Application Support/BaneySpaces` takes commands
+- **A local socket.** `baneyspaces.sock` in `~/Library/Application Support/BaneySpaces` takes commands
   from the `baneyspaces` tool and agent hooks. Any program running as you can use it, the same
   as any program running as you can already script your apps. Other users can't.
 - **Network.** No analytics and no account. The only request it makes on its own is the daily

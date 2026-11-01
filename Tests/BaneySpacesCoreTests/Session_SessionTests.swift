@@ -237,7 +237,7 @@ final class WireTests: XCTestCase {
 
     func testCallWithNoServerReturnsNilQuickly() {
         let start = Date()
-        XCTAssertNil(Wire.call(Wire.Request(op: .ping), timeout: 0.3, path: NSTemporaryDirectory() + "no-such-ghostdeck.sock"))
+        XCTAssertNil(Wire.call(Wire.Request(op: .ping), timeout: 0.3, path: NSTemporaryDirectory() + "no-such-ghostbaneyspaces.sock"))
         XCTAssertLessThan(Date().timeIntervalSince(start), 0.5)
     }
 }

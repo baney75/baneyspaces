@@ -6,7 +6,7 @@ import BaneySpacesCore
 /// arguments through an Apple event, so a click never pays for launching `osascript`.
 /// All of it runs on one serial queue, off the main thread; every `tell` carries a timeout.
 final class OSA {
-    static let queue = DispatchQueue(label: "deck.osa", qos: .userInitiated)
+    static let queue = DispatchQueue(label: "session.osa", qos: .userInitiated)
     /// `run`'s error when the script didn't compile, so nothing was sent.
     static let didNotCompile = 1
     private var compiled: NSAppleScript?
@@ -30,7 +30,7 @@ final class OSA {
             let s = NSAppleScript(source: source)
             var err: NSDictionary?
             guard s?.compileAndReturnError(&err) == true else {
-                NSLog("BaneySpaces deck: script didn't compile: %@", err ?? [:])
+                NSLog("BaneySpaces session: script didn't compile: %@", err ?? [:])
                 return (nil, Self.didNotCompile)
             }
             compiled = s
@@ -56,7 +56,7 @@ final class OSA {
 enum Automation {
     private static let lock = NSLock()
     private static var asked: Set<String> = []
-    private static let askQueue = DispatchQueue(label: "baneyspaces.deck.consent")
+    private static let askQueue = DispatchQueue(label: "baneyspaces.session.consent")
 
     /// A yes, remembered for a while: asking costs a round trip to the system on every read.
     private static var yes: [String: Date] = [:]
@@ -197,13 +197,13 @@ enum Scripts {
     }
 
     /// `claude-desk`'s tiling (~/.local/bin/claude-desk, which points back here), compiled once so
-    /// the Deck's New Claude button skips bash, osascript and the compile. A script of its own on a
+    /// the session engine's New Claude button skips bash, osascript and the compile. A script of its own on a
     /// queue of its own: Ghostty can take seconds to open a window, which mustn't hold up the rows,
     /// and a compile error here costs only the button, which then runs claude-desk.
     static func claudeDesk() -> OSA {
         OSA(header + """
 
-        -- claude-desk's tiling (~/.local/bin/claude-desk), compiled once here so the Deck's button
+        -- claude-desk's tiling (~/.local/bin/claude-desk), compiled once here so the session engine's button
         -- skips bash, osascript and the compile. `prior` is its state file: the Claude tab's ID,
         -- then the terminals it made there. Returns the new state.
         --   1st  a screen-filling window   2nd  split right   3rd  left pane down
@@ -379,7 +379,7 @@ enum Scripts {
         	set AppleScript's text item delimiters to ""
         	return s
         end joinLines
-        """, queue: DispatchQueue(label: "deck.osa.claude", qos: .userInitiated))
+        """, queue: DispatchQueue(label: "session.osa.claude", qos: .userInitiated))
     }
 
     static func chromium(_ bundle: String) -> OSA {

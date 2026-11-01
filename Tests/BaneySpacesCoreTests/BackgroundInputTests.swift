@@ -1030,8 +1030,8 @@ final class BackgroundPosterSourceTests: XCTestCase {
     }
 
     func testOwnershipComparesStartTimeSoAReusedPidFails() throws {
-        let deck = try HandsSourceTests.code("Sources/BaneySpaces/Deck/DeckController.swift")
-        let pids = try XCTUnwrap(HandsSourceTests.block(after: "var pids: Set<Int32>", in: deck))
+        let session = try HandsSourceTests.code("Sources/BaneySpaces/Session/SessionController.swift")
+        let pids = try XCTUnwrap(HandsSourceTests.block(after: "var pids: Set<Int32>", in: session))
         XCTAssertTrue(pids.contains("startedAt: Self.startTime($0)"))
         var set = AgentOwnedSet()
         set.add(10, startedAt: 1000)

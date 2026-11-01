@@ -6,8 +6,8 @@ public enum Wire {
     public static var supportDir: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/BaneySpaces")
     }
-    public static var socketPath: String { supportDir.appendingPathComponent("deck.sock").path }
-    public static var statePath: String { supportDir.appendingPathComponent("deck.json").path }
+    public static var socketPath: String { supportDir.appendingPathComponent("baneyspaces.sock").path }
+    public static var statePath: String { supportDir.appendingPathComponent("session.json").path }
 
     public struct Request: Codable, Equatable, Sendable {
         public enum Op: String, Codable, Sendable {

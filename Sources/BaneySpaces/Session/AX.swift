@@ -1,7 +1,7 @@
 import AppKit
 import ApplicationServices
 
-/// Deck additions to the Accessibility helpers in Windows.swift.
+/// Accessibility helpers for the session engine, added in Windows.swift.
 extension AXUIElement {
     var frame: CGRect? {
         guard let p: CGPoint = value(kAXPositionAttribute, .cgPoint), let s: CGSize = value(kAXSizeAttribute, .cgSize) else { return nil }

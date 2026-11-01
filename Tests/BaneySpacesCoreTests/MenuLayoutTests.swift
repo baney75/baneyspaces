@@ -49,7 +49,7 @@ final class MenuLayoutTests: XCTestCase {
         let text = try code("Sources/BaneySpaces/AppDelegate.swift")
         XCTAssertFalse(text.contains("\"Add ⇧ to send the front window there\""), "the ⇧ hint row is gone; setup teaches it")
         XCTAssertTrue(text.contains("MenuLayout.rows("), "the workspace rows come from MenuLayout")
-        for gone in ["optionsItem()", "channelItem()", "updateItem()", "parkedAppsItem()", "\"About BaneySpaces\"", "deck.menuItems()", "toolTip = updater"] {
+        for gone in ["optionsItem()", "channelItem()", "updateItem()", "parkedAppsItem()", "\"About BaneySpaces\"", "session.menuItems()", "toolTip = updater"] {
             XCTAssertFalse(text.contains(gone), "\(gone) moved into Settings (Donovan, 2026-10-31)")
         }
     }
@@ -91,9 +91,9 @@ final class MenuLayoutTests: XCTestCase {
     /// the number never counts something the menu won't show.
     func testTheCountBesideTheIconComesWithARowForThoseAgents() throws {
         let text = try code("Sources/BaneySpaces/AppDelegate.swift")
-        XCTAssertTrue(text.contains("deck.unseenCount"))
-        XCTAssertTrue(text.contains("finished: deck.started ? deck.unseenCount : 0"), "the menu row counts the same agents as the badge")
-        XCTAssertTrue(text.contains("deck.finishedMenuItem(title:"))
+        XCTAssertTrue(text.contains("session.unseenCount"))
+        XCTAssertTrue(text.contains("finished: session.started ? session.unseenCount : 0"), "the menu row counts the same agents as the badge")
+        XCTAssertTrue(text.contains("session.finishedMenuItem(title:"))
         XCTAssertFalse(text.contains("toolTip = updater"), "a tooltip is no notice of an update")
     }
 
@@ -116,9 +116,9 @@ final class MenuLayoutTests: XCTestCase {
         XCTAssertEqual(text.components(separatedBy: "NSMenuItem(").count - 1, 1, "only the item(_:_:key:) helper builds one")
         XCTAssertEqual(text.components(separatedBy: ".addItem(withTitle:").count - 1, 2, "only the not-started notices")
         XCTAssertEqual(text.components(separatedBy: "NSMenu()").count - 1, 1, "only the status item's own menu; no submenu built here")
-        // The one other place a menu row is built, the finished-agents submenu, is the Deck's.
-        let deck = try code("Sources/BaneySpaces/Deck/DeckController.swift")
-        XCTAssertEqual(deck.components(separatedBy: "NSMenuItem(").count - 1, 2, "the finished row and one item for each agent")
+        // The one other place a menu row is built, the finished-agents submenu, is the session engine's.
+        let session = try code("Sources/BaneySpaces/Session/SessionController.swift")
+        XCTAssertEqual(session.components(separatedBy: "NSMenuItem(").count - 1, 2, "the finished row and one item for each agent")
     }
 
     /// Review of #100: Settings' lists were read only on a tab change, a clicked row stayed, the
@@ -191,9 +191,9 @@ final class SettingsFollowUpTests: XCTestCase {
     }
 
     func testTheBadgeAndTheMenuCountOnlyAgentsTheListCanShow() throws {
-        let deck = try code("Sources/BaneySpaces/Deck/DeckController.swift")
-        XCTAssertTrue(deck.contains("var unseenCount: Int { finishedRows().count }"), "one count for the badge and the menu row")
-        XCTAssertTrue(deck.contains("engine.attention.unseen.compactMap { engine.item($0) }"), "an unseen agent with no row isn't listed")
+        let session = try code("Sources/BaneySpaces/Session/SessionController.swift")
+        XCTAssertTrue(session.contains("var unseenCount: Int { finishedRows().count }"), "one count for the badge and the menu row")
+        XCTAssertTrue(session.contains("engine.attention.unseen.compactMap { engine.item($0) }"), "an unseen agent with no row isn't listed")
     }
 
     func testTheKeyObserverIsKeptAndRemoved() throws {

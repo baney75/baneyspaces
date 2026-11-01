@@ -45,7 +45,7 @@ public struct DockAgent: Equatable, Sendable {
         /// Stopped on an error.
         case failed
 
-        /// What a Deck row shows on the dock: `unseen` is the Deck's "finished while you were
+        /// What a session row shows on the dock: `unseen` is the session engine's "finished while you were
         /// away", `notice` what the agent last said. Asking and failed stay while you're elsewhere,
         /// since they wait on you, and go once you've looked at the row (`AnsweredQuestions`) or
         /// the agent moves on; a plain finish goes once you've looked. Nil for none.
@@ -72,11 +72,11 @@ public struct DockAgent: Equatable, Sendable {
         public var needsYou: Bool { self != .working }
     }
 
-    /// The Deck row it runs in, so a click can go to its very tab or split.
+    /// The session row it runs in, so a click can go to its very tab or split.
     public let id: String
-    /// The macOS window it runs in, 0 when the Deck doesn't know it yet.
+    /// The macOS window it runs in, 0 when the session engine doesn't know it yet.
     public let window: WindowID
-    /// The Deck's workspace for it; 0 means the one you're on.
+    /// The session engine's workspace for it; 0 means the one you're on.
     public let workspace: Int
     public let state: State
     /// "Claude", or the app's name when no hook has named the agent.
@@ -106,7 +106,7 @@ public struct DockAgent: Equatable, Sendable {
 }
 
 extension DockTiles {
-    /// Each agent's workspace: the one holding its window, else the Deck's own (0 being the one
+    /// Each agent's workspace: the one holding its window, else the session engine's own (0 being the one
     /// you're on). `windows[n]` is every window on workspace `n`.
     public static func place(_ agents: [DockAgent], windows: [Int: [WindowID]], current: Int) -> [Int: [DockAgent]] {
         var home: [WindowID: Int] = [:]

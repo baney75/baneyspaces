@@ -1,7 +1,7 @@
 import BaneySpacesCore
 import Foundation
 
-/// `baneyspaces sandbox up|down|reset|status|view|guest|images`. Goes to the running app over the deck
+/// `baneyspaces sandbox up|down|reset|status|view|guest|images`. Goes to the running app over the session
 /// socket. `--local` runs the same code in this process with no app (headless only, no window), which
 /// is how `scripts/sandbox-probe.swift` runs: `--local probe` is up, reset x3 and down, timed.
 enum SandboxCommand {
