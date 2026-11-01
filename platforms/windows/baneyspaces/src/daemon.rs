@@ -531,10 +531,10 @@ impl Core {
             // Already open: exactly where it is. Agent windows (parked from a previous run) stay parked.
             let on_agent = self.is_agent_pid(info.pid) || self.hidden.get(hwnd).is_some_and(|h| h.agent);
             let workspace = if on_agent { None } else { monitor.as_deref().and_then(|m| self.model.current(m)).filter(|n| *n != 0).or(Some(1)) };
-            let _ = self.apply(Event::ObserveWindow { window: id, pid: info.pid, start: info.start, app: info.app, workspace });
+            let _ = self.apply(Event::ObserveWindow { window: id, pid: info.pid, start: info.start, app: info.app, workspace, role: Default::default() });
             return;
         }
-        let _ = self.apply(Event::Open { window: id.clone(), pid: info.pid, start: info.start, app: info.app, monitor, workspace: None });
+        let _ = self.apply(Event::Open { window: id.clone(), pid: info.pid, start: info.start, app: info.app, monitor, workspace: None, role: Default::default(), pin: None });
         if self.is_agent_pid(info.pid) && !matches!(self.model.home(&id), Some(Home::Agent)) {
             let _ = self.apply(Event::AgentSend { window: id });
         }
