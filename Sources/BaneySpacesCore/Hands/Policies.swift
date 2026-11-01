@@ -180,6 +180,10 @@ public enum SocketPolicy {
     public static let humanOnly: Set<String> = ["lend", "return", "grant"]
 
     public static func refusal(for r: Wire.Request) -> String? {
+        // The cursor is how Donovan sees agent activity: an agent may pick its look, but only he switches it off (Settings).
+        if r.op == .agent, r.text?.lowercased() == "cursor", r.args?.first?.lowercased() == "off" {
+            return "turning the agent cursor off is Donovan's to do, in BaneySpaces Settings; agents may change its theme: `baneyspaces agent cursor theme <name>`"
+        }
         if r.op == .sandbox, r.text?.lowercased() == "images" {
             return "deleting the sandbox's images (24 GB to download again) is Donovan's to do: Settings > Agents > Delete Images"
         }

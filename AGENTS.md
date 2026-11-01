@@ -21,6 +21,9 @@ A change is done when steps 1–3 pass on its branch and step 4 passes on `main`
    For the dock's own motion or the "+N" list/strip panel (`DockSide`, `DockMotion`, `WorkspaceDock.show/hide/syncSide`):
    `swift scripts/dock-motion-probe.swift` (no pointer; it shows the dock for about four seconds, so run it
    when Donovan has been idle 10 minutes; it needs `dockURLCommands` on and a tile with more than four apps).
+   For the agent cursor (`Sources/BaneySpacesCursor`, `CursorDirector`, `CursorVisibility`, `GlidePlan`):
+   `swift run -c release cursor-probe` (100 glides on the display, frame times, the real pointer; the cursor is visible
+   while it runs, so run it when Donovan has been idle 10 minutes; it refuses to start otherwise and fails if nothing drew).
    For anything that decides what each display shows (`Workspaces.shown`, `displays`, `carry`,
    `noteMovedAcrossDisplays`): `swift scripts/displays-probe.swift` with two displays (Sidecar counts).
    For anything under `Sources/BaneySpacesCore/Sandbox/`: `swift scripts/sandbox-probe.swift` (headless, no window; needs

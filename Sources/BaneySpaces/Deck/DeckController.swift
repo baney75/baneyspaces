@@ -117,6 +117,15 @@ final class DeckController {
         return agents.sorted { rank($0) < rank($1) }
     }
 
+    /// The name and status the agent cursor wears for a hands session (its terminal): the Deck's row for that tty.
+    /// A session the Deck doesn't know (an MCP caller) is "Agent", working.
+    func cursorAgent(_ session: String) -> (name: String, status: DockAgent.State) {
+        guard started, !session.isEmpty, let item = engine.items.first(where: { $0.tty == session }) else { return ("Agent", .working) }
+        let name = item.agent.isEmpty ? item.appName : item.agent.prefix(1).uppercased() + item.agent.dropFirst()
+        let state = DockAgent.State.of(activity: item.activity, unseen: engine.attention.unseen.contains(item.id), notice: item.notice)
+        return (name, state ?? .working)
+    }
+
     /// Goes to an agent's own row: its tab or split selected, and a finished one marked seen.
     /// False when the Deck no longer has it.
     func focusAgent(_ id: String) -> Bool {
@@ -570,6 +579,9 @@ final class DeckController {
                 NSWorkspace.shared.open(files, withApplicationAt: url, configuration: cfg) { app, _ in finished(app) }
             }
             return .init(ok: true, info: ["workspace": "\(n)", "app": appName, "note": "starting a separate copy; its window opens there in a moment"])
+        case "cursor":
+            // `agent cursor on|theme <name>|status`: the agent cursor's look (only Settings turns it off).
+            return CursorController.shared.command(args)
         case "lend-ask":
             // Not a grant: it shows Donovan a sheet in BaneySpaces and only a real click on it lends (see LendConsent).
             let target = args.first ?? ""
@@ -599,7 +611,7 @@ final class DeckController {
             h.move(id, n)
             return .init(ok: true, info: ["workspace": "\(n)", "moved": "window \(id)"])
         default:
-            return .init(ok: false, error: "usage: baneyspaces agent status|on [N]|off|open <app> [file…]|lend <app>|run [--dir D] -- <cmd>|move <row>")
+            return .init(ok: false, error: "usage: baneyspaces agent status|on [N]|off|open <app> [file…]|lend <app>|run [--dir D] -- <cmd>|move <row>|cursor on|theme <name>")
         }
     }
 

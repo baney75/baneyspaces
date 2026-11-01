@@ -422,6 +422,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         spaces.onChange = { [weak self] in
             self?.updateIcon()
             self?.dock.reload()
+            // The agent cursor hides the moment you leave the agent workspace.
+            CursorController.shared.environmentChanged()
         }
         // A new theme redraws the menu bar indicator as well as the panels.
         NotificationCenter.default.addObserver(forName: Appearance.didChange, object: nil, queue: .main) { [weak self] _ in
@@ -702,7 +704,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         deck.onUnseenChange = { [weak self] _ in self?.updateIcon(); self?.dock.reload() }
         var h = AgentHost()
         h.workspace = { Spaces.agentWorkspace }
-        h.setWorkspace = { [weak self] n in Spaces.agentWorkspace = n; self?.run { $0.reapply() } }
+        h.setWorkspace = { [weak self] n in Spaces.agentWorkspace = n; self?.run { $0.reapply() }; CursorController.shared.environmentChanged() }
         h.current = { [weak self] in self?.spaces.model.current ?? 1 }
         h.claim = { [weak self] pid, n, fresh, title in
             // A process the agent started gets the full 8 s; your running app only 3, so a claim
@@ -728,6 +730,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             agentOwned: { AgentOwned.shared.pids },
             askToLend: { app, minutes, takeBack in LendConsent.ask(app: app, minutes: minutes, takeBack: takeBack) },
             open: { [weak self] args in self?.deck.agent("open", args) ?? Wire.Reply(ok: false, error: "not ready") })
+        // The agent cursor: drawn on the agent workspace while you look at it, and over a lent app.
+        deck.hands.host.cursorMark = { CursorController.shared.mark(window: $0) }
+        CursorController.shared.start(shown: { [weak self] in self.map { Set($0.spaces.model.shown.values).union([$0.spaces.model.current]) } ?? [1] }, agentWorkspace: { Spaces.agentWorkspace },
+                                      agent: { [weak self] in self?.deck.cursorAgent($0) ?? ("Agent", .working) },
+                                      windowFrame: { WindowFrames.frame(of: $0) })
         HandsLends.shared.onChange = { [weak self] in
             DispatchQueue.main.async {
                 // A lent app is parked, not hidden, while it is lent: the workspace is applied again.

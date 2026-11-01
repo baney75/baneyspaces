@@ -64,6 +64,7 @@ final class Server {
         if let req = try? JSONDecoder().decode(Wire.Request.self, from: line) {
             // The socket is open to every process of this user: what only Donovan may decide is refused here.
             if let why = SocketPolicy.refusal(for: req) {
+                Trace.log("refused on the socket: \(req.op.rawValue) \(req.text ?? "") \((req.args ?? []).joined(separator: " "))")
                 reply = Wire.Reply(ok: false, error: why)
             } else {
                 if req.op == .sandbox {
