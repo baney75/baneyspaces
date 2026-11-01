@@ -100,6 +100,33 @@ final class SandboxSecurityTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: slot.path))
     }
 
+    func testAFailedReleaseTakesBackWhatItCopiedSoARetryAddsNoSecondCopies() throws {
+        let r = rig()
+        let paths = SandboxPaths(root: r.dir)
+        let rest = try SandboxHandoff.folder(for: "t1", paths: paths)
+        try Data("yours".utf8).write(to: rest.appendingPathComponent("mine.txt"))
+        let slot = try SandboxHandoff.makeSlot(vm: "bsx-w-x", paths: paths)
+        try SandboxHandoff.bind(task: "t1", slot: slot, paths: paths)   // mine.txt moves into the slot
+        let fm = FileManager.default
+        for d in ["a", "b"] {
+            try fm.createDirectory(at: slot.appendingPathComponent(d), withIntermediateDirectories: false)
+            for i in 0..<5 { try Data(count: 100).write(to: slot.appendingPathComponent("\(d)/f\(i).bin")) }
+        }
+        try fm.createSymbolicLink(at: slot.appendingPathComponent("link"), withDestinationURL: r.dir)
+        // 1,005 bytes against a 550-byte limit: at least five files copy before it fails, in any walk order
+        for _ in 0..<3 {
+            let failed = SandboxHandoff.release(slot: slot, paths: paths, limitBytes: 550)
+            XCTAssertFalse(failed.complete)
+            XCTAssertEqual(names(rest), [], "a failed attempt leaves nothing in the task folder")
+            XCTAssertEqual(SandboxHandoff.pending(paths: paths)["bsx-w-x"], "t1")
+        }
+        let done = SandboxHandoff.release(slot: slot, paths: paths)
+        XCTAssertTrue(done.complete, done.failure ?? "")
+        XCTAssertEqual(done.copied, 11)
+        XCTAssertEqual(names(rest), ["SANDBOX-SKIPPED.txt", "a", "b", "mine.txt"], "one copy each, under its own name")
+        for d in ["a", "b"] { XCTAssertEqual(names(rest.appendingPathComponent(d)), (0..<5).map { "f\($0).bin" }) }
+    }
+
     func testAGuestThatWontDieKeepsItsFilesAndItsSlot() throws {
         let r = rig()
         let rest = try SandboxHandoff.folder(for: "t1", paths: SandboxPaths(root: r.dir))
@@ -257,6 +284,32 @@ final class SandboxSecurityTests: XCTestCase {
         XCTAssertTrue(r.manager.snapshot().lastError?.contains("handoff_full") == true)
         XCTAssertTrue(r.tart.ours().filter { !$0.hasPrefix("bsx-s-") }.isEmpty)
         _ = rest
+    }
+
+    func testAFolderTooDeepToMeasureCountsAsOverTheQuota() throws {
+        let r = rig()
+        let slot = try SandboxHandoff.makeSlot(vm: "bsx-w-x", paths: SandboxPaths(root: r.dir))
+        try Data(count: 100).write(to: slot.appendingPathComponent("top.bin"))
+        XCTAssertEqual(SandboxHandoff.size(of: slot), 100)
+        var deep = slot
+        for _ in 0...SandboxHandoff.maxDepth { deep.appendPathComponent("d") }
+        try FileManager.default.createDirectory(at: deep, withIntermediateDirectories: true)
+        try Data(count: 3 << 20).write(to: deep.appendingPathComponent("hidden.bin"))
+        XCTAssertNil(SandboxHandoff.size(of: slot), "a walk that couldn't reach everything says so, not a smaller number")
+    }
+
+    func testAGuestWhoseHandoffFolderCannotBeMeasuredIsStopped() throws {
+        let r = rig()
+        _ = try r.manager.up(task: "t1")
+        var deep = slotPath(r, r.manager.snapshot().vm!)
+        for _ in 0...SandboxHandoff.maxDepth { deep.appendPathComponent("d") }
+        try FileManager.default.createDirectory(at: deep, withIntermediateDirectories: true)
+        try Data(count: 3 << 20).write(to: deep.appendingPathComponent("hidden.bin"))
+        r.manager.handoffLimit = { 1 << 20 }
+        r.manager.tick()
+        XCTAssertNil(r.manager.snapshot().vm)
+        XCTAssertTrue(r.manager.snapshot().lastError?.contains("could not be measured") == true, r.manager.snapshot().lastError ?? "")
+        XCTAssertTrue(r.tart.ours().filter { !$0.hasPrefix("bsx-s-") }.isEmpty)
     }
 }
 

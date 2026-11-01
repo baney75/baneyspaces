@@ -190,11 +190,15 @@ public final class SandboxManager {
     /// is given up again, so nothing else (the probe) is kept out while the app merely runs.
     public func startupCleanup(keepOwnership: Bool = true) throws {
         try ensureOwner()
-        if !keepOwnership {
-            ownerLock.lock(); defer { ownerLock.unlock() }
-            state.lock(); let busy = working != nil || warmName != nil; state.unlock()
-            if !busy, owned { owned = false; flock(lockFD, LOCK_UN); close(lockFD); lockFD = -1 }
-        }
+        if !keepOwnership { giveUpOwnership() }
+    }
+
+    /// Gives the Mac-wide lock back while no guest runs or builds, so another manager (the probe) can own the
+    /// sandbox; the next command here takes it again.
+    private func giveUpOwnership() {
+        ownerLock.lock(); defer { ownerLock.unlock() }
+        state.lock(); let busy = working != nil || warmName != nil; state.unlock()
+        if !busy, owned { owned = false; flock(lockFD, LOCK_UN); close(lockFD); lockFD = -1 }
     }
 
     /// Files whose guest is gone but not yet given back (slot name -> task), without any slot a live VM holds.
@@ -778,13 +782,17 @@ public final class SandboxManager {
         // A guest that fills its handoff folder fills the host's disk: past the cap it is stopped.
         if let w = currentWorking() {
             let limit = handoffLimit()
-            if SandboxHandoff.size(of: w.slot, stopAfter: limit) > limit {
+            let used = SandboxHandoff.size(of: w.slot, stopAfter: limit)
+            if (used ?? .max) > limit {
                 destroyWorking()
-                fail("handoff_full: the guest wrote more than \(limit >> 20) MB into its handoff folder; the sandbox was stopped and what fits is in the task folder")
+                fail(used == nil
+                     ? "handoff_full: the guest's handoff folder could not be measured (nested too deep, too many entries, or unreadable); the sandbox was stopped"
+                     : "handoff_full: the guest wrote more than \(limit >> 20) MB into its handoff folder; the sandbox was stopped and what fits is in the task folder")
                 set(.error)
             }
         }
-        if !snapshot().pendingDeletes.isEmpty || !pendingRestoresLocked().isEmpty { _ = retryPending() }
+        // Without the lock another manager may be giving back its own slots: only the owner retries.
+        if isOwner, !snapshot().pendingDeletes.isEmpty || !pendingRestoresLocked().isEmpty { _ = retryPending() }
         state.lock()
         let hold = warmState == .ready && warmLocation == .memory
         let last = lastActivity, running = warmProc?.isRunning ?? false
@@ -821,17 +829,22 @@ public final class SandboxManager {
         _ = done.wait(timeout: .now() + deadline)
     }
 
-    /// Settings turned the sandbox off: everything of it goes (VMs, warm clone), files back in their folders.
+    /// Settings turned the sandbox off: everything of it goes (VMs, warm clone), files back in their folders. Once
+    /// every VM is verified gone the lock is given back, so the probe isn't kept out while the app merely runs.
     public func stopAll() {
         op.lock(); defer { op.unlock() }
-        teardown()
+        if teardown() { giveUpOwnership() }
     }
 
-    private func teardown() {
+    /// True when this manager owned the sandbox and every one of its VMs is verified gone.
+    @discardableResult
+    private func teardown() -> Bool {
         destroyWorking()
         dropWarm()
-        if isOwner, tart.deleteAllOurs() { recoverSlots() }
+        let gone = isOwner && tart.deleteAllOurs()
+        if gone { state.lock(); pendingDeletes = []; state.unlock(); recoverSlots() } // every `bsx-*` VM is verified gone
         set(.stopped)
+        return gone
     }
 
     /// Settings > Agents > Delete images: the VMs and the pulled base image. Refuses while the sandbox is up.
