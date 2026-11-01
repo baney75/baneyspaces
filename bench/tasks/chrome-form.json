@@ -11,12 +11,9 @@
       ],
       "not_running": [
         "Google Chrome"
-      ],
-      "env": [
-        "BENCH_AGENT_BROWSER_PROFILE"
-      ],
-      "env_why": "an agent browser profile (--user-data-dir) ships in phase 3; a URL handed to a running browser would land in Donovan's session"
+      ]
     },
+    "profile": "user-data-dir",
     "settle_s": 3.0,
     "open": [
       {

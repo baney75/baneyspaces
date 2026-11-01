@@ -17,13 +17,17 @@
 // the tools under test do. `input` lines carry {real: n, posted: {pid: n}}. Needs Input Monitoring; when
 // the tap cannot be created `tap` is false in the start line and the harness falls back to HID idle time.
 //
+// A tap the system disables is switched back on and reported (`tap_disabled`: a lost monitor). HID activity that
+// no tap event explains is reported as `hid` with real: true.
+//
 // Session: `session` lines say whether the screen is locked, the display asleep, the session off the
-// console, or loginwindow in front.
+// console, loginwindow in front, or secure keyboard input on (keystrokes then never reach the tap).
 //
 // It prints a "beat" on EVERY sample (the harness treats 200 ms without one, or the process exiting, as a
 // lost monitor), one JSON line when anything above changes, and a "hid" line while HID idle < 5 s.
 // Read-only: it posts no events.
 import AppKit
+import Carbon.HIToolbox
 import CoreGraphics
 import Foundation
 
@@ -138,16 +142,29 @@ func sessionState(front: String) -> [String: Any] {
     return ["locked": (d["CGSSessionScreenIsLocked"] as? Bool) ?? false,
             "console": (d["kCGSSessionOnConsoleKey"] as? Bool) ?? true,
             "asleep": CGDisplayIsAsleep(CGMainDisplayID()) != 0,
-            "loginwindow": front == "com.apple.loginwindow"]
+            "loginwindow": front == "com.apple.loginwindow",
+            // secure keyboard input (a password field, Terminal's Secure Keyboard Entry): keystrokes then never
+            // reach an event tap, so the user may be typing unseen. The harness treats it as the user being here.
+            "secure_input": IsSecureEventInputEnabled()]
 }
 
 // ---- input tap: real hardware (source pid 0) versus programs posting events
 var realInputs = 0
 var postedInputs: [Int: Int] = [:]
+var lastPostedAt = 0.0
 var tapOK = false
-let tapCallback: CGEventTapCallBack = { _, _, event, _ in
+var tapPort: CFMachPort? = nil
+var tapDisabled = false
+let tapCallback: CGEventTapCallBack = { _, type, event, _ in
+    // The system turns a tap off when its callback is slow or on certain user input: switch it back on and
+    // tell the harness, which treats it as a lost monitor (real input can no longer be seen).
+    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+        tapDisabled = true
+        if let p = tapPort { CGEvent.tapEnable(tap: p, enable: true) }
+        return Unmanaged.passUnretained(event)
+    }
     let pid = Int(event.getIntegerValueField(.eventSourceUnixProcessID))
-    if pid == 0 { realInputs += 1 } else { postedInputs[pid, default: 0] += 1 }
+    if pid == 0 { realInputs += 1 } else { postedInputs[pid, default: 0] += 1; lastPostedAt = Date().timeIntervalSince1970 }
     return Unmanaged.passUnretained(event)
 }
 func installTap() {
@@ -160,6 +177,7 @@ func installTap() {
     let src = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
     CFRunLoopAddSource(CFRunLoopGetMain(), src, .commonModes)
     CGEvent.tapEnable(tap: tap, enable: true)
+    tapPort = tap
     tapOK = true
 }
 installTap()
@@ -225,14 +243,21 @@ func tick() {
         last = cur
     }
 
-    if realInputs > 0 || !postedInputs.isEmpty {
+    let tapSawInput = realInputs > 0 || !postedInputs.isEmpty
+    if tapSawInput {
         let posted = Dictionary(uniqueKeysWithValues: postedInputs.map { (String($0.key), $0.value) })
         emit(["event": "input", "t": now, "real": realInputs, "posted": posted])
         realInputs = 0; postedInputs = [:]
     }
+    if tapDisabled { emit(["event": "tap_disabled", "t": now]); tapDisabled = false }
     let idle = idleSeconds()
-    if !tapOK, idle < 5, (!hidLow || idle < prevIdle - 0.001) {
+    let freshHID = idle < 5 && (!hidLow || idle < prevIdle - 0.001)
+    if !tapOK, freshHID {
         emit(["event": "hid", "t": now, "idle": idle])
+    } else if tapOK, freshHID, !tapSawInput, now - lastPostedAt > 1.0 {
+        // HID activity no event the tap saw can explain (nothing posted by a program just now): someone typed
+        // under secure input, or the tap missed it. Real.
+        emit(["event": "hid", "t": now, "idle": idle, "real": true])
     }
     hidLow = idle < 5
     prevIdle = idle

@@ -192,6 +192,38 @@ class Opener:
                 found[int(parts[0])] = (parts[1], parts[2])
         return found
 
+    PROFILE_FLAG = "--user-data-dir"
+
+    def supports_profile(self):
+        """Does this build's `agent open` take --user-data-dir? Read from its usage text (a call with no app
+        is refused before it does anything)."""
+        if getattr(self, "_profile_ok", None) is None:
+            _, out, err, _ = self.exec([self.bin, "agent", "open"], timeout=15)
+            self._profile_ok = self.PROFILE_FLAG in (out + err)
+        return self._profile_ok
+
+    def pid_of(self, wid):
+        _, out, _, _ = self.exec([self.bin, "agent", "windows"], timeout=15)
+        env = parse_envelope(out)
+        if env and env[0] and isinstance(env[1], dict):
+            for w in env[1].get("windows", []):
+                if w.get("id") == wid:
+                    return w.get("pid")
+        return None
+
+    def open_isolated(self, app, targets, profile_dir):
+        """Open `app` with a fresh profile under `profile_dir` and verify it: the window's process must really have
+        --user-data-dir=<profile_dir> in its arguments. -> (window id or None, ms, verified)."""
+        wid, ms = self.open(app, [self.PROFILE_FLAG, profile_dir, *targets])
+        if wid is None:
+            return None, ms, False
+        pid = self.pid_of(wid)
+        if not pid:
+            return wid, ms, False
+        _, out, _, _ = self.exec(["ps", "-o", "command=", "-p", str(pid)], timeout=10)
+        ok = f"{self.PROFILE_FLAG}={profile_dir}" in out or f"{self.PROFILE_FLAG} {profile_dir}" in out
+        return wid, ms, ok
+
     def open(self, app, targets=()):
         """Open `app` (with `targets`) on the agent workspace; return (window id or None, ms)."""
         before = set(self.windows())

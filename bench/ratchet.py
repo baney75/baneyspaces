@@ -32,6 +32,7 @@ sys.path.insert(0, HERE)
 from benchlib import compare, report, scoring  # noqa: E402
 
 LEVELS = ("scripted", "agent", "micro")
+COVERAGE_MIN = 0.5      # a run must complete at least this share of the baseline's scored tasks
 
 
 def baseline_path(directory, level):
@@ -67,8 +68,11 @@ def check(results_dir, baseline_dir, others=True):
         elif level == "micro":
             problems += [f"{level} vs baseline: {p}" for p in compare.latency_vs_baseline(mine.get("micro"), base)]
         else:
-            if not compare.common_ids(mine["tasks"], base.get("tasks", {})):
-                notes.append(f"{level}: no task in common with the baseline")
+            common = compare.common_ids(mine["tasks"], base.get("tasks", {}))
+            scored_base = [t for t, b in base.get("tasks", {}).items() if b["status"] in scoring.SCORED]
+            if scored_base and len(common) < COVERAGE_MIN * len(scored_base):
+                problems.append(f"{level}: the run completed only {len(common)} of the baseline's {len(scored_base)} scored tasks "
+                                f"(need {COVERAGE_MIN:.0%}): too much was unavailable, errored or skipped to say nothing regressed")
             problems += [f"{level} vs baseline: {p}" for p in compare.vs_baseline(mine["tasks"], base.get("tasks", {}))]
         if level == "micro" or not others:
             continue
@@ -92,6 +96,12 @@ def update(results_dir, baseline_dir):
             continue
         if not mine.get("full") or mine.get("aborted") or mine.get("only"):
             refused.append(f"{level}: not a full run ({mine.get('aborted') or 'partial'})")
+            continue
+        if level != "micro" and not any(t["status"] in scoring.SCORED for t in mine["tasks"]):
+            refused.append(f"{level}: the run scored no task at all")
+            continue
+        if level == "micro" and (mine.get("micro") or {}).get("status") != "ok":
+            refused.append(f"{level}: the micro measurement is not valid")
             continue
         old = load_baseline(baseline_dir, level)
         if level == "micro":

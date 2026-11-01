@@ -79,3 +79,14 @@ def run_micro(driver, text_wid, calc_wid, noop_ms, reps=REPS):
         if not r.ok:
             errors.append(f"click: {r.code}")
     return summarize_latency(samples), errors
+
+
+def invalid(latency, errors, reps=REPS):
+    """-> list of reasons a micro measurement cannot be a result: any failed action or failed read-back
+    validation, or fewer than `reps` samples for an action."""
+    problems = list(errors)
+    for action in ACTIONS:
+        n = (latency.get(action) or {}).get("n", 0)
+        if n < reps:
+            problems.append(f"{action}: {n} of {reps} samples")
+    return problems

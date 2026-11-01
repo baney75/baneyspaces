@@ -19,7 +19,7 @@ LEVEL_TITLE = {
 }
 STATUS_MARK = {"pass": "pass", "refused_ok": "refused ok", "fail": "FAIL", "infra_error": "infra error",
                "monitor_lost": "monitor lost", "unavailable": "n/a", "not_run": "not run"}
-FILE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})(?:-(\d{6})(?:-\d+)?)?-(baneyspaces|agent-desktop-headed|agent-desktop|chatgpt)(-scripted|-micro)?\.json$")
+FILE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})(?:-(\d{6})(?:-(\d+))?)?-(baneyspaces|agent-desktop-headed|agent-desktop|chatgpt)(-scripted|-micro)?\.json$")
 
 
 def result_name(tool, level, date, hms):
@@ -43,15 +43,20 @@ def write_result(directory, result):
             path = os.path.join(directory, base.replace(f"-{hms}-", f"-{hms}-{n}-", 1))
 
 
+def sort_key(name):
+    """(date, time, collision number) parsed from the file name, so '-2' files sort after their original."""
+    m = FILE_RE.match(name)
+    date, hms, n = m.group(1), m.group(2) or "000000", m.group(3)
+    return (date, hms, int(n) if n else 0)
+
+
 def all_results(directory):
-    """[(path, result)] sorted oldest to newest by file name (date, time)."""
+    """[(path, result)] sorted oldest to newest by (date, time, collision number), never by raw file name."""
+    names = [os.path.basename(p) for p in glob.glob(os.path.join(directory, "*.json"))]
     out = []
-    for path in sorted(glob.glob(os.path.join(directory, "*.json"))):
-        m = FILE_RE.match(os.path.basename(path))
-        if not m:
-            continue
-        with open(path, encoding="utf-8") as fh:
-            out.append((path, json.load(fh)))
+    for name in sorted((n for n in names if FILE_RE.match(n)), key=lambda n: (sort_key(n), n)):
+        with open(os.path.join(directory, name), encoding="utf-8") as fh:
+            out.append((os.path.join(directory, name), json.load(fh)))
     return out
 
 
@@ -149,7 +154,7 @@ def write_latest(directory, versions=None, today=None):
         out.append("")
     out += ["## Not in this table", "",
             "- Cua's driver is removed from the fleet. A Cua column is only meaningful inside the sandbox (phase 2) and is pending.",
-            "- Tasks marked `place: sandbox` (Notes, Safari, Firefox) are `n/a` until the sandbox exists; they run for every tool in the same place or not at all.",
+            "- Tasks marked `place: sandbox` (Notes, Safari, Firefox) are `n/a` until the sandbox exists; they run for every tool in the same place or not at all. ChatGPT computer use runs only inside the sandbox, so its column is `n/a` for every task until then.",
             "- A column marked `n/a` or `not run` was not measured (reason in its JSON file); it is not a pass.",
             "- `infra error` and `monitor lost` tasks are excluded from every score and never charged to a tool.",
             "- `expected` failures are features the design schedules for later phases; they count as failures here.",

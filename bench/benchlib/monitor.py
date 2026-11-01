@@ -19,7 +19,9 @@ the monitor reports `tap_ok = False` and the harness skips the tools that post i
 
 Integrity: the sampler prints a beat on every sample. No beat for 200 ms, a beat reporting a longer gap,
 or the process exiting is LOST: the run aborts and a task that ran then is `monitor_lost`.
-Session: the sampler reports whether the screen is locked, the display asleep, or loginwindow in front.
+Session: the sampler reports whether the screen is locked, the display asleep, loginwindow in front, or secure
+keyboard input on (typing then never reaches the tap, so it counts as the user being there). A tap the system
+disables is a lost monitor. HID activity the tap cannot explain (no posted events behind it) is real input.
 """
 import json
 import os
@@ -32,8 +34,13 @@ HID_ABORT_IDLE_S = 5.0   # real idle below this means someone is at the machine
 STALL_S = 0.2            # no beat for this long: the monitor is lost
 WATCH_S = 0.02
 WINDOW_FIELDS = ("user_window", "unplaced_window")
-TOOL_OWNERS = {"BaneySpaces", "agent-desktop", "ChatGPT", "Codex Computer Use", "SkyComputerUseService",
-               "SkyComputerUseClient", "codex", "claude"}
+# Each column's own processes. A window owned by ANOTHER tool's process is ambient, not charged to this one.
+TOOL_OWNERS = {
+    "baneyspaces": {"BaneySpaces"},
+    "agent-desktop": {"agent-desktop"},
+    "agent-desktop-headed": {"agent-desktop"},
+    "chatgpt": {"ChatGPT", "Codex Computer Use", "SkyComputerUseService", "SkyComputerUseClient", "codex"},
+}
 
 
 class Event:
@@ -69,8 +76,8 @@ def changes_between(events, t0, t1, settle=0.0):
 
 def attribute(changes, owners):
     """-> (charged, ambient). A window change whose windows all belong to apps outside `owners` (the
-    task's apps and the tool's own processes) is ambient: Donovan's own background apps."""
-    owners = set(owners) | TOOL_OWNERS
+    task's apps and THIS tool's own processes) is ambient: Donovan's own background apps, or another tool's."""
+    owners = set(owners)
     charged, ambient = [], []
     for c in changes:
         wf = [f for f in c["fields"] if f in WINDOW_FIELDS]
@@ -88,13 +95,18 @@ def attribute(changes, owners):
 
 
 def input_between(events, t0, t1, settle=0.0):
-    """-> (real, posted): counts of real hardware events and of events posted by programs."""
+    """-> (real, posted, by_pid): hardware events, events posted by programs, and the posted ones per source pid."""
     real = posted = 0
+    by_pid = {}
     for e in events:
-        if e.kind == "input" and t0 <= e.t < t1 + settle:
+        if (e.kind == "input" and t0 <= e.t < t1 + settle):
             real += int(e.raw.get("real", 0))
-            posted += sum(int(v) for v in (e.raw.get("posted") or {}).values())
-    return real, posted
+            for pid, n in (e.raw.get("posted") or {}).items():
+                posted += int(n)
+                by_pid[pid] = by_pid.get(pid, 0) + int(n)
+        elif e.kind == "hid" and e.raw.get("real") and t0 <= e.t < t1 + settle:
+            real += 1                  # HID activity the tap did not explain: someone typed under secure input
+    return real, posted, by_pid
 
 
 class Monitor:
@@ -148,7 +160,10 @@ class Monitor:
 
     @staticmethod
     def session_ok_of(s):
-        return not (s.get("locked") or s.get("asleep") or s.get("loginwindow") or s.get("console") is False)
+        # secure input (a password field, Terminal's Secure Keyboard Entry) hides keystrokes from the tap, so it
+        # is treated as the user being present
+        return not (s.get("locked") or s.get("asleep") or s.get("loginwindow") or s.get("secure_input")
+                    or s.get("console") is False)
 
     def _read(self):
         for line in self._proc.stdout:
@@ -157,6 +172,7 @@ class Monitor:
                 continue
             stalled = gap = None
             real_in = False
+            tap_dead = False
             bad_session = None
             with self._lock:
                 if ev.kind == "start":
@@ -178,9 +194,13 @@ class Monitor:
                     if int(ev.raw.get("real", 0)) > 0:
                         real_in = True
                         self._real_last = time.time()
-                elif ev.kind == "hid" and not self.tap_ok:
-                    real_in = True            # without the tap every HID event has to be assumed real
+                elif ev.kind == "hid" and (not self.tap_ok or ev.raw.get("real")):
+                    # without the tap every HID event has to be assumed real; with it, only one the tap
+                    # could not explain (typing under secure input never reaches a tap)
+                    real_in = True
                     self._real_last = time.time()
+                elif ev.kind == "tap_disabled":
+                    tap_dead = True
                 elif ev.kind == "session":
                     was_ok = self.session_ok_of(self.session)
                     self.session = dict(ev.raw.get("state") or {})
@@ -189,6 +209,8 @@ class Monitor:
                 self.events.append(ev)
             if stalled:
                 self._lose(f"sampler stalled {gap} ms")
+            if tap_dead:
+                self._lose("the input tap was disabled by the system: real input can no longer be seen")
             if real_in and self.on_hid:
                 self.on_hid(ev)
             if bad_session is not None and self.on_session:

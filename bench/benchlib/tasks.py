@@ -76,8 +76,8 @@ def validate(task):
         for app in apps:
             if app not in req.get("exclusive", []) and app not in req.get("not_running", []):
                 bad(f"host task opens {app} without requires.exclusive or requires.not_running for it")
-        if task["category"] == "browser" and not req.get("env"):
-            bad("a host browser task needs requires.env for an agent browser profile")
+        if task["category"] == "browser" and not setup.get("profile"):
+            bad("a host browser task needs setup.profile (a fresh --user-data-dir under the bench temp dir)")
         if task["category"] == "browser" and task["app"] not in req.get("not_running", []):
             bad("a host browser task needs requires.not_running for the browser")
     for app in setup.get("quit_after", []):
@@ -92,8 +92,11 @@ def validate(task):
     blob_outside = json.dumps({"goal": task["goal"], "open": setup.get("open", []), "file_names": list(setup.get("files", {}))})
     if "{nonce}" in blob_outside:
         bad("{nonce} may only appear inside a file's content and in the check, never in the goal, a title or a file name")
-    if place == "host" and task["category"] == "electron" and not req.get("env"):
-        bad("a host Electron task needs requires.env for an isolated profile (it restores the previous session's windows otherwise)")
+    if place == "host" and task["category"] == "electron" and not setup.get("profile"):
+        bad("a host Electron task needs setup.profile (a fresh --user-data-dir: it restores the previous session's windows otherwise)")
+    for alias in setup.get("close_before_run", []):
+        if alias not in aliases:
+            bad(f"close_before_run names {alias!r}, which setup.open does not open")
     for f in task.get("allowed_change_fields", []):
         if f not in ("front", "key_window"):
             bad(f"allowed_change_fields may only name front and key_window, not {f!r}")

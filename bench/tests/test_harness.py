@@ -35,7 +35,7 @@ class DryRun(unittest.TestCase):
         return rc, buf.getvalue()
 
     def test_lists_thirty_tasks(self):
-        rc, out = self.run_dry("--tool", "baneyspaces", "--level", "scripted", env={"BENCH_BANEYSPACES": "/bin/echo"})
+        rc, out = self.run_dry("--tool", "baneyspaces", "--level", "scripted", env={"BENCH_BANEYSPACES": "/bin/echo", "BENCH_AGENT_DESKTOP": "/bin/echo"})
         self.assertEqual(rc, 0)
         self.assertIn("30 tasks", out)
         self.assertEqual(sum(1 for line in out.splitlines() if line.startswith("  ") and line.split()[0] in
@@ -47,16 +47,16 @@ class DryRun(unittest.TestCase):
         self.assertIn("MISSING", out)
 
     def test_sandbox_tasks_are_labelled(self):
-        rc, out = self.run_dry("--tool", "baneyspaces", "--level", "scripted", env={"BENCH_BANEYSPACES": "/bin/echo"})
+        rc, out = self.run_dry("--tool", "baneyspaces", "--level", "scripted", env={"BENCH_BANEYSPACES": "/bin/echo", "BENCH_AGENT_DESKTOP": "/bin/echo"})
         self.assertEqual(sum(1 for line in out.splitlines() if "[sandbox]" in line), 3)
 
     def test_expected_failures_are_listed_not_skipped(self):
-        rc, out = self.run_dry("--tool", "baneyspaces", "--level", "scripted", env={"BENCH_BANEYSPACES": "/bin/echo"})
+        rc, out = self.run_dry("--tool", "baneyspaces", "--level", "scripted", env={"BENCH_BANEYSPACES": "/bin/echo", "BENCH_AGENT_DESKTOP": "/bin/echo"})
         self.assertIn("baneyspaces:expected-fail", out)
 
     def test_only_filters_and_rejects_unknown(self):
         rc, out = self.run_dry("--tool", "baneyspaces", "--level", "scripted", "--only", "textedit-type",
-                               env={"BENCH_BANEYSPACES": "/bin/echo"})
+                               env={"BENCH_BANEYSPACES": "/bin/echo", "BENCH_AGENT_DESKTOP": "/bin/echo"})
         self.assertIn("1 tasks", out)
         buf = io.StringIO()
         with contextlib.redirect_stderr(buf):

@@ -25,7 +25,7 @@ Not run yet.
 ## Not in this table
 
 - Cua's driver is removed from the fleet. A Cua column is only meaningful inside the sandbox (phase 2) and is pending.
-- Tasks marked `place: sandbox` (Notes, Safari, Firefox) are `n/a` until the sandbox exists; they run for every tool in the same place or not at all.
+- Tasks marked `place: sandbox` (Notes, Safari, Firefox) are `n/a` until the sandbox exists; they run for every tool in the same place or not at all. ChatGPT computer use runs only inside the sandbox, so its column is `n/a` for every task until then.
 - A column marked `n/a` or `not run` was not measured (reason in its JSON file); it is not a pass.
 - `infra error` and `monitor lost` tasks are excluded from every score and never charged to a tool.
 - `expected` failures are features the design schedules for later phases; they count as failures here.

@@ -22,7 +22,7 @@ done
 if [ "$dry" = 0 ]; then
   # not `ioreg | awk ... exit`: awk quitting early gives ioreg a SIGPIPE, which pipefail turns into exit 141
   hid=$(ioreg -c IOHIDSystem)
-  idle=$(printf '%s\n' "$hid" | awk '/HIDIdleTime/ {printf "%d", $NF/1000000000; found=1} END {if (!found) exit 1}' || true)
+  idle=$(printf '%s\n' "$hid" | awk '/HIDIdleTime/ && !found {printf "%d", $NF/1000000000; found=1} END {if (!found) exit 1}' || true)
   if [ -z "${idle:-}" ]; then echo "bench: could not read HIDIdleTime from ioreg" >&2; exit 1; fi
   if [ "$idle" -lt "$IDLE_REQUIRED" ]; then
     echo "not run: user active (HIDIdleTime ${idle} s, need ${IDLE_REQUIRED} s). The bench acts on a live Mac and runs only while Donovan is away."

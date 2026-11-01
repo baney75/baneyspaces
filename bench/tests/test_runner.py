@@ -28,7 +28,7 @@ class FakeMonitor:
         return out
 
     def input(self, t0, t1, settle=0.0):
-        return self.h, self.posted
+        return self.h, self.posted, ({"4242": self.posted} if self.posted else {})
 
     def lost_between(self, t0, t1, settle=0.0):
         return self._lost
@@ -43,9 +43,19 @@ class FakeOpener:
         self.opened = []
         self.listing = listing
 
+    profile_ok = True
+    verified = True
+
     def open(self, app, targets=()):
         self.opened.append((app, list(targets)))
         return (self.ids.pop(0) if self.ids else None), 5
+
+    def supports_profile(self):
+        return self.profile_ok
+
+    def open_isolated(self, app, targets, profile_dir):
+        self.opened.append((app, list(targets), profile_dir))
+        return (self.ids.pop(0) if self.ids else None), 5, self.verified
 
     def windows(self):
         return {w: ("X", "t") for w in (self.listing if self.listing is not None else [5, 6, 7])}
@@ -63,11 +73,12 @@ OK = lambda t, w, ti: {"ok": True, "log": [], "tool_ms": 12}
 
 
 def ctx(tmp, doing, **kw):
+    kw.setdefault("drain_s", 0)
     server = fixtures.FixtureServer().start()
     ref = FakeDriver({(5, None): kw.pop("ref_tree", None) or tree("a.txt", "x")})
     args = dict(tool="baneyspaces", workdir=tmp, server=server, monitor=FakeMonitor(), opener=FakeOpener([5]),
                 referee_driver=ref, exec_fn=fake_exec([]), doing=doing, sleep=lambda s: None, watch_dirs=(),
-                availability_fn=lambda t, s: None, running_fn=lambda a: False, settle_s=0)
+                availability_fn=lambda t, s, tool=None: None, running_fn=lambda a: False, settle_s=0)
     args.update(kw)
     c = runner.Context(**args)
     c.ref, c.server_obj = ref, server
@@ -107,7 +118,7 @@ class RunTask(unittest.TestCase):
 
     def test_unavailable_never_opens_anything(self):
         called = []
-        rec, c = self.run_it(doing=lambda *a: called.append(1), availability_fn=lambda t, s: "unavailable: nope")
+        rec, c = self.run_it(doing=lambda *a: called.append(1), availability_fn=lambda t, s, tool=None: "unavailable: nope")
         self.assertEqual((rec["status"], called, c.opener.opened), ("unavailable", [], []))
 
     def test_the_keys_of_a_files_spec_are_expanded_and_the_fixture_is_where_the_task_opens_it(self):
@@ -345,6 +356,131 @@ class RunTask(unittest.TestCase):
             runner.run_task(t, c)
             c.server_obj.stop()
             self.assertFalse(any("set visible of process" in " ".join(a) for a in c.exec.seen))
+
+
+class SetupLeaksAndProfiles(unittest.TestCase):
+    def run_it(self, task=TASK, doing=OK, **kw):
+        with tempfile.TemporaryDirectory() as d:
+            c = ctx(d, doing, **kw)
+            try:
+                return runner.run_task(task, c), c
+            finally:
+                c.server_obj.stop()
+
+    def test_a_refusal_that_posted_input_is_a_failure(self):
+        """sol-F2: posted > 0, real == 0, no screen change"""
+        t = dict(TASK, id="refuse-x", category="refusal", impossible=True, check={"kind": "nothing"})
+        refused = lambda *a: {"ok": True, "log": [], "tool_errors": 1, "refusal": {"code": "x", "suggestion": "s"}}
+        rec, _ = self.run_it(task=t, doing=refused, monitor=FakeMonitor(posted=3))
+        self.assertEqual(rec["status"], "fail")
+        self.assertEqual(rec["posted_input_by_pid"], {"4242": 3})
+        self.assertEqual(self.run_it(task=t, doing=refused, monitor=FakeMonitor(posted=0))[0]["status"], "refused_ok")
+
+    def test_the_run_waits_out_the_debounce_before_t0(self):
+        """first-F4"""
+        slept = []
+        rec, c = self.run_it(sleep=lambda s: slept.append(s), drain_s=1.5)
+        self.assertIn(1.5, slept)
+
+    def test_a_window_leaked_during_setup_fails_the_task_and_the_tool_is_never_run(self):
+        """first-F4: the 2026-10-31 incident. The event was first seen before t0 but only reported after it."""
+        class Late:
+            """changes() answers from a list of events stamped with their FIRST-SEEN time."""
+            def __init__(self):
+                self.events = [{"t": 3.0, "fields": ["unplaced_window"], "windows": [{"id": 9, "pid": 4, "owner": "TextEdit"}]}]
+                self.losses = []
+                self.calls = []
+
+            def changes(self, t0, t1, settle=0.0):
+                self.calls.append((t0, t1))
+                return [e for e in self.events if t0 <= e["t"] < t1 + settle]
+
+            def input(self, *a, **k):
+                return 0, 0, {}
+
+            def lost_between(self, *a, **k):
+                return []
+
+            def healthy(self):
+                return True, ""
+        clock = iter([1.0, 5.0, 5.0, 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.7, 5.8])
+        called = []
+        rec, c = self.run_it(monitor=Late(), clock=lambda: next(clock), doing=lambda *a: called.append(1))
+        self.assertEqual(rec["status"], "fail")
+        self.assertIn("leaked", rec["why"])
+        self.assertEqual(called, [])
+        self.assertEqual(rec["setup_leak"][0]["fields"], ["unplaced_window"])
+
+    def test_a_leak_from_a_background_app_during_setup_is_ambient_and_does_not_fail_the_task(self):
+        class Bg(FakeMonitor):
+            def changes(self, t0, t1, settle=0.0):
+                self.calls.append((t0, t1, settle))
+                if len(self.calls) == 1:
+                    return [{"t": 1, "fields": ["user_window"], "windows": [{"id": 1, "pid": 2, "owner": "Mail"}]}]
+                return []
+        rec, _ = self.run_it(monitor=Bg())
+        self.assertEqual(rec["status"], "pass")
+        self.assertEqual(rec["ambient_changes"][0]["windows"][0]["owner"], "Mail")
+
+    def test_a_profile_task_is_unavailable_until_agent_open_takes_a_user_data_dir(self):
+        t = dict(TASK, setup=dict(TASK["setup"], profile="user-data-dir"))
+        op = FakeOpener([5])
+        op.profile_ok = False
+        rec, c = self.run_it(task=t, opener=op)
+        self.assertEqual(rec["status"], "unavailable")
+        self.assertIn("--user-data-dir", rec["why"])
+        self.assertEqual(op.opened, [])
+
+    def test_a_profile_task_launches_with_a_fresh_dir_under_the_bench_temp_dir(self):
+        t = dict(TASK, setup=dict(TASK["setup"], profile="user-data-dir"))
+        op = FakeOpener([5])
+        rec, c = self.run_it(task=t, opener=op)
+        app, targets, profile = op.opened[0]
+        self.assertTrue(profile.endswith("/t1/profile"))
+        self.assertEqual(rec["status"], "pass")
+
+    def test_a_launch_whose_process_does_not_carry_the_profile_is_dropped_and_its_window_closed(self):
+        t = dict(TASK, setup=dict(TASK["setup"], profile="user-data-dir"))
+        op = FakeOpener([5])
+        op.verified = False
+        called = []
+        rec, c = self.run_it(task=t, opener=op, doing=lambda *a: called.append(1))
+        self.assertEqual(rec["status"], "infra_error")
+        self.assertIn("--user-data-dir", rec["why"])
+        self.assertEqual(called, [])
+        self.assertTrue(any(call[0] == "click" for call in c.ref.calls))     # the unverified window is closed
+
+    def test_a_teardown_that_raises_is_recorded_and_the_accounting_and_cleanup_still_happen(self):
+        """second-S6"""
+        with tempfile.TemporaryDirectory() as d:
+            c = ctx(d, OK)
+
+            class Broken:
+                def snapshot(self, *a, **k):
+                    raise FileNotFoundError("agent-desktop is gone")
+                run = snapshot
+            c.cleanup_driver = Broken()
+            rec = runner.run_task(TASK, c)
+            c.server_obj.stop()
+            self.assertEqual(rec["teardown_pending"]["windows"], [5])
+            self.assertIn("FileNotFoundError", rec["teardown_pending"]["error"])
+            self.assertIn("teardown_changes", rec)
+            self.assertFalse(os.path.exists(os.path.join(d, "t1")))
+
+    def test_the_closed_window_of_the_missing_window_task_is_not_closed_twice(self):
+        t = dict(TASK, setup=dict(TASK["setup"], close_before_run=["doc"]))
+        with tempfile.TemporaryDirectory() as d:
+            c = ctx(d, OK)
+            orig = c.ref.run
+
+            def run(verb, timeout=60, **kw):
+                c.ref.trees.clear()               # the window is gone once Close is pressed
+                return orig(verb, timeout, **kw)
+            c.ref.run = run
+            rec = runner.run_task(t, c)
+            c.server_obj.stop()
+        self.assertEqual(len([x for x in c.ref.calls if x[0] == "click"]), 1)
+        self.assertNotIn("teardown_pending", rec)
 
 
 class Exec_(unittest.TestCase):

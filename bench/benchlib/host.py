@@ -9,6 +9,9 @@ STATE_PATH = os.path.expanduser("~/Library/Application Support/BaneySpaces/state
 APP_DIRS = ("/Applications", "/System/Applications", "/System/Applications/Utilities",
             "/Applications/Utilities", os.path.expanduser("~/Applications"))
 SANDBOX_AVAILABLE = False   # phase 2 of the design; until it exists every `place: sandbox` task is unavailable
+CHATGPT_ROUTE = None        # how ChatGPT's computer use would be run INSIDE the sandbox VM. None: there is none yet.
+# ChatGPT's Sky/cua_repl never runs on this Mac: availability() refuses it for every task and codex_command()
+# refuses to build the command without a route. No flag or environment variable changes either.
 
 
 def hid_idle_seconds(run=subprocess.run):
@@ -54,7 +57,7 @@ def running(app, run=subprocess.run):
     return r.returncode == 0
 
 
-def availability(task, state, *, installed_fn=installed, running_fn=running, sandbox=None):
+def availability(task, state, tool=None, *, installed_fn=installed, running_fn=running, sandbox=None):
     """None when the task can run here, else why not ("unavailable: ...").
 
     place: sandbox           needs the phase 2 sandbox; skipped until it exists (once-per-user apps)
@@ -65,6 +68,8 @@ def availability(task, state, *, installed_fn=installed, running_fn=running, san
     requires.env             environment flags that must be 1 (e.g. the agent browser profile exists)
     A task is checked here at every level (scripted, agent and micro), before anything is opened.
     """
+    if tool == "chatgpt" and (CHATGPT_ROUTE is None or task.get("place", "host") != "sandbox"):
+        return "unavailable: needs sandbox (ChatGPT computer use runs only inside the sandbox VM, never on this Mac)"
     if task.get("place", "host") == "sandbox" and not (SANDBOX_AVAILABLE if sandbox is None else sandbox):
         return "unavailable: needs sandbox (phase 2)"
     req = task["setup"].get("requires", {})
@@ -109,6 +114,8 @@ def session_gate(ok, state):
     if ok:
         return True, "screen awake and unlocked"
     why = [k for k in ("locked", "asleep", "loginwindow") if state.get(k)]
+    if state.get("secure_input"):
+        why.append("under secure keyboard input (someone may be typing)")
     if state.get("console") is False:
         why.append("not on the console")
     return False, ("not run: the screen is " + ", ".join(why or ["not usable"]) +

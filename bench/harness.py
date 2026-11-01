@@ -86,10 +86,16 @@ def resolve_plan(plan, p):
             mcp = agents.find_plugin_mcp()
             node = os.path.join(agents.CUA_NODE, "bin", "node")
             ok = bool(which(p["codex"])) and mcp is not None and os.access(node, os.X_OK)
-            d = (f"codex {which(p['codex'])}; cua_repl from {mcp}" if ok
-                 else "needs codex, ChatGPT.app's cua_node and the unified-computer-use plugin")
+            d = (f"codex {which(p['codex'])}; cua_repl from {mcp}; runs only in the sandbox: every task is unavailable on this Mac"
+                 if ok else "needs codex, ChatGPT.app's cua_node and the unified-computer-use plugin")
         rows.append((level, tool, ok, d))
     return rows
+
+
+def referee_row(p):
+    """agent-desktop is the referee and the cleanup driver for EVERY run, whichever column runs."""
+    ok, d = AgentDesktopDriver(None, p["agent_desktop"]).resolve()
+    return [("all", "referee (agent-desktop)", ok, d)]
 
 
 def load(tasks_dir, only=None):
@@ -110,7 +116,7 @@ def dry_run(args, p):
         exp = ",".join(f"{k}:expected-fail" for k in t.get("expected_fail", {}))
         place = "" if t.get("place", "host") == "host" else "[sandbox]"
         print(f"  {t['id']:<34} {t['category']:<10} {t['app']:<16} {place:<10} {exp}")
-    rows = resolve_plan(plan_for(args.tool, args.level), p)
+    rows = referee_row(p) + resolve_plan(plan_for(args.tool, args.level), p)
     print("\nrunners")
     bad = 0
     for level, tool, ok, detail in rows:
@@ -192,6 +198,11 @@ def make_doing(level, tool, p, exec_fn, workdir, cwd=None):
             return out
         return doing
 
+    if tool == "chatgpt":
+        def doing(task, windows, titles):
+            raise agents.SandboxOnly("ChatGPT computer use runs only inside the sandbox VM, never on this Mac")
+        return doing
+
     # level == agent
     mcp_path = os.path.join(workdir, f"mcp-{tool}.json")
     cfg = agents.baneyspaces_mcp_config(p["baneyspaces"]) if tool == "baneyspaces" else agents.empty_mcp_config()
@@ -201,37 +212,37 @@ def make_doing(level, tool, p, exec_fn, workdir, cwd=None):
 
     def doing(task, windows, titles):
         prompt = agents.build_prompt(task, windows, titles, tool)
-        if tool == "chatgpt":
-            cmd = agents.codex_command(prompt, p["codex"], agents.find_plugin_mcp(), cwd, agents.other_mcp_servers())
-            rc, out, err, ms = exec_fn(cmd, timeout=agents.AGENT_TIMEOUT_S, cwd=cwd)
-            parsed = agents.parse_codex(out)
-        else:
-            env = None
-            cmd = agents.claude_command(tool, prompt, p["claude"], mcp_path)
-            if tool == "agent-desktop":
-                with open(guard_file, "w", encoding="utf-8") as fh:
-                    json.dump({"windows": [f"w-{w}" for w in windows.values()], "snapshots": []}, fh)
-                env = {"BENCH_AD_BIN": p["agent_desktop"], "BENCH_GUARD_FILE": guard_file}
-                cmd += ["--append-system-prompt", agents.agent_desktop_skill_prompt()]
-            rc, out, err, ms = exec_fn(cmd, timeout=agents.AGENT_TIMEOUT_S, cwd=cwd, env=env)
-            parsed = agents.parse_claude(out)
+        env = None
+        cmd = agents.claude_command(tool, prompt, p["claude"], mcp_path)
+        if tool == "agent-desktop":
+            with open(guard_file, "w", encoding="utf-8") as fh:
+                json.dump({"windows": [f"w-{w}" for w in windows.values()], "snapshots": []}, fh)
+            env = {"BENCH_AD_BIN": p["agent_desktop"], "BENCH_GUARD_FILE": guard_file}
+            cmd += ["--append-system-prompt", agents.agent_desktop_skill_prompt()]
+        rc, out, err, ms = exec_fn(cmd, timeout=agents.AGENT_TIMEOUT_S, cwd=cwd, env=env)
+        parsed = agents.parse_claude(out)
         text = parsed.get("text", "")
         base = {"log": [{"do": "agent", "ok": parsed["ok"], "ms": ms, "message": (parsed.get("error") or err or "")[:200]}],
                 "tool_ms": ms, "model_turns": parsed.get("turns"), "cost_usd": parsed.get("cost_usd"),
                 "agent_text": text[:300], "answer": text, "tool_calls": parsed.get("tool_calls", 0),
-                "tool_errors": parsed.get("tool_errors", 0), "shortcut": parsed.get("shortcut"), "refusal": None}
+                "tool_errors": parsed.get("tool_errors", 0), "shortcut": parsed.get("shortcut"), "refusal": None,
+                "guard_refusals": parsed.get("guard_refusals", 0)}
         infra = agents.infra_failure(tool, rc, out, err, parsed)
         if infra:
             return dict(base, ok=False, infra=infra[0], fatal_infra=infra[1], why=infra[0])
         if task.get("impossible"):
-            if tool != "chatgpt" and parsed.get("refusals"):
-                r = parsed["refusals"][-1]          # the TOOL's own code and suggestion, not the agent's prose
+            if parsed.get("refusals"):
+                r = parsed["refusals"][-1]          # the TOOL's own code and suggestion (never the guard's), not the agent's prose
                 base["refusal"] = {"code": r["code"], "suggestion": r["suggestion"], "retry": r.get("retry")}
-            elif tool == "chatgpt" and text.strip().upper().startswith("REFUSED") and len(text.strip()) > 20 and \
-                    (base["tool_calls"] + base["tool_errors"]) >= 1:
-                base["refusal"] = {"code": "agent_refused", "suggestion": text.strip()[:300], "retry": None}
         return dict(base, ok=parsed["ok"] or base["refusal"] is not None, why=parsed.get("error") or "")
     return doing
+
+
+def run_is_full(recs, only, aborted):
+    """A result may feed latest.md and the ratchet only if every task was attempted, none was skipped by --only, the
+    run was not cut short, and at least one task was actually scored (a run that scored nothing measured nothing)."""
+    scored = any(r["status"] in scoring.SCORED for r in recs)
+    return (not only) and not aborted and scored and all(r["status"] != "not_run" for r in recs)
 
 
 def tool_order(tools, i):
@@ -331,9 +342,11 @@ def run_micro_level(tool, p, exec_fn, opener, workdir, referee_driver, cleanup_d
     """-> result dict for the micro level of one tool. Same availability gate as a task; only windows
     this function opened are touched, and Calculator is quit only if it was not running before."""
     from benchlib import fixtures
-    why = host.availability(host.micro_task(tool), state_fn())
+    why = host.availability(host.micro_task(tool), state_fn(), tool)
     if why:
         return {"status": "n/a", "why": why, "latency": None}
+    if tool == "chatgpt":
+        raise agents.SandboxOnly("ChatGPT computer use runs only inside the sandbox VM, never on this Mac")
     os.makedirs(workdir, exist_ok=True)
     fixtures.write_files(workdir, {"micro.txt": ""})
     created = []
@@ -348,18 +361,6 @@ def run_micro_level(tool, p, exec_fn, opener, workdir, referee_driver, cleanup_d
         if te is None or calc is None:
             return {"status": "n/a", "why": "could not open TextEdit and Calculator on the agent workspace", "latency": None}
         time.sleep(1.0)
-        if tool == "chatgpt":
-            node = os.path.join(agents.CUA_NODE, "bin", "node")
-            rc, out, err, _ = exec_fn([node, os.path.join(HERE, "chatgpt_micro.mjs"), str(micro.REPS), "TextEdit", "Calculator"],
-                                      timeout=240)
-            try:
-                obj = json.loads(out.strip().splitlines()[-1])
-            except (json.JSONDecodeError, IndexError):
-                obj = {"unavailable": (err or out or "no output")[:300]}
-            if "unavailable" in obj:
-                return {"status": "n/a", "why": obj["unavailable"], "latency": None}
-            return {"status": "ok", "latency": micro.summarize_latency(obj), "errors": obj.get("errors", []),
-                    "method": micro.METHOD_SKY}
         if tool == "baneyspaces":
             driver = BaneySpacesDriver(exec_fn, p["baneyspaces"])
             noop = [p["baneyspaces"], "--version"]
@@ -368,8 +369,10 @@ def run_micro_level(tool, p, exec_fn, opener, workdir, referee_driver, cleanup_d
             noop = [p["agent_desktop"], "--version"]
         noop_ms = micro.noop_spawn_ms(exec_fn, noop)
         lat, errs = micro.run_micro(driver, te, calc, noop_ms)
-        return {"status": "ok", "latency": lat, "errors": errs, "noop_spawn_ms": noop_ms, "noop_command": noop,
-                "method": micro.METHOD_CLI}
+        problems = micro.invalid(lat, errs)
+        # a measurement with failed actions or missing samples is kept as a diagnostic, never as a result
+        return {"status": "invalid" if problems else "ok", "latency": lat, "errors": errs, "problems": problems,
+                "noop_spawn_ms": noop_ms, "noop_command": noop, "method": micro.METHOD_CLI}
     finally:
         if not aborted_fn():       # after an abort the bench's own windows stay where they are
             try:
@@ -385,7 +388,7 @@ def run_micro_level(tool, p, exec_fn, opener, workdir, referee_driver, cleanup_d
 def real_run(args, p):
     tasks = load(os.path.join(HERE, "tasks"), args.only)
     plan = plan_for(args.tool, args.level)
-    rows = resolve_plan(plan, p)
+    rows = referee_row(p) + resolve_plan(plan, p)
     missing = [r for r in rows if not r[2]]
     if missing:
         print("cannot run, unresolved:", file=sys.stderr)
@@ -459,16 +462,14 @@ def _run_levels(args, p, tasks, plan, mon, st, abort, exec_fn, sess, awake):
     results_dir = args.results_dir
     exit_code = 0
     host_state = {"session": sess, "caffeinate": " ".join(host.CAFFEINATE) if awake else None, "input_tap": mon.tap_ok}
-    caveats = ["cua_repl's REPL may write files outside codex's read-only sandbox (not established either way); "
-               "shell use is detected and fails the task",
-               "ChatGPT's Sky addresses apps by name and cannot be confined to this task's windows; the BaneySpaces and "
-               "agent-desktop columns are confined (MCP scope, agent-desktop-guard)"]
+    caveats = ["ChatGPT computer use runs only inside the sandbox VM and is not measured on this Mac",
+               "the BaneySpaces and agent-desktop agent columns are confined (MCP scope, agent-desktop-guard)"]
 
     def finish(level, tool, recs, dead):
         aborted = dead.get(tool, "")
         aborted = aborted if aborted.startswith("column stopped") else (
             f"stopped: {st.stop_reason}" if st.stop and any(r["status"] == "not_run" for r in recs) else "")
-        full = (not args.only) and not aborted and all(r["status"] != "not_run" for r in recs)
+        full = run_is_full(recs, args.only, aborted)
         report.write_result(results_dir, {
             "tool": tool, "level": level, "date": date, "hms": hms, "run_id": run_id, "only": args.only, "full": full,
             "versions": versions, "host": os.uname().nodename, "aborted": aborted or None, "tasks": recs,
@@ -483,7 +484,7 @@ def _run_levels(args, p, tasks, plan, mon, st, abort, exec_fn, sess, awake):
                     if why:
                         st.halt(why)
                         break
-                    if tool in SENDS_INPUT and not mon.tap_ok:
+                    if tool in SENDS_INPUT and not mon.tap_ok and tool != "chatgpt":
                         m = {"status": "n/a", "why": "needs the sampler's input tap (Input Monitoring)", "latency": None}
                     else:
                         try:

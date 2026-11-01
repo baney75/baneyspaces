@@ -13,8 +13,9 @@ GUARD = os.path.join(support.BENCH, "agent-desktop-guard")
 FAKE_REAL = r'''#!/usr/bin/env python3
 import json, sys
 a = sys.argv[1:]
+import os
 if a[0] == "snapshot":
-    print(json.dumps({"ok": True, "data": {"snapshot_id": "sABC123", "tree": {"role": "window"}}}))
+    print(json.dumps({"ok": True, "data": {"snapshot_id": os.environ.get("FAKE_SID", "sABC123"), "tree": {"role": "window"}}}))
 elif a[0] == "list-windows":
     print(json.dumps({"ok": True, "data": [{"id": "w-10", "title": "mine"}, {"id": "w-99", "title": "Donovan's private note"}]}))
 else:
@@ -31,8 +32,8 @@ class Guard(unittest.TestCase):
         self.gf = os.path.join(self.d, "guard.json")
         json.dump({"windows": ["w-10"], "snapshots": []}, open(self.gf, "w"))
 
-    def run_guard(self, *args):
-        env = dict(os.environ, BENCH_AD_BIN=self.real, BENCH_GUARD_FILE=self.gf)
+    def run_guard(self, *args, **extra):
+        env = dict(os.environ, BENCH_AD_BIN=self.real, BENCH_GUARD_FILE=self.gf, **extra)
         p = subprocess.run([sys.executable, GUARD, *args], capture_output=True, text=True, env=env, timeout=30)
         try:
             out = json.loads(p.stdout.strip().splitlines()[-1])
@@ -95,6 +96,51 @@ class Guard(unittest.TestCase):
     def test_list_windows_only_shows_the_tasks_windows(self):
         rc, out = self.run_guard("list-windows")
         self.assertEqual([w["id"] for w in out["data"]], ["w-10"])
+
+    def test_an_act_verb_without_a_ref_is_refused_so_nothing_is_aimed_at_whatever_is_focused(self):
+        """second-S3"""
+        self.run_guard("snapshot", "--window-id", "w-10")
+        self.refused("type", "hello")
+        self.refused("click")
+        self.refused("click", "--name", "Send")
+        self.refused("set-value", "just text")
+        self.refused("type", "@sABC123:e1")                 # a ref but no text
+        self.refused("click", "@sABC123:e1", "@sABC123:e2")  # two targets
+        self.refused("focus", "12345")                     # a pid or id in place of a ref
+
+    def test_flags_and_positionals_off_the_verbs_list_are_refused(self):
+        self.run_guard("snapshot", "--window-id", "w-10")
+        self.refused("click", "@sABC123:e1", "--pid", "1")
+        self.refused("snapshot", "--window-id", "w-10", "--trace", "/tmp/x")
+        self.refused("snapshot", "--window-id", "w-10", "--session", "other")
+        self.refused("snapshot", "--window-id", "w-10", "extra")
+        self.refused("list-windows", "--app", "x")
+        self.refused("list-windows", "extra")
+        self.refused("press", "--window-id", "w-10", "cmd+a", "cmd+b")
+        self.refused("scroll", "@sABC123:e1", "--direction", "down", "--bogus")
+
+    def test_the_legitimate_commands_pass(self):
+        self.assertEqual(self.run_guard("snapshot", "--window-id", "w-10", "-i", "--compact", "--max-depth", "4")[0], 0)
+        for args in (("click", "@sABC123:e1"), ("type", "@sABC123:e1", "hello world"), ("type", "--", "@sABC123:e1", "-x"),
+                     ("set-value", "@sABC123:e1", "v"), ("get", "@sABC123:e1", "--property", "value"),
+                     ("scroll", "@sABC123:e1", "--direction", "down", "--amount", "3"), ("select", "@sABC123:e1", "Option"),
+                     ("press", "--window-id", "w-10", "cmd+a"), ("wait", "300"), ("wait", "--element", "@sABC123:e2", "--timeout", "2000"),
+                     ("find", "--window-id", "w-10", "--role", "button", "--name", "Save", "--exact")):
+            self.assertEqual(self.run_guard(*args)[0], 0, args)
+
+    def test_parallel_snapshots_do_not_lose_each_others_ids(self):
+        """second-S8"""
+        procs = []
+        env_base = dict(os.environ, BENCH_AD_BIN=self.real, BENCH_GUARD_FILE=self.gf)
+        for i in range(8):
+            procs.append(subprocess.Popen([sys.executable, GUARD, "snapshot", "--window-id", "w-10"], stdout=subprocess.PIPE,
+                                          stderr=subprocess.PIPE, env=dict(env_base, FAKE_SID=f"sPAR{i}"), text=True))
+        for p in procs:
+            out, err = p.communicate(timeout=60)
+            self.assertEqual(p.returncode, 0, err)
+            self.assertNotIn("Traceback", err)
+        learned = set(json.load(open(self.gf))["snapshots"])
+        self.assertEqual(learned, {f"sPAR{i}" for i in range(8)})
 
     def test_without_a_task_file_it_refuses_everything(self):
         os.remove(self.gf)

@@ -11,12 +11,9 @@
       ],
       "not_running": [
         "Cursor"
-      ],
-      "env": [
-        "BENCH_AGENT_ELECTRON_PROFILE"
-      ],
-      "env_why": "Cursor restores the previous session's windows; it needs an isolated --user-data-dir profile, which ships with phase 3"
+      ]
     },
+    "profile": "user-data-dir",
     "settle_s": 8.0,
     "quit_after": [
       "Cursor"

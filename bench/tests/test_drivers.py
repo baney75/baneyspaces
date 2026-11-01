@@ -92,5 +92,41 @@ class Opening(unittest.TestCase):
         self.assertIsNone(o.open("TextEdit")[0])
 
 
+class Profiles(unittest.TestCase):
+    def opener(self, usage="", ps="", windows=None, open_env=None):
+        calls = []
+
+        def run(argv, timeout=60, **kw):
+            calls.append(argv)
+            if argv[2:] == ["open"]:
+                return 1, usage, "", 1
+            if argv[2:3] == ["open"]:
+                return 0, json.dumps(open_env or {"ok": True, "data": {"app": argv[3], "window": 88}}), "", 1
+            if argv[2:] == ["windows"]:
+                return 0, json.dumps({"ok": True, "data": {"windows": windows if windows is not None else [{"id": 88, "pid": 777}]}}), "", 1
+            if argv[0] == "ps":
+                return 0, ps, "", 1
+            return 0, "", "", 1
+        o = Opener(run)
+        o.calls = calls
+        return o
+
+    def test_support_is_read_from_the_usage_text(self):
+        self.assertTrue(self.opener(usage="usage: baneyspaces agent open <app> [--user-data-dir <dir>] [targets]").supports_profile())
+        self.assertFalse(self.opener(usage="usage: baneyspaces agent open <app> [targets]").supports_profile())
+
+    def test_a_launch_is_verified_by_the_new_processs_arguments(self):
+        """sol-F3"""
+        ok = self.opener(ps="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=/tmp/b/profile --no-first-run")
+        wid, ms, verified = ok.open_isolated("Google Chrome", ["http://127.0.0.1:1/form"], "/tmp/b/profile")
+        self.assertEqual((wid, verified), (88, True))
+        opens = [c for c in ok.calls if c[2:3] == ["open"] and len(c) > 3]
+        self.assertEqual(opens[0][:6], ["baneyspaces", "agent", "open", "Google Chrome", "--user-data-dir", "/tmp/b/profile"])
+        bad = self.opener(ps="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+        self.assertEqual(bad.open_isolated("Google Chrome", [], "/tmp/b/profile")[2], False)
+        nopid = self.opener(ps="x", windows=[])
+        self.assertEqual(nopid.open_isolated("Google Chrome", [], "/tmp/b/profile")[2], False)
+
+
 if __name__ == "__main__":
     unittest.main()

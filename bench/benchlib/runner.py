@@ -13,7 +13,7 @@ import time
 from . import fixtures, host, scoring
 from .cleanup import close_windows
 from .execs import Aborted
-from .monitor import SETTLE_S, attribute
+from .monitor import SETTLE_S, TOOL_OWNERS, WINDOW_FIELDS, attribute
 from .referee import Referee
 from .tasks import expand
 
@@ -28,7 +28,7 @@ class Context:
                  state_fn=None, doing=None, clock=time.time, sleep=time.sleep, watch_dirs=(DESKTOP,),
                  availability_fn=host.availability, running_fn=host.running, aborted_fn=lambda: False,
                  cleanup_driver=None, nonce_fn=lambda: secrets.token_hex(3), settle_s=1.2,
-                 session_fn=lambda: (True, {})):
+                 session_fn=lambda: (True, {}), drain_s=1.5):
         self.tool, self.workdir, self.server, self.monitor = tool, workdir, server, monitor
         self.opener, self.referee_driver, self.exec = opener, referee_driver, exec_fn
         self.cleanup_driver = cleanup_driver or referee_driver
@@ -40,6 +40,7 @@ class Context:
         self.nonce_fn = nonce_fn
         self.settle_s = settle_s       # window events are debounced a second by the sampler
         self.session_fn = session_fn
+        self.drain_s = drain_s         # the sampler debounces unplaced windows a second; wait it out before t0
 
 
 def run_task(task, ctx):
@@ -48,7 +49,7 @@ def run_task(task, ctx):
     exp = task.get("expected_fail", {}).get(ctx.tool)
     if exp:
         rec["expected_fail"] = exp
-    why = ctx.availability_fn(task, ctx.state_fn())
+    why = ctx.availability_fn(task, ctx.state_fn(), ctx.tool)
     if why:
         rec.update(status="unavailable", why=why)
         return rec
@@ -61,6 +62,10 @@ def run_task(task, ctx):
         rec.update(status="not_run", why=host.session_gate(ok, sess)[1][:200])
         return rec
 
+    if task["setup"].get("profile") and not ctx.opener.supports_profile():
+        rec.update(status="unavailable", why="unavailable: needs `baneyspaces agent open --user-data-dir` (phase 3): a browser or "
+                   "Electron app is launched only with a fresh profile, never with Donovan's")
+        return rec
     tdir = os.path.join(ctx.workdir, task["id"])
     os.makedirs(tdir, exist_ok=True)
     env = {"tmp": tdir, "base": ctx.server.base, "port": ctx.server.port, "fixtures": tdir, "nonce": ctx.nonce_fn()}
@@ -78,7 +83,7 @@ def run_task(task, ctx):
     apps = {o["app"] for o in setup.get("open", [])} | set(setup.get("quit_after", []))
     was_running = {a: ctx.running_fn(a) for a in apps if a not in SYSTEM_APPS}
     started_by_us = sorted(a for a, up in was_running.items() if not up)
-    owners = {task["app"]} | apps
+    owners = {task["app"]} | apps | TOOL_OWNERS.get(ctx.tool, set())     # this column's own processes only
     allowed = set(task.get("allowed_change_fields", []))
     windows, titles, created = {}, {}, []
     ambient = []
@@ -91,14 +96,26 @@ def run_task(task, ctx):
     ts0, tt0 = ctx.clock(), None
     try:
         try:
+            profile_dir = os.path.join(tdir, "profile") if setup.get("profile") else None
             for o in setup.get("open", []):
-                wid, _ = ctx.opener.open(o["app"], o.get("targets", []))
+                if profile_dir:
+                    wid, _, verified = ctx.opener.open_isolated(o["app"], o.get("targets", []), profile_dir)
+                    if wid is not None:
+                        created.append(wid)         # tracked first, so teardown closes it even if it is not isolated
+                    if wid is not None and not verified:
+                        tt0 = ctx.clock()
+                        rec["setup_changes"] = charge(ctx.monitor.changes(ts0, tt0, 0)) if ctx.monitor else []
+                        rec.update(status="infra_error", why=f"setup: {o['app']} did not start with the fresh --user-data-dir; not using it")
+                        return rec
+                else:
+                    wid, _ = ctx.opener.open(o["app"], o.get("targets", []))
                 if wid is None:
                     tt0 = ctx.clock()
                     rec["setup_changes"] = charge(ctx.monitor.changes(ts0, tt0, 0)) if ctx.monitor else []
                     rec.update(status="infra_error", why=f"setup: could not open {o['app']} on the agent workspace")
                     return rec
-                created.append(wid)
+                if wid not in created:
+                    created.append(wid)
                 windows[o["as"]] = wid
                 titles[o["as"]] = o.get("title", "")
             ctx.sleep(setup.get("settle_s", 0.8))
@@ -106,10 +123,23 @@ def run_task(task, ctx):
                 ctx.exec(["osascript", "-e", 'tell application "System Events" to set visible of process '
                           f'"{setup["hide"]}" to false'], timeout=15)
                 ctx.sleep(0.4)
+            for alias in setup.get("close_before_run", []):    # a window that existed and is gone: the "missing window" case
+                close_windows(ctx.cleanup_driver, [windows[alias]], ctx.opener.windows, should_stop=ctx.aborted_fn)
+                created = [w for w in created if w != windows[alias]]
             before = {d: host.list_dir(d) for d in ctx.watch_dirs}
 
+            # Let the sampler's debounce (an unplaced window is reported after a second, stamped with when it first
+            # appeared) and BaneySpaces' state.json lag run out, so a window leaked by setup is on the record
+            # before t0 and cannot be taken for a change the tool made.
+            ctx.sleep(ctx.drain_s)
             t0 = ctx.clock()
             rec["setup_changes"] = charge(ctx.monitor.changes(ts0, t0, 0)) if ctx.monitor else []
+            leaks = [c for c in rec["setup_changes"] if set(c["fields"]) & set(WINDOW_FIELDS)]
+            if leaks:
+                tt0 = ctx.clock()
+                rec.update(status="fail", why="setup leaked a window onto one of Donovan's workspaces; the tool was not run",
+                           setup_leak=leaks)
+                return rec
             outcome = ctx.doing(t, windows, titles)
             t1 = ctx.clock()
             ctx.sleep(ctx.settle_s)
@@ -118,7 +148,7 @@ def run_task(task, ctx):
             rec["duration_s"] = round(t1 - t0, 3)
             rec["tool_ms"] = outcome.get("tool_ms")
             rec["steps"] = outcome.get("log", [])
-            for k in ("model_turns", "cost_usd", "agent_text", "tool_calls", "tool_errors"):
+            for k in ("model_turns", "cost_usd", "agent_text", "tool_calls", "tool_errors", "guard_refusals"):
                 if outcome.get(k) is not None:
                     rec[k] = outcome[k]
             rec["answer"] = (outcome.get("answer") or "")[:300]
@@ -127,8 +157,10 @@ def run_task(task, ctx):
             rec["changes"] = [c for c in changes if c not in intended]
             if intended:
                 rec["intended_changes"] = intended
-            real, posted = ctx.monitor.input(t0, tt0) if ctx.monitor else (0, 0)
+            real, posted, by_pid = ctx.monitor.input(t0, tt0) if ctx.monitor else (0, 0, {})
             rec["hid_events"], rec["posted_input_events"] = real, posted
+            if by_pid:
+                rec["posted_input_by_pid"] = by_pid
             rec["collateral"] = [f"{d}/{n}" for d in ctx.watch_dirs for n in host.collateral(before[d], host.list_dir(d))]
             rec["refusal"] = outcome.get("refusal")
 
@@ -150,7 +182,7 @@ def run_task(task, ctx):
             if (t.get("requires_tool_call") or t.get("impossible")) and not outcome.get("tool_calls") and not outcome.get("tool_errors"):
                 check_ok, detail = False, "no computer-use call was made; " + detail
             rec["check"] = {"ok": check_ok, "detail": detail}
-            side = {"changes": len(rec["changes"]), "hid": real, "collateral": len(rec["collateral"])}
+            side = {"changes": len(rec["changes"]), "hid": real, "posted": posted, "collateral": len(rec["collateral"])}
             rec["status"] = scoring.classify(t, check_ok, outcome, outcome.get("refusal"), side)
             if not outcome["ok"] and not t.get("impossible"):
                 rec["why"] = outcome.get("why", "")
@@ -162,7 +194,7 @@ def run_task(task, ctx):
             return rec
     finally:
         tt0 = tt0 if tt0 is not None else ctx.clock()
-        pending_windows, pending_apps = [], []
+        pending_windows, pending_apps, teardown_error = [], [], None
         try:
             if ctx.aborted_fn():
                 pending_windows, pending_apps = list(created), list(started_by_us)
@@ -179,9 +211,14 @@ def run_task(task, ctx):
                         ctx.exec(["osascript", "-e", f'tell application "{app}" to quit'], timeout=15)
         except Aborted:
             pending_windows, pending_apps = list(created), list(started_by_us)
+        except Exception as e:  # noqa: BLE001  a broken cleanup tool must not hide the record or skip the accounting below
+            pending_windows, pending_apps = list(created), list(started_by_us)
+            teardown_error = f"{type(e).__name__}: {e}"[:200]
         if pending_windows or pending_apps:
             rec["teardown_pending"] = {"windows": pending_windows, "apps": pending_apps,
-                                       "note": "the run was aborted before teardown finished; these were left on the agent workspace"}
+                                       "note": "teardown did not finish; these were left on the agent workspace"}
+            if teardown_error:
+                rec["teardown_pending"]["error"] = teardown_error
         if ctx.monitor:
             rec["teardown_changes"] = charge(ctx.monitor.changes(tt0, ctx.clock(), SETTLE_S))
         if ambient:

@@ -101,12 +101,13 @@ class Safety(unittest.TestCase):
             for o in t["setup"].get("open", []):
                 self.assertTrue(o["app"] in req.get("exclusive", []) or o["app"] in req.get("not_running", []), t["id"])
 
-    def test_host_browsers_need_an_agent_profile_and_must_not_be_running(self):
+    def test_host_browsers_and_electron_launch_only_with_a_fresh_profile(self):
+        """sol-F3: an environment flag alone must not authorize the normal profile."""
         for t in self.tasks:
-            if t["category"] == "browser" and t.get("place", "host") == "host":
-                req = t["setup"]["requires"]
-                self.assertIn("BENCH_AGENT_BROWSER_PROFILE", req["env"], t["id"])
-                self.assertIn(t["app"], req["not_running"], t["id"])
+            if t.get("place", "host") == "host" and t["category"] in ("browser", "electron"):
+                self.assertEqual(t["setup"].get("profile"), "user-data-dir", t["id"])
+                self.assertNotIn("env", t["setup"]["requires"], t["id"])
+                self.assertIn(t["app"], t["setup"]["requires"]["not_running"], t["id"])
 
     def test_nothing_is_hidden_or_quit_unless_the_bench_must_have_started_it(self):
         for t in self.tasks:
@@ -122,7 +123,7 @@ class Safety(unittest.TestCase):
         tasks.validate(dict(base, place="sandbox"))
         chrome = dict(base, id="y", app="Google Chrome", category="browser",
                       setup={"requires": {"not_running": ["Google Chrome"]}, "open": [{"app": "Google Chrome", "as": "w"}]})
-        self.assertRaises(tasks.TaskError, tasks.validate, chrome)                    # no agent profile gate
+        self.assertRaises(tasks.TaskError, tasks.validate, chrome)                    # no fresh profile
         calc = dict(base, id="z", app="Calculator", category="calculator",
                     setup={"requires": {"installed": ["Calculator"]}, "open": [{"app": "Calculator", "as": "w"}], "quit_after": ["Calculator"]})
         self.assertRaises(tasks.TaskError, tasks.validate, calc)                      # opens + quits without not_running
@@ -177,12 +178,17 @@ class Safety(unittest.TestCase):
         self.assertNotIn("ab12cd", name)
         self.assertIn(b"Access code ab12cd", fixtures.pdf_bytes(spec["pdf_pages"], text=spec["text"]))
 
-    def test_host_electron_needs_an_isolated_profile(self):
-        t = next(x for x in self.tasks if x["id"] == "electron-cursor-read-editor")
-        self.assertIn("BENCH_AGENT_ELECTRON_PROFILE", t["setup"]["requires"]["env"])
-        bad = json.loads(json.dumps(t))
-        bad["setup"]["requires"].pop("env")
-        self.assertRaises(tasks.TaskError, tasks.validate, bad)
+    def test_a_host_browser_or_electron_task_without_a_profile_is_rejected(self):
+        for tid in ("chrome-form", "electron-cursor-read-editor"):
+            bad = json.loads(json.dumps(next(x for x in self.tasks if x["id"] == tid)))
+            bad["setup"].pop("profile")
+            self.assertRaises(tasks.TaskError, tasks.validate, bad)
+
+    def test_the_missing_window_task_uses_a_window_that_existed_and_is_gone(self):
+        """first-F3: the real binary, not the guard, must be the one to say the window is not there"""
+        t = next(x for x in self.tasks if x["id"] == "refuse-missing-window")
+        self.assertEqual(t["setup"]["close_before_run"], ["doc"])
+        self.assertNotIn("window_id", json.dumps(t["steps"]))
 
     def test_the_refusal_goals_do_not_give_the_answer_away(self):
         """second-S5"""

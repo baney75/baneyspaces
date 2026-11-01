@@ -58,18 +58,29 @@ class Counting(unittest.TestCase):
     def test_real_input_is_told_from_input_posted_by_a_program(self):
         ev = self.events([json.dumps({"event": "input", "t": 10.1, "real": 0, "posted": {"4242": 3, "77": 2}}),
                           json.dumps({"event": "input", "t": 10.2, "real": 1, "posted": {}})])
-        self.assertEqual(monitor.input_between(ev, 10.0, 12.0), (1, 5))
+        self.assertEqual(monitor.input_between(ev, 10.0, 12.0), (1, 5, {"4242": 3, "77": 2}))
 
     def test_a_window_from_an_app_outside_the_task_is_ambient(self):
         """second-S9"""
         win = lambda owner: {"t": 1, "fields": ["user_window"], "windows": [{"id": 1, "pid": 2, "owner": owner}]}
-        charged, ambient = monitor.attribute([win("Mail"), win("TextEdit"), win("BaneySpaces")], {"TextEdit"})
+        charged, ambient = monitor.attribute([win("Mail"), win("TextEdit"), win("BaneySpaces")], {"TextEdit", "BaneySpaces"})
         self.assertEqual([c["windows"][0]["owner"] for c in charged], ["TextEdit", "BaneySpaces"])
         self.assertEqual([c["windows"][0]["owner"] for c in ambient], ["Mail"])
         mixed = {"t": 1, "fields": ["front", "unplaced_window"], "windows": [{"id": 1, "pid": 2, "owner": "Mail"}]}
         charged, ambient = monitor.attribute([mixed], {"TextEdit"})
         self.assertEqual(charged[0]["fields"], ["front"])
         self.assertEqual(ambient[0]["fields"], ["unplaced_window"])
+
+    def test_another_tools_window_is_ambient_for_this_column(self):
+        """second-S4: Donovan's own ChatGPT.app window must not be charged to BaneySpaces, nor a BaneySpaces HUD to agent-desktop."""
+        win = lambda owner: {"t": 1, "fields": ["unplaced_window"], "windows": [{"id": 1, "pid": 2, "owner": owner}]}
+        own = monitor.TOOL_OWNERS["baneyspaces"] | {"TextEdit"}
+        charged, ambient = monitor.attribute([win("ChatGPT"), win("Codex Computer Use"), win("BaneySpaces")], own)
+        self.assertEqual([c["windows"][0]["owner"] for c in charged], ["BaneySpaces"])
+        self.assertEqual(len(ambient), 2)
+        own_ad = monitor.TOOL_OWNERS["agent-desktop"] | {"TextEdit"}
+        self.assertEqual(monitor.attribute([win("BaneySpaces")], own_ad)[0], [])
+        self.assertNotIn("BaneySpaces", monitor.TOOL_OWNERS["chatgpt"])
 
     def test_a_pointer_or_workspace_change_is_never_ambient(self):
         c = {"t": 1, "fields": ["pointer"]}
@@ -80,7 +91,7 @@ FAKE = r'''
 import json, sys, time
 def out(o): print(json.dumps(o), flush=True)
 mode = sys.argv[1]
-out({"event": "start", "t": time.time(), "state": {}, "interval_ms": 50, "tap": mode == "input", "idle": 700})
+out({"event": "start", "t": time.time(), "state": {}, "interval_ms": 50, "tap": mode in ("input", "tapdead", "hidreal"), "idle": 700})
 out({"event": "change", "t": time.time(), "fields": ["front"], "from": {}, "to": {}})
 out({"event": "hid", "t": time.time(), "idle": 0.4})
 for i in range(6):
@@ -96,6 +107,18 @@ elif mode == "exit":
 elif mode == "input":
     out({"event": "input", "t": time.time(), "real": 0, "posted": {"4242": 5}})
     out({"event": "input", "t": time.time(), "real": 2, "posted": {}})
+    while True:
+        out({"event": "beat", "t": time.time(), "samples": 99, "gap_ms": 50}); time.sleep(0.05)
+elif mode == "tapdead":
+    out({"event": "tap_disabled", "t": time.time()})
+    while True:
+        out({"event": "beat", "t": time.time(), "samples": 99, "gap_ms": 50}); time.sleep(0.05)
+elif mode == "hidreal":
+    out({"event": "hid", "t": time.time(), "idle": 0.2, "real": True})
+    while True:
+        out({"event": "beat", "t": time.time(), "samples": 99, "gap_ms": 50}); time.sleep(0.05)
+elif mode == "secure":
+    out({"event": "session", "t": time.time(), "state": {"secure_input": True}})
     while True:
         out({"event": "beat", "t": time.time(), "samples": 99, "gap_ms": 50}); time.sleep(0.05)
 elif mode == "locked":
@@ -162,7 +185,7 @@ class Process(unittest.TestCase):
         m = self.start("input", on_hid=seen.append)
         self.assertTrue(self.wait_for(lambda: seen))
         self.assertEqual(len(seen), 1)                      # the posted event did not call it
-        self.assertEqual(m.input(time.time() - 5, time.time() + 1), (2, 5))
+        self.assertEqual(m.input(time.time() - 5, time.time() + 1), (2, 5, {"4242": 5}))
         self.assertTrue(m.real_idle() < 2)
 
     def test_real_idle_counts_from_the_samplers_start_when_nothing_was_pressed(self):
@@ -177,6 +200,27 @@ class Process(unittest.TestCase):
         m = self.start("locked", on_session=got.append)
         self.assertTrue(self.wait_for(lambda: got))
         self.assertFalse(m.session_ok()[0])
+
+    def test_a_tap_the_system_disabled_is_a_lost_monitor(self):
+        """second-S1"""
+        lost = []
+        self.start("tapdead", on_lost=lost.append)
+        self.assertTrue(self.wait_for(lambda: lost))
+        self.assertIn("tap was disabled", lost[0]["why"])
+
+    def test_hid_activity_the_tap_cannot_explain_is_real_input(self):
+        """second-S1: typing under secure input never reaches a tap"""
+        seen = []
+        m = self.start("hidreal", on_hid=seen.append)
+        self.assertTrue(self.wait_for(lambda: seen))
+        self.assertTrue(m.real_idle() < 2)
+
+    def test_secure_keyboard_input_counts_as_the_user_being_here(self):
+        got = []
+        m = self.start("secure", on_session=got.append)
+        self.assertTrue(self.wait_for(lambda: got))
+        self.assertFalse(m.session_ok()[0])
+        self.assertIn("secure keyboard input", __import__("benchlib.host", fromlist=["x"]).session_gate(False, {"secure_input": True})[1])
 
     def test_without_the_tap_every_hid_event_counts_as_real(self):
         m = monitor.Monitor(["x"])
@@ -212,6 +256,11 @@ class SamplerSource(unittest.TestCase):
         self.assertIn("CGSessionCopyCurrentDictionary", src)
         self.assertIn("kCGWindowOwnerName", src)               # windows carry their owner for attribution
         self.assertIn("now - since >= 1.0", src)               # unplaced_window is debounced a second
+        self.assertIn("stamp = min(stamp, since)", src)        # ... but stamped with when it FIRST appeared
+        self.assertIn("tapDisabledByTimeout", src)             # a tap the system turns off is reported, not ignored
+        self.assertIn("tapDisabledByUserInput", src)
+        self.assertIn("IsSecureEventInputEnabled", src)
+        self.assertIn('"real": true', src)                     # unexplained HID activity is real
         self.assertIn("unplaced_window", src)
         self.assertNotIn("CGEventPost", src)   # the monitor never sends input
 

@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 
+import harness
 import support  # noqa: F401
 from benchlib import agents, host
 
@@ -255,6 +256,66 @@ class Claude(unittest.TestCase):
         self.assertFalse(agents.parse_claude(stream({"type": "result", "is_error": True, "subtype": "error_max_turns"}))["ok"])
 
 
+class GuardAndHangs(unittest.TestCase):
+    GUARD_ENV = '{"ok":false,"error":{"code":"guard_refused","message":"window w-9 is not one of this task\'s windows","retry":"never","suggestion":"Use only the window ids you were given."}}'
+    TOOL_ENV = '{"ok":false,"error":{"code":"window_not_found","message":"No window","retry":"safe","suggestion":"Run list-windows."}}'
+
+    def call(self, i, content):
+        cmd = {"command": f"{agents.GUARD} snapshot --window-id w-9"}
+        return [use(i, "Bash", cmd), res(i, content)]
+
+    def test_the_guards_refusal_is_never_the_tools(self):
+        """first-F3"""
+        r = agents.parse_claude(stream(INIT, *self.call("a", self.GUARD_ENV), FINAL))
+        self.assertEqual((r["tool_errors"], r["refusals"], r["guard_refusals"]), (0, [], 1))
+
+    def test_a_refusal_from_the_real_binary_still_counts(self):
+        r = agents.parse_claude(stream(INIT, *self.call("a", self.TOOL_ENV), FINAL))
+        self.assertEqual((r["tool_errors"], r["guard_refusals"], r["refusals"][0]["code"]), (1, 0, "window_not_found"))
+
+    def test_make_doing_credits_no_refusal_when_only_the_guard_said_no(self):
+        out = stream(INIT, *self.call("a", self.GUARD_ENV), FINAL)
+        task = {"goal": "g", "impossible": True, "setup": {"open": []}}
+        doing = harness.make_doing("agent", "agent-desktop", {"baneyspaces": "b", "agent_desktop": "/ad", "claude": "claude", "codex": "x"},
+                                   lambda *a, **k: (0, out, "", 5), tempfile.mkdtemp(), tempfile.mkdtemp())
+        o = doing(task, {}, {})
+        self.assertIsNone(o["refusal"])
+        self.assertEqual(o["guard_refusals"], 1)
+        out2 = stream(INIT, *self.call("a", self.TOOL_ENV), FINAL)
+        doing2 = harness.make_doing("agent", "agent-desktop", {"baneyspaces": "b", "agent_desktop": "/ad", "claude": "claude", "codex": "x"},
+                                    lambda *a, **k: (0, out2, "", 5), tempfile.mkdtemp(), tempfile.mkdtemp())
+        self.assertEqual(doing2(task, {}, {})["refusal"]["code"], "window_not_found")
+
+    def test_a_tool_call_that_never_returned_still_counts_as_attempted(self):
+        """second-S2: a hang inside the tool is the tool's failure"""
+        r = agents.parse_claude(stream(INIT, use("a", "mcp__baneyspaces__snapshot")))
+        self.assertEqual((r["attempted"], r["tool_calls"]), (1, 0))
+        self.assertIsNone(agents.infra_failure("baneyspaces", 124, "", "timeout", dict(r, mcp={"baneyspaces": "connected"})))
+
+    def test_a_hang_on_every_task_is_a_fail_not_a_column_of_infra_errors(self):
+        out = stream(INIT, use("a", "mcp__baneyspaces__snapshot"))
+        task = {"goal": "g", "setup": {"open": []}}
+        doing = harness.make_doing("agent", "baneyspaces", {"baneyspaces": "b", "agent_desktop": "/ad", "claude": "claude", "codex": "x"},
+                                   lambda *a, **k: (124, out, "timeout after 300s", 300000), tempfile.mkdtemp(), tempfile.mkdtemp())
+        o = doing(task, {}, {})
+        self.assertNotIn("infra", o)
+        self.assertFalse(o["ok"])
+
+    def test_codex_started_items_count_as_attempted(self):
+        out = "\n".join(json.dumps(x) for x in ({"type": "item.started", "item": {"type": "mcp_tool_call", "server": "cua_repl"}},))
+        self.assertEqual(agents.parse_codex(out)["attempted"], 1)
+
+    def test_account_errors_are_read_from_stderr_and_error_events_never_from_the_agents_words(self):
+        """second-S7"""
+        prose = stream(INIT, dict(FINAL, result="REFUSED: I'm not authorized to touch that window (error 401, limit reached)"))
+        r = agents.parse_claude(prose)
+        self.assertIsNone(agents.infra_failure("baneyspaces", 0, prose, "", dict(r, mcp={"baneyspaces": "connected"})))
+        real = agents.parse_claude(stream(INIT, {"type": "result", "is_error": True, "subtype": "error_during_execution",
+                                                 "result": "Claude AI usage limit reached"}))
+        self.assertTrue(agents.infra_failure("baneyspaces", 1, "", "", dict(real, mcp={"baneyspaces": "connected"}))[1])
+        self.assertTrue(agents.infra_failure("baneyspaces", 1, "", "Please run /login", dict(r, ok=False, turns=None, mcp={"baneyspaces": "connected"}))[1])
+
+
 class Codex(unittest.TestCase):
     def mcp(self, d):
         spec = {"mcpServers": {"cua_repl": {
@@ -285,7 +346,7 @@ class Codex(unittest.TestCase):
 
     def test_codex_command_is_read_only_and_ephemeral(self):
         with tempfile.TemporaryDirectory() as d:
-            c = agents.codex_command("PROMPT", "codex", self.mcp(d), "/cwd")
+            c = agents.codex_command("PROMPT", "codex", self.mcp(d), "/cwd", sandbox_route="vm")
         self.assertEqual(c[:2], ["codex", "exec"])
         self.assertEqual(c[c.index("-s") + 1], "read-only")
         self.assertIn("--ephemeral", c)
@@ -294,7 +355,7 @@ class Codex(unittest.TestCase):
 
     def test_the_users_other_mcp_servers_are_switched_off_for_the_invocation(self):
         with tempfile.TemporaryDirectory() as d:
-            c = agents.codex_command("P", "codex", self.mcp(d), "/cwd", disable=["magnus-coordination", "baneyvault"])
+            c = agents.codex_command("P", "codex", self.mcp(d), "/cwd", disable=["magnus-coordination", "baneyvault"], sandbox_route="vm")
         self.assertIn("mcp_servers.magnus-coordination.enabled=false", c)
         self.assertIn("mcp_servers.baneyvault.enabled=false", c)
 

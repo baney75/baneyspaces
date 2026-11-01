@@ -27,6 +27,12 @@ PLUGIN_GLOB_ROOT = os.path.expanduser("~/.codex/plugins/cache/openai-bundled/uni
 CHATGPT_APP = "/Applications/ChatGPT.app"
 CUA_NODE = CHATGPT_APP + "/Contents/Resources/cua_node"
 USER_CODEX_CONFIG = os.path.expanduser("~/.codex/config.toml")
+
+
+class SandboxOnly(RuntimeError):
+    """ChatGPT's computer use (Sky/cua_repl) runs ONLY inside the sandbox VM, never on Donovan's Mac."""
+
+
 GUARD = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "agent-desktop-guard")
 
 RULES = (
@@ -109,8 +115,10 @@ def _envelope_error(content):
 def parse_claude(stdout, guard_path=None):
     """Parse `claude -p --output-format stream-json --verbose`.
 
-    -> {ok, turns, cost_usd, text, error, tool_calls, tool_errors, refusals, shortcut, mcp}
-    tool_calls   computer-use calls that came back fine; tool_errors those the TOOL refused (an envelope with ok:false)
+    -> {ok, turns, cost_usd, text, error, tool_calls, tool_errors, attempted, guard_refusals, refusals, shortcut, mcp, error_text}
+    tool_calls   computer-use calls that came back fine; tool_errors those the TOOL refused (an envelope with ok:false);
+    attempted    computer-use calls issued, returned or not; guard_refusals the bench guard's own refusals, which are
+                 never the tool's (its binary was not reached)
     shortcut     a tool other than the computer-use tool actually ran (a denied attempt is not one)
     mcp          {server: status} from the init line, to notice an MCP server that never connected
     Works on a partial stream (a run killed at its timeout still shows the calls it made).
@@ -136,14 +144,17 @@ def parse_claude(stdout, guard_path=None):
                     results[c.get("tool_use_id")] = (bool(c.get("is_error")), c.get("content"))
         elif t == "result":
             final = ev
-    calls = errors = 0
+    calls = errors = attempted = guard_refusals = 0
     refusals, shortcut = [], None
     for uid, (name, inp) in uses.items():
         cu = name.startswith("mcp__baneyspaces") or (name == "Bash" and guard in str(inp.get("command", "")))
         is_err, content = results.get(uid, (True, None))
         if cu:
+            attempted += 1          # issued, whether or not it ever came back (a hang inside the tool is the tool's)
             env_err = _envelope_error(content) if content is not None else None
-            if env_err:
+            if env_err and env_err["code"] == "guard_refused":
+                guard_refusals += 1     # the bench's own guard said no; the tool's binary was never reached
+            elif env_err:
                 errors += 1
                 refusals.append(env_err)
             elif not is_err and content is not None and _result_ok(content):
@@ -152,10 +163,15 @@ def parse_claude(stdout, guard_path=None):
             shortcut = shortcut or name
     if final is None:
         return {"ok": False, "turns": None, "cost_usd": None, "text": "", "tool_calls": calls, "tool_errors": errors,
-                "refusals": refusals, "shortcut": shortcut, "mcp": mcp, "error": "claude printed no result"}
-    return {"ok": not final.get("is_error", False), "turns": final.get("num_turns"), "cost_usd": final.get("total_cost_usd"),
-            "text": str(final.get("result", ""))[:2000], "tool_calls": calls, "tool_errors": errors, "refusals": refusals,
-            "shortcut": shortcut, "mcp": mcp, "error": final.get("subtype") if final.get("is_error") else None}
+                "attempted": attempted, "guard_refusals": guard_refusals, "refusals": refusals, "shortcut": shortcut,
+                "mcp": mcp, "error": "claude printed no result", "error_text": ""}
+    is_err = bool(final.get("is_error", False))
+    return {"ok": not is_err, "turns": final.get("num_turns"), "cost_usd": final.get("total_cost_usd"),
+            "text": str(final.get("result", ""))[:2000], "tool_calls": calls, "tool_errors": errors, "attempted": attempted,
+            "guard_refusals": guard_refusals, "refusals": refusals, "shortcut": shortcut, "mcp": mcp,
+            "error": final.get("subtype") if is_err else None,
+            # account and quota errors are read from here (the result event) and stderr, never from the agent's prose
+            "error_text": (str(final.get("subtype", "")) + " " + str(final.get("result", ""))) if is_err else ""}
 
 
 # ---- codex exec with ChatGPT computer use ----------------------------------------------------------
@@ -232,12 +248,18 @@ def cua_repl_overrides(mcp_json_path, disable=()):
     return out
 
 
-def codex_command(prompt, codex_bin, mcp_json_path, cwd, disable=()):
+def codex_command(prompt, codex_bin, mcp_json_path, cwd, disable=(), sandbox_route=None):
     """codex exec for the ChatGPT column. `-s read-only` confines codex's own shell tool only (and still
     lets it READ files). The cua_repl server is a separate node process codex starts, outside that sandbox,
     and whether its REPL can write files is NOT established. So nothing relies on the sandbox: any shell
     command or non-computer-use tool call is detected in the JSONL and fails the task, the fixture's secret
-    lives only inside a document's content, and the cwd is an empty directory with no path to the fixtures."""
+    lives only inside a document's content, and the cwd is an empty directory with no path to the fixtures.
+
+    Sky/cua_repl never starts on Donovan's Mac: there is no flag or environment variable that allows it. The
+    only way to build this command is to hand over a `sandbox_route` (the VM that will run it), and no such route
+    exists until the phase 2 sandbox does, so on the host this always raises SandboxOnly."""
+    if not sandbox_route:
+        raise SandboxOnly("ChatGPT computer use runs only inside the sandbox VM, never on this Mac")
     return [codex_bin, "exec", "--json", "--ephemeral", "--skip-git-repo-check", "-s", "read-only",
             "-C", cwd, *cua_repl_overrides(mcp_json_path, disable), prompt]
 
@@ -249,7 +271,7 @@ def parse_codex(stdout):
     shortcut     a shell command, or a call to any server other than cua_repl.
     `turns` approximates model round trips as all calls + 1. Works on a partial stream.
     """
-    calls = errors = shell = 0
+    calls = errors = shell = attempted = 0
     other = None
     text, failed, done = "", None, False
     for line in stdout.splitlines():
@@ -259,6 +281,8 @@ def parse_codex(stdout):
             continue
         item = ev.get("item") or {}
         etype = ev.get("type", "")
+        if etype == "item.started" and item.get("type") == "mcp_tool_call" and "cua_repl" in str(item.get("server") or ""):
+            attempted += 1
         if etype == "item.completed":
             kind = item.get("type", "")
             if kind == "command_execution":
@@ -280,7 +304,8 @@ def parse_codex(stdout):
             failed = str(ev.get("message") or ev.get("error") or ev)[:300]
     shortcut = ("a shell command" if shell else None) or other
     return {"ok": done and failed is None, "turns": calls + errors + shell + 1 if done else None, "tool_calls": calls,
-            "tool_errors": errors, "shell_calls": shell, "shortcut": shortcut, "text": text[:2000], "error": failed}
+            "tool_errors": errors, "attempted": max(attempted, calls + errors), "shell_calls": shell, "shortcut": shortcut,
+            "text": text[:2000], "error": failed, "error_text": failed or ""}
 
 
 AUTH_QUOTA = re.compile(r"(rate.?limit|quota|usage limit|limit reached|not logged in|please run /login|log ?in again|"
@@ -297,10 +322,12 @@ def infra_failure(tool, rc, out, err, parsed, timeout_s=AGENT_TIMEOUT_S):
     way (the MCP server will not connect, signed out, quota gone), so the column is stopped and reported
     n/a instead of scoring nothing 30 times.
     """
-    text = f"{err}\n{out}"
-    worked = (parsed.get("tool_calls") or 0) + (parsed.get("tool_errors") or 0)
+    # Account, quota and start-up errors are read from stderr and from the stream's own error events,
+    # never from the agent's prose or a tool's output (an agent may well write "REFUSED: not authorized").
+    text = f"{err}\n{parsed.get('error_text', '')}"
+    worked = max(parsed.get("attempted") or 0, (parsed.get("tool_calls") or 0) + (parsed.get("tool_errors") or 0))
     if tool == "chatgpt" and MCP_FAIL.search(text) and not worked:
-        return "cua_repl did not start: " + (err or out).strip()[:200], True
+        return "cua_repl did not start: " + (err or parsed.get("error_text") or out).strip()[:200], True
     if tool == "baneyspaces":
         status = (parsed.get("mcp") or {}).get("baneyspaces")
         if status is not None and status != "connected":
@@ -308,7 +335,7 @@ def infra_failure(tool, rc, out, err, parsed, timeout_s=AGENT_TIMEOUT_S):
         if "mcp" in parsed and parsed["mcp"] == {} and parsed.get("turns") is not None and not worked:
             return "claude listed no MCP servers: baneyspaces mcp did not start", True
     if AUTH_QUOTA.search(text) and not worked:
-        return "account or quota error: " + (err or out).strip()[:200], True
+        return "account or quota error: " + (err or parsed.get("error_text") or "").strip()[:200], True
     if rc == 124 and not worked:
         return f"timed out after {timeout_s} s with no computer-use call", False
     if parsed.get("turns") is None and not parsed.get("ok") and not worked and rc != 124:

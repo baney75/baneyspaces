@@ -19,7 +19,7 @@ class IdleGate(unittest.TestCase):
     def run_it(self, seconds, *args):
         with tempfile.TemporaryDirectory() as d:
             fake_ioreg(d, seconds)
-            env = dict(os.environ, PATH=d + os.pathsep + os.environ["PATH"], BENCH_BANEYSPACES="/bin/echo")
+            env = dict(os.environ, PATH=d + os.pathsep + os.environ["PATH"], BENCH_BANEYSPACES="/bin/echo", BENCH_AGENT_DESKTOP="/bin/echo")
             return subprocess.run([RUN, *args], capture_output=True, text=True, env=env, timeout=60)
 
     def test_active_user_exits_3_with_the_message_and_does_nothing(self):
