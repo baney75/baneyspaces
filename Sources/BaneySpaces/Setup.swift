@@ -421,7 +421,7 @@ struct SetupView: View {
                 // About the app as a whole, so only under General; on another tab it read like a stray note.
                 if model.tab == .general {
                     Text("Full screen works as usual; switching workspaces takes a window out of it first. Change anything later with Settings… in the menu bar icon's menu (⌘,).")
-                        .font(.footnote).foregroundStyle(.secondary)
+                        .font(Chrome.font(10)).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
@@ -438,19 +438,19 @@ struct SetupView: View {
         HStack(spacing: 14) {
             Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 56, height: 56)
             VStack(alignment: .leading, spacing: 2) {
-                Text("BaneySpaces").font(.title2.bold())
+                Text("BaneySpaces").font(Chrome.font(17, .bold))
                 Text("Nine workspaces. One row of keys.").foregroundStyle(.secondary)
             }
         }
 
         if model.justEnabled && model.ready {
             HStack(spacing: 10) {
-                Image(systemName: "checkmark.seal.fill").font(.title2).foregroundStyle(.green)
-                Text("BaneySpaces is on. Try \(model.modifier.symbol)2.").font(.title3.bold())
+                Image(systemName: "checkmark.seal.fill").font(Chrome.font(17)).foregroundStyle(.green)
+                Text("BaneySpaces is on. Try \(model.modifier.symbol)2.").font(Chrome.font(15, .bold))
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 10).fill(Color.green.opacity(0.12)))
+            .background(Chrome.shape(.settingsCallout, continuous: false).fill(Color.green.opacity(0.12)))
         }
 
         step(done: model.trusted, title: "Let BaneySpaces arrange windows") {
@@ -465,17 +465,17 @@ struct SetupView: View {
                 .controlSize(.large)
                 .buttonStyle(.borderedProminent)
                 Text("macOS opens its settings. Turn on BaneySpaces in the list and come back; this window updates by itself.")
-                    .font(.callout).foregroundStyle(.secondary)
+                    .font(Chrome.font(12)).foregroundStyle(.secondary)
                 if model.staleGrant {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Already switched on and still not working?").font(.callout.bold())
+                        Text("Already switched on and still not working?").font(Chrome.font(12, .bold))
                         Text("macOS kept an old permission from an earlier copy of BaneySpaces. Fixing it removes the old entry and asks again.")
-                            .font(.callout).foregroundStyle(.secondary)
+                            .font(Chrome.font(12)).foregroundStyle(.secondary)
                         Button(model.fixing ? "Fixing…" : "Fix Permission", action: model.fixPermission)
                             .disabled(model.fixing)
                     }
                     .padding(10)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.12)))
+                    .background(Chrome.shape(.settingsCell, continuous: false).fill(Color.orange.opacity(0.12)))
                 }
             }
         }
@@ -507,7 +507,7 @@ struct SetupView: View {
             Toggle("Open BaneySpaces at login", isOn: Binding(get: { model.openAtLogin }, set: { model.setOpenAtLogin($0) }))
             if model.loginNeedsApproval {
                 HStack {
-                    Text("macOS needs you to approve it in Login Items.").font(.callout).foregroundStyle(.secondary)
+                    Text("macOS needs you to approve it in Login Items.").font(Chrome.font(12)).foregroundStyle(.secondary)
                     Spacer()
                     Button("Approve in Login Items") { SMAppService.openSystemSettingsLoginItems() }
                 }
@@ -518,7 +518,7 @@ struct SetupView: View {
             // Text across the full width, the button under it, as the Allow step lays out; side by
             // side, the text wrapped into a narrow four-line column beside a floating button.
             Text("Puts back your windows, the macOS Dock, the screenshot and Spotlight shortcuts and your Claude Code settings as they were, then removes BaneySpaces.")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(Chrome.font(12)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Button("Uninstall BaneySpaces…") { model.onUninstall?() }
         }
@@ -538,17 +538,17 @@ struct SetupView: View {
                 GridRow { Text("\(model.modifier.symbol)1 – \(model.modifier.symbol)9").monospaced(); Text("go to a workspace") }
                 GridRow { Text("\(model.modifier.symbol)⇧1 – \(model.modifier.symbol)⇧9").monospaced(); Text("send the front window there") }
             }
-            Text(model.modifier.tradeoff).font(.callout).foregroundStyle(.secondary)
+            Text(model.modifier.tradeoff).font(Chrome.font(12)).foregroundStyle(.secondary)
             ForEach(model.conflicts, id: \.self) { c in
                 HStack {
-                    Text(c).font(.callout).foregroundStyle(.secondary)
+                    Text(c).font(Chrome.font(12)).foregroundStyle(.secondary)
                     Spacer()
                     Button(model.freeing ? "Working…" : "Free Them", action: model.freeShortcuts).disabled(model.freeing)
                 }
             }
             if model.screenshotsFreed && model.conflicts.isEmpty {
                 HStack {
-                    Text("macOS's own shortcuts for these keys are off.").font(.callout).foregroundStyle(.secondary)
+                    Text("macOS's own shortcuts for these keys are off.").font(Chrome.font(12)).foregroundStyle(.secondary)
                     Spacer()
                     Button(model.freeing ? "Working…" : "Turn Them Back On", action: model.restoreShortcuts).disabled(model.freeing)
                 }
@@ -559,28 +559,28 @@ struct SetupView: View {
             Toggle("Use BaneySpaces' overview instead of Mission Control", isOn: Binding(get: { model.viewerKeys }, set: { model.setViewerKeys($0) }))
             if model.viewerKeysFailed {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Already switched on and still not working?").font(.callout.bold())
+                    Text("Already switched on and still not working?").font(Chrome.font(12, .bold))
                     Text("macOS wouldn't let BaneySpaces watch the Mission Control key and ⌃↑, so macOS's Mission Control stays on until it does. Usually macOS kept an old permission from an earlier copy of BaneySpaces. Fixing it removes the old entry and asks again. The overview is always in the menu bar menu (Show All Workspaces).")
-                        .font(.callout).foregroundStyle(.secondary)
+                        .font(Chrome.font(12)).foregroundStyle(.secondary)
                     Button(model.fixing ? "Fixing…" : "Fix Permission", action: model.fixPermission)
                         .disabled(model.fixing)
                 }
                 .padding(10)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.12)))
+                .background(Chrome.shape(.settingsCell, continuous: false).fill(Color.orange.opacity(0.12)))
             } else {
                 Text("The Mission Control key, ⌃↑, a swipe up with three or four fingers (as your trackpad settings have it) and any hot corner set to Mission Control open the overview; a swipe down closes it. macOS's Mission Control is switched off in the Dock while BaneySpaces runs, and comes back, with your hot corners as they were, when you turn this off or quit. A Magic Mouse's two-finger double tap opens nothing while this is on.")
-                    .font(.callout).foregroundStyle(.secondary)
+                    .font(Chrome.font(12)).foregroundStyle(.secondary)
             }
             if let problem = model.missionControlFailed {
                 Text("macOS's Mission Control is still on. \(problem) BaneySpaces tries again every few minutes.")
-                    .font(.callout).foregroundStyle(.orange)
+                    .font(Chrome.font(12)).foregroundStyle(.orange)
             }
             if let problem = model.trackpadFailed {
-                Text(problem).font(.callout).foregroundStyle(.orange)
+                Text(problem).font(Chrome.font(12)).foregroundStyle(.orange)
             }
             Toggle("Dragging a window to the top of the screen opens the overview", isOn: Binding(get: { model.topDrag }, set: { model.setTopDrag($0) }))
             Text("Let go over a workspace to send the window there; let go at the top and it fills the screen. Mission Control for that drag stays off while this is on, and comes back when you turn it off.")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(Chrome.font(12)).foregroundStyle(.secondary)
         }
 
         section("⌘Tab") {
@@ -588,7 +588,7 @@ struct SetupView: View {
                 ForEach(MissionControlKeys.CmdTabMode.allCases) { Text($0.title).tag($0) }
             }
             .fixedSize()
-            Text(cmdTabNote).font(.callout).foregroundStyle(.secondary)
+            Text(cmdTabNote).font(Chrome.font(12)).foregroundStyle(.secondary)
         }
     }
 
@@ -598,7 +598,7 @@ struct SetupView: View {
         section("Workspace Dock") {
             Toggle("Workspace Dock in place of the macOS Dock", isOn: Binding(get: { model.workspaceDock }, set: { model.setWorkspaceDock($0) }))
             Text("Rest the pointer on the dock's edge of the screen to see your workspaces, each with its apps; click one to go there. At the top it waits a moment longer, so reaching for the menu bar doesn't bring it up. The macOS Dock stays out of sight while this is on and comes back as it was when you turn it off or quit BaneySpaces.")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(Chrome.font(12)).foregroundStyle(.secondary)
             Picker("Position on screen", selection: Binding(get: { model.dockEdge }, set: { model.dockEdge = $0; model.onDockEdgeChange?($0) })) {
                 ForEach(DockEdge.allCases, id: \.self) { Text($0.title).tag($0) }
             }
@@ -612,13 +612,13 @@ struct SetupView: View {
                 legend(AgentStatusBadge(state: .working, size: 16), "Working")
                 legend(AgentStatusBadge(state: .asking, size: 16), "Asking you something, such as a permission")
                 legend(AgentStatusBadge(state: .failed, size: 16), "Stopped on an error")
-                legend(Text("1").font(.system(size: 10, weight: .heavy, design: .rounded)).foregroundStyle(.white)
+                legend(Text("1").font(Chrome.font(10, .heavy, rounded: true)).foregroundStyle(Chrome.light())
                         .frame(width: 16, height: 16).background(Circle().fill(Color.orange)),
                        "Finished while you were away (on the workspace's corner)")
             }
             .opacity(model.dockAgentStatus && model.workspaceDock ? 1 : 0.4)
             Text("Click an app with a badge to go straight to that agent's tab. Off, the dock shows apps only.")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(Chrome.font(12)).foregroundStyle(.secondary)
         }
 
         if !model.finished.isEmpty {
@@ -635,17 +635,17 @@ struct SetupView: View {
         section("Agent hooks") {
             if model.hooks == .noClaudeCode {
                 Text("Claude Code isn't set up on this Mac (there's no ~/.claude/settings.json). Once it is, install the hooks here.")
-                    .font(.callout).foregroundStyle(.secondary)
+                    .font(Chrome.font(12)).foregroundStyle(.secondary)
                 Button("Install Claude Code and Grok Hooks", action: model.installHooks)
             } else if model.hooks == .unreadable {
                 Text("~/.claude/settings.json isn't valid JSON, so BaneySpaces leaves it alone. Fix it, then come back here.")
-                    .font(.callout).foregroundStyle(.orange)
+                    .font(Chrome.font(12)).foregroundStyle(.orange)
             } else if model.hooks == .on {
                 Label("Claude Code and Grok report to BaneySpaces.", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
             } else {
                 Text("Hooks let Claude Code and Grok say when they start, finish, ask for permission or hit an error. Without them BaneySpaces reads only terminal titles.")
-                    .font(.callout).foregroundStyle(.secondary)
+                    .font(Chrome.font(12)).foregroundStyle(.secondary)
                 Button("Install Claude Code and Grok Hooks", action: model.installHooks)
             }
         }
@@ -654,7 +654,7 @@ struct SetupView: View {
     private func legend<Badge: View>(_ badge: Badge, _ text: String) -> some View {
         GridRow {
             badge.frame(width: 18, alignment: .center)
-            Text(text).font(.callout)
+            Text(text).font(Chrome.font(12))
         }
     }
 
@@ -663,12 +663,12 @@ struct SetupView: View {
     @ViewBuilder private var automation: some View {
         section("Keep usable by automation") {
             Text("Checked apps aren't hidden on other workspaces, so automation tools can still click and type in them. Their windows are parked just out of view instead.")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(Chrome.font(12)).foregroundStyle(.secondary)
             if let why = model.automationReason {
-                Text(why).font(.callout).foregroundStyle(.orange)
+                Text(why).font(Chrome.font(12)).foregroundStyle(.orange)
             }
             if model.parkedRows.isEmpty {
-                if model.automationReason == nil { Text("No apps with windows yet.").font(.callout).foregroundStyle(.secondary) }
+                if model.automationReason == nil { Text("No apps with windows yet.").font(Chrome.font(12)).foregroundStyle(.secondary) }
             } else {
                 // Past eight, the list scrolls, so the window never runs off a laptop screen.
                 ScrollView {
@@ -687,7 +687,7 @@ struct SetupView: View {
 
         section("If windows get tangled") {
             Text("Gathers every window onto workspace 1, all visible. It gets you out of any tangle.")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(Chrome.font(12)).foregroundStyle(.secondary)
             Button("Bring Every Window Back") { model.onBringBack?() }.disabled(model.automationReason != nil)
         }
     }
@@ -701,12 +701,12 @@ struct SetupView: View {
                 Label(notice.menuTitle, systemImage: "arrow.down.circle")
             } else if let notice = model.update.notice {
                 HStack {
-                    Label(notice.sentence, systemImage: "arrow.down.circle.fill").font(.headline)
+                    Label(notice.sentence, systemImage: "arrow.down.circle.fill").font(Chrome.font(13, .bold))
                     Spacer()
                     Button(notice.menuTitle) { model.onOfferUpdate?() }
                 }
                 Text("Shows what's new first. Nothing installs until you press Update Now.")
-                    .font(.callout).foregroundStyle(.secondary)
+                    .font(Chrome.font(12)).foregroundStyle(.secondary)
             }
             Picker("Follow", selection: Binding(get: { model.update.channel }, set: { model.setUpdateChannel($0) })) {
                 Text("Stable: tested releases").tag(UpdateChannel.stable)
@@ -721,10 +721,10 @@ struct SetupView: View {
             HStack(spacing: 14) {
                 Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 48, height: 48)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("BaneySpaces").font(.title3.bold())
+                    Text("BaneySpaces").font(Chrome.font(15, .bold))
                     Text("Nine workspaces on one keyboard row.").foregroundStyle(.secondary)
                     Text("\(model.modifier.symbol)1–\(model.modifier.symbol)9 to switch. Add ⇧ to bring the window along.")
-                        .font(.callout).foregroundStyle(.secondary)
+                        .font(Chrome.font(12)).foregroundStyle(.secondary)
                 }
             }
             Button("About BaneySpaces…") { model.onAbout?() }
@@ -735,6 +735,15 @@ struct SetupView: View {
 
     @ViewBuilder private var appearanceTab: some View {
         appearancePreview
+
+        section("Theme") {
+            HStack(spacing: 10) {
+                ForEach(ThemeID.allCases, id: \.self) { t in
+                    ThemeCard(theme: t, selected: appearance.settings.theme == t) { appearance.settings.theme = t }
+                }
+            }
+            paletteMenu
+        }
 
         section("Accent") {
             HStack(spacing: 7) {
@@ -747,11 +756,11 @@ struct SetupView: View {
                 Button { appearance.settings.accent = .system } label: {
                     HStack(spacing: 5) {
                         Circle().fill(Appearance.color(Appearance.systemAccent)).frame(width: 10, height: 10)
-                        Text("System").font(.callout)
+                        Text("System").font(Chrome.font(12))
                     }
                     .padding(.horizontal, 8).padding(.vertical, 3)
-                    .background(Capsule().strokeBorder(appearance.settings.accent == .system ? Color.primary : Color.secondary.opacity(0.35),
-                                                       lineWidth: appearance.settings.accent == .system ? 2 : 1))
+                    .background(Chrome.pill().strokeBorder(appearance.settings.accent == .system ? Color.primary : Color.secondary.opacity(0.35),
+                                                       lineWidth: Chrome.width(.settingsTile, focused: appearance.settings.accent == .system)))
                 }
                 .buttonStyle(.plain)
                 .help("Follow the accent color in System Settings")
@@ -793,12 +802,12 @@ struct SetupView: View {
                                 appearance.settings.overrides[n] = rgb
                             }), supportsOpacity: false)
                             .labelsHidden()
-                        Text("\(n)").font(.caption2.weight(.semibold)).foregroundStyle(appearance.settings.overrides[n] == nil ? Color.secondary : Color.primary)
+                        Text("\(n)").font(Chrome.font(10, .semibold)).foregroundStyle(appearance.settings.overrides[n] == nil ? Color.secondary : Color.primary)
                     }
                 }
             }
             Text("Click a color to change one workspace. Bright colors are dimmed so the numbers stay readable.")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(Chrome.font(12)).foregroundStyle(.secondary)
         }
 
         section("Panels") {
@@ -813,10 +822,10 @@ struct SetupView: View {
                     .frame(width: 120)
                     .disabled(appearance.settings.panelStyle == .solid)
                 Text("\(Int((appearance.settings.effectivePanelOpacity * 100).rounded()))%")
-                    .font(.callout.monospacedDigit()).foregroundStyle(.secondary).frame(width: 40, alignment: .trailing)
+                    .font(Chrome.font(12).monospacedDigit()).foregroundStyle(.secondary).frame(width: 40, alignment: .trailing)
             }
             Text("Dock, ⌘Tab, launcher, overview and switch overlay. Solid is always opaque.")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(Chrome.font(12)).foregroundStyle(.secondary)
         }
 
         section("Dock size") {
@@ -824,6 +833,34 @@ struct SetupView: View {
                 ForEach(DockSize.allCases, id: \.self) { Text($0.title).tag($0) }
             }
             .pickerStyle(.segmented).labelsHidden().frame(width: 220)
+        }
+    }
+
+    /// Auto and the 22 palettes, each with its swatch.
+    private var paletteMenu: some View {
+        HStack(spacing: 8) {
+            Text("Palette").font(Chrome.font(12))
+            Menu {
+                paletteItem(AppearanceSettings.autoPalette, "Auto")
+                Divider()
+                ForEach(PaletteCatalog.shared.palettes) { p in paletteItem(p.name, p.name) }
+            } label: {
+                let name = appearance.settings.colorPalette
+                Label { Text(name == AppearanceSettings.autoPalette ? "Auto" : name) } icon: {
+                    Image(nsImage: PaletteSwatch.image(appearance.look.palette))
+                }
+            }
+            .fixedSize()
+            Text(appearance.settings.colorPalette == AppearanceSettings.autoPalette
+                 ? "Auto: the panels' own dark look with your accent." : "Any theme takes any palette.")
+                .font(Chrome.font(10)).foregroundStyle(.secondary)
+        }
+    }
+
+    private func paletteItem(_ name: String, _ title: String) -> some View {
+        Button { appearance.settings.colorPalette = name } label: {
+            let palette = PaletteCatalog.shared.named(name) ?? Palette.auto(accent: appearance.accentRGB)
+            Label { Text(title) } icon: { Image(nsImage: PaletteSwatch.image(palette)) }
         }
     }
 
@@ -835,18 +872,18 @@ struct SetupView: View {
                 let current = n == 2
                 let tint = Chrome.workspace(n)
                 VStack(spacing: 3) {
-                    RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .fill(current ? tint.opacity(0.26) : Color.white.opacity(0.06))
-                        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous)
-                            .strokeBorder(current ? Chrome.accent : Color.white.opacity(0.08), lineWidth: current ? 2 : 1))
-                        .overlay(Image(systemName: "app.fill").font(.system(size: 18 * k)).foregroundStyle(.white.opacity(0.35)))
+                    Chrome.shape(.settingsTile)
+                        .fill(current ? Chrome.lit(tint, 0.26) : Chrome.cell(0.06))
+                        .overlay(Chrome.shape(.settingsTile)
+                            .strokeBorder(current ? Chrome.accent : Chrome.edge(0.08), lineWidth: Chrome.width(.settingsTile, focused: current)))
+                        .overlay(Image(systemName: "app.fill").font(.system(size: 18 * k)).foregroundStyle(Chrome.wash(0.35)))
                         .frame(width: 44 * k, height: 44 * k)
                     WorkspaceBadge(n: n, size: 16)
                 }
             }
         }
         .padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 8)
-        .background(Chrome.panelBackground(cornerRadius: 18))
+        .background(Chrome.panelBackground(.settingsPanel))
         .environment(\.colorScheme, .dark)
         .frame(maxWidth: .infinity)
         .padding(.vertical, 4)
@@ -857,7 +894,7 @@ struct SetupView: View {
     private func swatch(_ color: Color, selected: Bool, name: String, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Circle().fill(color).frame(width: 20, height: 20)
-                .overlay(Circle().strokeBorder(Color.primary.opacity(selected ? 0.9 : 0.15), lineWidth: selected ? 2 : 1))
+                .overlay(Circle().strokeBorder(Color.primary.opacity(selected ? 0.9 : 0.15), lineWidth: Chrome.width(.settingsTile, focused: selected)))
                 .padding(2)
         }
         .buttonStyle(.plain)
@@ -872,7 +909,7 @@ struct SetupView: View {
         section("Find and install apps") {
             Toggle("⌘Space opens the BaneySpaces launcher instead of Spotlight", isOn: Binding(get: { model.launcherOnCmdSpace }, set: { model.setLauncher($0) }))
             Text("Open apps, install and remove them, find files, terminal tabs and splits, browser tabs and agent windows, search the web and ask an agent, from one box. ⌃⌘K opens it from any app. Off gives ⌘Space back to Spotlight; the launcher stays in the menu bar, the Workspace Dock and ⌃⌘K.")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(Chrome.font(12)).foregroundStyle(.secondary)
             Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 6) {
                 GridRow {
                     Text("Search the web with")
@@ -886,16 +923,19 @@ struct SetupView: View {
                 }
             }
             Text("Type !yt cats, !i sunsets or ? a question. Type ! to see every bang.")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(Chrome.font(12)).foregroundStyle(.secondary)
         }
         section("Your bangs\(model.customBangs.isEmpty ? "" : " (\(model.customBangs.count))")") { bangEditor }
     }
 
     private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(.headline)
+        let themed = Chrome.theme != .baneyspaces
+        return VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(Chrome.font(13, .bold))
             content()
         }
+        .padding(themed ? 6 : 0)
+        .overlay { if themed { Chrome.shape(.settingsCallout).strokeBorder(Chrome.edge(0.1), lineWidth: Chrome.width(.settingsCallout)) } }
         .frame(maxWidth: .infinity, alignment: .leading)
         // Notes wrap instead of trailing off.
         .fixedSize(horizontal: false, vertical: true)
@@ -911,7 +951,7 @@ struct SetupView: View {
                         HStack {
                             Text("!\(b.trigger)").monospaced().frame(width: 70, alignment: .leading)
                             Text(b.name + (b.isAgent ? " (agent)" : "")).lineLimit(1)
-                            Text(b.url).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                            Text(b.url).font(Chrome.font(10)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                             Spacer()
                             Button { model.removeBang(b.trigger) } label: { Image(systemName: "minus.circle") }
                                 .buttonStyle(.borderless).help("Remove !\(b.trigger)")
@@ -931,15 +971,15 @@ struct SetupView: View {
                 Spacer()
                 Button("Add Bang", action: model.addBang)
             }
-            if let why = model.bangProblem { Text(why).font(.callout).foregroundStyle(.orange) }
+            if let why = model.bangProblem { Text(why).font(Chrome.font(12)).foregroundStyle(.orange) }
             Text(verbatim: "A bang with a built-in's trigger replaces it. Agents and scripts can add them too:")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(Chrome.font(10)).foregroundStyle(.secondary)
             Text(verbatim: "~/Applications/BaneySpaces.app/Contents/MacOS/BaneySpaces --bangs add jira Jira 'https://acme.atlassian.net/browse/{q}'")
-                .font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+                .font(Chrome.font(10).monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(10)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
+        .background(Chrome.shape(.settingsCell, continuous: false).fill(Color.secondary.opacity(0.08)))
     }
 
     private var cmdTabNote: String {
@@ -953,11 +993,11 @@ struct SetupView: View {
     private func step<Content: View>(done: Bool, title: String, symbol: String? = nil, @ViewBuilder content: () -> Content) -> some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: symbol ?? (done ? "checkmark.circle.fill" : "circle"))
-                .font(.title3)
+                .font(Chrome.font(15))
                 .foregroundStyle(symbol != nil ? Color.secondary : done ? Color.green : Color.secondary)
                 .frame(width: 22)
             VStack(alignment: .leading, spacing: 8) {
-                Text(title).font(.headline)
+                Text(title).font(Chrome.font(13, .bold))
                 content()
             }
         }

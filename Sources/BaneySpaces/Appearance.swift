@@ -114,13 +114,17 @@ final class Appearance: ObservableObject {
 /// redraws even when its parent doesn't.
 struct PanelBackground: View {
     let surface: Surface
+    /// Another theme's look and a smaller scale: Settings' previews of each theme.
+    var look: Look?
+    var scale: CGFloat = 1
     @ObservedObject private var appearance = Appearance.shared
 
     var body: some View {
-        let look = appearance.look
-        let p = PanelLook.make(surface, look: look, settings: appearance.settings, accent: appearance.accentRGB)
-        let shape = RoundedRectangle(cornerRadius: CGFloat(p.radius), style: .continuous)
+        let l = look ?? appearance.look
+        let p = PanelLook.make(surface, look: l, settings: appearance.settings, accent: appearance.accentRGB)
+        let shape = RoundedRectangle(cornerRadius: CGFloat(p.radius) * scale, style: .continuous)
         let border = Appearance.color(p.border.color)
+        let shadow = Appearance.color(l.color("sunken")).opacity(p.shadow?.opacity ?? 0)
         shape.fill(p.blur ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(Color.clear))
             // Dark enough that text in the windows behind never reads through (Omarchy: fully opaque).
             .overlay(shape.fill(Appearance.color(p.fill).opacity(p.fillOpacity)))
@@ -129,7 +133,7 @@ struct PanelBackground: View {
             }
             // BaneySpaces: a light top edge and a faint outline, like glass catching light. Others: one solid line.
             .overlay(shape.strokeBorder(LinearGradient(colors: [border.opacity(p.border.top), border.opacity(p.border.bottom)],
-                                                       startPoint: .top, endPoint: .bottom), lineWidth: CGFloat(p.border.width)))
-            .shadow(color: Chrome.shade(p.shadow?.opacity ?? 0), radius: CGFloat(p.shadow?.radius ?? 0), y: CGFloat(p.shadow?.y ?? 0))
+                                                       startPoint: .top, endPoint: .bottom), lineWidth: CGFloat(p.border.width) * scale))
+            .shadow(color: shadow, radius: CGFloat(p.shadow?.radius ?? 0) * scale, y: CGFloat(p.shadow?.y ?? 0) * scale)
     }
 }

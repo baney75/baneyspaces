@@ -314,3 +314,78 @@ enum MenuBarMark {
         return image
     }
 }
+
+/// A palette as a strip of its colors: background, surface, accent and text.
+enum PaletteSwatch {
+    static func image(_ p: Palette) -> NSImage {
+        let roles = ["background", "surface", "accent", "foreground"]
+        let img = NSImage(size: NSSize(width: 44, height: 14), flipped: false) { rect in
+            let w = rect.width / CGFloat(roles.count)
+            for (i, role) in roles.enumerated() {
+                (p.color(role) ?? RGB(r: 0.5, g: 0.5, b: 0.5)).nsColor.setFill()
+                NSRect(x: CGFloat(i) * w, y: 0, width: w, height: rect.height).fill()
+            }
+            NSColor.separatorColor.setStroke()
+            NSBezierPath(rect: rect.insetBy(dx: 0.5, dy: 0.5)).stroke()
+            return true
+        }
+        return img
+    }
+}
+
+/// One theme, drawn small in its own shape and type, in the palette now chosen. Click to use it.
+struct ThemeCard: View {
+    let theme: ThemeID
+    let selected: Bool
+    let action: () -> Void
+    @ObservedObject private var appearance = Appearance.shared
+
+    var body: some View {
+        let look = Look(theme: theme, palette: appearance.settings.colorPalette, accent: appearance.accentRGB)
+        let bar = SurfaceStyle.make(.dockBar, theme: theme, spec: look.spec)
+        let tile = SurfaceStyle.make(.dockTile, theme: theme, spec: look.spec)
+        // A fifth of the real dock, which is 64 pt tiles in the BaneySpaces theme.
+        let s: CGFloat = 0.42
+        Button(action: action) {
+            VStack(spacing: 6) {
+                HStack(spacing: CGFloat(bar.gap) * s) {
+                    ForEach(1...3, id: \.self) { n in
+                        let current = n == 2
+                        let tint = Appearance.color(look.color("workspace", workspace: Appearance.shared.settings.workspaceColor(n, accent: appearance.accentRGB).rgb))
+                        let edge = Appearance.color(look.color(current ? tile.focusedBorderRole : tile.borderRole, workspace: Appearance.shared.settings.workspaceColor(n, accent: appearance.accentRGB).rgb))
+                        let shape = RoundedRectangle(cornerRadius: CGFloat(tile.radius) * s, style: .continuous)
+                        shape.fill(current ? tint.opacity(0.35) : Appearance.color(look.color("foreground")).opacity(0.08))
+                            .overlay(shape.strokeBorder(edge.opacity(current ? 1 : (tile.borderOpacity ?? 0.2)),
+                                                        lineWidth: CGFloat(current ? tile.focusedBorderWidth : tile.borderWidth) * s * 1.6))
+                            .overlay(mark(n, look: look, tint: tint, current: current))
+                            .frame(width: CGFloat(tile.tile) * s, height: CGFloat(tile.tile) * s)
+                    }
+                }
+                .padding(CGFloat(bar.padding) * s)
+                .background(PanelBackground(surface: .dockBar, look: look, scale: s))
+                Text(look.spec.label).font(Chrome.font(11, selected ? .semibold : .regular))
+            }
+            .padding(6)
+            .frame(maxWidth: .infinity)
+            .overlay(Chrome.shape(.settingsCallout).strokeBorder(selected ? Chrome.accent : Chrome.edge(0.1), lineWidth: Chrome.width(.settingsTile, focused: selected)))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(look.spec.label) theme\(selected ? ", selected" : "")")
+        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+    }
+
+    @ViewBuilder private func mark(_ n: Int, look: Look, tint: Color, current: Bool) -> some View {
+        let fg = Appearance.color(look.color("foreground"))
+        switch look.spec.indicator {
+        case .dot:
+            Text("\(n)").font(.system(size: 9, weight: .bold, design: .rounded)).foregroundStyle(fg)
+        case .numberBlock:
+            Text("\(n)").font(.system(size: 9, weight: .bold, design: .monospaced)).foregroundStyle(current ? tint : fg)
+        case .bar:
+            VStack(spacing: 1) {
+                Text("\(n)").font(.system(size: 9, weight: .regular)).foregroundStyle(fg)
+                Rectangle().fill(tint).frame(width: 10, height: 1.5)
+            }
+        }
+    }
+}
