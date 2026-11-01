@@ -168,8 +168,10 @@ eq "an app that is open takes you to its window (workspace shown in the row)" "$
 check "the open app's row says which workspace it is on" sh -c "baneyspaces launcher search chromium | jq -e '.data.results[0].subtitle|test(\"workspace\")'"
 R="$(baneyspaces launcher search chromium | jq -r '.data.results[0].id')"
 baneyspaces switch 4 >/dev/null; sleep 0.2
-baneyspaces launcher search chromium >/dev/null; baneyspaces launcher run "$R" >/dev/null; sleep 0.4
-eq "Return on an open app goes to its window, on the display you are on" "$(active)" "$(addr_of Docs)"
+# --alt: the modifier goes to the app. Plain Return would start another chromium here (behavior.launcher.open = here), and a real
+# chromium hands a new window to the user's own running one: the open-here cases below use fake apps only.
+baneyspaces launcher search chromium >/dev/null; baneyspaces launcher run "$R" --alt >/dev/null; sleep 0.4
+eq "Alt+Return on an open app goes to its window, on the display you are on" "$(active)" "$(addr_of Docs)"
 eq "workspaces are searchable by number" "$(baneyspaces launcher search 5 | jq -r '.data.results[0].id')" "ws:5"
 eq "a bang goes to its site" "$(baneyspaces launcher search '!yt lofi & chill' | jq -r '.data.results[0].id')" "bang:yt"
 baneyspaces launcher search '!yt lofi & chill' >/dev/null
@@ -339,7 +341,7 @@ check "the releases of Alt and Super are bound in the compositor" test "$(H bind
 baneyspaces focus-monitor $M1 >/dev/null; baneyspaces switch 1 >/dev/null; sleep 0.4
 layer_up() { H layers | grep -c 'baneyspaces-switcher\|baneyspaces-overview'; }
 watch_layers() { # watch_layers <seconds> <outfile>: the overlay layers present, sampled every 20 ms
-  ( end=$(( $(date +%s%N) + $1 * 1000000000 )); : > "$2"; while [ "$(date +%s%N)" -lt "$end" ]; do layer_up >> "$2"; sleep 0.02; done ) &
+  ( end=$(( $(date +%s%N) + $(awk "BEGIN{printf \"%d\", $1*1000000000}") )); : > "$2"; while [ "$(date +%s%N)" -lt "$end" ]; do layer_up >> "$2"; sleep 0.02; done ) &
 }
 expected_target() { baneyspaces switcher next >/dev/null; baneyspaces ui | jq -r '.data.switcher.items[1].window'; baneyspaces switcher cancel >/dev/null; }
 tap() { # tap <ms>: Alt+Tab pressed and let go after <ms>
@@ -480,6 +482,66 @@ echo "== launcher results belong to the search that made them"
 S1="$(baneyspaces launcher search foot --mode apps | jq -r '.data.seq')"; S2="$(baneyspaces launcher search chrom --mode apps | jq -r '.data.seq')"
 check "each search has its own number, rising" test "$S2" -gt "$S1"
 eq "a result of the older search is refused once a newer one exists" "$(baneyspaces launcher run app:foot --dry-run --seq "$S1" 2>&1 | jq -r '.error.code // "ran"')" "not_found"
+
+echo "== launcher rows never draw a missing image, in any theme"
+for th in baneyspaces omarchy minimal; do
+  baneyspaces set theme.name $th >/dev/null; sleep 0.3
+  baneyspaces launcher show >/dev/null; sleep 0.5
+  ICONS="[]"
+  for q in "zzqx wibble" "5" "!yt lofi" "?why is the sky blue" "foot" "tax"; do
+    LQ type "$q" >/dev/null; sleep 0.7
+    ICONS="$(jq -nc --argjson a "$ICONS" --argjson b "$(LQ icons)" '$a+$b')"
+  done
+  [ "$th" = "baneyspaces" ] && grim -g "$((960-360)),150 720x480" "$TMP/shots/launcher-$th.png"
+  [ "$th" = "omarchy" ] && grim -g "$((960-360)),150 720x480" "$TMP/shots/launcher-$th.png"
+  [ "$th" = "minimal" ] && grim -g "$((960-360)),150 720x480" "$TMP/shots/launcher-$th.png"
+  check "$th: rows were drawn to look at (workspace, web search, images, ask, apps)" test "$(jq 'length' <<<"$ICONS")" -ge 8
+  eq "$th: Workspace, Web search, Search images and Ask Claude each draw a glyph" "$(jq -c '[.[]|select(.title|test("^(Workspace|Web search|Search the web|Search images|Ask)"))|.state]|unique' <<<"$ICONS")" '["glyph"]'
+  eq "$th: no row draws a missing image (every icon is a glyph, a real image or a letter)" "$(jq -c '[.[]|select(.state|IN("glyph","image","letter")|not)]|length' <<<"$ICONS")" "0"
+  eq "$th: a row with a built-in icon name is always a glyph" "$(jq -c '[.[]|select(.icon|IN("view-grid","web-browser","image-x-generic","dialog-question","preferences-system","accessories-calculator","folder","text-x-generic","package-x-generic","system-software-update","help-browser"))|select(.state!="glyph")]|length' <<<"$ICONS")" "0"
+  baneyspaces launcher hide >/dev/null; sleep 0.3
+done
+baneyspaces set theme.name omarchy >/dev/null
+
+echo "== the themes look different (selection, chips, footer)"
+baneyspaces launcher show >/dev/null; sleep 0.4; LQ type "foot" >/dev/null; sleep 0.6
+for th in baneyspaces omarchy minimal; do
+  baneyspaces set theme.name $th >/dev/null; sleep 0.4
+  eq "$th: the launcher reports its selection and chip style" "$(LQ style | jq -c '[.select,.chips]')" "$(case $th in baneyspaces) echo '["pill","pill"]';; omarchy) echo '["text","text"]';; minimal) echo '["line","none"]';; esac)"
+  check "$th: the footer is one line of at most three hints" sh -c "qs ipc -p '$QSD/shell.qml' call baneyspaces.launcher style | jq -e '(.footer|split(\"·\")|length) <= 3'"
+done
+baneyspaces launcher hide >/dev/null; baneyspaces set theme.name omarchy >/dev/null
+
+echo "== closing every window after the overview showed them does not take the shell down"
+goto $M1 1
+for i in 1 2 3 4 5 6 7; do mkwin foot "crash win $i"; done
+baneyspaces overview show >/dev/null; sleep 1.0; baneyspaces overview hide >/dev/null; sleep 0.5
+for a in $(H clients | jq -r '.[]|select(.workspace.name!="special:agent")|.address'); do hyprctl dispatch "hl.dsp.window.close({ window = \"address:$a\" })" >/dev/null; done; sleep 0.8
+baneyspaces overview show >/dev/null; sleep 0.8; baneyspaces overview hide >/dev/null
+baneyspaces dock show >/dev/null; sleep 0.6
+PQ start overview >/dev/null; baneyspaces overview show >/dev/null; sleep 0.8; baneyspaces overview hide >/dev/null; sleep 0.3; CR="$(PQ stop)"
+check "the shell is still alive" kill -0 $QSPID
+check "the overview drew frames afterwards" test "$(echo "$CR" | jq -r '.intervals // 0')" -ge 3
+check "no wl_display error in its log" sh -c "! grep -q 'wl_display' '$TMP/quickshell.log'"
+baneyspaces dock hide >/dev/null
+
+echo "== the daemon notices a dead shell, says so, and brings it back"
+cat >"$TMP/restart-shell.sh" <<RS
+#!/bin/sh
+case "\$XDG_RUNTIME_DIR" in /tmp/bs-nested.*) ;; *) echo "refusing: not the nested session" >&2; exit 1;; esac
+export QT_QPA_PLATFORM=wayland QT_QUICK_BACKEND="${QT_QUICK_BACKEND:-software}" QS_NO_RELOAD_POPUP=1 BANEYSPACES_THEME_DIR="$TMP/theme"
+quickshell -p "$QSD/shell.qml" >>"$TMP/quickshell.log" 2>&1 &
+echo \$! >"$TMP/qs.pid"
+RS
+chmod +x "$TMP/restart-shell.sh"
+kill -9 $QSPID; sleep 0.3
+check "the daemon stops claiming the overview is shown while the shell is dead (it answers shell_dead)" wait_for 12 sh -c "baneyspaces overview show | jq -e '.error.code==\"shell_dead\"'"
+check "…and it starts the shell again by itself" wait_for 30 sh -c "qs ipc -p '$QSD/shell.qml' call baneyspaces ping | grep -q ok"
+QSPID="$(cat "$TMP/qs.pid" 2>/dev/null || echo 0)"; PIDS+=($QSPID)
+check "the new shell is a different, living process" kill -0 $QSPID
+check "…and the daemon is again willing to show the overview" wait_for 10 sh -c "baneyspaces overview show | jq -e '.ok'"
+baneyspaces overview hide >/dev/null; sleep 0.3
+eq "the daemon's log says it restarted the shell" "$(grep -c 'restarting it' "$TMP/daemon.log" | sed 's/^[1-9].*/restarted/')" "restarted"
 
 echo "== the shell stayed healthy"
 check "quickshell is still running" kill -0 $QSPID

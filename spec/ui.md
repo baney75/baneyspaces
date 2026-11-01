@@ -50,12 +50,28 @@ one; Shift steps back; letting go of Alt goes to the selected window, wherever i
 the display you are on); Esc cancels. Windows of an agent are never offered. `switcher.items = apps` offers each
 app's most recent window. A switcher nobody finishes closes itself after 15 s.
 
+A quick tap needs no overlay: when Alt is let go within 150 ms of the press, the switch happens without showing
+anything (the same for Super+Tab and the overview). A hold shows the overlay once 150 ms have passed. The platform
+must see the release of the modifier even if it comes before the overlay exists; a release that overtakes its press
+still commits. If the switcher is turned off, Alt+Tab is the platform's own again.
+
 ## Launcher
 
 ### R-L1 One box
 Type to search apps, windows, workspaces, files and commands at once. An app that is already open takes you to
 the workspace it is on. Tab goes into a menu (Apps, Files, Install, Remove, Update, System, Workspaces),
 Backspace on an empty search comes back. With nothing typed, agents that finished or need you come first.
+A lone `?` shows the help view; `!apps`, `!files`, `!install`, `!remove`, `!update`, `!system`, `!ws` and `!windows`
+choose a menu. One dim footer line with at most three hints (`↵ open · ⇥ actions · ? help`); the rest is in the help
+view. Every row has an icon that exists: an app's own, or a glyph for the built-in ones (workspace, web, images,
+ask, calculator, files, packages); a missing image is never drawn.
+
+### R-L5 Open where you are
+Anything opened from a workspace lands on that workspace (`behavior.launcher.open = here`, the default). An app that
+is not running starts there. A running app that can make another window gets a new one there (a new-window action,
+else a second instance). A single-window app has its window moved there, and you stay. Holding the modifier
+(Alt+Return) does the other thing: go to where the app already is. `behavior.launcher.open = go` makes going the
+plain choice. The dock's "+" and the overview follow the same rule.
 
 ### R-L2 Files
 Every word typed must start a word of the name (`tax 2025` finds `2025 Tax Return.pdf`; words also break at `_`
@@ -71,6 +87,11 @@ bang that is not built in goes to DuckDuckGo. `?question` asks the agent in a ne
 http(s) addresses. Your own bangs live in config.toml.
 
 ## Overview
+
+### R-O0 It never outlives what it shows
+The shell plugin tells the daemon it is alive once a second. While it is not (no beat for about 2.5 s), the daemon
+refuses to show surfaces (`shell_dead`) and reports none as shown; after about 4 s it restarts the plugin (at most
+three times an hour, 30 s apart). Closing every window while an overview preview is up must not take the plugin down.
 
 ### R-O1 Nine workspaces in a 3 x 3 grid
 Click a workspace or press its number to go there; arrows move the highlight, Return goes. Click a window to go

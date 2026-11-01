@@ -201,8 +201,19 @@ back at the next edge reveal, no restart.
 
 Parity with Omarchy's own navigation is in [PARITY.md](PARITY.md), generated from the real bindings and measured in the
 nested session: every Omarchy binding BaneySpaces does not replace is untouched (a `hyprctl binds -j` diff), the ones it
-replaces (the number keys, Super+Tab, Alt+Tab, Super+Space) are listed with what they do instead, and Omarchy's own
-workspace animation stays.
+replaces (the number keys, Super+Tab, Alt+Tab, Super+Space) are listed with what they do instead. Omarchy's workspace
+switch is instant (its looknfeel turns that animation off); BaneySpaces keeps it that way unless
+`animation.workspace.style` is `fade` or `slide`, and touches no other animation.
+
+Alt+Tab and Super+Tab are taps first: the compositor binds the release of Alt and Super (`release` binds, with a
+held-state helper in the include), so a tap switches at once with no overlay, and a hold past 150 ms shows it. If the
+switcher, launcher or overview is turned off in config, its keys fall back to Omarchy's own (`cycle_next`,
+`omarchy-menu`, next workspace). Anything opened from a workspace lands there (`behavior.launcher.open = here`);
+`go` goes to the app instead, and Alt+Return in the launcher does the other of the two.
+
+The plugin sends the daemon a heartbeat each second. When it stops, `overview show`, `dock` and `settings` answer
+`shell_dead` instead of claiming a surface is shown, and the daemon runs `omarchy restart shell`
+(`BANEYSPACES_SHELL_RESTART` replaces the command; three restarts an hour at most).
 
 Agent status: `baneyspaces agent-status set working|asking|error|finished|idle --pid $PPID` (a Claude Code hook;
 `baneyspaces hooks print` prints the entries for `~/.claude/settings.json`, it never edits that file). Without hooks, a

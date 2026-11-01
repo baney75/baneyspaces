@@ -172,6 +172,8 @@ eq "two monitors" "$(H monitors | jq length)" "2"
 eq "monitors are 1920 wide (a real mode)" "$(H monitors | jq -r '.[0].width')" "1920"
 
 # --- the daemon
+# what the daemon runs to bring the shell plugin back when its heartbeat stops (shell.sh writes the script)
+export BANEYSPACES_SHELL_RESTART="$TMP/restart-shell.sh"
 baneyspaces daemon --trace >"$TMP/daemon.log" 2>&1 & DPID=$!; PIDS+=($DPID)
 for _ in $(seq 1 100); do baneyspaces state 2>/dev/null | jq -e .ok >/dev/null 2>&1 && break; sleep 0.1; done
 check "daemon answers" sh -c 'baneyspaces state | jq -e .ok'

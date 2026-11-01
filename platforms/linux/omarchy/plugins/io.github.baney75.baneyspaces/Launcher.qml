@@ -43,6 +43,8 @@ Item {
       scrollRequest(rowIndexOf(sel))
     })
   }
+  // the one dim line under the results; everything else is in the ? help view
+  readonly property string hint: "↵ open   ·   ⇥ actions   ·   ? help"
   property var listRef: null
   function listItem(i) { return listRef ? listRef.itemAtIndex(i) : null }
   function rowIndexOf(flat) {
@@ -305,7 +307,7 @@ Item {
             Text {
               id: footer
               width: parent.width
-              text: root.note !== "" ? root.note : "↵ open   ·   ⇥ actions   ·   ? help"
+              text: root.note !== "" ? root.note : root.hint
               color: root.note !== "" ? win.th.urgent : win.th.dim
               font.family: win.th.fontFamily
               font.pixelSize: win.th.fs(11)
@@ -324,9 +326,10 @@ Item {
     function state(): string { return JSON.stringify({ mode: root.mode, count: root.results.length, sel: root.sel, titles: root.results.slice(0, 12).map(function (r) { return r.title }), confirm: root.confirm }) }
     function type(text: string): string { root.tType = Date.now(); root.tTyped = 0; root.query = text; root.search(); return "ok" }
     // the icon of every row now drawn: glyph, image or letter (never a missing image)
+    function style(): string { return JSON.stringify({ select: root.bs.theme.selectStyle, chips: root.bs.theme.chipStyle, footer: root.hint }) }
     function icons(): string {
       var out = []
-      for (var i = 0; i < 40; i++) { var it = root.listItem(i); if (it === null) break; if (it.iconState !== undefined && it.iconState !== "header") out.push({ title: it.modelData.title, state: it.iconState }) }
+      for (var i = 0; i < 40; i++) { var it = root.listItem(i); if (it === null) break; if (it.iconState !== undefined && it.iconState !== "header") out.push({ title: it.modelData.title, icon: it.modelData.icon || "", state: it.iconState }) }
       return JSON.stringify(out)
     }
     function timing(): string { return JSON.stringify({ open_to_ready_ms: root.tReady - root.tOpen, type_to_first_result_ms: root.tTyped > 0 ? root.tTyped - root.tType : -1 }) }

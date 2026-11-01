@@ -39,7 +39,9 @@ else
   if [ -f "$SJ" ] && jq -e --arg id "$ID" '(.plugins // []) | map(.id) | index($id) != null' "$SJ" >/dev/null 2>&1; then
     say "$ID is already in $SJ"
   else
+    HAD=0
     if [ -f "$SJ" ]; then
+      HAD=1
       say "backup of $SJ -> $BK/shell.json"
       do_ "mkdir -p '$BK' && cp -p '$SJ' '$BK/shell.json'"
       BASE="$SJ"
@@ -58,7 +60,7 @@ else
       mkdir -p "$STATE"; sha256sum "$SJ" | cut -d' ' -f1 > "$STATE/shell-json.sha"
       # There was no shell.json before this run: say so, so that uninstall removes the file instead of leaving a copy of
       # Omarchy's defaults that later Omarchy updates would no longer reach.
-      if [ -f "$BK/shell.json" ]; then echo "$BK/shell.json" > "$STATE/shell-json.backup"; else echo "absent" > "$STATE/shell-json.backup"; fi
+      if [ "$HAD" = 1 ]; then echo "$BK/shell.json" > "$STATE/shell-json.backup"; else echo "absent" > "$STATE/shell-json.backup"; fi
     fi
   fi
 fi
