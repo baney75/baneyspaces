@@ -12,15 +12,18 @@ $repo = $pin['repo']; $commit = $pin['commit']
 if (-not $repo -or -not $commit) { throw "engine.pin has no repo/commit" }
 $src = Join-Path $here 'third_party\agent-desktop'
 $out = Join-Path $here 'engine'
-$git = if (Get-Command git -ErrorAction SilentlyContinue) { 'git' } else { 'C:\mingit\cmd\git.exe' }
-function Git { & $git @args; if ($LASTEXITCODE -ne 0) { throw "git $args failed" } }
+# An application path, not the name: PowerShell command names are case-insensitive, so a function called
+# Git would shadow git.exe and call itself forever.
+$cmd = Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+$git = if ($cmd) { $cmd.Source } else { 'C:\mingit\cmd\git.exe' }
+function Invoke-Git { & $git @args; if ($LASTEXITCODE -ne 0) { throw "git $args failed" } }
 if (-not (Test-Path (Join-Path $src '.git'))) {
   New-Item -ItemType Directory -Force (Split-Path $src) | Out-Null
-  Git clone -q $repo $src
+  Invoke-Git clone -q $repo $src
 }
 if ((& $git -C $src rev-parse HEAD) -ne $commit) {
-  Git -C $src fetch -q origin
-  Git -C $src checkout -q --detach $commit
+  Invoke-Git -C $src fetch -q origin
+  Invoke-Git -C $src checkout -q --detach $commit
 }
 if ((& $git -C $src rev-parse HEAD) -ne $commit) { throw "engine: HEAD is not the pinned $commit" }
 if (& $git -C $src status --porcelain) { throw 'engine: pinned checkout is dirty' }
