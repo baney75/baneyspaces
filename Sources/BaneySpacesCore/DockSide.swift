@@ -98,18 +98,22 @@ public struct DockSideGrace: Equatable, Sendable {
 /// Display) makes every one instant. Only a view's own appearing, scaling, fading or sliding
 /// animates; nothing here moves a window or the bar's resting place.
 public enum DockMotion {
-    /// The dock slides this far toward its edge as it fades out, and in from it.
-    public static let slide: CGFloat = 8
-    public static let dockIn: TimeInterval = 0.18
-    public static let dockOut: TimeInterval = 0.14
-    public static let listIn: TimeInterval = 0.14
-    public static let listOut: TimeInterval = 0.10
-    public static let rowHover: TimeInterval = 0.08
-    public static let settle: TimeInterval = 0.12
+    /// Each of these is the theme's (`ThemeCenter`, from themes.json); the BaneySpaces theme's are
+    /// the lengths and distances the dock has always had.
+    ///
+    /// The dock slides this far toward its edge as it fades out, and in from it. A theme that
+    /// scales nothing (Omarchy) only fades.
+    public static var slide: CGFloat { ThemeCenter.spec.motion.slides ? 8 : 0 }
+    public static var dockIn: TimeInterval { ThemeCenter.spec.motion.inMs / 1000 }
+    public static var dockOut: TimeInterval { ThemeCenter.spec.motion.outMs / 1000 }
+    public static var listIn: TimeInterval { ThemeCenter.spec.motion.listInMs / 1000 }
+    public static var listOut: TimeInterval { ThemeCenter.spec.motion.listOutMs / 1000 }
+    public static var rowHover: TimeInterval { ThemeCenter.spec.motion.rowMs / 1000 }
+    public static var settle: TimeInterval { ThemeCenter.spec.motion.seconds(0.12, .row) }
     /// A list grows from this scale.
-    public static let listScale: CGFloat = 0.96
+    public static var listScale: CGFloat { CGFloat(ThemeCenter.spec.motion.scaleFrom) }
     /// A tile or row picked up for a drag.
-    public static let lift: CGFloat = 1.04
+    public static var lift: CGFloat { CGFloat(ThemeCenter.spec.motion.lift) }
 
     /// Arrives quickly and settles: the curve for a dock or list coming in.
     public static let arrive = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.25, 1.0)

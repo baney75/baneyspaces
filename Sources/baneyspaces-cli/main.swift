@@ -29,6 +29,9 @@ usage: \(me) <command>
   mcp                         the same commands as a stdio MCP server (claude mcp add baneyspaces -- baneyspaces mcp)
   agent move <id | words>     send a window there (only windows of apps started for an agent)
   phone ls|ui|shot|tap|swipe|type|key|shell|mirror   phones for agents (phone help)
+  set <setting> <value>       appearance.theme omarchy|baneyspaces|minimal, appearance.palette auto|<name>,
+                              dock.enabled true|false; applies at once, no restart
+  get [setting]               read one setting, or all three
   remote on|off|status|token  let your other machines (tailnet only) send agent work here
   --on HOST <command>         run ls or agent status|open|run on another machine
   hook claude|grok            for agent hooks: reads the hook JSON on stdin
@@ -158,6 +161,18 @@ case "state":
     guard let d = FileManager.default.contents(atPath: Wire.statePath) else { fail("no state yet: is BaneySpaces running?") }
     out(String(data: d, encoding: .utf8) ?? "")
 
+case "set", "get":
+    if cmd == "set" && rest.count != 2 {
+        fail("usage: \(me) set <setting> <value>\n  " + SettingKey.allCases.map(\.usage).joined(separator: "\n  "), code: 2)
+    }
+    if cmd == "get" && rest.count > 1 { fail("usage: \(me) get [setting]", code: 2) }
+    // Who is asking, for trace.log: an agent says its name in $BANEYSPACES_AGENT, otherwise the app that ran this.
+    let caller = ProcessInfo.processInfo.environment["BANEYSPACES_AGENT"].flatMap { $0.isEmpty ? nil : $0 }
+        ?? (launchingApp.isEmpty ? "cli" : launchingApp)
+    let reply = call(Wire.Request(op: .setting, target: rest.first, text: cmd == "set" ? rest[1] : nil, caller: caller))
+    let info = reply.info ?? [:]
+    if rest.count == 1 && cmd == "get" { out(info[SettingKey(name: rest[0])?.rawValue ?? ""] ?? "") }
+    else { for k in info.keys.sorted() { out("\(k) \(info[k] ?? "")") } }
 case "remote":
     // Local only: whether other machines on your tailnet can send work here.
     guard remoteHost == nil else { fail("remote is set on each machine itself", code: 2) }
