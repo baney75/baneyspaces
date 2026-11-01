@@ -146,6 +146,18 @@ final class RouteSelectionTests: XCTestCase {
         XCTAssertEqual(refusal(unresolved)?.code, .notSupported)
     }
 
+    func testAFocusedElementThatCannotBePlacedRefusesKeysButNotTheirAbsence() {
+        var f = ready(); f.focusedElementUnplaced = true; f.focusedElementWindow = nil
+        let e = refusal(f)
+        XCTAssertEqual(e?.code, .notSupported)
+        XCTAssertEqual(e?.retry, .never)
+        XCTAssertFalse(e?.suggestion.isEmpty ?? true)
+        var none = ready(); none.focusedElementWindow = nil
+        XCTAssertNotNil(try? BackgroundPlanner.plan(none).get(), "no element at all is a different fact")
+        var pointer = ready(.pointer); pointer.focusedElementUnplaced = true
+        XCTAssertNotNil(try? BackgroundPlanner.plan(pointer).get(), "a pointer event does not depend on the app's keyboard focus")
+    }
+
     func testPointerConditions() {
         var outside = ready(.pointer); outside.pointInsideWindow = false
         XCTAssertEqual(refusal(outside)?.code, .badArguments)
@@ -315,15 +327,52 @@ final class DeliveryProofTests: XCTestCase {
         ElementReading.text(window: window, identity: id, value: value, selection: sel, attributes: attrs)
     }
     let none: ReadingPair = (nil, nil)
+    func steps(_ spec: String) -> [KeyStep] { KeySteps.split(try! KeyParse.sequence(spec).get()) }
+    /// One step (a typed segment or a single chord).
     func keys(_ spec: String, ref: ReadingPair = (nil, nil), focus: ReadingPair = (nil, nil), content: Bool? = nil,
               window: (WindowReading?, WindowReading?) = (nil, nil), pixels: PixelChange? = nil) -> DeliveryVerdict {
-        DeliveryProof.keys(target: target, chords: try! KeyParse.sequence(spec).get(), ref: ref, focus: focus, content: content, window: window, pixels: pixels)
+        let st = steps(spec)
+        precondition(st.count == 1, "\(spec) is \(st.count) steps")
+        return DeliveryProof.keys(target: target, step: st[0], ref: ref, focus: focus, content: content, window: window, pixels: pixels)
     }
 
     func testTypedLettersAreProvedByTheValueOfTheTargetedElement() {
         let v = keys("h i", ref: (el("a"), el("hia")))
         XCTAssertTrue(v.verified)
         XCTAssertEqual(v.basis, "value_changed")
+    }
+
+    func testATypedSegmentMustShowItsOwnText() {
+        // The value changed, but "hi" is not in it: something else typed.
+        let v = keys("h i", ref: (el("start"), el("zzzzz")))
+        XCTAssertFalse(v.verified)
+        XCTAssertEqual(v.basis, "unpredicted_change")
+        XCTAssertTrue(keys("N e w", ref: (el("x"), el("New x"))).verified, "capitals keep their Shift")
+        XCTAssertFalse(keys("h i", ref: (el("hi there"), el("hi there"))).verified, "text already there is not text typed")
+    }
+
+    func testAMultiKeyPressIsSplitIntoStepsAndEachMustLand() {
+        XCTAssertEqual(steps("cmd+a n e w").map(\.typed), [nil, "new"])
+        XCTAssertEqual(steps("h i Return a b").map(\.typed), ["hi", nil, "ab"])
+        XCTAssertEqual(steps("cmd+a b Delete").count, 3)
+        // "cmd+a h": select-all lands, the typed letter is dropped. The first step is proved; the second is not.
+        let st = steps("cmd+a h")
+        let selected = DeliveryProof.keys(target: target, step: st[0], ref: none, focus: (el("hello", sel: (5, 0)), el("hello", sel: (0, 5))), content: nil, pixels: nil)
+        XCTAssertTrue(selected.verified)
+        let dropped = DeliveryProof.keys(target: target, step: st[1], ref: none, focus: (el("hello", sel: (0, 5)), el("hello", sel: (0, 5))), content: false, pixels: nil)
+        XCTAssertFalse(dropped.verified, "a changed selection from the first chord never stands in for the typed letter")
+        XCTAssertEqual(dropped.basis, "no_change")
+        let e = BackgroundRefusal.partial(landed: 1, of: 2, basis: dropped.basis)
+        XCTAssertEqual(e.code, .unverified)
+        XCTAssertEqual(e.retry, .never)
+        XCTAssertTrue(e.message.contains("1 of 2 steps landed"))
+        XCTAssertTrue(e.suggestion.contains("Do not send the whole press again"))
+    }
+
+    func testReturnMayTypeANewlineOrRunAFieldsAction() {
+        XCTAssertTrue(keys("Return", ref: (el("a"), el("a\n"))).verified)
+        let edited = WindowReading(titleDigest: 1, edited: true, sheets: 0), done = WindowReading(titleDigest: 2, edited: true, sheets: 0)
+        XCTAssertTrue(keys("Return", focus: (el("a"), el("a")), window: (edited, done)).verified, "a submit that changes the window counts")
     }
 
     func testSelectAllAndMovementAreProvedBySelectionNotByValue() {
@@ -349,9 +398,9 @@ final class DeliveryProofTests: XCTestCase {
         XCTAssertFalse(keys("cmd+b", focus: (before, before), content: false).verified)
         // A different part of the tree changing does not stand in for it when the attributes can be read.
         XCTAssertFalse(keys("cmd+b", focus: (before, before), content: true).verified)
-        // Where the element cannot give its attributes, the toggled Bold checkbox is the next best proof.
+        // Where the element cannot give its attributes, a Bold checkbox elsewhere in the window is not proof of this text.
         let silent = el("plain", sel: (0, 5))
-        XCTAssertTrue(keys("cmd+b", focus: (silent, silent), content: true).verified)
+        XCTAssertFalse(keys("cmd+b", focus: (silent, silent), content: true).verified)
     }
 
     func testTabIsProvedByFocusMovingInsideTheWindow() {
@@ -370,7 +419,7 @@ final class DeliveryProofTests: XCTestCase {
 
     func testAnAppWithNoTextFocusIsProvedByItsContentAndOnlyByTheNoiseFilteredContent() {
         // Calculator: no field to type into, so the window's content is what the keys change.
-        XCTAssertTrue(keys("9 asterisk 8 Return", content: true).verified)
+        XCTAssertTrue(keys("Return", content: true).verified)
         XCTAssertEqual(keys("9", content: true).basis, "content_changed")
         XCTAssertFalse(keys("9", content: false).verified)
         // A text field in focus predicts a change to the field; a changing clock does not stand in for it.
@@ -407,7 +456,6 @@ final class DeliveryProofTests: XCTestCase {
     func testThePredictionTableAndWhenSilenceIsEvidence() {
         func exp(_ s: String, text: Bool) -> Set<KeyEffect> { KeyPrediction.expected(try! KeyParse.sequence(s).get(), focusIsText: text) }
         XCTAssertEqual(exp("a", text: true), [.text])
-        XCTAssertEqual(exp("Return", text: true), [.text])
         XCTAssertEqual(exp("a", text: false), [.content])
         XCTAssertEqual(exp("Left", text: true), [.selection])
         XCTAssertEqual(exp("cmd+a", text: false), [.selection])
@@ -415,9 +463,12 @@ final class DeliveryProofTests: XCTestCase {
         XCTAssertEqual(exp("cmd+s", text: true), [.window])
         XCTAssertEqual(exp("Tab", text: true), [.focus])
         XCTAssertEqual(exp("h cmd+a", text: true), [.text, .selection])
-        XCTAssertTrue(KeyPrediction.certainToShow(try! KeyParse.sequence("h i").get(), focusIsText: true))
-        XCTAssertFalse(KeyPrediction.certainToShow(try! KeyParse.sequence("Home").get(), focusIsText: true), "Home at the top changes nothing")
-        XCTAssertFalse(KeyPrediction.certainToShow(try! KeyParse.sequence("h").get(), focusIsText: false))
+        func certain(_ spec: String, _ text: Bool = true) -> Bool { KeySteps.split(try! KeyParse.sequence(spec).get()).allSatisfy { KeyPrediction.certainToShow($0, focusIsText: text) } }
+        XCTAssertTrue(certain("h i"))
+        XCTAssertFalse(certain("Home"), "Home at the top changes nothing")
+        XCTAssertFalse(certain("h", false))
+        for often in ["Return", "Delete", "forwarddelete", "Escape", "alt+e", "Tab", "cmd+a", "Left"] { XCTAssertFalse(certain(often), "\(often) often does nothing") }
+        XCTAssertEqual(exp("Return", text: true), [.text, .window])
     }
 
     func testOnlyContentBeyondWhatChangedOnItsOwnCounts() throws {
@@ -426,9 +477,32 @@ final class DeliveryProofTests: XCTestCase {
         }
         let base1 = tree(["clock 10:00:01", "display 0"])
         let base2 = tree(["clock 10:00:02", "display 0"])
-        XCTAssertFalse(ContentChange.changed(base1: base1, base2: base2, after: tree(["clock 10:00:01", "display 0"])), "nothing but what already moved")
-        XCTAssertFalse(ContentChange.changed(base1: base1, base2: base2, after: tree(["clock 10:00:02", "display 0"])), "the clock ticking on is not the action")
-        XCTAssertTrue(ContentChange.changed(base1: base1, base2: base2, after: tree(["clock 10:00:02", "display 72"])))
+        let noise = ContentChange.noise(base1: base1, base2: base2)
+        let base = ContentChange.entries(of: base1)
+        XCTAssertEqual(noise, ["0/0"], "the clock's place, not its text")
+        XCTAssertFalse(ContentChange.changed(base: base, noise: noise, after: tree(["clock 10:00:01", "display 0"])), "nothing but what already moved")
+        XCTAssertFalse(ContentChange.changed(base: base, noise: noise, after: tree(["clock 10:00:02", "display 0"])))
+        XCTAssertFalse(ContentChange.changed(base: base, noise: noise, after: tree(["clock 10:00:03", "display 0"])), "a third tick nobody has seen is still the clock")
+        XCTAssertTrue(ContentChange.changed(base: base, noise: noise, after: tree(["clock 10:00:03", "display 72"])))
+    }
+
+    func testTextAttributesHashTheSameWhenReadTwice() throws {
+        // Two separately made, equal colors: a description would carry each one's address; the components do not.
+        func runs() -> [(range: NSRange, attributes: [AnyHashable: Any])] {
+            [(NSRange(location: 0, length: 5), ["AXForegroundColor": CGColor(red: 0.1, green: 0.2, blue: 0.3, alpha: 1),
+                                                 "AXFont": ["AXFontName": "Helvetica", "AXFontSize": 12],
+                                                 "AXUnderline": 0, "AXObject": NSObject()] as [AnyHashable: Any])]
+        }
+        let a = StableAttributes.runs(runs()), b = StableAttributes.runs(runs())
+        XCTAssertEqual(a, b)
+        XCTAssertEqual(ElementReading.digest(a), ElementReading.digest(b))
+        XCTAssertFalse(a.contains("0x"), "no address")
+        let bold: [(range: NSRange, attributes: [AnyHashable: Any])] = [(NSRange(location: 0, length: 5), ["AXFont": ["AXFontName": "Helvetica-Bold", "AXFontSize": 12]])]
+        XCTAssertNotEqual(a, StableAttributes.runs(bold))
+        let red = CGColor(red: 1, green: 0, blue: 0, alpha: 1)
+        XCTAssertEqual(StableAttributes.describe(red), StableAttributes.describe(CGColor(red: 1, green: 0, blue: 0, alpha: 1)))
+        XCTAssertNotEqual(StableAttributes.describe(red), StableAttributes.describe(CGColor(red: 0, green: 0, blue: 1, alpha: 1)))
+        XCTAssertNil(StableAttributes.describe(NSObject()), "an unknown object is skipped, never printed")
     }
 
     func testAStrokeIsProvedByPixelsAlongItWhileTheRestStaysPut() {
@@ -589,6 +663,32 @@ final class PostGuardTests: XCTestCase {
         XCTAssertEqual(PostGuard.activations([500], target: 500), .targetCameForward)
     }
 
+    func testASampledFrontChangeIsNotDiscardedWhenNoNotificationHasArrived() {
+        // The front app moved to 20, then to the target; no notification yet. The look alone is a change.
+        XCTAssertEqual(PostGuard.span(activations: [], start: 10, now: 20, target: 500), .other(20))
+        XCTAssertEqual(PostGuard.span(activations: [], start: 10, now: 500, target: 500), .targetCameForward)
+        XCTAssertEqual(PostGuard.span(activations: [], start: 10, now: 10, target: 500), .same)
+        XCTAssertEqual(PostGuard.span(activations: [], start: 10, now: nil, target: 500), .unknown)
+        // And a notification alone, though the front app is back where it was, is a change.
+        XCTAssertEqual(PostGuard.span(activations: [500], start: 10, now: 10, target: 500), .targetCameForward)
+    }
+
+    func testDonovanBringingTheTargetForwardIsNotBlamedOnTheRoute() {
+        XCTAssertEqual(PostGuard.verdict(.targetCameForward, hardware: true), .userActivated, "a hardware event in the span: his doing")
+        XCTAssertEqual(PostGuard.verdict(.targetCameForward, hardware: false), .selfActivated, "a tap was listening and heard nothing")
+        XCTAssertEqual(PostGuard.verdict(.targetCameForward, hardware: nil), .unattributed, "nothing was listening: blamed on the process only")
+        XCTAssertEqual(PostGuard.verdict(.other(7), hardware: true), .other(7))
+        XCTAssertEqual(PostGuard.verdict(.same, hardware: false), .same)
+        XCTAssertEqual(PostGuard.verdict(.unknown, hardware: true), .unknown)
+        let e = BackgroundRefusal.userActivated("TextEdit")
+        XCTAssertEqual(e.code, .inUse)
+        XCTAssertEqual(e.retry, .never)
+        var b = RouteBreaker()
+        b.selfActivated(pid: 5, kind: .keys)
+        XCTAssertEqual(b.block(bundle: "x", pid: 5, kind: .keys), .selfActivates)
+        XCTAssertNil(b.block(bundle: "x", pid: 6, kind: .keys), "another copy is not blamed")
+    }
+
     func testTheFrontChangeRefusalSaysPartOfItMayHaveLanded() {
         let e = BackgroundRefusal.frontChanged("TextEdit", to: 20)
         XCTAssertEqual(e.retry, .never)
@@ -621,16 +721,21 @@ final class RouteBreakerTests: XCTestCase {
 }
 
 final class BalancedEventsTests: XCTestCase {
-    struct Stop: Error {}
     let stopError = HandsError(.actionFailed, "stopped", suggestion: "x", retry: .never)
 
-    /// Runs `events` stopping at the `n`th question (0-based) asked before a new press or move; returns what was posted.
-    func run(_ events: [InputEvent], stopAt n: Int?) -> RunReport {
+    /// Runs `events` stopping at the `n`th question (0-based) asked before a new press or move. `unmakeable` events
+    /// cannot be made. Returns what was posted.
+    func run(_ events: [InputEvent], stopAt n: Int? = nil, unmakeable: (InputEvent) -> Bool = { _ in false }) -> RunReport {
         var asked = 0
-        return EventRunner.run(events, stop: {
+        var log: [InputEvent] = []
+        var report = EventRunner.run(events, stop: {
             defer { asked += 1 }
             return asked == n ? self.stopError : nil
-        }, post: { _ in true })
+        }, prepare: { e in unmakeable(e) ? nil : { log.append(e) } })
+        // What was actually posted is what the prepared closures ran; the report must say the same.
+        XCTAssertEqual(report.posted, log)
+        report.posted = log
+        return report
     }
 
     /// Every press has its release, last pressed first released, and nothing new follows the stop.
@@ -671,7 +776,6 @@ final class BalancedEventsTests: XCTestCase {
         for n in 0...nonReleases(events) {
             let r = run(events, stopAt: n)
             assertBalanced(r, "click stop \(n)")
-            XCTAssertEqual(r.posted.filter { if case .mouseUp = $0 { return true }; return false }.count, r.posted.filter { if case .mouseDown = $0 { return true }; return false }.count)
         }
     }
 
@@ -683,52 +787,52 @@ final class BalancedEventsTests: XCTestCase {
             assertBalanced(r, "drag stop \(n)")
             let downs = r.posted.filter { if case .mouseDown = $0 { return true }; return false }.count
             if downs == 1, n < nonReleases(events) {
-                // Released where the last event stood, once.
                 guard case .mouseUp(let at)? = r.posted.last else { return XCTFail("drag stop \(n): no release last") }
-                let lastMove = r.posted.dropLast().reversed().compactMap { e -> CGPoint? in
+                let lastPoint = r.posted.dropLast().reversed().compactMap { e -> CGPoint? in
                     switch e { case .mouseDown(let p), .mouseDragged(let p): return p; default: return nil }
                 }.first
-                XCTAssertEqual(at, lastMove, "drag stop \(n)")
+                XCTAssertEqual(at, lastPoint, "drag stop \(n): released where the gesture stood")
                 XCTAssertEqual(r.released, 1)
             }
         }
     }
 
     func testTheStopIsNeverAskedBeforeARelease() {
-        var asks = 0
         var order: [String] = []
-        _ = EventRunner.run(InputScript.chords([KeyChord(keyCode: 0, flags: 0, label: "a")]), stop: { asks += 1; order.append("ask"); return nil },
-                            post: { e in order.append(e.isRelease ? "up" : "down"); return true })
+        _ = EventRunner.run(InputScript.chords([KeyChord(keyCode: 0, flags: 0, label: "a")]), stop: { order.append("ask"); return nil },
+                            prepare: { e in { order.append(e.isRelease ? "up" : "down") } })
         XCTAssertEqual(order, ["ask", "down", "up"], "asked before the press only")
-        XCTAssertEqual(asks, 1)
+    }
+
+    func testAPressIsNotPostedWhenItsReleaseCannotBeMade() {
+        let a = KeyChord(keyCode: 0, flags: 0, label: "a"), b = KeyChord(keyCode: 11, flags: 0, label: "b")
+        // The normal key-up of b cannot be made: b is never pressed. a already went down and comes up.
+        let r = run([.keyDown(a), .keyDown(b), .keyUp(b), .keyUp(a)], unmakeable: { $0 == .keyUp(b) })
+        XCTAssertEqual(r.posted, [.keyDown(a), .keyUp(a)])
+        XCTAssertEqual(r.stopped?.code, .engineError)
+        XCTAssertEqual(r.released, 1)
+        // The same for a mouse press, and for a drag step that moves the pending release.
+        let p = CGPoint(x: 3, y: 4), q = CGPoint(x: 9, y: 9)
+        let m = run([.mouseDown(p), .mouseUp(p)], unmakeable: { if case .mouseUp = $0 { return true }; return false })
+        XCTAssertEqual(m.posted, [], "no press went out whose release could not be made")
+        XCTAssertEqual(m.stopped?.code, .engineError)
+        let d = run([.mouseDown(p), .mouseDragged(q), .mouseUp(q)], unmakeable: { $0 == .mouseUp(q) })
+        XCTAssertEqual(d.posted, [.mouseDown(p), .mouseUp(p)], "the drag step is not posted either; the release stays where the press stood")
+        XCTAssertEqual(d.stopped?.code, .engineError)
     }
 
     func testAnEventThatCannotBeMadeStopsTheRunAndReleasesWhatIsDown() {
         let c = KeyChord(keyCode: 0, flags: 0, label: "a")
-        var n = 0
-        let r = EventRunner.run([.keyDown(c), .mouseDown(.zero), .mouseUp(.zero), .keyUp(c)], stop: { nil }, post: { e in
-            n += 1
-            if case .mouseDown = e { return false }
-            return true
-        })
+        let r = run([.keyDown(c), .mouseDown(.zero), .mouseUp(.zero), .keyUp(c)], unmakeable: { if case .mouseDown = $0 { return true }; return false })
         XCTAssertEqual(r.stopped?.code, .engineError)
         XCTAssertEqual(r.posted, [.keyDown(c), .keyUp(c)], "the key already down is released")
         XCTAssertEqual(r.released, 1)
     }
 
-    func testAReleaseThatFailsToPostDoesNotStopTheOthers() {
+    func testStoppedAfterTwoPressesTheReleasesComeNewestFirst() {
         let a = KeyChord(keyCode: 0, flags: 0, label: "a"), b = KeyChord(keyCode: 11, flags: 0, label: "b")
-        let r = EventRunner.run([.keyDown(a), .keyDown(b), .keyDown(b)], stop: { self.stopError }, post: { e in
-            if case .keyUp(let c) = e, c == b { return false }
-            return true
-        })
-        XCTAssertTrue(r.posted.isEmpty, "stopped before anything")
-        var asked = 0
-        let r2 = EventRunner.run([.keyDown(a), .keyDown(b), .keyDown(b)], stop: { [stopError] in asked += 1; return asked > 2 ? stopError : nil }, post: { e in
-            if case .keyUp(let c) = e, c == b { return false }
-            return true
-        })
-        XCTAssertEqual(r2.posted, [.keyDown(a), .keyDown(b), .keyUp(a)], "a's release is sent although b's could not be")
+        let r = run([.keyDown(a), .keyDown(b), .keyDown(b)], stopAt: 2)
+        XCTAssertEqual(r.posted, [.keyDown(a), .keyDown(b), .keyUp(b), .keyUp(a)])
     }
 }
 
@@ -743,6 +847,8 @@ final class RefusalSuggestionTests: XCTestCase {
             BackgroundRefusal.axUnresolved("TextEdit", window: 1), BackgroundRefusal.siblings("TextEdit", count: 2), BackgroundRefusal.siblings("TextEdit", count: 1),
             BackgroundRefusal.notKeyWindow("TextEdit", focused: nil, window: 1), BackgroundRefusal.noTransport("TextEdit"),
             BackgroundRefusal.noVerifier("TextEdit"), BackgroundRefusal.pointOutside(window: 1), BackgroundRefusal.unverified(basis: "no_change"),
+            BackgroundRefusal.elementNotPlaced("TextEdit"), BackgroundRefusal.userActivated("TextEdit"), BackgroundRefusal.partial(landed: 1, of: 3, basis: "no_change"),
+            BackgroundRefusal.pointerStampsMissing("TextEdit"), BackgroundRefusal.pointInTitleBar(window: 1),
             BackgroundRefusal.frontChanged("TextEdit", to: nil), BackgroundRefusal.pointerMoved(from: .zero, to: CGPoint(x: 1, y: 1)),
         ]
         for e in all {
@@ -816,7 +922,7 @@ final class BackgroundPosterSourceTests: XCTestCase {
     func testEveryScriptRunsThroughTheBalancedRunner() throws {
         let text = try poster()
         XCTAssertEqual(text.components(separatedBy: "EventRunner.run(").count - 1, 2, "keys and pointer both go through it")
-        XCTAssertFalse(text.contains("Thread.sleep(forTimeInterval: 0.008)\n            }"), "no hand-rolled loop of down and up")
+        XCTAssertTrue(text.contains("return {"), "events are made first and posted by the closure the runner calls")
         XCTAssertFalse(text.contains("for down in"), "no loop that can leave a key down")
     }
 
@@ -850,7 +956,7 @@ final class BackgroundPosterSourceTests: XCTestCase {
         let transact = try XCTUnwrap(HandsSourceTests.block(after: "private func transact(", in: text))
         // Inside it, in this order: watch, read before, facts, plan, post, read after.
         let order = ["ActivationWatch()", "SessionTap()", "refReading()", "gatherFacts(w, kind: kind", "BackgroundPlanner.plan(facts)",
-                     "BackgroundPoster.keys(chords", "BackgroundPoster.pointer(", "DeliveryProof.keys(", "PointerAudit.verdict("]
+                     "BackgroundPoster.keys(step.chords", "DeliveryProof.keys(", "BackgroundPoster.pointer(", "DeliveryProof.pointer(", "PointerAudit.verdict("]
         var last = transact.startIndex
         for marker in order {
             let r = try XCTUnwrap(transact.range(of: marker), marker)
@@ -884,12 +990,43 @@ final class BackgroundPosterSourceTests: XCTestCase {
         XCTAssertTrue(watch.contains("options: .listenOnly"), "the session tap only listens")
         XCTAssertTrue(watch.contains(".cgSessionEventTap"))
         let router = try HandsSourceTests.code("Sources/BaneySpaces/Hands/HandsRouter+Background.swift")
-        XCTAssertTrue(router.contains("PostGuard.activations(activations.activated"))
+        XCTAssertTrue(router.contains("PostGuard.span(activations: activations.activated, start: frontStart, now: frontPid()"), "the notifications and a look right now, together")
+        XCTAssertTrue(router.contains("PostGuard.verdict(spanFront(), hardware: hardware())"))
         XCTAssertTrue(router.contains("PointerAudit.verdict("))
         // The span closes after the proof loop, not after the post.
         let loop = try XCTUnwrap(router.range(of: "} while !verdict.verified"))
         let closing = try XCTUnwrap(router.range(of: "let events = tap.stop()"))
         XCTAssertTrue(loop.lowerBound < closing.lowerBound)
+    }
+
+    func testNoTapIsCreatedUntilInputMonitoringIsGranted() throws {
+        let watch = try HandsSourceTests.code("Sources/BaneySpaces/Hands/BackgroundWatch.swift")
+        XCTAssertEqual(watch.components(separatedBy: "CGEvent.tapCreate(").count - 1, 1, "one place makes a tap")
+        let preflight = try XCTUnwrap(watch.range(of: "guard CGPreflightListenEventAccess() else { return }"))
+        let create = try XCTUnwrap(watch.range(of: "CGEvent.tapCreate("))
+        XCTAssertTrue(preflight.lowerBound < create.lowerBound, "the permission is checked, without asking, before the tap exists")
+        for banned in ["CGRequestListenEventAccess", "IOHIDRequestAccess"] { XCTAssertFalse(watch.contains(banned), "\(banned) would put a prompt on Donovan's screen") }
+        for f in try HandsSourceTests.handsFiles() where !f.hasSuffix("/BackgroundWatch.swift") {
+            XCTAssertFalse(try HandsSourceTests.code(f).contains("tapCreate"), "\(f) must not make a tap")
+        }
+        let router = try HandsSourceTests.code("Sources/BaneySpaces/Hands/HandsRouter+Background.swift")
+        XCTAssertTrue(router.contains("\"pointer_check\": .string(tap.available ? \"tap\" : \"idle_fallback\")"), "the result says which check ran")
+    }
+
+    func testTheWatchRunsForASecondAfterTheLastPostNotJustUntilTheProof() throws {
+        let router = try HandsSourceTests.code("Sources/BaneySpaces/Hands/HandsRouter+Background.swift")
+        let tail = try XCTUnwrap(router.range(of: "while Date().timeIntervalSince(lastPostAt) < 1.0"))
+        let verdictCheck = try XCTUnwrap(router.range(of: "let events = tap.stop() ?? idle.events"))
+        XCTAssertTrue(tail.lowerBound < verdictCheck.lowerBound)
+        XCTAssertGreaterThanOrEqual(router.components(separatedBy: "lastPostAt = Date()").count - 1, 3, "measured from every post")
+    }
+
+    func testAKeyPressIsProvedStepByStep() throws {
+        let router = try HandsSourceTests.code("Sources/BaneySpaces/Hands/HandsRouter+Background.swift")
+        XCTAssertTrue(router.contains("let steps = KeySteps.split(chords)"))
+        XCTAssertTrue(router.contains("BackgroundRefusal.partial(landed: landed, of: stepCount"))
+        let loop = try XCTUnwrap(HandsSourceTests.between("for step in steps {", "case .pointer:", in: router))
+        XCTAssertTrue(loop.contains("if !verdict.verified {") && loop.contains("return .failed("), "the first step that shows nothing ends the press")
     }
 
     func testOwnershipComparesStartTimeSoAReusedPidFails() throws {
@@ -928,6 +1065,8 @@ final class BackgroundPosterSourceTests: XCTestCase {
         for needed in ["AXSelectedTextRange", "alt+Left", "shift+alt+Right", "cmd+a", "cmd+b", "Return", "func cleanup()"] { XCTAssertTrue(text.contains(needed), needed) }
         XCTAssertFalse(text.contains("\"Home\"") || text.contains("\"End\""), "Home and End change nothing in a short document")
         XCTAssertFalse(text.contains("defer { try?"), "exit skips defer; cleanup() runs before every exit")
+        XCTAssertTrue(text.contains("came to the front on its own"))
+        XCTAssertFalse(text.contains("untested(\"TextEdit came to the front"), "a focus steal is a FAIL, not untested")
         XCTAssertGreaterThanOrEqual(text.components(separatedBy: "cleanup()").count - 1, 4)
     }
 }

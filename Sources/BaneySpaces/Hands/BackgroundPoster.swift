@@ -72,14 +72,16 @@ enum BackgroundPoster {
             switch event {
             case .keyDown(let c): chord = c; down = true
             case .keyUp(let c): chord = c; down = false
-            default: return false
+            default: return nil
             }
-            guard let e = CGEvent(keyboardEventSource: source, virtualKey: chord.keyCode, keyDown: down) else { return false }
+            // Made now, posted later: the runner makes a press's release before it posts the press.
+            guard let e = CGEvent(keyboardEventSource: source, virtualKey: chord.keyCode, keyDown: down) else { return nil }
             // The physical modifier state is never inherited: the flags are exactly the chord's, even none.
             e.flags = CGEventFlags(rawValue: chord.flags)
-            post(e, permit)
-            Thread.sleep(forTimeInterval: 0.008)
-            return true
+            return {
+                post(e, permit)
+                Thread.sleep(forTimeInterval: 0.008)
+            }
         }
     }
 
@@ -111,10 +113,10 @@ enum BackgroundPoster {
             case .mouseDown(let p): (type, local, state, subtype, pause) = (.leftMouseDown, p, 1, drag ? 0 : 3, drag ? 0.03 : 0.06)
             case .mouseDragged(let p): (type, local, state, subtype, pause) = (.leftMouseDragged, p, 1, 0, 0.012)
             case .mouseUp(let p): (type, local, state, subtype, pause) = (.leftMouseUp, p, 1, drag ? 0 : 3, 0)
-            default: return false
+            default: return nil
             }
             let screen = PointerPath.screenPoint(local: local, frame: frame)
-            guard let e = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: screen, mouseButton: .left) else { return false }
+            guard let e = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: screen, mouseButton: .left) else { return nil }
             let raw = Unmanaged.passUnretained(e).toOpaque()
             setField(raw, 1, state)
             setField(raw, 3, 0)
@@ -126,10 +128,11 @@ enum BackgroundPoster {
             setField(raw, 58, gesture)
             setLocation(raw, Double(screen.x), Double(screen.y))
             e.flags = []
-            post(e, permit)
-            aimed.append(screen)
-            if pause > 0 { Thread.sleep(forTimeInterval: pause) }
-            return true
+            return {
+                post(e, permit)
+                aimed.append(screen)
+                if pause > 0 { Thread.sleep(forTimeInterval: pause) }
+            }
         }
         return PointerPost(report: report, screenPoints: aimed)
     }

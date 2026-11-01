@@ -106,6 +106,17 @@ public enum KeyParse {
         "leftarrow": "left", "rightarrow": "right", "uparrow": "up", "downarrow": "down", "fwddelete": "forwarddelete", "bksp": "backspace",
     ]
 
+    /// The character a chord types, when it types one: no command, control, option or fn; letters, digits, punctuation
+    /// and space (Return, Delete and the others are not text).
+    public static func character(of c: KeyChord) -> Character? {
+        if c.flags & ~KeyChord.shift != 0 { return nil }
+        if c.keyCode == 49 { return c.flags == 0 ? " " : nil }
+        guard let key = base.first(where: { $0.value == c.keyCode })?.key, let ch = key.first else { return nil }
+        guard c.flags & KeyChord.shift != 0 else { return ch }
+        if ch.isLetter { return Character(ch.uppercased()) }
+        return shiftedSymbols.first(where: { $0.value == key })?.key
+    }
+
     /// Several chords separated by spaces. At most `maxChords`.
     public static func sequence(_ spec: String) -> Result<[KeyChord], HandsError> {
         let words = spec.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" }).map(String.init)
@@ -204,18 +215,22 @@ public struct BackgroundFacts: Equatable, Sendable {
     public var verifier: VerifierPlan
     /// Pointer only: the point lies inside the window's frame.
     public var pointInsideWindow: Bool
+    /// The app has a focused element and accessibility cannot say which window it is in (not even through its window
+    /// attribute). Keys could be going anywhere, so they are refused.
+    public var focusedElementUnplaced: Bool
     /// Pointer only: a point lies in the title bar (close, minimize, zoom, and the drag that moves the window).
     public var pointInTitleBar: Bool
 
     public init(kind: InputKind, app: String, pid: Int32, window: UInt32, scope: ScopeKind, pidIsAgentOwned: Bool,
                 windowOwnerPid: Int32?, axWindowResolved: Bool, siblingWindows: Int, condition: WindowCondition,
                 hasSheetOrPanel: Bool, focusedWindow: UInt32?, focusedElementWindow: UInt32?, targetIsFront: Bool,
-                transports: TransportSupport, block: RouteBlock?, verifier: VerifierPlan, pointInsideWindow: Bool = true, pointInTitleBar: Bool = false) {
+                transports: TransportSupport, block: RouteBlock?, verifier: VerifierPlan, pointInsideWindow: Bool = true, pointInTitleBar: Bool = false, focusedElementUnplaced: Bool = false) {
         self.kind = kind; self.app = app; self.pid = pid; self.window = window; self.scope = scope
         self.pidIsAgentOwned = pidIsAgentOwned; self.windowOwnerPid = windowOwnerPid; self.axWindowResolved = axWindowResolved
         self.siblingWindows = siblingWindows; self.condition = condition; self.hasSheetOrPanel = hasSheetOrPanel
         self.focusedWindow = focusedWindow; self.focusedElementWindow = focusedElementWindow; self.targetIsFront = targetIsFront
         self.transports = transports; self.block = block; self.verifier = verifier; self.pointInsideWindow = pointInsideWindow; self.pointInTitleBar = pointInTitleBar
+        self.focusedElementUnplaced = focusedElementUnplaced
     }
 }
 
@@ -307,6 +322,19 @@ public enum BackgroundRefusal {
         HandsError(.unverified, "the events were posted, and nothing read back from the window shows they landed (\(basis))",
                    suggestion: "Do not send them again. Read the element with `baneyspaces agent get` or take a snapshot; if they did not land, " + sandboxLine, retry: .never)
     }
+    public static func elementNotPlaced(_ app: String) -> HandsError {
+        HandsError(.notSupported, "\(app)'s focused element cannot be placed in any window, so a key could go to a window nobody can name",
+                   suggestion: "`click` the element in this window first so the app focuses something accessibility can place, or use `type` or `set-value` on it, or " + sandboxLine, retry: .never)
+    }
+    public static func userActivated(_ app: String) -> HandsError {
+        HandsError(.inUse, "Donovan brought \(app) forward while events were being posted to it; the rest were not sent",
+                   suggestion: "Read the element back before doing anything else: part of the input may have landed. Wait until he has been away from \(app) for 30 seconds.", retry: .never)
+    }
+    /// Some steps of a multi-key press were proved and one was not; the steps after it were not sent.
+    public static func partial(landed: Int, of total: Int, basis: String) -> HandsError {
+        HandsError(.unverified, "\(landed) of \(total) steps landed; step \(landed + 1) showed no sign of landing (\(basis)) and the steps after it were not sent",
+                   suggestion: "Do not send the whole press again: the first \(landed) step\(landed == 1 ? "" : "s") already landed. Read the element with `baneyspaces agent get` and continue from step \(landed + 1) if it did not land.", retry: .never)
+    }
     public static func frontUnknown(_ app: String) -> HandsError {
         HandsError(.actionFailed, "the front app could not be read while events were being posted to \(app); the rest were not sent",
                    suggestion: "Read the element back before doing anything else: part of the input may have landed.", retry: .never)
@@ -340,6 +368,7 @@ public enum BackgroundPlanner {
         switch f.kind {
         case .keys:
             if f.siblingWindows > 0 { return .failure(BackgroundRefusal.siblings(f.app, count: f.siblingWindows)) }
+            if f.focusedElementUnplaced { return .failure(BackgroundRefusal.elementNotPlaced(f.app)) }
             // The app's focused window must be this one. Its focused element, if it has one, must be in it too (an app
             // like Calculator has none: its keys go to the window, and the proof reads the window's content).
             if f.focusedWindow != f.window || (f.focusedElementWindow != nil && f.focusedElementWindow != f.window) {
@@ -373,6 +402,9 @@ public struct RouteBreaker: Equatable, Sendable {
 
     /// The app became the front app by itself after a post (or the target was activated while one ran).
     public mutating func selfActivated(bundle: String, kind: InputKind) { shut["b:" + bundle + "|" + kind.rawValue] = .selfActivates }
+
+    /// This process came forward after a post and nothing says Donovan did it (no tap to ask): shut for this process only.
+    public mutating func selfActivated(pid: Int32, kind: InputKind) { shut["p:\(pid)|" + kind.rawValue] = .selfActivates }
 
     /// Events whose effect was certain to show (text typed into a readable text field) changed nothing. Two in a row
     /// shut the route for that process; a proof opens the count again. Keys whose effect may be nothing (Home at the
@@ -427,42 +459,54 @@ public struct RunReport: Equatable, Sendable {
 }
 
 /// Posts a script of events with one rule: a stop means "post nothing new", and every press already posted gets its
-/// release, newest first, before the run returns. A release is never harmful, so it is not subject to the stop.
+/// release, newest first, before the run returns. A release is never subject to the stop.
+///
+/// A release can never fail after its press went out: the release event is made BEFORE the press is posted, and if it
+/// cannot be made the press is not posted. `prepare` makes an event ready to post (nil if it cannot be made); posting
+/// a prepared event cannot fail.
 public enum EventRunner {
-    public static func run(_ events: [InputEvent], stop: () -> HandsError?, post: (InputEvent) -> Bool) -> RunReport {
+    public typealias Prepared = () -> Void
+
+    public static func run(_ events: [InputEvent], stop: () -> HandsError?, prepare: (InputEvent) -> Prepared?) -> RunReport {
         var report = RunReport()
-        var held: [InputEvent] = []
-        var lastMouse: CGPoint?
-        func note(_ e: InputEvent) {
+        struct Held { var press: InputEvent; var release: InputEvent; var post: Prepared }
+        var held: [Held] = []
+        func cannotMake() -> HandsError {
+            HandsError(.engineError, "an input event could not be made, so nothing further was posted", suggestion: "Read the element back before trying again.", retry: .never)
+        }
+        /// The event that undoes a press at its current position.
+        func release(for e: InputEvent) -> InputEvent? {
             switch e {
-            case .mouseMoved(let p), .mouseDown(let p), .mouseDragged(let p), .mouseUp(let p): lastMouse = p
-            default: break
+            case .keyDown(let c): return .keyUp(c)
+            case .mouseDown(let p), .mouseDragged(let p): return .mouseUp(p)
+            default: return nil
             }
         }
-        for e in events {
+        loop: for e in events {
             if e.isRelease {
-                // Matches a press already posted; always sent.
-                if post(e) { report.posted.append(e); note(e) }
-                if let i = held.lastIndex(where: { matches($0, e) }) { held.remove(at: i) }
+                // Sent at once: the matching release made ahead of the press, or, for a script release with no press, made now.
+                if let i = held.lastIndex(where: { matches($0.press, e) }) {
+                    let h = held.remove(at: i)
+                    h.post(); report.posted.append(h.release)
+                } else if let post = prepare(e) { post(); report.posted.append(e) }
                 continue
             }
-            if let s = stop() { report.stopped = s; break }
-            guard post(e) else {
-                report.stopped = HandsError(.engineError, "an input event could not be made", suggestion: "Read the element back before trying again.", retry: .never)
-                break
+            if let s = stop() { report.stopped = s; break loop }
+            guard let post = prepare(e) else { report.stopped = cannotMake(); break loop }
+            if let rel = release(for: e) {
+                // The release first. A drag step moves the pending mouse release to where the gesture now stands.
+                guard let relPost = prepare(rel) else { report.stopped = cannotMake(); break loop }
+                post(); report.posted.append(e)
+                if case .mouseDragged = e, let i = held.lastIndex(where: { if case .mouseDown = $0.press { return true }; return false }) {
+                    held[i].release = rel; held[i].post = relPost
+                } else {
+                    held.append(Held(press: e, release: rel, post: relPost))
+                }
+            } else {
+                post(); report.posted.append(e)
             }
-            report.posted.append(e)
-            note(e)
-            if e.isPress { held.append(e) }
         }
-        for h in held.reversed() {
-            let up: InputEvent
-            switch h {
-            case .keyDown(let c): up = .keyUp(c)
-            default: up = .mouseUp(lastMouse ?? .zero)
-            }
-            if post(up) { report.posted.append(up); report.released += 1 }
-        }
+        for h in held.reversed() { h.post(); report.posted.append(h.release); report.released += 1 }
         return report
     }
 
@@ -527,6 +571,38 @@ public enum PostGuard {
         if pids.isEmpty { return .same }
         return pids.contains(target) ? .targetCameForward : .other(pids.first)
     }
+
+    /// The notification history and a synchronous look at the front app, together. Either one seeing a change is a
+    /// change: a front app that moved before its notification arrived is not forgotten.
+    public static func span(activations pids: [Int32], start: Int32?, now: Int32?, target: Int32) -> FrontChange {
+        let seen = activations(pids, target: target)
+        if seen != .same { return seen }
+        return front(start: start, now: now, target: target)
+    }
+
+    public enum FrontVerdict: Equatable, Sendable {
+        case same
+        /// Donovan brought the app forward: hardware events in the span. Stop, and do not blame the route.
+        case userActivated
+        /// The app came forward by itself: a tap was listening and heard no hardware.
+        case selfActivated
+        /// The app came forward and nothing can say who did it (no tap): blamed on the process only.
+        case unattributed
+        case other(Int32?)
+        case unknown
+    }
+
+    /// `hardware`: whether a hardware event (source process 0) was seen in the span; nil when nothing was listening.
+    public static func verdict(_ change: FrontChange, hardware: Bool?) -> FrontVerdict {
+        switch change {
+        case .same: return .same
+        case .unknown: return .unknown
+        case .other(let p): return .other(p)
+        case .targetCameForward:
+            guard let hardware else { return .unattributed }
+            return hardware ? .userActivated : .selfActivated
+        }
+    }
 }
 
 /// One keyboard or mouse event as a listen-only session tap reports it.
@@ -568,11 +644,16 @@ public struct ElementReading: Equatable, Sendable {
     public var selectionLength: Int?
     /// A hash of the text's attributes (fonts, underline...) when the element answers for them.
     public var attributesDigest: UInt64?
+    /// The value itself, held in memory only so that a typed segment can be looked for in it. It is never logged,
+    /// returned or written; values over `maxKept` characters are not kept.
+    public var value: String?
+    public static let maxKept = 100_000
 
     public init(window: UInt32?, identity: String, valueLength: Int? = nil, valueDigest: UInt64? = nil, selectionLocation: Int? = nil,
-                selectionLength: Int? = nil, attributesDigest: UInt64? = nil) {
+                selectionLength: Int? = nil, attributesDigest: UInt64? = nil, value: String? = nil) {
         self.window = window; self.identity = identity; self.valueLength = valueLength; self.valueDigest = valueDigest
         self.selectionLocation = selectionLocation; self.selectionLength = selectionLength; self.attributesDigest = attributesDigest
+        self.value = value
     }
 
     /// FNV-1a, so the same text hashes the same in a test and in the app.
@@ -583,7 +664,8 @@ public struct ElementReading: Equatable, Sendable {
     }
     public static func text(window: UInt32?, identity: String, value: String?, selection: (Int, Int)? = nil, attributes: String? = nil) -> ElementReading {
         ElementReading(window: window, identity: identity, valueLength: value?.count, valueDigest: value.map(digest),
-                       selectionLocation: selection?.0, selectionLength: selection?.1, attributesDigest: attributes.map(digest))
+                       selectionLocation: selection?.0, selectionLength: selection?.1, attributesDigest: attributes.map(digest),
+                       value: value.flatMap { $0.count <= maxKept ? $0 : nil })
     }
     /// A text element: it has a value or a selection to read.
     public var isText: Bool { valueDigest != nil || selectionLocation != nil }
@@ -610,6 +692,7 @@ public enum KeyPrediction {
         return !arrows.contains(c.keyCode) && c.keyCode != 48 && c.keyCode != 53 && !functionKeys.contains(c.keyCode)
     }
 
+    /// What one step is expected to change (a step is a typed segment or a single chord; see `KeySteps`).
     public static func expected(_ chords: [KeyChord], focusIsText: Bool) -> Set<KeyEffect> {
         var out: Set<KeyEffect> = []
         for c in chords {
@@ -621,6 +704,9 @@ public enum KeyPrediction {
                 out.insert(.selection)                        // select all
             } else if c.flags & (KeyChord.command | KeyChord.control) != 0 {
                 out.insert(.window)                           // save, new, close...: the window is what changes
+            } else if c.keyCode == 36 {
+                // Return types a newline in a text view, runs the action of a one-line field (the window may change).
+                out.insert(focusIsText ? .text : .content); out.insert(.window)
             } else if c.keyCode == 48 {
                 out.insert(.focus)
             } else if isTextual(c) {
@@ -632,10 +718,62 @@ public enum KeyPrediction {
         return out
     }
 
-    /// Typed text into a readable text field must change its value. Only then is silence evidence that the events
-    /// were dropped (a key that may do nothing, like Home at the top, is never evidence).
-    public static func certainToShow(_ chords: [KeyChord], focusIsText: Bool) -> Bool {
-        focusIsText && expected(chords, focusIsText: true) == [.text]
+    /// Only a typed segment (printable characters, no Option, no Return, Delete or ForwardDelete) into a readable text
+    /// field must change its value; for nothing else is silence evidence that the events were dropped. Delete at the
+    /// start, Escape, dead keys and a one-line field's Return may all do nothing.
+    public static func certainToShow(_ step: KeyStep, focusIsText: Bool) -> Bool { focusIsText && step.typed != nil }
+}
+
+/// One thing to prove: either a run of printable characters, which must appear, or a single chord.
+public struct KeyStep: Equatable, Sendable {
+    public var chords: [KeyChord]
+    /// The characters a typed segment puts in; nil for a single chord.
+    public var typed: String?
+    public init(chords: [KeyChord], typed: String?) { self.chords = chords; self.typed = typed }
+}
+
+public enum KeySteps {
+    /// Consecutive printable chords are one typed segment; every other chord is a step of its own. A press is verified
+    /// step by step, in order, and stops at the first step that shows nothing.
+    public static func split(_ chords: [KeyChord]) -> [KeyStep] {
+        var out: [KeyStep] = []
+        var run: [KeyChord] = []
+        var text = ""
+        func flush() {
+            if !run.isEmpty { out.append(KeyStep(chords: run, typed: text)); run = []; text = "" }
+        }
+        for c in chords {
+            if let ch = KeyParse.character(of: c) { run.append(c); text.append(ch) }
+            else { flush(); out.append(KeyStep(chords: [c], typed: nil)) }
+        }
+        flush()
+        return out
+    }
+}
+
+/// Attributes of text, reduced to values that read the same every time: names, numbers, flags and the components of a
+/// color, never an object's description (which holds its address).
+public enum StableAttributes {
+    public static func describe(_ value: Any) -> String? {
+        if CFGetTypeID(value as AnyObject) == CGColor.typeID {
+            let c = value as! CGColor
+            let space = c.colorSpace?.name as String? ?? "?"
+            return "color(" + space + ":" + (c.components ?? []).map { String(format: "%.3f", Double($0)) }.joined(separator: ",") + ")"
+        }
+        switch value {
+        case let s as String: return s
+        case let n as NSNumber: return "\(n)"
+        case let d as [AnyHashable: Any]:
+            let parts = d.compactMap { (k, v) -> String? in describe(v).map { "\(k)=\($0)" } }
+            return "{" + parts.sorted().joined(separator: ";") + "}"
+        case let a as [Any]: return "[" + a.compactMap(describe).joined(separator: ",") + "]"
+        default: return nil
+        }
+    }
+
+    /// Runs of equal attributes, normalized: `location+length:{attributes}`.
+    public static func runs(_ runs: [(range: NSRange, attributes: [AnyHashable: Any])]) -> String {
+        runs.map { "\($0.range.location)+\($0.range.length):" + (describe($0.attributes) ?? "{}") }.joined(separator: "|")
     }
 }
 
@@ -678,14 +816,33 @@ public enum PixelDiff {
     }
 }
 
-/// Elements whose text changed on their own between two readings taken before the post (a clock, a spinner, a
-/// timer) are noise; only what changes beyond them can be the action's doing.
+/// Elements that changed on their own between two readings taken before the post (a clock, a spinner, a timer) are
+/// noise, found by where they are in the tree and not by what they say: whatever they read afterwards is not evidence,
+/// including a third value nobody has seen yet.
 public enum ContentChange {
-    public static func changed(base1: JSONValue, base2: JSONValue, after: JSONValue) -> Bool {
-        let noise = AXDiff.between(base1, base2)
-        let noisy = Set(noise.added + noise.removed)
-        let d = AXDiff.between(base1, after)
-        return (d.added + d.removed).contains { !noisy.contains($0) }
+    /// Each element by its place (`0/2/1`, the child indexes down from the window) with what it shows.
+    public static func entries(of tree: JSONValue) -> [String: String] {
+        var out: [String: String] = [:]
+        func walk(_ n: JSONValue, _ path: String) {
+            guard case .object(let o) = n else { return }
+            let states = (o["states"]?.array ?? []).compactMap(\.string).sorted().joined(separator: ",")
+            out[path] = [o["role"]?.string ?? "", o["name"]?.string ?? o["title"]?.string ?? "", o["value"]?.string ?? "", states].joined(separator: "|")
+            for (i, c) in (o["children"]?.array ?? []).enumerated() { walk(c, path + "/\(i)") }
+        }
+        walk(tree, "0")
+        return out
+    }
+
+    /// Places that differ between the two baselines (or exist in only one).
+    public static func noise(base1: JSONValue, base2: JSONValue) -> Set<String> {
+        let a = entries(of: base1), b = entries(of: base2)
+        return Set(Set(a.keys).union(b.keys).filter { a[$0] != b[$0] })
+    }
+
+    /// Whether anything outside the noise differs between the first baseline and now.
+    public static func changed(base: [String: String], noise: Set<String>, after: JSONValue) -> Bool {
+        let now = entries(of: after)
+        return Set(base.keys).union(now.keys).contains { !noise.contains($0) && base[$0] != now[$0] }
     }
 }
 
@@ -729,26 +886,33 @@ public enum DeliveryProof {
         }
     }
 
-    /// Keys: proof is the change the keys predict, on the targeted element, the focused element or (when keys have no
-    /// text field to change) the window's content, all inside the target window. An unrelated change does not count,
-    /// and pixels never prove keys.
-    public static func keys(target: UInt32, chords: [KeyChord], ref: ReadingPair, focus: ReadingPair, content: Bool?,
+    /// Keys, one step: proof is the change that step predicts, on the targeted element or the focused element (value,
+    /// selection, attributes, focus), all inside the target window. A typed segment must also show its own characters.
+    /// The window's content counts only where there is no text element to read (Calculator), and the window itself
+    /// only for a shortcut that acts on the window (Save). An unrelated change does not count, and pixels never prove keys.
+    public static func keys(target: UInt32, step: KeyStep, ref: ReadingPair, focus: ReadingPair, content: Bool?,
                             window: (before: WindowReading?, after: WindowReading?) = (nil, nil), pixels: PixelChange?) -> DeliveryVerdict {
         let focusIsText = (focus.before?.isText ?? false) || (ref.before?.isText ?? false)
-        let expected = KeyPrediction.expected(chords, focusIsText: focusIsText)
-        let seen = change(ref, target: target).union(change(focus, target: target))
+        let expected = KeyPrediction.expected(step.chords, focusIsText: focusIsText)
+        var seen = change(ref, target: target).union(change(focus, target: target))
+        var wrongText = false
+        // A typed segment proves itself only by appearing in the element it was typed into.
+        if let typed = step.typed, seen.contains(.text) {
+            func appears(_ p: ReadingPair) -> Bool {
+                guard let b = p.before, let a = p.after, b.window == target, a.window == target, b.valueDigest != a.valueDigest else { return false }
+                return a.value?.contains(typed) ?? false
+            }
+            if !(appears(ref) || appears(focus)) { seen.remove(.text); wrongText = true }
+        }
         let windowChanged: Bool = {
             guard let b = window.before, let a = window.after else { return false }
             return b != a
         }()
         for e in [KeyEffect.text, .selection, .focus, .attributes] where expected.contains(e) && seen.contains(e) { return .init(verified: true, basis: basis(e)) }
-        // Attributes unreadable on the element (some views do not answer): the Bold checkbox changing is the next best thing.
-        let attributesUnreadable = (focus.before?.attributesDigest == nil) && (ref.before?.attributesDigest == nil)
-        if expected.contains(.attributes), attributesUnreadable, content == true { return .init(verified: true, basis: "content_changed") }
         if expected.contains(.window), windowChanged { return .init(verified: true, basis: "window_changed") }
-        if expected.contains(.window) || expected.contains(.content), content == true { return .init(verified: true, basis: "content_changed") }
+        if !focusIsText, expected.contains(.content), content == true { return .init(verified: true, basis: "content_changed") }
         if pixels?.anyChange == true { return .init(verified: false, basis: "pixels_only") }
-        if !seen.isEmpty || content == true || windowChanged { return .init(verified: false, basis: "unpredicted_change") }
+        if !seen.isEmpty || wrongText || windowChanged || (focusIsText && content == true) { return .init(verified: false, basis: "unpredicted_change") }
         let read = ref.after != nil || focus.after != nil || content != nil
         return .init(verified: false, basis: read ? "no_change" : "no_reading")
     }

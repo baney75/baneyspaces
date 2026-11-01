@@ -74,13 +74,22 @@ enum BackgroundAX {
         return max(0, bottom - windowTop) + 6
     }
 
-    /// Where the app's keys go: its focused window and the window its focused element is in.
-    static func focus(pid: pid_t) -> (window: UInt32?, element: AXUIElement?, elementWindow: UInt32?) {
+    /// The window an element is in: asked of the private call first, then of the element's own window attribute.
+    static func placedWindow(of e: AXUIElement) -> UInt32? {
+        if let id = windowID(of: e) { return id }
+        if let w = copy(e, kAXWindowAttribute), CFGetTypeID(w) == AXUIElementGetTypeID() { return windowID(of: w as! AXUIElement) }
+        return nil
+    }
+
+    /// Where the app's keys go: its focused window, its focused element, and the window that element is in. An element
+    /// that exists but cannot be placed is reported as such, never as "no element".
+    static func focus(pid: pid_t) -> (window: UInt32?, element: AXUIElement?, elementWindow: UInt32?, unplaced: Bool) {
         let a = app(pid)
-        let window = (copy(a, kAXFocusedWindowAttribute)).flatMap { windowID(of: $0 as! AXUIElement) }
-        guard let raw = copy(a, kAXFocusedUIElementAttribute) else { return (window, nil, nil) }
+        let window = copy(a, kAXFocusedWindowAttribute).flatMap { windowID(of: $0 as! AXUIElement) }
+        guard let raw = copy(a, kAXFocusedUIElementAttribute) else { return (window, nil, nil, false) }
         let el = raw as! AXUIElement
-        return (window, el, windowID(of: el))
+        let w = placedWindow(of: el)
+        return (window, el, w, w == nil)
     }
 
     /// A reading of one element: what it is (role and frame), what it holds (hashed), what is selected.
@@ -94,13 +103,14 @@ enum BackgroundAX {
             frame = "\(Int(pt.x)),\(Int(pt.y)),\(Int(sz.width)),\(Int(sz.height))"
         }
         var value: String?
-        if let v = copy(e, kAXValueAttribute) { value = (v as? String) ?? "\(v)" }
+        // Only a string or a number: other value types print with addresses and would differ on every read.
+        if let v = copy(e, kAXValueAttribute) { value = (v as? String) ?? (v as? NSNumber).map { "\($0)" } }
         var selection: (Int, Int)?
         if let r = copy(e, kAXSelectedTextRangeAttribute) {
             var range = CFRange()
             if AXValueGetValue(r as! AXValue, .cfRange, &range) { selection = (range.location, range.length) }
         }
-        return ElementReading.text(window: windowID(of: e), identity: "\(role)|\(frame)", value: value, selection: selection,
+        return ElementReading.text(window: placedWindow(of: e), identity: "\(role)|\(frame)", value: value, selection: selection,
                                    attributes: value.flatMap { attributesDescription(e, length: $0.utf16.count) })
     }
 
@@ -112,12 +122,11 @@ enum BackgroundAX {
         var out: CFTypeRef?
         guard AXUIElementCopyParameterizedAttributeValue(e, kAXAttributedStringForRangeParameterizedAttribute as CFString, param, &out) == .success,
               let attributed = out as? NSAttributedString else { return nil }
-        var parts: [String] = []
+        var runs: [(range: NSRange, attributes: [AnyHashable: Any])] = []
         attributed.enumerateAttributes(in: NSRange(location: 0, length: attributed.length), options: []) { attrs, r, _ in
-            let keys = attrs.keys.sorted { "\($0)" < "\($1)" }
-            parts.append("\(r.location)+\(r.length):" + keys.map { "\($0)=\(attrs[$0]!)" }.joined(separator: ";"))
+            runs.append((r, attrs as [AnyHashable: Any]))
         }
-        return parts.joined(separator: "|")
+        return StableAttributes.runs(runs)
     }
 
     /// The window server's word on one window: its owner and its frame in screen coordinates. Windows parked

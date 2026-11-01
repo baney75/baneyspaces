@@ -231,30 +231,40 @@ nothing new", and every key-down and mouse-down already posted gets its matching
 action returns. A release is never subject to the stop. `EventRunner` does this for keys and the pointer alike,
 and its tests stop a chord, a click and a drag at every step.
 
-Delivery proof: the same window is read before and after (the window's tree twice before, a moment apart, so
-what changes by itself is noise). Keys pass only when what the keys predict changed, in the target window:
-typed text changes the value of the targeted or focused element, a movement or select-all changes its selected
-range, Tab moves focus, cmd+b changes the text's attributes, a save changes the window (title, edited flag,
-sheet), and in an app with no text in focus (Calculator) the window's content changes beyond the noise. An
-unrelated change does not count. A reading from another window of the same process never counts. Pixels never
+Delivery proof: the same window is read before and after (the window's tree twice before, a moment apart; an
+element that changes by itself between them, found by its place in the tree and not by its text, is noise for good,
+whatever it reads later). A key press is proved step by step: consecutive printable keys are one typed segment whose
+own text must appear in the element it was typed into, and every other chord is a step of its own. Each step passes
+only when what it predicts changed, in the target window: typed text changes the value of the targeted or focused
+element, a movement or select-all changes its selected range, Tab moves focus, cmd+b changes the text's attributes
+(compared as normalized runs of font and color components, never object descriptions), Return changes the value or
+the window, a save changes the window (title, edited flag, sheet), and in an app with no text element in focus
+(Calculator) the window's content changes beyond the noise. The first step that shows nothing stops the press and the
+answer says how many landed (`unverified`, "2 of 3 steps landed"); the steps after it are not sent. An unrelated
+change does not count. A reading from another window of the same process never counts. Pixels never
 prove keys. A pointer is proved by a change on an element of the target window, or, for a surface that exposes
 nothing, by pixels: the pointer arrives first (a move), the picture before is taken after that, the pixels around
 the start point are left out of a drag, and the stroke needs changed pixels in proportion to its length (never
 under 24) while at most 2% of the rest of the window changes. No proof is `unverified` with retry `never`: the
 events may have landed.
 
-Guards while posting: every app the workspace activates, from planning to the end of verification, is recorded
-(`didActivateApplicationNotification`); any activation in that span, the target's or another's, fails the action
-(the target's also shuts that app out of the route for the run, as does an app that ignored typed text twice, for
-that process only). BaneySpaces does not follow any of them. A front app that cannot be read is not a pass. The
-real pointer is Donovan's: a listen-only session tap runs during the action, and the check fails only when the
-pointer ends where an event was aimed, or moved with no hardware event to explain it, or one of BaneySpaces' own
-events reached the session. His hand moving the mouse is ignored (`pointer: user_moved`).
+Guards while posting: every app the workspace activates is recorded (`didActivateApplicationNotification`) from
+planning until a second after the last post, and the front app is looked at synchronously before every step; either
+seeing a change stops posting (releases still balanced). Any activation in the span, the target's or another's, fails
+the action. If the target came forward and a hardware event was heard in the span it was Donovan (`user_activated`,
+`in_use`): the action stops and the route is not blamed. If a tap was listening and heard no hardware, the app is shut
+out of the route for the run; if nothing was listening, only that process is. BaneySpaces does not follow any of
+them. A front app that cannot be read is not a pass. The real pointer is Donovan's: a listen-only session tap runs
+during the action, and the check fails only when the pointer ends where an event was aimed, or moved with no hardware
+event to explain it, or one of BaneySpaces' own events reached the session. His hand moving the mouse is ignored
+(`pointer: user_moved`). The tap is made only when Input Monitoring is already granted (checked without asking);
+otherwise the pointer's own position and the system's idle clock stand in, and the result says `pointer_check:
+idle_fallback`. BaneySpaces never puts a permission prompt on the screen for an agent action.
 
 Refusals, each with a suggestion: not our process (`needs_lend`), window moved to another process
 (`stale_ref`), Donovan is in the app (`in_use`), minimized or hidden window, a sheet or file panel, other windows
-in the process (windows accessibility cannot map count too), window is not where the app's keys go, no
-accessibility window for it, no transport, a pointer recipe with any setter missing, a point outside the window or
+in the process (windows accessibility cannot map count too), window is not where the app's keys go, a focused element
+that cannot be placed in any window, no accessibility window for it, no transport, a pointer recipe with any setter missing, a point outside the window or
 in its title bar, nothing readable to prove it (all `not_supported` except as named). Coordinates start at the
 window's top-left corner, title bar included.
 

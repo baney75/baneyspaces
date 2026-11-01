@@ -28,8 +28,9 @@ final class ActivationWatch {
 
 /// A listen-only tap on the session's keyboard, mouse and scroll events for the length of one action: what it sees
 /// tells Donovan's hand (source process 0) from anything else, and shows whether one of our own events reached the
-/// session. `stop()` answers nil when no tap could be made (Input Monitoring not granted); the pointer check then
-/// fails only on a landing where we posted.
+/// session. It is made only when Input Monitoring is already granted (`CGPreflightListenEventAccess`, which never asks):
+/// creating a tap without it can put the permission prompt on Donovan's screen. Without it `stop()` answers nil and the
+/// pointer check falls back to the pointer's own position and the system's idle clock (`IdleWatch`).
 final class SessionTap {
     private let lock = NSLock()
     private var seen: [SessionEvent] = []
@@ -38,6 +39,7 @@ final class SessionTap {
     private(set) var available = false
 
     init() {
+        guard CGPreflightListenEventAccess() else { return }
         let types: [CGEventType] = [.mouseMoved, .leftMouseDown, .leftMouseUp, .leftMouseDragged, .rightMouseDown, .rightMouseUp, .rightMouseDragged,
                                     .otherMouseDown, .otherMouseUp, .scrollWheel, .keyDown, .keyUp, .flagsChanged]
         let mask = types.reduce(CGEventMask(0)) { $0 | (1 << $1.rawValue) }
@@ -63,6 +65,13 @@ final class SessionTap {
 
     fileprivate func record(_ pid: Int64) { lock.lock(); seen.append(SessionEvent(sourcePid: pid)); lock.unlock() }
 
+    /// What the tap has seen so far (nil without a tap).
+    var snapshot: [SessionEvent]? {
+        guard available else { return nil }
+        lock.lock(); defer { lock.unlock() }
+        return seen
+    }
+
     func stop() -> [SessionEvent]? {
         guard available else { return nil }
         if let loop { CFRunLoopStop(loop) }
@@ -70,6 +79,23 @@ final class SessionTap {
         lock.lock(); defer { lock.unlock() }
         return seen
     }
+}
+
+/// The stand-in for the tap when Input Monitoring is not granted: the seconds since the last hardware event, read
+/// from the system's own clock before and after. A shorter time afterwards than the time that passed means a hardware
+/// event happened in between. (An event posted to a process may also reset the clock; then a pointer move is excused
+/// that should not be, which is why the evidence says `pointer_check: idle_fallback`.)
+struct IdleWatch {
+    private let startedAt = Date()
+    private let idleAtStart = IdleWatch.idle()
+    static func idle() -> Double { CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: CGEventType(rawValue: ~0)!) }
+    /// Events as the audit wants them: one hardware event if the clock was reset since the start, none otherwise.
+    var events: [SessionEvent] {
+        let elapsed = Date().timeIntervalSince(startedAt)
+        return IdleWatch.idle() < idleAtStart + elapsed - 0.25 ? [SessionEvent(sourcePid: 0)] : []
+    }
+    /// Whether a hardware event happened since the start.
+    var hardwareSeen: Bool { !events.isEmpty }
 }
 
 /// Whether a probe app (BaneySpaces' own canvas test app) is the one built into this app: inside Resources/probe,

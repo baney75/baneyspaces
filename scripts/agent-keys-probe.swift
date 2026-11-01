@@ -289,7 +289,8 @@ func expect(_ label: String, _ ok: Bool) {
 print("TextEdit keys, one line of text (another app stays in front):")
 if let (win, pid) = open("TextEdit", { () -> String in
     let f = runDirURL.appendingPathComponent("line.txt"); FileManager.default.createFile(atPath: f.path, contents: Data("alpha beta gamma".utf8)); return f.path }()) {
-    if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid_t(pid) { untested("TextEdit came to the front on its own; nothing to prove from behind") }
+    // After the app was opened for the agent, any front change is a failure of BaneySpaces, not a missing precondition.
+    if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid_t(pid) { failures.append("TextEdit came to the front on its own after it was opened") }
     if let field = nodes(win).first(where: { canon($0.role) == "textfield" }) {
         var ok = true
         ok = press(field.ref, "cmd+a", label: "select all") && ok
@@ -322,6 +323,8 @@ if let (win, pid) = open("TextEdit", { () -> String in
         ok = press(field.ref, "cmd+b", label: "bold: cmd+b") && ok
         let now = hasBold(pid)
         expect("cmd+b made the selected text bold, read through its attributes (was bold: \(was), now: \(now))", !was && now)
+        // BaneySpaces said "verified" (press returned true) but the text is not bold: its proof is wrong.
+        expect("BaneySpaces did not call cmd+b verified while the text stayed plain", !(ok && !now))
         print("scenario keys-bold: \(ok && !was && now ? "PASS" : "FAIL")")
     } else { failures.append("TextEdit (rtf) has no text field ref") }
     quit(pid)
