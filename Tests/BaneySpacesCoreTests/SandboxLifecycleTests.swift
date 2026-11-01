@@ -121,6 +121,7 @@ final class SandboxLifecycleTests: XCTestCase {
     func testUpTwiceForTheSameTaskIsHarmlessAndForAnotherTaskIsRefused() throws {
         let r = rig()
         _ = try r.manager.up(task: "t1")
+        XCTAssertTrue(r.manager.waitUntilWarm(limit: 120)) // the background warm build spawns its own VM: let it finish first
         let before = r.tart.spawned.count
         _ = try r.manager.up(task: "t1")
         XCTAssertEqual(r.tart.spawned.count, before)
