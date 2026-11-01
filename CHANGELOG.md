@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **⌘Tab workspaces mode lists empty workspaces.** A single occupied workspace no longer makes ⌘Tab a no-op. Window-bar hold eligibility is pinned by `WindowBarGateTests`.
+
+## Unreleased
+
 - **Agent hands, phase 4: keys and a pointer for windows that are not in front.** `agent press` now sends keys (several,
   separated by spaces) to the one process, and `agent click-at` and `agent drag` post window-local mouse events to it,
   without activating, raising, switching a Space, moving the real pointer, or posting to the session. Only to a process

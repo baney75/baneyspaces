@@ -81,7 +81,7 @@ final class WorkspaceSwitcher {
         guard isShowing, model.mode == .apps, hold.repeated(at: time) else { return }
         holdCheck?.cancel()
         if model.windowBar != nil { return toggleWindowBar() }
-        guard windowCount(of: model.selected) > 1 else {
+        guard WindowBarGate.shouldOpen(windowCount: windowCount(of: model.selected)) else {
             Trace.log("cmdTab hold (\(source)): highlighted app has one window")
             return
         }
@@ -188,7 +188,10 @@ final class WorkspaceSwitcher {
     private func windowCount(of index: Int) -> Int {
         guard model.apps.indices.contains(index) else { return 0 }
         let pid = model.apps[index].pid
-        return model.apps.filter { $0.pid == pid }.reduce(0) { $0 + $1.windows }
+        return WindowBarGate.windowCount(
+            pid: pid,
+            tiles: model.apps.map { (pid: $0.pid, windows: $0.windows) }
+        )
     }
 
     /// The bar changed size: keep it centered.
