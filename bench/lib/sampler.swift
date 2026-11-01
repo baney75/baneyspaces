@@ -40,26 +40,45 @@ if let i = CommandLine.arguments.firstIndex(of: "--interval-ms"), i + 1 < Comman
    let v = Int(CommandLine.arguments[i + 1]) { intervalMs = max(10, v) }
 var allowFile = ""
 if let i = CommandLine.arguments.firstIndex(of: "--allow-file"), i + 1 < CommandLine.arguments.count { allowFile = CommandLine.arguments[i + 1] }
-var allowStamp: Date? = nil
+var allowVersion = -1
 var allowPgids = Set<Int>()
 var allowPids = Set<Int>()
+var pidGroup: [Int: Int] = [:]            // poster pid -> its process group, learned while it was alive
+var graceUntil: [Int: Double] = [:]       // process group -> when it stops being recognised after it left the file
+let postedGraceS = 2.0
+/// Reload the allow file when its VERSION changes (not its mtime: two writes in one tick must not be missed), keep a
+/// group that just left the file recognised for postedGraceS, and acknowledge the version.
 func refreshAllow() {
-    guard !allowFile.isEmpty else { return }
-    let stamp = (try? FileManager.default.attributesOfItem(atPath: allowFile))?[.modificationDate] as? Date
-    if stamp == allowStamp { return }
-    allowStamp = stamp
-    guard let data = FileManager.default.contents(atPath: allowFile),
-          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
-    allowPgids = Set((obj["pgids"] as? [Int]) ?? [])
+    guard !allowFile.isEmpty,
+          let data = FileManager.default.contents(atPath: allowFile),
+          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let v = obj["version"] as? Int, v != allowVersion else { return }
+    let now = Date().timeIntervalSince1970
+    let newPgids = Set((obj["pgids"] as? [Int]) ?? [])
+    for g in allowPgids.subtracting(newPgids) { graceUntil[g] = now + postedGraceS }
+    for g in newPgids { graceUntil[g] = nil }
+    allowPgids = newPgids
     allowPids = Set((obj["pids"] as? [Int]) ?? [])
-    // acknowledge the version, so the harness knows a child's group is on the list before the child starts
-    if let v = obj["version"] as? Int { emit(["event": "allow", "t": Date().timeIntervalSince1970, "version": v]) }
+    allowVersion = v
+    emit(["event": "allow", "t": now, "version": v])
 }
-/// Is the poster one of the harness's own commands (its process group) or the harness?
+/// Is the poster one of the harness's own commands (its process group) or the harness? Each registered command is its own
+/// group leader (pgid == pid), so a poster that already exited is still matched by its pid; a grandchild is matched through the
+/// group it had while alive (cached), which stays valid for postedGraceS after its group is retired.
 func ownPoster(_ pid: Int) -> Bool {
-    if allowPids.contains(pid) { return true }
+    let now = Date().timeIntervalSince1970
+    if allowPids.contains(pid) || allowPgids.contains(pid) { return true }
+    if let g = pidGroup[pid] {
+        if allowPgids.contains(g) { return true }
+        if let until = graceUntil[g], until > now { return true }
+    }
     let g = Int(getpgid(pid_t(pid)))
-    return g > 0 && allowPgids.contains(g)
+    if g > 0 {
+        if allowPgids.contains(g) { pidGroup[pid] = g; return true }
+        if let until = graceUntil[g], until > now { pidGroup[pid] = g; return true }
+    }
+    if let until = graceUntil[pid], until > now { return true }     // a retired leader that exited before delivery
+    return false
 }
 let statePath = NSHomeDirectory() + "/Library/Application Support/BaneySpaces/state.json"
 
@@ -217,6 +236,7 @@ var lastSession = sessionState(front: last.front)
 var knownUser = stateUser
 var knownOnScreen = Set(onScreen0.map { $0.id })
 var pendingUnplaced: [Int: Double] = [:]      // window id -> when it first appeared unlisted
+var seenAt: [Int: Double] = [:]               // on-screen window id -> when it was first seen on screen
 refreshAllow()
 emit(["event": "start", "t": Date().timeIntervalSince1970, "state": json(last), "interval_ms": intervalMs,
       "tap": tapOK, "idle": idleSeconds(), "session": lastSession])
@@ -244,14 +264,20 @@ func tick() {
     if abs(cur.px - last.px) > 0.5 || abs(cur.py - last.py) > 0.5 { fields.append("pointer") }
     if cur.key != last.key || cur.keyPid != last.keyPid { fields.append("key_window") }
 
-    var newWindows: [[String: Any]] = []
+    for w in onScreen where seenAt[w.id] == nil { seenAt[w.id] = now }
+    let onIds = Set(onScreen.map { $0.id })
+    for id in Array(seenAt.keys) where !onIds.contains(id) && !stateAll.contains(id) { seenAt[id] = nil }
+
+    // user_window: state.json lists a new window on one of Donovan's workspaces. state.json lags the window, so the event is
+    // its own line stamped with when the window was first SEEN on screen, never with the tick that read state.json.
+    var userEvents: [(Double, [String: Any])] = []
     let newUser = stateUser.subtracting(knownUser)
     if !newUser.isEmpty {
         let all = windows(onScreenOnly: false)
         for id in newUser.sorted() {
-            newWindows.append(all.first(where: { $0.id == id }).map(winJSON) ?? ["id": id, "pid": 0, "owner": ""])
+            let w = all.first(where: { $0.id == id }).map(winJSON) ?? ["id": id, "pid": 0, "owner": ""]
+            userEvents.append((min(seenAt[id] ?? now, now), w))
         }
-        fields.append("user_window")
     }
     knownUser = stateUser
 
@@ -274,8 +300,11 @@ func tick() {
     }
     knownOnScreen = ids
     if !fields.isEmpty {
-        emit(["event": "change", "windows": newWindows, "t": now, "fields": Array(Set(fields)).sorted(), "from": json(last), "to": json(cur)])
+        emit(["event": "change", "windows": [] as [Any], "t": now, "fields": Array(Set(fields)).sorted(), "from": json(last), "to": json(cur)])
         last = cur
+    }
+    for (since, w) in userEvents.sorted(by: { $0.0 < $1.0 }) {
+        emit(["event": "change", "windows": [w], "t": since, "fields": ["user_window"], "from": json(last), "to": json(cur)])
     }
     for (since, w) in delayed.sorted(by: { $0.0 < $1.0 }) {
         emit(["event": "change", "windows": [winJSON(w)], "t": since, "fields": ["unplaced_window"], "from": json(last), "to": json(cur)])

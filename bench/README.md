@@ -140,8 +140,11 @@ stops that column and leaves it `n/a` instead of scoring nothing 30 times.
   cuts setup `[ts0, t0)`, task `[t0, tt0)` and teardown `[tt0, end)` from the full event log by stamp, and only then
   classifies the task. A window first seen before `t0` that appears only in that late pass invalidates the task
   (`infra_error`, `setup_leak`). Real input from any process outside the column's own process groups (the sampler is
-  given them through a versioned file the harness keeps, acknowledged by the sampler before a child starts, with a five-second
-  grace after it ends) counts as Donovan's, so his remapper or scroll tool still stops the run.
+  given them through a versioned file the harness keeps) counts as Donovan's. A registered command is started behind a gate: the
+  child is spawned blocked, its group is written to the file, and only after the sampler acknowledges that version is the gate
+  released (the timeout and the measured time start there); a missed acknowledgement kills the child unstarted and aborts the run,
+  never continuing unregistered. The sampler matches a poster by pid (each child is its own group leader), by the group it had
+  while alive, and for two seconds after the group is retired, so an event delivered after the poster exited is still its own counts as Donovan's, so his remapper or scroll tool still stops the run.
 - **A window leaked by setup is an `infra_error`, never a `fail`** (and the tool is not run if the leak is seen before it
   starts). The shared `agent open` is harness code, so a leak is not the tool's doing; it is recorded as `setup_leak`, shown in
   the report, kept out of the scored set and ignored by the ratchet. The "missing window" task uses a bench window that existed
@@ -221,7 +224,7 @@ Drop `bench/tasks/<id>.json` (the file name is the id). Fields:
 
 ## Status of this build
 
-Prepared and unit-tested (`bench/run_tests.sh`, 376 tests, fakes only). `bench/run.sh --dry-run --tool all` lists the 30 tasks
+Prepared and unit-tested (`bench/run_tests.sh`, 399 tests, fakes only). `bench/run.sh --dry-run --tool all` lists the 30 tasks
 and resolves every runner. agent-desktop builds from the pinned source. **No column has been measured and nothing has
 run live since the 2026-10-31 incident** (a Calculator and a TextEdit window landed on Donovan's workspace); the monitor's
 `user_window` and `unplaced_window` fields exist to catch that.
@@ -235,3 +238,16 @@ Known gaps to read before trusting a number:
 - ChatGPT is not measured at all until the phase 2 sandbox can run it.
 - The installed BaneySpaces app bundle may not record its commit; the result then says so (read with `plutil -extract`, absent key = not recorded).
 - The sampler needs Input Monitoring for the tap; the first run will say whether it has it.
+
+## Known follow-ups
+
+Findings from the last review round that are small and were deliberately not fixed in #104 (tracked in a follow-up issue):
+
+- `Exec._live_lock` is a plain lock and `kill_all` runs from the signal handler: a signal arriving while the main thread holds the lock
+  deadlocks. Use an `RLock`, or make the signal handler only set the abort (the wait loop already kills the child).
+- `bench/results/latest.md` is tracked but `write_latest` rewrites it on every run, partial runs included, and the committed copy holds
+  hand-entered version lines. Generate it with `--write-latest` or stop tracking it.
+- The end-to-end test named for the scripted and micro levels drives only the scripted level, and `results_of` has a dead branch; add a
+  `("micro", "baneyspaces")` plan and assert its result file.
+- The sampler's tap, heartbeat, session, attribution and allow-file logic is typechecked and unit-tested with fakes but has never run on
+  a Mac: the first live run must be a supervised first run, with the output of `run_tests.sh` and `swiftc` attached to the PR.

@@ -70,14 +70,15 @@ class CalculatorDefaults(unittest.TestCase):
             orig = ex
 
             def watching(argv, **k):
-                p = os.path.join(rd, "t1", "com.apple.calculator.plist")
                 if argv[:2] == ["defaults", "import"]:
+                    dirs = [x for x in os.listdir(rd) if x.startswith("t1-")]
+                    p = os.path.join(rd, dirs[0], "com.apple.calculator.plist") if dirs else ""
                     seen["during"] = os.path.exists(p) and open(p).read()
                 return orig(argv, **k)
             watching.log = orig.log
             rec, c, op = self.run_calc(watching, recovery=rd)
             self.assertEqual(seen["during"], PLIST)
-            self.assertFalse(os.path.exists(os.path.join(rd, "t1", "com.apple.calculator.plist")))
+            self.assertEqual([f for _r, _d, fs in os.walk(rd) for f in fs], [])          # removed after a verified restore
             self.assertNotIn("teardown_pending", rec)
 
     def test_a_restore_that_fails_or_does_not_match_keeps_the_backup_and_says_where(self):
@@ -85,8 +86,10 @@ class CalculatorDefaults(unittest.TestCase):
             with tempfile.TemporaryDirectory() as rd:
                 rec, c, op = self.run_calc(defaults_exec(**kw), recovery=rd)
                 self.assertEqual(rec["teardown_pending"]["defaults"], ["com.apple.calculator"], kw)
-                self.assertEqual(rec["teardown_pending"]["recovery"], os.path.join(rd, "t1"))
-                self.assertTrue(os.path.exists(os.path.join(rd, "t1", "com.apple.calculator.plist")), kw)
+                rdir = rec["teardown_pending"]["recovery"]
+                self.assertTrue(rdir.startswith(os.path.join(rd, "t1-")), rdir)          # a directory of its own for every invocation
+                self.assertTrue(os.path.exists(os.path.join(rdir, "com.apple.calculator.plist")), kw)
+                self.assertIn("defaults import com.apple.calculator", rec["teardown_pending"]["recovery_commands"][0])
 
     def test_preferences_are_restored_only_after_the_instance_has_exited(self):
         """sonnet-F2: quitting returns before the process is gone; its exit would overwrite the import"""
@@ -116,16 +119,17 @@ class CalculatorDefaults(unittest.TestCase):
     def test_an_instance_that_will_not_exit_keeps_the_preferences_pending(self):
         op = FakeOpener([5])
         op.pids = {5: 777}
+        t = dict(CALC, setup=dict(CALC["setup"], quit_after=["TextEdit"]))
         with tempfile.TemporaryDirectory() as rd:
             ex = defaults_exec()
-            rec, c, _ = self.run_calc(ex, opener=op, alive_fn=lambda pid: True, recovery=rd)
+            rec, c, _ = self.run_calc(ex, opener=op, alive_fn=lambda pid: True, recovery=rd, task=t)
         self.assertEqual(rec["teardown_pending"]["defaults"], ["com.apple.calculator"])
         self.assertFalse(any(a[0][:2] == ["defaults", "import"] for a in ex.log))
         self.assertIn("backup kept", rec["teardown_pending"]["error"])
 
     def test_after_an_abort_the_instance_is_ended_quietly_and_the_preferences_are_put_back(self):
         """second-S3: Donovan coming back is exactly when an abort happens; the quiet path ignores the abort"""
-        t = dict(CALC, setup=dict(CALC["setup"], requires={"not_running": ["TextEdit"]}))
+        t = dict(CALC, setup=dict(CALC["setup"], requires={"not_running": ["TextEdit"]}, quit_after=["TextEdit"]))
         op = FakeOpener([5])
         op.pids = {5: 777}
         alive = {"v": True}

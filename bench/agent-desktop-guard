@@ -97,7 +97,7 @@ def check(args, state):
     verb = args[0]
     value_flags, bool_flags, pos_spec, needs_window = SPEC[verb]
     allowed = {norm(w) for w in state.get("windows", [])}
-    positionals, seen_window = [], False
+    positionals, seen_window, seen_element = [], False, False
     i, rest_positional = 1, False
     while i < len(args):
         a = args[i]
@@ -123,6 +123,7 @@ def check(args, state):
                     refuse(f"surface {val} is not allowed")
                 elif name in ("--root", "--element"):
                     check_ref(val, state)
+                    seen_element = seen_element or name == "--element"
                 i += 1
                 continue
             refuse(f"option {name} is not allowed for {verb}",
@@ -141,7 +142,8 @@ def check(args, state):
         if len(positionals) != 1:
             refuse("press takes one key combination")
     elif pos_spec == "ms":
-        if verb == "wait" and not (len(positionals) == 1 and positionals[0].isdigit()) and "--element" not in " ".join(args):
+        has_ms = len(positionals) == 1 and positionals[0].isdigit()
+        if verb == "wait" and not (has_ms or seen_element):          # parsed flags, never a substring of the joined argv
             refuse("wait needs a number of milliseconds or --element <ref>")
         if len(positionals) > 1 or (positionals and not positionals[0].isdigit()):
             refuse("wait takes at most a number of milliseconds")

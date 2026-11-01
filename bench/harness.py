@@ -306,6 +306,8 @@ class RunState:
             return "the screen locked or the display went to sleep"
         if k == "budget":
             return "the level's time budget ran out"
+        if k == "registry":
+            return "the sampler did not acknowledge a child's process group, so the child was not started"
         if k == "signal":
             return "the harness was interrupted (SIGINT or SIGTERM)"
         return "aborted"
@@ -460,6 +462,11 @@ def real_run(args, p):
     monitor.build_sampler(p["sampler_src"], p["sampler"])
     mon = monitor.Monitor([p["sampler"], "--allow-file", registry.path], on_hid=on_hid, on_lost=on_lost, on_session=on_session).start()
     registry.waiter = mon.wait_allow_version
+
+    def on_registration_failure(version):
+        st.reason.update(kind="registry", version=version)
+        abort.set()
+    registry.on_failure = on_registration_failure       # a child is never started unregistered: the run aborts
     st.healthy_fn = mon.healthy
 
     def on_signal(signum, _frame):
@@ -506,6 +513,7 @@ def _run_levels(args, p, tasks, plan, mon, st, abort, exec_fn, sess):
     results_dir = args.results_dir
     exit_code = 0
     created_ever = set()
+    blocked_domains = {}
     host_state = {"session": sess, "caffeinate": " ".join(host.CAFFEINATE) + " -t <level budget>", "input_tap": mon.tap_ok}
     caveats = ["ChatGPT computer use and agent-desktop --headed run only inside the sandbox VM (#111) and are not measured on this Mac",
                "the BaneySpaces and agent-desktop agent columns are confined (MCP allowlist, agent-desktop-guard)"]
@@ -529,6 +537,7 @@ def _run_levels(args, p, tasks, plan, mon, st, abort, exec_fn, sess):
                     session_fn=mon.session_ok, quiet_exec=host.quiet_exec,
                     recovery_dir=os.path.join(TOOLS_DIR, "recovery", run_id))
         c.created_ever = created_ever
+        c.blocked_domains = blocked_domains          # shared: a domain whose restore failed stays off limits for every column
         return c
 
     try:
@@ -574,6 +583,9 @@ def _run_levels(args, p, tasks, plan, mon, st, abort, exec_fn, sess):
             if st.stop:
                 break
     finally:
+        for dom, info in blocked_domains.items():
+            print(f"RECOVERY NEEDED: Calculator-style preferences {dom} were not restored. Put them back with:\n  {info['command']}\n"
+                  f"  (backup directory: {info['recovery']})", file=sys.stderr)
         if st.stop or abort.is_set():
             exit_code = EXIT_USER_ACTIVE
         server.stop()

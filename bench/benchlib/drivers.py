@@ -89,6 +89,8 @@ class Driver:
         """-> (ok, [window ids]) of every window the process `pid` owns, on every workspace (agent-desktop lists them
         all). ok is False when the listing failed, which a caller must treat as 'cannot tell', never as 'none'."""
         res = self.run("list-windows", app=app)
+        if not res.ok and res.code == "app_not_found":
+            return True, []          # the app is not running at all: it owns no window
         if not res.ok or not isinstance(res.data, list):
             return False, []
         return True, [w.get("id") for w in res.data if w.get("pid") == pid]
