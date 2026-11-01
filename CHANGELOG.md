@@ -23,13 +23,11 @@
   that finished while you were away list under **Dock**. When agents have finished, or an update
   is waiting, a row for it appears in the menu (and goes away when there's nothing to act on); the
   update controls are also in Settings > Updates.
-- **Agent hands, phase 1.** `baneyspaces agent snapshot|find|get|click|type|set-value|press|scroll|select|toggle|shot|open|lend|return|windows`
-  read and act on apps on the agent workspace (or an app you lend) without touching your screen, and print one
 - **Agent hands, phase 1.** `baneyspaces agent snapshot|find|get|click|type|set-value|press|scroll|select|toggle|shot|open|windows`
   read and act on apps on the agent workspace (or an app you lend with `baneyspaces agent lend`, which asks you in a sheet) without touching your screen, and print one
   JSON envelope each; `baneyspaces mcp` serves the same tools to Claude Code and Codex. Built on agent-desktop
   (Apache-2.0, pinned). Cua Spaces no longer starts on the Keep Usable by Automation list.
-- **`agent open` puts an app's launch window on the agent workspace,** not on yours.
+- **`agent open` starts a separate copy of an app, and its windows are on the agent workspace,** not yours. Only TextEdit and Preview (on a file from the handoff folder) and Calculator start; everything else answers `needs_sandbox`.
 
 - **The Workspace Dock goes down once the pointer leaves it.** It used to stay up while the pointer
   rested above or beside it, over the app underneath, because it counted the empty room it keeps for

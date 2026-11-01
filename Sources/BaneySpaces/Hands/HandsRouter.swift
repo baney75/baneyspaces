@@ -11,8 +11,10 @@ struct HandsHost {
     /// One window, straight from the model, for the check right before an engine call.
     var live: (UInt32) -> HandsWindow? = { _ in nil }
     var titles: ([UInt32]) -> [UInt32: String] = { _ in [:] }
-    /// The file a window shows (its AXDocument), if any.
-    var document: (UInt32) -> String? = { _ in nil }
+    /// What a window shows: its document (AXDocument), and whether it is an Open or Save panel.
+    var inspect: (UInt32) -> (document: String?, panel: Bool) = { _ in (nil, false) }
+    /// The processes BaneySpaces started for an agent.
+    var agentOwned: () -> Set<Int32> = { [] }
     /// Asks Donovan, in a sheet, whether to lend an app; true only for a real click on "Lend".
     var askToLend: (_ app: String, _ minutes: Int, _ takeBack: Bool) -> Bool = { _, _, _ in false }
     /// The deck's `agent open <app> [files…]`.
@@ -91,7 +93,7 @@ final class HandsRouter {
         { [self] in gate(w) ?? ref.flatMap { refProblem($0) } }
     }
 
-    private func refmapURL(_ sid: String) -> URL { HandsEngine.home.appendingPathComponent("snapshots/\(sid)/refmap.json") }
+    private func refmapURL(_ sid: String) -> URL { HandsEngine.stateRoot.appendingPathComponent("snapshots/\(sid)/refmap.json") }
 
     private func refProblem(_ ref: String) -> HandsError? {
         guard let colon = ref.firstIndex(of: ":") else { return nil }
@@ -111,7 +113,21 @@ final class HandsRouter {
         guard let now else { return HandsError(.windowNotFound, "window \(w.id) is gone", suggestion: "Run `baneyspaces agent windows` and take a new snapshot.", retry: .afterSnapshot) }
         guard now.pid == w.pid else { return HandsError(.staleRef, "window \(w.id) belongs to a different process now", suggestion: "Take a new snapshot.", retry: .afterSnapshot) }
         if case .denied(let e) = decide(now, agent) { return e }
-        return nil
+        return inspectProblem(now)
+    }
+
+    /// Windows of a process BaneySpaces started for an agent are used only while they show nothing of Donovan's:
+    /// no document from outside the handoff folder (a restored one, or one opened through a panel), and never an
+    /// Open or Save panel, which would browse his files. Checked on every use, so a late window is covered too.
+    private func inspectProblem(_ w: HandsWindow) -> HandsError? {
+        let (owned, seen) = onMain { (host.agentOwned(), host.inspect(w.id)) }
+        guard owned.contains(w.pid) else { return nil }
+        var why: String?
+        if seen.panel { why = "window \(w.id) of \(w.app) is an Open or Save panel" }
+        else if let doc = seen.document, !doc.isEmpty, !HandoffPath.contains(document: doc, in: Self.handoffFolder) { why = "window \(w.id) of \(w.app) shows a document from outside the handoff folder" }
+        guard let why else { return nil }
+        lock.lock(); refused.insert(w.id); lock.unlock()
+        return HandsError(.needsSandbox, why, suggestion: "Agents work only on files from the handoff folder and never drive an Open or Save panel. Open the file with `baneyspaces agent open <app> <file>`.", retry: .never)
     }
 
     private func windowJSON(_ w: HandsWindow, _ scope: ScopeDecision) -> JSONValue {
@@ -126,6 +142,7 @@ final class HandsRouter {
     private func windows() -> HandsEnvelope {
         let (all, agent) = listWindows(fresh: true)
         let usable = ScopeGuard.visible(all, agentWorkspace: agent, lends: lends.current(), now: Date(), inUse: { UserActivity.shared.inUse($0) })
+            .filter { inspectProblem($0.window) == nil }
             .sorted { $0.window.id < $1.window.id }
         let titles = onMain { host.titles(usable.map(\.window.id)) }
         return .success(.object([
@@ -378,7 +395,7 @@ final class HandsRouter {
             if let e = gate(w) { return .failure(e) }
             let token = AgentActivity.shared.begin(pid: w.pid, window: w.id)
             defer { AgentActivity.shared.end(token) }
-            switch WindowShot.capture(window: w.id, named: req.string("out")) {
+            switch WindowShot.capture(window: w.id, named: req.string("out"), check: check(w)) {
             case .failure(let e): return .failure(e)
             case .success(let r):
                 return .success(.object([
@@ -426,13 +443,6 @@ final class HandsRouter {
         }
         var data: [String: JSONValue] = (reply.info ?? [:]).mapValues(JSONValue.string)
         if let window {
-            // A window that shows a document from outside the handoff folder was restored from Donovan's: never usable.
-            if let doc = onMain({ host.document(window.id) }), !doc.isEmpty,
-               HandoffPath.resolve(URL(string: doc)?.path ?? doc, in: Self.handoffFolder) == nil {
-                lock.lock(); refused.insert(window.id); lock.unlock()
-                return .failure(HandsError(.needsSandbox, "\(display) opened a document that isn't in the handoff folder, so the window is off limits",
-                                           suggestion: "Pass files from the handoff folder only.", retry: .never))
-            }
             data["window"] = .int(Int(window.id)); data["pid"] = .int(Int(window.pid))
         } else if separate, !pidsBefore.isEmpty, noNewProcess(bundle: bundle, before: pidsBefore) {
             return .failure(HandsError(.needsSandbox, "\(display) didn't start a separate copy, so nothing of it is the agent's",

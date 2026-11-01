@@ -7,10 +7,12 @@ import Foundation
 public enum AgentAppPolicy {
     /// Started with `-ApplePersistenceIgnoreState YES` as a new instance (`open -n`), so it opens nothing it restored.
     public static let separateInstance: Set<String> = ["com.apple.TextEdit", "com.apple.calculator", "com.apple.Preview"]
-    /// Finder cannot run twice: an agent may only ask it to show a folder inside the handoff folder.
-    public static let folderOnly: Set<String> = ["com.apple.finder"]
+    /// Apps that must be started with a document from the handoff folder: with none they would show an Open
+    /// panel, and an agent never drives an Open or Save panel (it would browse Donovan's files).
+    public static let documentRequired: Set<String> = ["com.apple.TextEdit", "com.apple.Preview"]
+    // Finder is not on the list: it runs once per user and shows his folders, and agents use files directly.
 
-    public static func allowed(bundle: String) -> Bool { separateInstance.contains(bundle) || folderOnly.contains(bundle) }
+    public static func allowed(bundle: String) -> Bool { separateInstance.contains(bundle) }
     public static func needsSeparateInstance(bundle: String) -> Bool { separateInstance.contains(bundle) }
 
     static let kinds: [(prefixes: [String], why: String)] = [
@@ -30,7 +32,7 @@ public enum AgentAppPolicy {
         let why = kinds.first { k in k.prefixes.contains { bundle == $0 || bundle.hasPrefix($0.hasSuffix(".") ? $0 : $0 + ".") } }?.why
             ?? "no one has checked that it starts a separate instance that restores nothing of Donovan's"
         return HandsError(.needsSandbox, "\(app): \(why)",
-                          suggestion: "Do this work in the sandbox (arrives in a later phase), or ask Donovan to lend \(app) and be away from it while you work. Apps an agent may start today: TextEdit, Calculator, Preview, and Finder on a handoff folder.",
+                          suggestion: "Do this work in the sandbox (arrives in a later phase), or ask Donovan to lend \(app) and be away from it while you work. Apps an agent may start today: TextEdit and Preview on a file from the handoff folder, and Calculator. Work with files directly rather than through Finder.",
                           retry: .never)
     }
 }
@@ -49,9 +51,9 @@ public enum AgentOpenGate {
             guard let r = HandoffPath.resolve(t, in: handoff) else { return .failure(HandoffPath.error(t, folder: handoff)) }
             files.append(r.path)
         }
-        if AgentAppPolicy.folderOnly.contains(bundle), files.isEmpty {
-            return .failure(HandsError(.needsSandbox, "\(app) shows Donovan's folders; an agent may ask it only for a folder in the handoff folder",
-                                       suggestion: "Pass a folder inside \(handoff.path).", retry: .never))
+        if AgentAppPolicy.documentRequired.contains(bundle), files.isEmpty {
+            return .failure(HandsError(.badArguments, "\(app) must be started with a file from the handoff folder, or it shows an Open panel",
+                                       suggestion: "Put a file in \(handoff.path) and pass its path: `baneyspaces agent open \(app) <file>`.", retry: .safe))
         }
         return .success(files)
     }
@@ -59,6 +61,13 @@ public enum AgentOpenGate {
 
 /// Which files an agent may hand to an app: only ones inside the agent handoff folder.
 public enum HandoffPath {
+    /// Whether what a window reports as its document (a file URL or a path) is inside the folder.
+    public static func contains(document: String, in folder: URL) -> Bool {
+        let path = URL(string: document).flatMap { $0.isFileURL ? $0.path : nil } ?? document
+        let url = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
+        return url.path.hasPrefix(folder.standardizedFileURL.resolvingSymlinksInPath().path + "/")
+    }
+
     /// The path, resolved through symlinks, when it exists inside `folder`; nil otherwise.
     public static func resolve(_ target: String, in folder: URL) -> URL? {
         let expanded = (target as NSString).expandingTildeInPath
@@ -177,5 +186,44 @@ public enum SocketPolicy {
     public static func mayMove(windowPid: Int32?, startedForAgents: Set<Int32>) -> Bool {
         guard let pid = windowPid else { return false }
         return startedForAgents.contains(pid)
+    }
+}
+
+/// Windows an agent never works in: the Open and Save panels of the apps it starts. They browse Donovan's files.
+public enum PanelDetector {
+    public static func isOpenOrSavePanel(identifier: String?, subrole: String?, title: String?) -> Bool {
+        let id = (identifier ?? "").lowercased()
+        if id.contains("open-panel") || id.contains("save-panel") || id.contains("openpanel") || id.contains("savepanel") { return true }
+        let t = (title ?? "").lowercased()
+        return (subrole == "AXDialog" || subrole == "AXSystemDialog") && ["open", "save", "save as", "export", "import", "choose"].contains(t)
+    }
+}
+
+/// Processes started for an agent, each with its start time, so a process id that macOS reuses for one of Donovan's
+/// apps is never taken for the agent's.
+public struct AgentOwnedSet: Equatable, Sendable {
+    private var started: [Int32: Double] = [:]
+    public init() {}
+    public mutating func add(_ pid: Int32, startedAt: Double) { started[pid] = startedAt }
+    public mutating func remove(_ pid: Int32) { started[pid] = nil }
+    /// True only for the same process: same pid and the same start time.
+    public func contains(_ pid: Int32, startedAt: Double?) -> Bool {
+        guard let was = started[pid], let now = startedAt else { return false }
+        return abs(was - now) < 0.5
+    }
+    public var pids: Set<Int32> { Set(started.keys) }
+}
+
+/// Whether a click or key may answer the consent sheet: the right kind of event, after the button was enabled,
+/// on the button.
+public enum ConsentClick {
+    public enum Kind: Sendable { case mouseDown, mouseUp, keyDown, other }
+    public static func valid(kind: Kind, eventTime: Double, buttonEnabledAt: Double, insideButton: Bool, keyIsActivation: Bool) -> Bool {
+        guard eventTime >= buttonEnabledAt else { return false }
+        switch kind {
+        case .mouseUp, .mouseDown: return insideButton
+        case .keyDown: return keyIsActivation
+        case .other: return false
+        }
     }
 }

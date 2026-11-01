@@ -147,7 +147,9 @@ final class ScopeGuardTests: XCTestCase {
         guard case .denied(let e) = ScopeGuard.check(win(2), agentWorkspace: 9, lends: book(), now: now, inUse: true) else { return XCTFail() }
         XCTAssertEqual(e.code, .inUse)
         XCTAssertEqual(e.retry, .safe)
-        XCTAssertEqual(ScopeGuard.check(win(9), agentWorkspace: 9, lends: book(), now: now, inUse: true), .onAgentWorkspace, "agent workspace windows are never the user's")
+        guard case .denied(let onAgentWorkspace) = ScopeGuard.check(win(9), agentWorkspace: 9, lends: book(), now: now, inUse: true) else { return XCTFail("his hands are on it, wherever it lives") }
+        XCTAssertEqual(onAgentWorkspace.code, .inUse)
+        XCTAssertEqual(ScopeGuard.check(win(9), agentWorkspace: 9, lends: book(), now: now, inUse: false), .onAgentWorkspace)
     }
 
     func testLendsEndByReturnTimeoutOrSession() {
@@ -189,9 +191,10 @@ final class ScopeGuardTests: XCTestCase {
 
 final class PolicyTests: XCTestCase {
     func testOnlyAVerifiedAllowlistMayBeStartedAndEverythingElseIsNeedsSandbox() {
-        for ok in ["com.apple.TextEdit", "com.apple.calculator", "com.apple.Preview", "com.apple.finder"] {
+        for ok in ["com.apple.TextEdit", "com.apple.calculator", "com.apple.Preview"] {
             XCTAssertNil(AgentAppPolicy.refusal(app: "A", bundle: ok), ok)
         }
+        XCTAssertEqual(AgentAppPolicy.refusal(app: "Finder", bundle: "com.apple.finder")?.code, .needsSandbox, "Finder shows his folders; agents use files directly")
         let refused = ["com.google.Chrome", "org.mozilla.firefox", "company.thebrowser.Browser", "com.brave.Browser", "com.microsoft.edgemac",
                        "com.apple.Safari", "com.1password.1password", "com.agilebits.onepassword7", "com.apple.Passwords", "com.bitwarden.desktop",
                        "com.apple.keychainaccess", "com.apple.systempreferences", "com.apple.Terminal", "com.googlecode.iterm2", "com.mitchellh.ghostty",
@@ -205,6 +208,7 @@ final class PolicyTests: XCTestCase {
         }
         XCTAssertTrue(AgentAppPolicy.needsSeparateInstance(bundle: "com.apple.TextEdit"))
         XCTAssertFalse(AgentAppPolicy.needsSeparateInstance(bundle: "com.apple.finder"), "Finder can't run twice")
+        XCTAssertEqual(AgentAppPolicy.documentRequired, ["com.apple.TextEdit", "com.apple.Preview"])
     }
 
     func testTheOpenGateAppliesToEveryCaller() throws {
@@ -215,11 +219,17 @@ final class PolicyTests: XCTestCase {
         if case .failure(let e) = AgentOpenGate.check(app: "Safari", bundle: "com.apple.Safari", targets: ["https://mail.example.com"], handoff: root) { XCTAssertEqual(e.code, .needsSandbox) } else { XCTFail() }
         if case .failure(let e) = AgentOpenGate.check(app: "TextEdit", bundle: "com.apple.TextEdit", targets: ["https://example.com"], handoff: root) { XCTAssertEqual(e.code, .notSupported) } else { XCTFail() }
         if case .failure(let e) = AgentOpenGate.check(app: "TextEdit", bundle: "com.apple.TextEdit", targets: ["/etc/hosts"], handoff: root) { XCTAssertEqual(e.code, .badArguments) } else { XCTFail() }
-        if case .failure(let e) = AgentOpenGate.check(app: "Finder", bundle: "com.apple.finder", targets: [], handoff: root) { XCTAssertEqual(e.code, .needsSandbox, "Finder needs a handoff folder") } else { XCTFail() }
-        guard case .success(let files) = AgentOpenGate.check(app: "Finder", bundle: "com.apple.finder", targets: [folder.path], handoff: root) else { return XCTFail() }
+        if case .failure(let e) = AgentOpenGate.check(app: "Finder", bundle: "com.apple.finder", targets: [folder.path], handoff: root) { XCTAssertEqual(e.code, .needsSandbox, "not even on a handoff folder") } else { XCTFail() }
+        // TextEdit and Preview start only with a document from the handoff folder: with none they show an Open panel.
+        for (app, bundle) in [("TextEdit", "com.apple.TextEdit"), ("Preview", "com.apple.Preview")] {
+            if case .failure(let e) = AgentOpenGate.check(app: app, bundle: bundle, targets: [], handoff: root) { XCTAssertEqual(e.code, .badArguments) } else { XCTFail(app) }
+        }
+        let doc = root.appendingPathComponent("a.txt")
+        FileManager.default.createFile(atPath: doc.path, contents: Data("x".utf8))
+        guard case .success(let files) = AgentOpenGate.check(app: "TextEdit", bundle: "com.apple.TextEdit", targets: [doc.path], handoff: root) else { return XCTFail() }
         XCTAssertEqual(files.count, 1)
-        guard case .success(let none) = AgentOpenGate.check(app: "TextEdit", bundle: "com.apple.TextEdit", targets: [], handoff: root) else { return XCTFail() }
-        XCTAssertEqual(none, [])
+        guard case .success(let none) = AgentOpenGate.check(app: "Calculator", bundle: "com.apple.calculator", targets: [], handoff: root) else { return XCTFail() }
+        XCTAssertEqual(none, [], "Calculator needs no document")
     }
 
     func testRefmapIdentityDetectsARetargetedRef() throws {
@@ -270,6 +280,47 @@ final class PolicyTests: XCTestCase {
         let link = root.appendingPathComponent("escape")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: URL(fileURLWithPath: "/etc/hosts"))
         XCTAssertNil(HandoffPath.resolve(link.path, in: root), "a symlink out of the folder doesn't count")
+    }
+
+    func testADocumentOutsideTheHandoffFolderIsRecognized() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("doc-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let inside = root.appendingPathComponent("a.txt")
+        XCTAssertTrue(HandoffPath.contains(document: inside.absoluteString, in: root), "a file URL")
+        XCTAssertTrue(HandoffPath.contains(document: inside.path, in: root), "a path")
+        XCTAssertFalse(HandoffPath.contains(document: "file:///Users/someone/Documents/taxes.pdf", in: root))
+        XCTAssertFalse(HandoffPath.contains(document: root.path + "/../elsewhere.txt", in: root))
+        XCTAssertFalse(HandoffPath.contains(document: root.path, in: root), "the folder itself isn't a document in it")
+    }
+
+    func testOpenAndSavePanelsAreRecognized() {
+        XCTAssertTrue(PanelDetector.isOpenOrSavePanel(identifier: "open-panel", subrole: nil, title: nil))
+        XCTAssertTrue(PanelDetector.isOpenOrSavePanel(identifier: "save-panel", subrole: nil, title: "x"))
+        XCTAssertTrue(PanelDetector.isOpenOrSavePanel(identifier: nil, subrole: "AXDialog", title: "Open"))
+        XCTAssertTrue(PanelDetector.isOpenOrSavePanel(identifier: nil, subrole: "AXSystemDialog", title: "Save As"))
+        XCTAssertFalse(PanelDetector.isOpenOrSavePanel(identifier: nil, subrole: "AXStandardWindow", title: "Untitled"))
+        XCTAssertFalse(PanelDetector.isOpenOrSavePanel(identifier: nil, subrole: "AXDialog", title: "Fonts"))
+    }
+
+    func testAgentOwnedProcessesAreTheSameProcessNotJustTheSamePid() {
+        var set = AgentOwnedSet()
+        set.add(100, startedAt: 5000.25)
+        XCTAssertTrue(set.contains(100, startedAt: 5000.25))
+        XCTAssertFalse(set.contains(100, startedAt: 9000), "macOS reused the pid for another process")
+        XCTAssertFalse(set.contains(100, startedAt: nil))
+        XCTAssertFalse(set.contains(101, startedAt: 5000.25))
+        set.remove(100)
+        XCTAssertFalse(set.contains(100, startedAt: 5000.25), "dropped when it quits")
+    }
+
+    func testTheConsentAnswerMustBeAClickOnTheButtonAfterItWasEnabled() {
+        XCTAssertTrue(ConsentClick.valid(kind: .mouseUp, eventTime: 12, buttonEnabledAt: 11, insideButton: true, keyIsActivation: false))
+        XCTAssertFalse(ConsentClick.valid(kind: .mouseUp, eventTime: 10.5, buttonEnabledAt: 11, insideButton: true, keyIsActivation: false), "a click meant for what was under the pointer")
+        XCTAssertFalse(ConsentClick.valid(kind: .mouseUp, eventTime: 12, buttonEnabledAt: 11, insideButton: false, keyIsActivation: false), "somewhere else on the sheet")
+        XCTAssertFalse(ConsentClick.valid(kind: .other, eventTime: 12, buttonEnabledAt: 11, insideButton: true, keyIsActivation: true), "a mouse move lying around")
+        XCTAssertTrue(ConsentClick.valid(kind: .keyDown, eventTime: 12, buttonEnabledAt: 11, insideButton: false, keyIsActivation: true))
+        XCTAssertFalse(ConsentClick.valid(kind: .keyDown, eventTime: 12, buttonEnabledAt: 11, insideButton: false, keyIsActivation: false))
     }
 
     func testShotNamesAreAPlainFileName() {
@@ -325,9 +376,13 @@ final class FocusGuardTests: XCTestCase {
 
     func testALaunchedAppIsTheAgentsWholeProcessOrBundleForAWhile() {
         var g = FocusGuard()
-        g.markLaunch(bundle: "com.apple.TextEdit", now: t, for: 10)
+        g.markLaunch(bundle: "com.apple.TextEdit", excluding: [4], now: t, for: 10)
         XCTAssertTrue(g.caused(pid: 9, window: 1, bundle: "com.apple.TextEdit", now: t.addingTimeInterval(9)), "before there is a pid")
+        XCTAssertFalse(g.caused(pid: 4, window: 1, bundle: "com.apple.TextEdit", now: t.addingTimeInterval(1)), "Donovan's own running copy is never ignored")
         XCTAssertFalse(g.caused(pid: 9, window: 1, bundle: "com.apple.TextEdit", now: t.addingTimeInterval(11)))
+        g.markLaunch(bundle: "com.apple.Preview", excluding: [], now: t, for: 10)
+        g.clearLaunch(bundle: "com.apple.Preview")
+        XCTAssertFalse(g.caused(pid: 9, window: 1, bundle: "com.apple.Preview", now: t), "cleared once the launch's own process is known")
         g.markLaunch(pid: 9, now: t, for: 6)
         XCTAssertTrue(g.caused(pid: 9, window: 77, bundle: nil, now: t.addingTimeInterval(5)))
         g.prune(now: t.addingTimeInterval(20))
@@ -639,7 +694,9 @@ final class HandsSourceTests: XCTestCase {
         XCTAssertEqual(calls, 1, "one place acts, so one place to check")
         let engine = try Self.code("Sources/BaneySpaces/Hands/HandsEngine.swift")
         // The policy is one constant, passed as is, and no function takes a policy from its caller.
-        XCTAssertTrue(engine.contains("ad_execute_by_ref_timeout(adapter, r, &action, Self.headlessPolicy, 5000, &out)"))
+        // Single shot: the engine's own 5 s wait would run with no scope check. The wait is ours, checked each attempt.
+        XCTAssertTrue(engine.contains("ad_execute_by_ref_timeout(adapter, r, &action, Self.headlessPolicy, 0, &out)"))
+        XCTAssertTrue(engine.contains("if let stop = check() { return .failed(stop) }"), "the scope is checked between attempts")
         XCTAssertTrue(engine.contains("static let headlessPolicy: Int32 = 0"))
         XCTAssertFalse(engine.contains("policy:"), "no caller can pass a policy")
         let act = try XCTUnwrap(Self.block(after: "func act(", in: engine))
@@ -722,6 +779,9 @@ final class HandsSourceTests: XCTestCase {
         XCTAssertTrue(consent.contains("eventSourceUnixProcessID") && consent.contains("eventSourceStateID"))
         XCTAssertTrue(consent.contains("alert.addButton(withTitle: \"Don't Lend\")"), "the default button refuses")
         XCTAssertTrue(consent.contains("pause"), "sheets are rate limited")
+        XCTAssertTrue(consent.contains("button.isEnabled = false"), "Lend is disabled for the first second")
+        XCTAssertTrue(consent.contains("ConsentClick.valid("))
+        XCTAssertTrue(consent.contains("maxRefusals"), "asking stops after repeated refusals")
         let cli = try Self.code("Sources/baneyspaces-cli/Agent.swift")
         XCTAssertFalse(cli.contains("isatty"), "no terminal check: a program can fake one")
         XCTAssertTrue(cli.contains("text: \"lend-ask\""))
@@ -777,6 +837,35 @@ final class HandsSourceTests: XCTestCase {
         XCTAssertFalse(shot.contains("expandingTildeInPath"))
     }
 
+    func testRefsLiveInAFolderBaneySpacesOwnsThatIsNewEveryLaunch() throws {
+        let engine = try Self.code("Sources/BaneySpaces/Hands/HandsEngine.swift")
+        XCTAssertTrue(engine.contains("static let stateRoot: URL = home.appendingPathComponent(UUID().uuidString"))
+        XCTAssertTrue(engine.contains("setenv(\"AGENT_DESKTOP_HOME\", stateRoot.path, 1)"))
+        XCTAssertTrue(engine.contains(".posixPermissions: 0o700"))
+        XCTAssertTrue(engine.contains("name != \"handoff\" && name != \"shots\""), "old launches' refs are removed at start")
+        let router = try Self.code("Sources/BaneySpaces/Hands/HandsRouter.swift")
+        XCTAssertTrue(router.contains("HandsEngine.stateRoot.appendingPathComponent(\"snapshots/"))
+    }
+
+    func testAShotIsCheckedAfterEnumerationBeforeCaptureAndBeforePublishing() throws {
+        let shot = try Self.code("Sources/BaneySpaces/Hands/WindowShot.swift")
+        XCTAssertEqual(shot.components(separatedBy: "if let e = check() { return outcome.set(.failure(e)) }").count - 1, 3)
+        XCTAssertEqual(shot.components(separatedBy: "if outcome.isCancelled { return }").count - 1, 3, "a capture whose caller gave up is dropped")
+        XCTAssertTrue(shot.contains("outcome.cancel()"))
+        let router = try Self.code("Sources/BaneySpaces/Hands/HandsRouter.swift")
+        XCTAssertTrue(router.contains("WindowShot.capture(window: w.id, named: req.string(\"out\"), check: check(w))"))
+    }
+
+    func testEveryWindowOfAnAgentProcessIsInspectedOnEveryUse() throws {
+        let router = try Self.code("Sources/BaneySpaces/Hands/HandsRouter.swift")
+        let gate = try XCTUnwrap(Self.block(after: "private func gate(", in: router))
+        XCTAssertTrue(gate.contains("inspectProblem(now)"))
+        let inspect = try XCTUnwrap(Self.block(after: "private func inspectProblem(", in: router))
+        XCTAssertTrue(inspect.contains("seen.panel") && inspect.contains("HandoffPath.contains(document: doc, in: Self.handoffFolder)"))
+        XCTAssertTrue(inspect.contains("refused.insert(w.id)"))
+        XCTAssertTrue(router.contains(".filter { inspectProblem($0.window) == nil }"), "the windows list hides them too")
+    }
+
     func testOnlyDonovanLends() throws {
         let router = try Self.code("Sources/BaneySpaces/Hands/HandsRouter.swift")
         let dispatch = try XCTUnwrap(Self.block(after: "func handle(", in: router))
@@ -820,17 +909,25 @@ final class AgentOpenLaunchTests: XCTestCase {
         let claim = try XCTUnwrap(launch.range(of: "h.claim("))
         let press = try XCTUnwrap(launch.range(of: "newWindow(app)"))
         XCTAssertTrue(claim.lowerBound < press.lowerBound, "claimed before anything else happens")
-        // The launch can be seen before the completion handler runs (an app that activates itself first).
-        XCTAssertTrue(src.contains("NSWorkspace.didLaunchApplicationNotification"))
         XCTAssertTrue(src.contains("AgentActivity.shared.markLaunch(bundle: bundle"), "marked by bundle before there is a pid")
-        // Both ways of launching (with files, and without) mark the bundle before launching and claim on first sight.
+        // Both ways of launching (with files, and without) mark the bundle before launching and claim the process
+        // that launch hands back, never a launch notification: that could be Donovan opening his own copy.
         let open = try XCTUnwrap(HandsSourceTests.between("case \"open\":", "case \"lend-ask\":", in: src))
-        XCTAssertEqual(open.components(separatedBy: "claimLaunch(app)").count - 1, 3, "the notification, openApplication and open(files)")
-        XCTAssertTrue(open.range(of: "AgentActivity.shared.markLaunch(bundle: bundle, for: 10)")!.lowerBound < open.range(of: "NSWorkspace.shared.openApplication")!.lowerBound)
+        XCTAssertFalse(open.contains("didLaunchApplicationNotification"), "no claim by bundle id")
+        XCTAssertEqual(open.components(separatedBy: "finished(app)").count - 1, 2, "openApplication and open(files) both claim their own result")
+        XCTAssertTrue(open.contains("claimLaunch(app)"))
+        XCTAssertTrue(open.range(of: "AgentActivity.shared.markLaunch(bundle: bundle, excluding: before, for: 10)")!.lowerBound < open.range(of: "NSWorkspace.shared.openApplication")!.lowerBound, "marked first, without Donovan's running copies")
+        XCTAssertTrue(open.contains("AgentActivity.shared.clearLaunch(bundle: bundle)"))
+        XCTAssertFalse(open.contains("folderOnly"), "no Finder branch")
         // Never Donovan's documents: a new instance told not to restore, not a window made inside his copy.
         XCTAssertTrue(open.contains("cfg.createsNewApplicationInstance = true"))
         XCTAssertTrue(open.contains("cfg.arguments = [\"-ApplePersistenceIgnoreState\", \"YES\"]"))
         XCTAssertTrue(open.contains("AgentOpenGate.check("), "the gate is in the op itself, so the socket can't skip it")
+    }
+
+    func testEveryLaterWindowOfAnAgentProcessGoesToTheAgentWorkspaceToo() throws {
+        let spaces = try HandsSourceTests.code("Sources/BaneySpaces/Spaces.swift")
+        XCTAssertTrue(spaces.contains("claimed: AgentOwned.shared.pids.contains(w.pid) ? agent : nil"), "a standing rule for the life of the process")
     }
 
     func testNewProcessClaimsTakeEveryWindowOfTheLaunch() throws {

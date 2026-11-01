@@ -39,10 +39,15 @@ final class HandsEngine {
     enum Kind: Int32 { case click = 0, setValue = 4, select = 8, toggle = 9, scroll = 12, typeText = 17 }
 
     /// Seconds each kind of call may take before the caller gets `timeout`.
+    /// How long an action waits for its target to become actionable before it gives up.
+    static let actionableWait: TimeInterval = 5
     enum Budget { static let snapshot: TimeInterval = 25, get: TimeInterval = 10, act: TimeInterval = 20 }
 
-    /// Where the engine keeps its refs: BaneySpaces' own folder, readable by this user only.
+    /// BaneySpaces' own folder for agents (handoff files, shots), readable by this user only.
     static var home: URL { Wire.supportDir.appendingPathComponent("hands", isDirectory: true) }
+    /// Where the engine keeps its refs: a folder of its own, new for each launch of BaneySpaces and named at random,
+    /// so nothing else has a reason to write there and an old launch's refs can't be mistaken for these.
+    static let stateRoot: URL = home.appendingPathComponent(UUID().uuidString, isDirectory: true)
 
     /// What a call to the engine returned: its JSON envelope, or why there is none.
     enum Reply {
@@ -97,8 +102,14 @@ final class HandsEngine {
     /// Sets the engine's state folder. Called once on the main thread at launch, before any engine queue exists:
     /// setenv is not safe against another thread reading the environment.
     static func prepareEnvironment() {
-        try? FileManager.default.createDirectory(at: home, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        setenv("AGENT_DESKTOP_HOME", home.path, 1)
+        let fm = FileManager.default
+        try? fm.createDirectory(at: home, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        // Refs of earlier launches (and the engine's old shared state folder) are of no use: remove them.
+        for name in (try? fm.contentsOfDirectory(atPath: home.path)) ?? [] where name != "handoff" && name != "shots" {
+            try? fm.removeItem(at: home.appendingPathComponent(name))
+        }
+        try? fm.createDirectory(at: stateRoot, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        setenv("AGENT_DESKTOP_HOME", stateRoot.path, 1)
     }
 
     private func ready() -> HandsError? {
@@ -219,11 +230,21 @@ final class HandsEngine {
             func dispatch(_ text: UnsafePointer<CChar>?) -> Int32 {
                 action.text = text
                 return ref.withCString { r in
-                    ad_execute_by_ref_timeout(adapter, r, &action, Self.headlessPolicy, 5000, &out)
+                    ad_execute_by_ref_timeout(adapter, r, &action, Self.headlessPolicy, 0, &out)
                 }
             }
-            let code = text.map { $0.withCString { dispatch($0) } } ?? dispatch(nil)
-            return finish(code, out)
+            // The engine would wait up to 5 s inside one call for the target to become actionable, with no way to
+            // look at the scope meanwhile. It is told not to (0 = single shot); the wait is here, and the scope is
+            // checked again before every attempt.
+            let giveUp = Date().addingTimeInterval(Self.actionableWait)
+            while true {
+                out = nil
+                let code = text.map { $0.withCString { dispatch($0) } } ?? dispatch(nil)
+                let reply = finish(code, out)
+                guard case .failed(let e) = reply, e.code == .timeout, Date() < giveUp else { return reply }
+                Thread.sleep(forTimeInterval: 0.1)
+                if let stop = check() { return .failed(stop) }
+            }
         }
     }
 

@@ -1,6 +1,6 @@
 ---
 name: baneyspaces
-description: See and drive what's open on Donovan's Mac through BaneySpaces - the Deck (every terminal split, browser tab and agent app in one list, with the workspace each is on) and the hands (`baneyspaces agent snapshot|click|type|…`, which read and act on desktop apps on the agent workspace without touching his screen). Use to find which terminal or tab holds something, open a URL, type into another Ghostty terminal, flag a terminal as needing him, or to operate a desktop app (TextEdit, Calculator, Preview, Finder on a handoff folder) the way a person would. Faster and safer than screenshots or GUI clicks.
+description: See and drive what's open on Donovan's Mac through BaneySpaces - the Deck (every terminal split, browser tab and agent app in one list, with the workspace each is on) and the hands (`baneyspaces agent snapshot|click|type|…`, which read and act on desktop apps on the agent workspace without touching his screen). Use to find which terminal or tab holds something, open a URL, type into another Ghostty terminal, flag a terminal as needing him, or to operate a desktop app (TextEdit, Preview, Calculator) the way a person would. Faster and safer than screenshots or GUI clicks.
 ---
 
 # BaneySpaces Deck
@@ -78,8 +78,8 @@ Scope rules, enforced by the app, not by your good behavior:
   Prefer `agent open`, which needs nobody's permission. `agent move` only moves windows of apps started for an agent.
 - `agent open` is how you start work: the app and its windows land on the agent workspace and he stays
   where he is. Put files you want it to open in `~/Library/Application Support/BaneySpaces/hands/handoff/`; no other path is accepted,
-  and URLs wait for the agent browser profiles. Only TextEdit, Calculator, Preview and Finder (on a handoff folder) start; every other
-  app, every browser and password manager included, answers `needs_sandbox`. Each starts as a separate copy that restores nothing.
+  and URLs wait for the agent browser profiles. Only TextEdit and Preview (each needs a handoff file) and Calculator start; every other
+  app, Finder, every browser and password manager included, answers `needs_sandbox`; work with files directly, not through Finder. Each starts as a separate copy that restores nothing.
   Never ask him to switch workspaces or look at the screen.
 - `press` always answers `not_supported` for now: keys reach only the app in front, and BaneySpaces never raises one for you.
   Use `type`, `set-value` or `click`.

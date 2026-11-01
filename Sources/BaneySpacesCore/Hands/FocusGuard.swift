@@ -13,7 +13,8 @@ public struct FocusGuard: Equatable, Sendable {
     private var running: [Int: Key] = [:]
     private var tailUntil: [Key: Date] = [:]
     private var launchPid: [Int32: Date] = [:]
-    private var launchBundle: [String: Date] = [:]
+    struct LaunchMark: Equatable, Sendable { var until: Date; var excluding: Set<Int32> }
+    private var launchBundle: [String: LaunchMark] = [:]
     private var nextToken = 1
 
     public init() {}
@@ -36,14 +37,17 @@ public struct FocusGuard: Equatable, Sendable {
     public mutating func markLaunch(pid: Int32, now: Date, for window: TimeInterval) {
         launchPid[pid] = max(launchPid[pid] ?? .distantPast, now.addingTimeInterval(window))
     }
-    public mutating func markLaunch(bundle: String, now: Date, for window: TimeInterval) {
-        launchBundle[bundle] = max(launchBundle[bundle] ?? .distantPast, now.addingTimeInterval(window))
+    /// Until the launch's own process is known (`markLaunch(pid:)` then `clearLaunch(bundle:)`): any process of the
+    /// bundle except the ones already running, which are Donovan's.
+    public mutating func markLaunch(bundle: String, excluding running: Set<Int32>, now: Date, for window: TimeInterval) {
+        launchBundle[bundle] = LaunchMark(until: now.addingTimeInterval(window), excluding: running)
     }
+    public mutating func clearLaunch(bundle: String) { launchBundle[bundle] = nil }
 
     /// Whether an activation of `pid` that put `window` in focus is the agent's doing.
     public func caused(pid: Int32, window: UInt32?, bundle: String?, now: Date) -> Bool {
         if (launchPid[pid] ?? .distantPast) > now { return true }
-        if let b = bundle, (launchBundle[b] ?? .distantPast) > now { return true }
+        if let b = bundle, let l = launchBundle[b], l.until > now, !l.excluding.contains(pid) { return true }
         guard let window else { return false }
         let k = Key(pid: pid, window: window)
         return running.values.contains(k) || (tailUntil[k] ?? .distantPast) > now
@@ -52,7 +56,7 @@ public struct FocusGuard: Equatable, Sendable {
     public mutating func prune(now: Date) {
         tailUntil = tailUntil.filter { $0.value > now }
         launchPid = launchPid.filter { $0.value > now }
-        launchBundle = launchBundle.filter { $0.value > now }
+        launchBundle = launchBundle.filter { $0.value.until > now }
     }
     public var activeCount: Int { running.count }
 }
@@ -83,9 +87,13 @@ public final class AgentActivity: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         guardrail.markLaunch(pid: pid, now: clock(), for: window)
     }
-    public func markLaunch(bundle: String, for window: TimeInterval) {
+    public func markLaunch(bundle: String, excluding running: Set<Int32>, for window: TimeInterval) {
         lock.lock(); defer { lock.unlock() }
-        guardrail.markLaunch(bundle: bundle, now: clock(), for: window)
+        guardrail.markLaunch(bundle: bundle, excluding: running, now: clock(), for: window)
+    }
+    public func clearLaunch(bundle: String) {
+        lock.lock(); defer { lock.unlock() }
+        guardrail.clearLaunch(bundle: bundle)
     }
 
     /// Whether this activation is an agent's: false for any window the agent isn't working on.

@@ -21,11 +21,14 @@ enum WindowShot {
     private final class Outcome: @unchecked Sendable {
         private let lock = NSLock()
         private var value: Swift.Result<Result, HandsError>?
+        private var cancelled = false
         func set(_ v: Swift.Result<Result, HandsError>) { lock.lock(); if value == nil { value = v }; lock.unlock() }
+        func cancel() { lock.lock(); cancelled = true; lock.unlock() }
+        var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
         func get() -> Swift.Result<Result, HandsError>? { lock.lock(); defer { lock.unlock() }; return value }
     }
 
-    static func capture(window id: UInt32, named name: String?) -> Swift.Result<Result, HandsError> {
+    static func capture(window id: UInt32, named name: String?, check: @escaping () -> HandsError?) -> Swift.Result<Result, HandsError> {
         if let name, !HandoffPath.isPlainFileName(name) {
             return .failure(HandsError(.badArguments, "out must be a file name, not a path", suggestion: "Pass just a name like `page.png`; shots are written in \(folder.path).", retry: .safe))
         }
@@ -36,11 +39,11 @@ enum WindowShot {
         guard #available(macOS 14, *) else {
             return .failure(HandsError(.notSupported, "window captures need macOS 14 or later", suggestion: "Use `baneyspaces agent snapshot` to read the window instead.", retry: .never))
         }
-        return captureWithKit(id, name)
+        return captureWithKit(id, name, check)
     }
 
     @available(macOS 14, *)
-    private static func captureWithKit(_ id: UInt32, _ name: String?) -> Swift.Result<Result, HandsError> {
+    private static func captureWithKit(_ id: UInt32, _ name: String?, _ check: @escaping () -> HandsError?) -> Swift.Result<Result, HandsError> {
         let outcome = Outcome()
         let done = DispatchSemaphore(value: 0)
         Task.detached {
@@ -50,11 +53,18 @@ enum WindowShot {
                 guard let w = content.windows.first(where: { $0.windowID == id }) else {
                     return outcome.set(.failure(HandsError(.windowNotFound, "window \(id) isn't there", suggestion: "Run `baneyspaces agent windows` for the current ids.", retry: .safe)))
                 }
+                // Enumerating took time: the window is still in scope, and the caller still waiting, or nothing is captured.
+                if outcome.isCancelled { return }
+                if let e = check() { return outcome.set(.failure(e)) }
                 let cfg = SCStreamConfiguration()
                 cfg.width = Int(w.frame.width * 2)
                 cfg.height = Int(w.frame.height * 2)
                 cfg.showsCursor = false
+                if outcome.isCancelled { return }
+                if let e = check() { return outcome.set(.failure(e)) }
                 let image = try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(desktopIndependentWindow: w), configuration: cfg)
+                if outcome.isCancelled { return }
+                if let e = check() { return outcome.set(.failure(e)) }   // before the bytes are published
                 let rep = NSBitmapImageRep(cgImage: image)
                 guard let png = rep.representation(using: .png, properties: [:]) else {
                     return outcome.set(.failure(HandsError(.engineError, "the capture couldn't be encoded", suggestion: "Try again.", retry: .safe)))
@@ -75,6 +85,7 @@ enum WindowShot {
             }
         }
         if done.wait(timeout: .now() + budget) == .timedOut {
+            outcome.cancel()
             outcome.set(.failure(HandsError(.timeout, "the capture didn't finish in \(Int(budget)) s", suggestion: "Try again.", retry: .safe)))
         }
         return outcome.get() ?? .failure(HandsError(.timeout, "the capture didn't finish", suggestion: "Try again.", retry: .safe))

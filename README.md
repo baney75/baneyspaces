@@ -410,9 +410,11 @@ that process and its windows as they are then, is refused while you use the app 
 seconds), ends after 30 minutes (up to 8 hours) or, if you gave `--session`, when that session ends, and is listed in
 `state.json` and `baneyspaces doctor`. Agents can't lend: the MCP server has no such tool and an agent's `lend` answers
 `needs_lend`. `agent move` moves only windows of apps BaneySpaces started for an agent; send your own window with its
-workspace key. `agent open` starts only apps verified to run a separate copy that restores nothing of yours (TextEdit,
-Calculator, Preview, and Finder on a folder in the handoff folder); every other app, browsers and password managers
-included, answers `needs_sandbox`.
+workspace key. `agent open` starts only apps verified to run a separate copy that restores nothing of yours (TextEdit and
+Preview on a file from the handoff folder, and Calculator); every other app, Finder, browsers and password managers
+included, answers `needs_sandbox`, and a window of the agent's copy that shows a document from outside the handoff
+folder, or an Open or Save panel, is off limits. The agent workspace protects you from accidents; it is not a security
+boundary (see [docs/agent-computer-use.md](docs/agent-computer-use.md)).
 
 Every command prints one JSON envelope: `{"ok":true,"data":{…}}`, or `{"ok":false,"error":{"code","message",
 "retry","suggestion"}}` with `retry` one of `safe`, `after_snapshot`, `never`. Four rules, all enforced by the app:
@@ -423,7 +425,7 @@ an action never activates an app, raises a window, moves the pointer or posts a 
 caused, for the window the action worked on and only while it ran, so your workspace doesn't follow it and your own
 windows of the same app still do; and every action returns what it verified from the exact window it targeted.
 `scripts/agent-hands-probe.swift` proves the rest on your Mac: 200 actions in TextEdit (a temporary document) and
-Finder (a temporary folder) while it samples your front app, workspace, pointer, front window and any window
+Calculator while it samples your front app, workspace, pointer, front window and any window
 appearing on another workspace every 50 ms.
 
 `make build` and `make test` build the engine first (Rust is needed once; `scripts/build-engine.sh`). The plan,

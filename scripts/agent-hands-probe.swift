@@ -1,5 +1,5 @@
 #!/usr/bin/env swift
-// Proves the agent hands never change what you see: opens TextEdit and Finder on the agent
+// Proves the agent hands never change what you see: opens TextEdit and Calculator on the agent
 // workspace with `baneyspaces agent open`, does 200 mixed actions through the CLI, and samples every
 // 50 ms the frontmost app, BaneySpaces' current workspace (state.json), the pointer location and the
 // frontmost window. PASS needs zero changes to all four, zero stray windows, every open and snapshot to
@@ -12,7 +12,7 @@
 // It refuses to run unless you have been idle for 10 minutes: any key or mouse move of yours is a
 // "change" it can't tell from the hands'. A new window of those apps on any workspace but the agent's
 // counts as a failure too (a "stray window"). Actions write only into a temporary TextEdit document in the
-// agent handoff folder; Finder shows a temporary folder there and gets reads and scrolls. Never Notes or
+// agent handoff folder; Calculator gets reads and button clicks. Never Finder, Notes or
 // any once-per-user app.
 import AppKit
 import Foundation
@@ -45,7 +45,7 @@ func agent(_ args: [String]) -> [String: Any] {
 func isOK(_ r: [String: Any]) -> Bool { (r["ok"] as? Bool) == true }
 func data(_ r: [String: Any]) -> [String: Any] { r["data"] as? [String: Any] ?? [:] }
 
-let probedApps: Set<String> = ["TextEdit", "Finder"]
+let probedApps: Set<String> = ["TextEdit", "Calculator"]
 struct Sample: Equatable {
     var front: pid_t
     var workspace: Int
@@ -107,8 +107,8 @@ FileManager.default.createFile(atPath: doc.path, contents: Data("probe\n".utf8))
 defer { try? FileManager.default.removeItem(at: dir) }
 
 var windows: [String: Int] = [:]
-for (app, target) in [("TextEdit", doc.path), ("Finder", dir.path)] {
-    let r = agent(["open", app, target])
+for (app, target) in [("TextEdit", doc.path), ("Calculator", "")] {
+    let r = agent(target.isEmpty ? ["open", app] : ["open", app, target])
     if let w = data(r)["window"] as? Int { windows[app] = w } else { failures.append("open \(app) gave no window: \(r)") }
     Thread.sleep(forTimeInterval: 0.5)
 }
@@ -118,7 +118,7 @@ for (app, target) in [("TextEdit", doc.path), ("Finder", dir.path)] {
 if let list = data(agent(["windows"]))["windows"] as? [[String: Any]] {
     for w in list where probedApps.contains(w["app"] as? String ?? "") {
         let title = (w["title"] as? String ?? "").lowercased()
-        if !(title.contains("notes") || title.contains(dir.lastPathComponent.lowercased())) { failures.append("restored window \(w["id"] ?? "?") (\(title)) is not what we opened") }
+        if !(title.contains("notes") || title.contains("calculator")) { failures.append("restored window \(w["id"] ?? "?") (\(title)) is not what we opened") }
     }
 }
 
@@ -147,15 +147,15 @@ func run(_ args: [String], mutating: Bool) {
 /// An action whose ref is missing counts as a failed action: it is never replaced by a read.
 func missing(mutating: Bool) { total += 1; if mutating { mutatingTotal += 1 } }
 
-var te = snapshot("TextEdit"), fi = snapshot("Finder")
-var text = first(te, role: "textfield"), bold = first(te, role: "checkbox", name: "bold"), area = first(fi, role: "scrollarea")
+var te = snapshot("TextEdit"), fi = snapshot("Calculator")
+var text = first(te, role: "textfield"), bold = first(te, role: "checkbox", name: "bold"), area = first(te, role: "scrollarea")
 if text == nil { failures.append("TextEdit has no text field ref") }
 if bold == nil { failures.append("TextEdit has no bold checkbox ref") }
 var i = 0
 while total < 200 && failures.isEmpty {
     if i % 40 == 39 {
-        te = snapshot("TextEdit"); fi = snapshot("Finder")
-        text = first(te, role: "textfield"); bold = first(te, role: "checkbox", name: "bold"); area = first(fi, role: "scrollarea")
+        te = snapshot("TextEdit"); fi = snapshot("Calculator")
+        text = first(te, role: "textfield"); bold = first(te, role: "checkbox", name: "bold"); area = first(te, role: "scrollarea")
     }
     switch i % 10 {
     case 0, 9: if let t = text { run(["type", t, "ab"], mutating: true) } else { missing(mutating: true) }
@@ -164,8 +164,8 @@ while total < 200 && failures.isEmpty {
     case 3: if let b = bold { run(["click", b], mutating: true) } else { missing(mutating: true) }
     case 4: if let t = text { run(["get", t, "value"], mutating: false) } else { missing(mutating: false) }
     case 5: if let w = windows["TextEdit"] { run(["find", "--window", String(w), "--role", "checkbox"], mutating: false) } else { missing(mutating: false) }
-    case 6: if let w = windows["Finder"] { run(["find", "--window", String(w), "--role", "button"], mutating: false) } else { missing(mutating: false) }
-    case 7: if let w = windows["Finder"] { run(["snapshot", "--window", String(w), "-i"], mutating: false) } else { missing(mutating: false) }
+    case 6: if let w = windows["Calculator"] { run(["find", "--window", String(w), "--role", "button"], mutating: false) } else { missing(mutating: false) }
+    case 7: if let w = windows["Calculator"] { run(["snapshot", "--window", String(w), "-i"], mutating: false) } else { missing(mutating: false) }
     default: if let a = area { run(["scroll", a, "down"], mutating: false) } else { missing(mutating: false) }
     }
     i += 1

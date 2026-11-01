@@ -328,7 +328,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                                           object: nil, queue: .main) { [weak self] note in
             guard let self, let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
             self.switcher.noteActivated(app.processIdentifier)
-            UserActivity.shared.activated(app.processIdentifier)
+            // An activation an agent's launch or action caused isn't Donovan using the app.
+            if !AgentActivity.shared.caused(pid: app.processIdentifier, window: nil, bundle: app.bundleIdentifier) { UserActivity.shared.activated(app.processIdentifier) }
             guard self.started else { return }
             self.spaces.appActivated(app)
             self.deck.appChanged()
@@ -576,7 +577,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             freshWindows: { [weak self] in self?.spaces.handsWindows(fresh: true) ?? [] },
             live: { [weak self] in self?.spaces.handsLive($0) },
             titles: { [weak self] in self?.spaces.handsTitles($0) ?? [:] },
-            document: { [weak self] in self?.spaces.handsDocument($0) },
+            inspect: { [weak self] in self?.spaces.handsInspect($0) ?? (nil, false) },
+            agentOwned: { AgentOwned.shared.pids },
             askToLend: { app, minutes, takeBack in LendConsent.ask(app: app, minutes: minutes, takeBack: takeBack) },
             open: { [weak self] args in self?.deck.agent("open", args) ?? Wire.Reply(ok: false, error: "not ready") })
         HandsLends.shared.onChange = { [weak self] in

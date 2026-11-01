@@ -120,7 +120,14 @@ public enum ScopeDecision: Equatable, Sendable {
 /// Everything else, including a window BaneySpaces doesn't place, is refused.
 public enum ScopeGuard {
     public static func check(_ w: HandsWindow, agentWorkspace: Int?, lends: LendBook, now: Date, inUse: Bool = false) -> ScopeDecision {
-        if let agent = agentWorkspace, w.workspace == agent { return .onAgentWorkspace }
+        if let agent = agentWorkspace, w.workspace == agent {
+            // His hands are on this app (in front, or used in the last 30 s): the agent waits, even here.
+            if inUse {
+                return .denied(HandsError(.inUse, "\(w.app) is in front or was used in the last 30 s",
+                                          suggestion: "Wait until Donovan has been away from \(w.app) for 30 seconds.", retry: .safe))
+            }
+            return .onAgentWorkspace
+        }
         if lends.isLent(w, now: now) {
             if inUse {
                 return .denied(HandsError(.inUse, "\(w.app) is lent, but you are using it right now",

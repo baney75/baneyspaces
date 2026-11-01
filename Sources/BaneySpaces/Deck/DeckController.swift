@@ -19,13 +19,40 @@ struct AgentHost {
 }
 
 /// Processes BaneySpaces started for an agent (`agent open` of an app, `agent run`): the only ones an agent
-/// caller may move windows of to the agent workspace.
+/// caller may move windows of to the agent workspace, and whose new windows always go there. Each is kept with its
+/// start time, so a pid macOS reuses for one of Donovan's apps is never taken for it, and dropped when it quits.
 final class AgentOwned {
     static let shared = AgentOwned()
     private let lock = NSLock()
-    private var set: Set<Int32> = []
-    func add(_ pid: Int32) { lock.lock(); set.insert(pid); lock.unlock() }
-    var pids: Set<Int32> { lock.lock(); defer { lock.unlock() }; return set.filter { kill($0, 0) == 0 } }
+    private var set = AgentOwnedSet()
+
+    init() {
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: nil) { [weak self] note in
+            guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+            self?.remove(app.processIdentifier)
+        }
+    }
+
+    /// When the process started, in seconds (the kernel's record for this pid).
+    static func startTime(_ pid: Int32) -> Double? {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0 else { return nil }
+        let t = info.kp_proc.p_un.__p_starttime
+        return Double(t.tv_sec) + Double(t.tv_usec) / 1_000_000
+    }
+
+    func add(_ pid: Int32) {
+        guard let t = Self.startTime(pid) else { return }
+        lock.lock(); set.add(pid, startedAt: t); lock.unlock()
+    }
+    func remove(_ pid: Int32) { lock.lock(); set.remove(pid); lock.unlock() }
+    /// The processes still running that are the ones started for an agent.
+    var pids: Set<Int32> {
+        lock.lock(); let all = set; lock.unlock()
+        return all.pids.filter { all.contains($0, startedAt: Self.startTime($0)) }
+    }
 }
 
 /// The Deck: the engine behind every terminal split, browser tab and coding agent BaneySpaces
@@ -452,19 +479,17 @@ final class DeckController {
             let cfg = NSWorkspace.OpenConfiguration()
             cfg.activates = false
             cfg.addsToRecentItems = false
+            // Only apps verified to run a separate copy get here (the gate above). A new instance every time,
+            // told not to restore what the app had open (it would be Donovan's documents), so every window it makes
+            // is the agent's.
             guard AgentAppPolicy.needsSeparateInstance(bundle: bundle) else {
-                // Finder cannot run twice: it shows the handoff folder in a window the agent claims by its name.
-                if let running = before.first { h.claim(running, n, false, files.first?.lastPathComponent) }
-                NSWorkspace.shared.open(files, withApplicationAt: url, configuration: cfg) { _, _ in }
-                return .init(ok: true, info: ["workspace": "\(n)", "app": appName, "files": "\(files.count)"])
+                return .init(ok: false, error: "\(appName) isn't an app an agent starts", info: ["code": "needs_sandbox"])
             }
-            // A new instance every time, told not to restore what the app had open (it would be Donovan's
-            // documents), so every window it makes is the agent's. The bundle is marked now, before there is a
-            // pid, and the launch is claimed when it is first seen (the notification can come before the
-            // completion handler, and a launch may activate the app before either).
             cfg.createsNewApplicationInstance = true
             cfg.arguments = ["-ApplePersistenceIgnoreState", "YES"]
-            AgentActivity.shared.markLaunch(bundle: bundle, for: 10)
+            // Until this launch's own process is known, an activation of the bundle by a process that was not
+            // already running is the launch's; Donovan's running copies are excluded.
+            AgentActivity.shared.markLaunch(bundle: bundle, excluding: before, for: 10)
             var claimed = false
             /// A new window from behind through the app's own New Window command, claimed first.
             func newWindow(_ app: NSRunningApplication) -> Bool {
@@ -476,9 +501,12 @@ final class DeckController {
                 }
                 return true
             }
+            /// Only the process this very request launched, handed back to its own completion handler: never a
+            /// launch notification for the bundle, which could be Donovan opening his own copy.
             func claimLaunch(_ app: NSRunningApplication) {
                 guard !claimed else { return }
                 claimed = true
+                AgentActivity.shared.clearLaunch(bundle: bundle)
                 // Not a new process (the app ran this launch inside Donovan's): leave it entirely alone.
                 guard !before.contains(app.processIdentifier) else { return }
                 AgentOwned.shared.add(app.processIdentifier)
@@ -490,25 +518,16 @@ final class DeckController {
                     }
                 }
             }
-            var observer: NSObjectProtocol?
-            observer = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main) { note in
-                guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication, app.bundleIdentifier == bundle else { return }
-                claimLaunch(app)
-                if let o = observer { NSWorkspace.shared.notificationCenter.removeObserver(o); observer = nil }
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
-                if let o = observer { NSWorkspace.shared.notificationCenter.removeObserver(o); observer = nil }
+            func finished(_ app: NSRunningApplication?) {
+                DispatchQueue.main.async {
+                    guard let app else { AgentActivity.shared.clearLaunch(bundle: bundle); return }
+                    claimLaunch(app)
+                }
             }
             if files.isEmpty {
-                NSWorkspace.shared.openApplication(at: url, configuration: cfg) { app, _ in
-                    guard let app else { return }
-                    DispatchQueue.main.async { claimLaunch(app) }
-                }
+                NSWorkspace.shared.openApplication(at: url, configuration: cfg) { app, _ in finished(app) }
             } else {
-                NSWorkspace.shared.open(files, withApplicationAt: url, configuration: cfg) { app, _ in
-                    guard let app else { return }
-                    DispatchQueue.main.async { claimLaunch(app) }
-                }
+                NSWorkspace.shared.open(files, withApplicationAt: url, configuration: cfg) { app, _ in finished(app) }
             }
             return .init(ok: true, info: ["workspace": "\(n)", "app": appName, "note": "starting a separate copy; its window opens there in a moment"])
         case "lend-ask":

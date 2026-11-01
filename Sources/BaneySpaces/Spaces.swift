@@ -289,7 +289,9 @@ final class Spaces {
             for id in candidates {
                 guard let w = self.windows[id], w.pid != front, let here = self.model.workspace(of: id), self.model.isShown(here) else { continue }
                 let others = self.windows.values.filter { $0.pid == w.pid && $0.id != id }.compactMap { self.model.workspace(of: $0.id) }
-                if let to = AgentWorkspace.homeForNewWindow(appFront: false, appWorkspaces: Set(others), claimed: nil,
+                // Every new window of a process BaneySpaces started for an agent belongs to the agent workspace, for
+                // as long as the process lives (a panel or a second document opened long after the launch claim ran out).
+                if let to = AgentWorkspace.homeForNewWindow(appFront: false, appWorkspaces: Set(others), claimed: AgentOwned.shared.pids.contains(w.pid) ? agent : nil,
                                                             current: here, agent: agent) {
                     Trace.log("agent window \(id) of \(w.appName) joins workspace \(to)")
                     self.model.assign(id, to: to, focus: false)
@@ -402,7 +404,7 @@ final class Spaces {
     /// model BaneySpaces keeps current from its own notifications: no scan, no Accessibility call. `fresh`
     /// scans first, at most twice a second, for a window that opened a moment ago.
     func handsWindows(fresh: Bool) -> [HandsWindow] {
-        if fresh, active, Date().timeIntervalSince(lastHandsScan) > 2 { lastHandsScan = Date(); refresh() }
+        if fresh, active, Date().timeIntervalSince(lastHandsScan) > 0.5 { lastHandsScan = Date(); refresh() }
         return model.home.compactMap { id, ws in handsWindow(id, ws) }
     }
 
@@ -418,8 +420,12 @@ final class Spaces {
         return HandsWindow(id: id, pid: w.pid, app: w.appName, bundle: handsBundles[w.pid] ?? "", title: "", workspace: ws)
     }
 
-    /// The file a window shows, as the app reports it (AXDocument), or nil.
-    func handsDocument(_ id: UInt32) -> String? { windows[id].flatMap { $0.element.string("AXDocument") } }
+    /// What a window shows (AXDocument), and whether it is an Open or Save panel.
+    func handsInspect(_ id: UInt32) -> (document: String?, panel: Bool) {
+        guard let e = windows[id]?.element else { return (nil, false) }
+        let panel = PanelDetector.isOpenOrSavePanel(identifier: e.string("AXIdentifier"), subrole: e.string(kAXSubroleAttribute), title: e.string(kAXTitleAttribute))
+        return (e.string("AXDocument"), panel)
+    }
 
     func handsTitles(_ ids: [UInt32]) -> [UInt32: String] {
         Dictionary(uniqueKeysWithValues: ids.compactMap { id in windows[id].map { (id, $0.title) } })
