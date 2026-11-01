@@ -12,7 +12,9 @@
   windows and busy apps are no longer hidden on their desktops; one that will not leave comes along instead of
   being hidden; nothing is asked to leave while macOS slides between desktops; and an audit after every
   switch and every change of desktop puts a stranded window right. `trace.log` records every full-screen
-  decision with the app and window number (`fullscreen check|ask|left|refused|carried|audit`).
+  decision with the app and window number (`fullscreen check|ask|left|refused|carried|audit`). A window in macOS
+  full screen, and the windows of an app whose Accessibility doesn't answer, stay in the dock, the overview and ⌘Tab
+  (a ⤢ or ◌ badge; activating one goes to its workspace).
 - **Themes, 22 palettes and a dock switch.** Settings › Appearance has a theme (**BaneySpaces**, the
   look it has always had; **Omarchy**, square corners, 2 px borders, monospace and numbered blocks;
   **Minimal**) and a palette (**Auto** or one of Omarchy's 22), shared with the other platforms from

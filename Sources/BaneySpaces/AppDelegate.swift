@@ -207,11 +207,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let window = element ?? Self.frontWindowElement()
                 if let window { Self.pressGreenButton(of: window) }
             }
-        case let .native(button):
+        case let .native(button, window):
             Trace.log("fullscreen: Option-click, macOS full screen")
+            self.spaces.noteNativeChoice(window)
             AXUIElementPerformAction(button, kAXPressAction as CFString)
         }
     }
+
+    private func wireFullScreenKeys() { fullScreenKeys.onClickEnded = { [weak self] in self?.spaces.refreshClickZones() } }
 
     private static func frontWindowElement() -> AXUIElement? {
         guard let pid = Windows.focusedPid() else { return nil }
@@ -592,6 +595,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         missionControlKeys.start()
         syncMissionControl()
         FullScreenKeys.loadMode()
+        wireFullScreenKeys()
         syncFullScreenKeys()
         spaces.start()
         watchClicksForDisplay()
@@ -1040,11 +1044,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // you're on does (`Spaces.focusApp`). Only when `dockURLCommands` says so, like the dock's own check commands.
         case "focusapp":
             guard UserDefaults.standard.bool(forKey: "dockURLCommands") else { NSLog("BaneySpaces: focusapp refused"); return }
-            run { s in s.focusApp(pid_t(n), on: s.model.current, announce: false) }
+            // Junk is ignored, never a trap: the number must be a process that is a running app.
+            guard let pid = pid_t(exactly: n), pid > 0, NSRunningApplication(processIdentifier: pid) != nil else { return NSLog("BaneySpaces: focusapp ignored: no such app %@", url.lastPathComponent) }
+            run { s in s.focusApp(pid, on: s.model.current, announce: false) }
         // The same, for one window: what the tile does once it has picked the window (`Spaces.focus`).
         case "focuswindow":
             guard UserDefaults.standard.bool(forKey: "dockURLCommands") else { NSLog("BaneySpaces: focuswindow refused"); return }
-            run { s in if let (_, ws) = s.entry(for: WindowID(n)) { s.focus(WindowID(n), on: ws, announce: false) } }
+            guard let id = WindowID(exactly: n), id > 0 else { return NSLog("BaneySpaces: focuswindow ignored: no such window %@", url.lastPathComponent) }
+            run { s in if let (_, ws) = s.entry(for: id) { s.focus(id, on: ws, announce: false) } }
         case "dock":
             // Turning it off or hiding it is always allowed: a pinned dock must never outlive
             // its check (2026-10-14, a hide that raced the setting going off left it stuck up).

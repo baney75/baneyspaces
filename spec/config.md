@@ -218,8 +218,9 @@ own that no workspace manager can hide or show. So by default there is no such d
   the workspace you go to instead of being hidden. Nothing about windows on the workspace you stay on is
   touched. Every request to leave is in the trace log with its reason.
 
-On Linux and Windows the compositor's full screen already belongs to the workspace, so `baneyspaces`
-means that and `native` is accepted and means the same. The trace log, on macOS, names every full-screen
+This key is macOS only. On Linux and Windows the compositor's full screen already belongs to the workspace, so
+those platforms do not define the key (a setting for it is refused there as unknown, until a platform that needs it adds it
+to this file). The trace log, on macOS, names every full-screen
 decision with the app and window number: `fullscreen check`, `ask`, `left`, `refused`, `carried`,
 `flatten`, `audit` and `desktop missing from the model` lines.
 

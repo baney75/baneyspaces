@@ -241,9 +241,12 @@ enum Windows {
     /// `offscreen` holds the app windows the window server isn't drawing (a hidden app's,
     /// minimized ones, ones on another macOS desktop, and ones the app closed but kept), by owner;
     /// `onScreen` the rest.
-    static func snapshot(apps: Set<pid_t>) -> (alive: Set<WindowID>, appWindows: Set<WindowID>, owners: Set<pid_t>, offscreen: [WindowID: pid_t], onScreen: [WindowID: pid_t]) {
+    static func snapshot(apps: Set<pid_t>) -> (alive: Set<WindowID>, appWindows: Set<WindowID>, owners: Set<pid_t>, offscreen: [WindowID: pid_t], onScreen: [WindowID: pid_t], zones: ClickZones, info: [ServerWindowInfo]) {
         let info = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
         var alive = Set<WindowID>(), appWindows = Set<WindowID>(), owners = Set<pid_t>(), offscreen: [WindowID: pid_t] = [:], onScreen: [WindowID: pid_t] = [:]
+        // The on-screen app windows, front to back: what the green-button tap tests a click against, in memory.
+        var front: [ClickZones.Entry] = []
+        var infos: [ServerWindowInfo] = []
         for w in info {
             guard let id = (w[kCGWindowNumber as String] as? NSNumber)?.uint32Value else { continue }
             alive.insert(id)
@@ -251,9 +254,19 @@ enum Windows {
                   let pid = (w[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value, apps.contains(pid) else { continue }
             appWindows.insert(id)
             owners.insert(pid)
-            if (w[kCGWindowIsOnscreen as String] as? Bool) != true { offscreen[id] = pid } else { onScreen[id] = pid }
+            // All the window server has to say about a window whose app can't be asked (or whose desktop isn't shown).
+            infos.append(ServerWindowInfo(id: id, pid: pid, app: w[kCGWindowOwnerName as String] as? String ?? "App",
+                                          title: w[kCGWindowName as String] as? String ?? "",
+                                          bounds: (w[kCGWindowBounds as String] as? NSDictionary).flatMap { CGRect(dictionaryRepresentation: $0) } ?? .zero,
+                                          onScreen: (w[kCGWindowIsOnscreen as String] as? Bool) == true))
+            if (w[kCGWindowIsOnscreen as String] as? Bool) != true { offscreen[id] = pid } else {
+                onScreen[id] = pid
+                if let b = (w[kCGWindowBounds as String] as? NSDictionary).flatMap({ CGRect(dictionaryRepresentation: $0) }) {
+                    front.append(ClickZones.Entry(id: id, pid: pid, frame: b))
+                }
+            }
         }
-        return (alive, appWindows, owners, offscreen, onScreen)
+        return (alive, appWindows, owners, offscreen, onScreen, ClickZones(front), infos)
     }
 
     /// Whether a window is on no macOS desktop at all, or on one a display is showing. A window
@@ -362,7 +375,8 @@ enum Windows {
 
     /// The full-screen desktops the window server lists, one per window in full screen (Split View
     /// adds windows to the same desktop). A cheap read, so a switch with none asks nothing else.
-    /// Nil when the window server doesn't answer in the shape this expects.
+    /// Nil when the window server doesn't answer in the shape `FullScreenSpaces.parse` was written against: the
+    /// caller then stops acting on full-screen desktops and falls back to what the apps say.
     static func fullScreenDesktops() -> [FullScreenSpace]? {
         guard let displays = CGSCopyManagedDisplaySpaces(CGSMainConnectionID()) as? [[String: Any]] else { return nil }
         return FullScreenSpaces.parse(displays)
@@ -379,7 +393,7 @@ enum Windows {
         let desktop: Answer
         if let desktops {
             // No full-screen desktop anywhere: nothing can be in full screen, and the window need not be asked.
-            desktop = desktops.isEmpty ? .no : FullScreenSpaces.contains(Windows.desktops(of: w.id), in: desktops)
+            desktop = desktops.isEmpty ? .no : FullScreenSpaces.contains(Windows.desktops(of: w.id), window: w.id, in: desktops)
         } else {
             desktop = .unknown
         }

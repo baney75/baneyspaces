@@ -66,28 +66,40 @@ public enum FullScreenSpaces {
     /// The window server's `type` of a full-screen desktop (0 is an ordinary one).
     public static let typeFullScreen = 4
 
-    /// The full-screen desktops in `CGSCopyManagedDisplaySpaces`'s answer.
-    public static func parse(_ displays: [[String: Any]]) -> [FullScreenSpace] {
+    /// The full-screen desktops in `CGSCopyManagedDisplaySpaces`'s answer, or nil when the answer is not
+    /// in the shape this was written against: at least one display, each with a `Spaces` array whose every
+    /// entry has a numeric `type` and `ManagedSpaceID`, and each full-screen one a `fs_wid`. A macOS point
+    /// release that renames a key must never read as "no full-screen desktops": the caller stops acting
+    /// on the list and falls back to Accessibility.
+    public static func parse(_ displays: [[String: Any]]) -> [FullScreenSpace]? {
         func int(_ v: Any?) -> Int? { (v as? NSNumber)?.intValue }
+        guard !displays.isEmpty else { return nil }
         var found: [FullScreenSpace] = []
         for d in displays {
+            guard let spaces = d["Spaces"] as? [[String: Any]] else { return nil }
             let key = (d["Display Identifier"] as? String) ?? ""
             let current = int((d["Current Space"] as? [String: Any])?["ManagedSpaceID"])
-            for s in (d["Spaces"] as? [[String: Any]]) ?? [] {
-                guard int(s["type"]) == typeFullScreen, let id = int(s["ManagedSpaceID"]) ?? int(s["id64"]) else { continue }
-                found.append(FullScreenSpace(space: id, display: key, window: int(s["fs_wid"]).map { WindowID($0) },
-                                             pid: int(s["pid"]).map { Int32($0) }, isCurrent: current == id))
+            for s in spaces {
+                guard let type = int(s["type"]), let id = int(s["ManagedSpaceID"]) else { return nil }
+                guard type == typeFullScreen else { continue }
+                guard let window = int(s["fs_wid"]) else { return nil }
+                found.append(FullScreenSpace(space: id, display: key, window: WindowID(truncatingIfNeeded: window),
+                                             pid: int(s["pid"]).map { Int32(truncatingIfNeeded: $0) }, isCurrent: current == id))
             }
         }
         return found
     }
 
-    /// Whether a window on `spaces` (its Space numbers, from `CGSCopySpacesForWindows`) is on one
-    /// of the full-screen desktops. Unknown when the window server wouldn't say.
-    public static func contains(_ windowSpaces: [Int]?, in fullScreen: [FullScreenSpace]) -> Answer {
+    /// Whether a window on `windowSpaces` (its Space numbers, from `CGSCopySpacesForWindows`) is on a
+    /// full-screen desktop. The window that owns the desktop (`fs_wid`) is, whatever else is reported;
+    /// any other window must be on full-screen desktops only, so a window that an app assigns to all
+    /// desktops is not taken for one in full screen. Unknown when the window server wouldn't say.
+    public static func contains(_ windowSpaces: [Int]?, window: WindowID? = nil, in fullScreen: [FullScreenSpace]) -> Answer {
         guard let windowSpaces else { return .unknown }
         let ids = Set(fullScreen.map(\.space))
-        return windowSpaces.contains(where: ids.contains) ? .yes : .no
+        guard windowSpaces.contains(where: ids.contains) else { return .no }
+        if let window, fullScreen.contains(where: { $0.window == window }) { return .yes }
+        return windowSpaces.allSatisfy(ids.contains) ? .yes : .no
     }
 
     /// Windows that own a full-screen desktop but that the model has never heard of: they live on
@@ -263,13 +275,15 @@ public enum VanishAudit {
     /// Every window that is neither shown where it belongs nor hidden by BaneySpaces. A window on a
     /// shown workspace is fine drawn on screen, minimized, or on its full-screen desktop; one on a
     /// hidden workspace is fine parked, with its app hidden, minimized, or closed-but-kept.
-    public static func findings(_ windows: [WindowObservation], shown: Set<Int>) -> [VanishFinding] {
+    /// `displayOnFullScreenDesktop`: the display is showing a full-screen desktop now, so the windows of
+    /// its workspace that live on the ordinary desktop are not on screen, and that is not a loss.
+    public static func findings(_ windows: [WindowObservation], shown: Set<Int>, displayOnFullScreenDesktop: Bool = false) -> [VanishFinding] {
         var out: [VanishFinding] = []
         for w in windows where !w.closedButKept {
             func add(_ k: VanishFinding.Kind) { out.append(VanishFinding(id: w.id, app: w.app, workspace: w.workspace, kind: k)) }
             if shown.contains(w.workspace) {
                 if w.minimized || w.onFullScreenDesktop { continue }
-                if w.atHidingSpot { add(.shownButParked) } else if !w.onScreen { add(.shownButNotVisible) }
+                if w.atHidingSpot { add(.shownButParked) } else if !w.onScreen && !displayOnFullScreenDesktop { add(.shownButNotVisible) }
             } else {
                 if w.onFullScreenDesktop { add(.hiddenButInFullScreen); continue }
                 if w.minimized || w.parked || w.appHidden || w.atHidingSpot { continue }
@@ -279,9 +293,12 @@ public enum VanishAudit {
         return out.sorted { $0.id < $1.id }
     }
 
-    /// The findings a full-screen event can explain and a repair can fix. Others are only traced.
-    public static func repairable(_ findings: [VanishFinding]) -> [VanishFinding] {
-        findings.filter { $0.kind == .hiddenButInFullScreen }
+    /// The findings a full-screen event can explain and a repair can fix. A window on a hidden workspace
+    /// that is on a full-screen desktop is asked to leave. One that left full screen on its own and is
+    /// now in plain sight on a hidden workspace is put away again at once, after a change of desktop
+    /// (or a switch a full-screen window was part of): that is the moment it appears. Others are only traced.
+    public static func repairable(_ findings: [VanishFinding], afterDesktopChange: Bool = false) -> [VanishFinding] {
+        findings.filter { $0.kind == .hiddenButInFullScreen || (afterDesktopChange && $0.kind == .inSightOnHiddenWorkspace) }
     }
 }
 
@@ -375,6 +392,19 @@ public struct FilledWindows: Codable, Equatable {
         return .fill(from: current, to: area)
     }
 
+    public enum Fill: Equatable {
+        case fill(from: CGRect, to: CGRect)
+        /// Already recorded as filled: nothing to do but keep the record.
+        case unchanged
+    }
+
+    /// One-way: fills and records, never restores. For a window that has just left macOS full screen.
+    public mutating func fill(_ id: WindowID, current: CGRect, area: CGRect) -> Fill {
+        if entries[id] != nil { return .unchanged }
+        entries[id] = Entry(before: current, fill: area)
+        return .fill(from: current, to: area)
+    }
+
     /// The frame the window took, read back after the fill.
     public mutating func settled(_ id: WindowID, actual: CGRect) {
         guard var e = entries[id] else { return }
@@ -419,14 +449,37 @@ public enum FullScreenMigration {
 
     /// `listed` is what Accessibility listed. A full-screen desktop's window that it listed is asked
     /// to leave where it is; one it did not is visited, current one first so nothing slides for it.
-    public static func plan(mode: FullScreenMode, desktops: [FullScreenSpace], listed: Set<WindowID>) -> Plan {
-        guard mode == .baneyspaces else { return Plan(now: [], visit: []) }
+    /// It happens once (`alreadyMigrated`): a window in native full screen at any later start is there on
+    /// purpose, and so is any window in `chosen` (an Option-click on the green button).
+    public static func plan(mode: FullScreenMode, desktops: [FullScreenSpace], listed: Set<WindowID>,
+                            alreadyMigrated: Bool = false, chosen: Set<WindowID> = []) -> Plan {
+        guard mode == .baneyspaces, !alreadyMigrated else { return Plan(now: [], visit: []) }
         var now: [WindowID] = [], visit: [FullScreenSpace] = []
         for d in desktops {
-            guard let w = d.window else { continue }
+            guard let w = d.window, !chosen.contains(w) else { continue }
             if listed.contains(w) { now.append(w) } else { visit.append(d) }
         }
         return Plan(now: now, visit: visit.sorted { $0.isCurrent && !$1.isCurrent })
+    }
+}
+
+/// Windows the person sent to macOS full screen on purpose (an Option-click on the green button), by
+/// window and owning process so a number reused later is not mistaken for one. Kept across restarts.
+public struct NativeChoices: Codable, Equatable {
+    public private(set) var pids: [WindowID: Int32] = [:]
+    public init() {}
+    public mutating func note(_ id: WindowID, pid: Int32) { pids[id] = pid }
+    public func contains(_ id: WindowID, pid: Int32?) -> Bool { pids[id].map { pid == nil || $0 == pid } ?? false }
+    public var ids: Set<WindowID> { Set(pids.keys) }
+    public mutating func keep(alive: Set<WindowID>) { pids = pids.filter { alive.contains($0.key) } }
+    public static func load(from url: URL) -> NativeChoices {
+        guard let d = try? Data(contentsOf: url), let v = try? JSONDecoder().decode(NativeChoices.self, from: d) else { return NativeChoices() }
+        return v
+    }
+    public func save(to url: URL) {
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        guard let d = try? JSONEncoder().encode(self) else { return }
+        try? d.write(to: url, options: .atomic)
     }
 }
 
@@ -444,4 +497,209 @@ public struct SpaceTransition: Equatable {
 
     /// Seconds to wait before a window may be asked to leave full screen; 0 when none is in flight.
     public func wait(now: Date) -> TimeInterval { max(0, lastChange.addingTimeInterval(Self.duration).timeIntervalSince(now)) }
+}
+
+/// One step of asking windows to leave full screen, decided from what is known now. The app calls it on
+/// a timer; nothing in it touches a window.
+public enum FullScreenLeave {
+    public enum Step: Equatable {
+        /// Every window asked is provably out.
+        case done
+        /// Wait; ask again shortly.
+        case wait
+        /// Press the green button of these windows, once (the app ignored the request).
+        case press([WindowID])
+        /// The hard deadline passed: these are carried, not hidden.
+        case refused([WindowID])
+    }
+
+    /// How long a window gets before its green button is pressed, and the hard deadline for the whole ask.
+    public static let pressAfter: TimeInterval = 0.8
+    public static let deadline: TimeInterval = 5
+
+    /// `transitionWait` is `SpaceTransition.wait`: nothing is pressed while a desktop change is in flight,
+    /// and only a window that positively reports full screen is pressed (never one nobody can read).
+    public static func step(asked: [WindowID], elapsed: TimeInterval, transitionWait: TimeInterval,
+                            calls: [WindowID: FullScreenCall], evidence: [WindowID: FullScreenEvidence], pressed: Bool) -> Step {
+        let notOut = asked.filter { !(calls[$0]?.isOut ?? false) }
+        if notOut.isEmpty { return .done }
+        if elapsed >= deadline { return .refused(notOut) }
+        if transitionWait > 0 || pressed || elapsed < pressAfter { return .wait }
+        let sure = notOut.filter { id in
+            guard let e = evidence[id] else { return false }
+            return e.desktop == .yes || e.attribute == .yes
+        }
+        return sure.isEmpty ? .wait : .press(sure)
+    }
+}
+
+/// What a switch does about full screen, as one flow the app and the tests both run: the plan, the
+/// windows carried, then the outcome of asking.
+public enum FullScreenFlow {
+    public struct Begin {
+        public var plan: SwitchPlan
+        public var ask: [WindowID]
+        public var carried: [WindowID]
+    }
+
+    /// `plan` is `model.switchTo(n)`. `calls` reads the windows being hidden. Refusals seen out are forgotten;
+    /// windows that refused before are carried to `n` (the model is changed) and the plan made again.
+    public static func begin(plan: SwitchPlan, model: inout Workspaces, to n: Int, refused: inout RefusedFullScreen, now: Date,
+                             calls read: ([WindowID]) -> [WindowID: FullScreenCall]) -> Begin {
+        let calls = read(plan.hide)
+        for (id, call) in calls where call.isOut { refused.forget(id) }
+        let p = FullScreenSwitch.plan(hide: plan.hide, calls: calls, refused: refused, now: now)
+        for id in p.carry { model.assign(id, to: n, focus: false) }
+        return Begin(plan: p.carry.isEmpty ? plan : model.switchTo(n), ask: p.ask, carried: p.carry)
+    }
+
+    /// After asking: those that did not provably leave are carried to `n`. Returns the plan to apply and the refusals.
+    public static func complete(model: inout Workspaces, to n: Int, asked: [WindowID], after: [WindowID: FullScreenCall],
+                                refused: inout RefusedFullScreen, now: Date) -> (plan: SwitchPlan, refused: [WindowID]) {
+        let no = FullScreenSwitch.refused(asked: asked, after: after)
+        for id in asked where !no.contains(id) { refused.forget(id) }
+        for id in no {
+            refused.refuse(id, now: now)
+            model.assign(id, to: n, focus: false)
+        }
+        return (model.switchTo(n), no)
+    }
+}
+
+/// A window's traffic-light corner, in Accessibility coordinates. The green button is the third light:
+/// about 14 to 70 pt across and 34 pt down on macOS 26 and 27. The zone is generous, because it only
+/// decides whether to look closer.
+public struct ClickZones {
+    public struct Entry: Equatable {
+        public var id: WindowID
+        public var pid: Int32
+        public var frame: CGRect
+        public init(id: WindowID, pid: Int32, frame: CGRect) { self.id = id; self.pid = pid; self.frame = frame }
+    }
+
+    public static let width: CGFloat = 110
+    public static let height: CGFloat = 56
+
+    /// On-screen windows, front to back, as the window server lists them.
+    public var windows: [Entry]
+    public init(_ windows: [Entry] = []) { self.windows = windows }
+
+    public static func zone(of w: Entry) -> CGRect { CGRect(x: w.frame.minX, y: w.frame.minY, width: width, height: height) }
+
+    /// The topmost window under `p`, if `p` is in its traffic-light zone. Nil for every other point,
+    /// without touching anything else.
+    public func candidate(at p: CGPoint) -> Entry? {
+        guard let top = windows.first(where: { $0.frame.contains(p) }) else { return nil }
+        return Self.zone(of: top).contains(p) ? top : nil
+    }
+}
+
+/// The decision about one click, with the Accessibility look injected so a test can count it.
+public enum ClickFilter {
+    /// `look` is the AX hit test (slow, bounded); it runs only for a point in a window's traffic-light zone.
+    public static func request(at p: CGPoint, zones: ClickZones, look: (ClickZones.Entry) -> Bool) -> ClickZones.Entry? {
+        guard let w = zones.candidate(at: p), look(w) else { return nil }
+        return w
+    }
+}
+
+/// A swallowed press holds its release (by the event number the press had), and a release anywhere but on
+/// the button cancels. Keys: a swallowed F is released by keycode, whatever modifiers are held then.
+public struct PressPairing: Equatable {
+    public private(set) var downNumber: Int64?
+    public private(set) var keyArmed = false
+    public init() {}
+
+    public mutating func armMouse(_ number: Int64) { downNumber = number }
+    public mutating func armKey() { keyArmed = true }
+    public mutating func reset() { downNumber = nil; keyArmed = false }
+
+    public enum Release: Equatable { case pass, swallowAndAct, swallowAndCancel }
+
+    /// A mouse release: ours when its number matches; it acts only if it is still on the button.
+    public mutating func mouseUp(number: Int64, onButton: Bool) -> Release {
+        guard let d = downNumber, d == number else { return .pass }
+        downNumber = nil
+        return onButton ? .swallowAndAct : .swallowAndCancel
+    }
+
+    /// A key release (or repeat) of F: swallowed whenever its press was.
+    public mutating func keyUp() -> Bool {
+        defer { keyArmed = false }
+        return keyArmed
+    }
+}
+
+// MARK: Windows the dock must keep listing
+
+/// What the window server says about one app window: all it has to say when Accessibility cannot.
+public struct ServerWindowInfo: Equatable {
+    public var id: WindowID
+    public var pid: Int32
+    public var app: String
+    public var title: String
+    public var bounds: CGRect
+    public var onScreen: Bool
+    public init(id: WindowID, pid: Int32, app: String, title: String, bounds: CGRect, onScreen: Bool) {
+        self.id = id; self.pid = pid; self.app = app; self.title = title; self.bounds = bounds; self.onScreen = onScreen
+    }
+}
+
+/// A window listed from the window server alone.
+public struct ServerListing: Equatable {
+    public enum Why: String { case fullScreen = "full screen", notResponding = "not responding" }
+    public var id: WindowID
+    public var pid: Int32
+    public var app: String
+    public var title: String
+    public var why: Why
+}
+
+public enum ServerListings {
+    /// Smaller than this is a helper, not a window a person has.
+    public static let minWidth: CGFloat = 120, minHeight: CGFloat = 80
+
+    /// Windows with no Accessibility handle that still belong in the model (Donovan, 2026-11-01: "full
+    /// screen apps keep disappearing from the dock"):
+    /// - a window on a macOS full-screen desktop: its desktop is not the one Accessibility is reading, so no
+    ///   scan lists it, but it is not closed, gone, unplaced or dormant;
+    /// - a window of an app whose Accessibility doesn't answer: the window server knows its owner, number,
+    ///   bounds and often title. One the model already knows stays; one it doesn't is listed only if it is
+    ///   on screen and big enough to be a window.
+    /// `withHandle` are windows the app lists (or listed before): they are not repeated here.
+    public static func decide(info: [ServerWindowInfo], withHandle: Set<WindowID>, silentApps: Set<Int32>,
+                              fullScreenWindows: Set<WindowID>, known: Set<WindowID>) -> [ServerListing] {
+        var out: [ServerListing] = []
+        for w in info where !withHandle.contains(w.id) {
+            if fullScreenWindows.contains(w.id) {
+                out.append(ServerListing(id: w.id, pid: w.pid, app: w.app, title: w.title, why: .fullScreen))
+            } else if silentApps.contains(w.pid), known.contains(w.id) || (w.onScreen && w.bounds.width >= minWidth && w.bounds.height >= minHeight) {
+                out.append(ServerListing(id: w.id, pid: w.pid, app: w.app, title: w.title, why: .notResponding))
+            }
+        }
+        return out.sorted { $0.id < $1.id }
+    }
+
+    /// How a listing reads in the dock, the overview and ⌘Tab: a small badge before the title.
+    public static func badge(_ why: ServerListing.Why?) -> String {
+        switch why {
+        case .fullScreen?: return "⤢ "
+        case .notResponding?: return "◌ "
+        case nil: return ""
+        }
+    }
+}
+
+public enum ClosedWindows {
+    /// Known windows that their app closed but keeps (Ghostty keeps every one; a tab behind another tab is
+    /// one): the app answered and didn't list them, they're off screen, and they're on no macOS desktop or on
+    /// one being shown. A window the window server holds on a full-screen desktop is never one: Accessibility
+    /// can't see it from here, and that is all.
+    public static func find(candidates: Set<WindowID>, listed: Set<WindowID>, answered: Set<Int32>, offscreen: [WindowID: Int32],
+                            heldByFullScreen: Set<WindowID>, onNoOtherDesktop: (WindowID) -> Bool) -> Set<WindowID> {
+        Set(candidates.filter { id in
+            guard !listed.contains(id), !heldByFullScreen.contains(id), let pid = offscreen[id], answered.contains(pid) else { return false }
+            return onNoOtherDesktop(id)
+        })
+    }
 }

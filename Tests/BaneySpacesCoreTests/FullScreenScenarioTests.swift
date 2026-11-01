@@ -64,29 +64,26 @@ final class FullScreenScenarioTests: XCTestCase {
             return FullScreenDecision.call(evidence(id))
         }
 
-        /// What `Spaces.switchTo` does about full screen, then what `apply` does to windows.
+        /// What `Spaces.switchTo` does about full screen (the same `FullScreenFlow` the app runs), then what
+        /// `apply` does to windows. The glue around it (timers, Accessibility) is the app's and has no unit test.
         func switchTo(_ n: Int) {
             let plan = model.switchTo(n)
-            var calls: [WindowID: FullScreenCall] = [:]
-            for id in plan.hide where wins[id] != nil {
-                calls[id] = call(id)
-                if calls[id]!.isOut { refused.forget(id) }
+            let begin = FullScreenFlow.begin(plan: plan, model: &model, to: n, refused: &refused, now: now) { hide in
+                Dictionary(uniqueKeysWithValues: hide.filter { self.wins[$0] != nil }.map { ($0, self.call($0)) })
             }
-            let fs = FullScreenSwitch.plan(hide: plan.hide, calls: calls, refused: refused, now: now)
-            for id in fs.carry { model.assign(id, to: n, focus: false) }
-            for id in fs.ask {
+            for id in begin.ask {
                 asked.append(id)
                 // The request lands even if the app can't say so afterwards.
                 if wins[id]!.leavesWhenAsked { wins[id]!.fullScreen = false }
             }
-            let after = Dictionary(uniqueKeysWithValues: fs.ask.map { ($0, call($0)) })
-            for id in FullScreenSwitch.refused(asked: fs.ask, after: after) {
-                refused.refuse(id, now: now)
-                model.assign(id, to: n, focus: false)
+            var next = begin.plan
+            if !begin.ask.isEmpty {
+                let after = Dictionary(uniqueKeysWithValues: begin.ask.map { ($0, call($0)) })
+                next = FullScreenFlow.complete(model: &model, to: n, asked: begin.ask, after: after, refused: &refused, now: now).plan
             }
             midSwitch?()
             midSwitch = nil
-            apply(model.switchTo(n))
+            apply(next)
         }
 
         /// Hides apps with nothing here, parks the windows of apps that have a window here.
@@ -115,9 +112,9 @@ final class FullScreenScenarioTests: XCTestCase {
 
         /// `Spaces.finish`'s audit, then its repair: asks the stranded windows to leave and shows the workspace again.
         @discardableResult
-        func auditAndRepair() -> [VanishFinding] {
+        func auditAndRepair(afterDesktopChange: Bool = false) -> [VanishFinding] {
             let found = findings()
-            if !VanishAudit.repairable(found).isEmpty { switchTo(model.current) }
+            if !VanishAudit.repairable(found, afterDesktopChange: afterDesktopChange).isEmpty { switchTo(model.current) }
             return found
         }
     }
@@ -350,8 +347,10 @@ final class FullScreenScenarioTests: XCTestCase {
         d.wins[1]!.fullScreen = false
         d.hiddenApps.remove(10)
         XCTAssertEqual(d.findings().map(\.kind), [.inSightOnHiddenWorkspace])
-        d.switchTo(d.model.current)                // the Space-change audit applies the workspace again
-        XCTAssertEqual(d.findings(), [])
+        XCTAssertEqual(d.auditAndRepair().map(\.kind), [.inSightOnHiddenWorkspace])
+        XCTAssertEqual(d.findings().map(\.kind), [.inSightOnHiddenWorkspace], "an after-switch audit does not touch a window it has no full-screen reason for")
+        d.auditAndRepair(afterDesktopChange: true)   // the desktop-change audit's own selection
+        XCTAssertEqual(d.findings(), [], "put away at once, not left exposed")
     }
 
     // MARK: (h) A window that refused is carried and then closed
@@ -439,6 +438,54 @@ final class FullScreenScenarioTests: XCTestCase {
         XCTAssertEqual(d.findings(), [])
     }
 
+    // MARK: The dock keeps listing them
+
+    /// Scans, switches and the audit: a window in native full screen stays in the model, with its workspace.
+    /// A scan that doesn't list it (its desktop isn't the one shown) must not drop it, and a switch must not forget it.
+    func testTheModelKeepsAFullScreenWindowThroughScansSwitchesAndTheAudit() {
+        var w = helium(); w.leavesWhenAsked = false
+        d.open(1, w, on: 1)
+        d.open(2, ghostty(), on: 1)
+        for _ in 0..<3 {
+            // A scan that lists only the other window, as one taken from another desktop does.
+            _ = d.model.sync(seen: [2], alive: Set(d.wins.keys))
+            XCTAssertNotNil(d.model.workspace(of: 1))
+            d.switchTo(2)
+            d.switchTo(1)
+            d.auditAndRepair(afterDesktopChange: true)
+            XCTAssertNotNil(d.model.workspace(of: 1), "dropped from the model")
+        }
+        XCTAssertTrue(d.wins[1]!.fullScreen)
+        XCTAssertEqual(d.findings(), [])
+        // And the closed-window rule leaves it alone while it is off screen on its own desktop.
+        let closed = ClosedWindows.find(candidates: [1, 2], listed: [2], answered: [10, 20], offscreen: [1: 10], heldByFullScreen: [1], onNoOtherDesktop: { _ in true })
+        XCTAssertEqual(closed, [])
+    }
+
+    // MARK: An unknown window-server shape
+
+    /// The window server's list is in a shape nobody recognises (parse gives nil): every window reads
+    /// "desktop unknown", and the app's own answer decides. A full-screen window that answers is still asked.
+    func testAnUnreadableWindowServerFallsBackToWhatTheAppSays() {
+        d.windowServerAnswers = false
+        d.open(1, helium(), on: 1)
+        d.open(2, ghostty(), on: 2)
+        d.switchTo(2)
+        XCTAssertEqual(d.asked, [1])
+        XCTAssertFalse(d.wins[1]!.fullScreen)
+        XCTAssertEqual(d.findings(), [])
+    }
+
+    func testAnUnreadableWindowServerNeverHidesAWindowTheAppSaysIsFullScreenAndWillNotLeave() {
+        d.windowServerAnswers = false
+        var w = helium(); w.leavesWhenAsked = false
+        d.open(1, w, on: 1)
+        d.open(2, ghostty(), on: 2)
+        d.switchTo(2)
+        XCTAssertEqual(d.model.workspace(of: 1), 2)
+        XCTAssertEqual(d.findings(), [])
+    }
+
     // MARK: (k) A screen-sized window that isn't in full screen
 
     func testAScreenSizedWindowThatIsNotFullScreenIsNeitherAskedNorCarried() {
@@ -508,7 +555,7 @@ final class FullScreenScenarioTests: XCTestCase {
         XCTAssertFalse(spaces.contains("screenSized(b), w.isFullScreen"), "the old detection missed Split View and busy apps")
         XCTAssertFalse(spaces.contains("var isFullScreen"))
         XCTAssertTrue(spaces.contains("FullScreenDecision.call("))
-        XCTAssertTrue(spaces.contains("FullScreenSwitch.plan("))
+        XCTAssertTrue(spaces.contains("FullScreenFlow.begin("))
         XCTAssertTrue(spaces.contains("VanishAudit.findings("), "every switch with full screen about is audited")
         let windows = try source("Windows.swift")
         XCTAssertFalse(windows.contains("var isFullScreen: Bool"), "an app that doesn't answer must not read as not in full screen")
@@ -532,5 +579,30 @@ final class FullScreenScenarioTests: XCTestCase {
                        "fullscreen flatten", "fullscreen desktop missing from the model", "fullscreen audit", "fullscreen closed"] {
             XCTAssertTrue(spaces.contains(phrase), "trace.log has no '\(phrase)' line")
         }
+    }
+
+    /// A timeout set on the system-wide element is the default for every Accessibility call in the process
+    /// (AppDelegate sets it to 0.25 s on purpose, once). The tap sets short ones on per-app elements only.
+    func testNoCodeSetsATimeoutOnTheSystemWideElementButTheOneInStart() throws {
+        let dir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Sources/BaneySpaces")
+        let files = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil)!.compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
+        var hits: [String] = []
+        for f in files {
+            let text = try String(contentsOf: f, encoding: .utf8).split(separator: "\n").map { $0.components(separatedBy: "//")[0] }
+            for line in text where line.contains("SetMessagingTimeout") && (line.contains("SystemWide") || line.contains("(sys,")) { hits.append("\(f.lastPathComponent): \(line.trimmingCharacters(in: .whitespaces))") }
+        }
+        XCTAssertEqual(hits.count, 1, "only AppDelegate.start() may: \(hits)")
+        XCTAssertTrue(hits.first?.hasPrefix("AppDelegate.swift") ?? false)
+        let keys = try source("FullScreenKeys.swift")
+        XCTAssertFalse(keys.contains("CreateSystemWide"), "the tap never touches the system-wide element")
+        XCTAssertTrue(keys.contains("ClickFilter.request("), "a click is tested in memory before any Accessibility call")
+    }
+
+    /// An unreadable list of desktops stops the audit and the migration; it is never read as "none".
+    func testAnUnreadableDesktopListIsNeverActedOn() throws {
+        let spaces = try source("Spaces.swift")
+        XCTAssertTrue(spaces.contains("guard let desktops = Windows.fullScreenDesktops() else { return }"), "the audit stops")
+        XCTAssertTrue(spaces.contains("the window server's Spaces list is unreadable"), "the migration stops")
+        XCTAssertTrue(spaces.contains("fullscreenMigrated"), "the migration happens once")
     }
 }

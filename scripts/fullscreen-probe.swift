@@ -20,9 +20,12 @@
 //
 // It types ⌃⌘F, clicks the green button and takes the pointer, so it runs only when Donovan has been
 // idle 10 minutes; otherwise it prints "untested live" and exits 3. Run it with BaneySpaces (this build)
-// installed and running, and `defaults write com.baney.baneyspaces dockURLCommands -bool true`:
+// installed and running:
 //   swift scripts/fullscreen-probe.swift
-// It changes BaneySpaces' own `behavior.fullscreen` and puts it back, and ends on workspace 1.
+// It turns BaneySpaces' own `dockURLCommands` check switch on for its run only (the dock's URL commands it
+// drives) and puts it back as it found it, whatever happens; it changes `behavior.fullscreen` and puts that
+// back too. It ends on workspace 1. It also asserts that a window in macOS full screen stays in the dock's model
+// (state.json) before and after every switch.
 import AppKit
 
 @_silgen_name("CGSMainConnectionID") func CGSMainConnectionID() -> Int32
@@ -122,7 +125,29 @@ func getMode() -> String {
 }
 func setMode(_ m: String) { _ = run(cli, ["set", "behavior.fullscreen", m]); pump(1.0) }
 
+/// BaneySpaces' own switch for the URL commands this probe drives: on for the run, then as it was.
+let flagKey = "dockURLCommands"
+let flagBefore = run("/usr/bin/defaults", ["read", "com.baney.baneyspaces", flagKey]).trimmingCharacters(in: .whitespacesAndNewlines)
+let modeBefore = getMode()
+var restored = false
+func restoreSettings() {
+    guard !restored else { return }
+    restored = true
+    if flagBefore == "1" || flagBefore.lowercased() == "true" {
+        _ = run("/usr/bin/defaults", ["write", "com.baney.baneyspaces", flagKey, "-bool", "true"])
+    } else if flagBefore.isEmpty {
+        _ = run("/usr/bin/defaults", ["delete", "com.baney.baneyspaces", flagKey])
+    } else {
+        _ = run("/usr/bin/defaults", ["write", "com.baney.baneyspaces", flagKey, "-bool", "false"])
+    }
+    setMode(modeBefore)
+}
+func finish(_ code: Int32) -> Never { restoreSettings(); exit(code) }
+_ = run("/usr/bin/defaults", ["write", "com.baney.baneyspaces", flagKey, "-bool", "true"])
+atexit { restoreSettings() }
+
 var failures: [String] = []
+var closed = Set<String>()
 var notRun: [String] = []
 func fail(_ s: String) { failures.append(s); say("FAIL: \(s)") }
 
@@ -153,10 +178,12 @@ NSApplication.shared.finishLaunching()
 // The checks that end every step.
 func verify(_ label: String) {
     let st = state()
-    for (name, w) in windows where w.isVisible || w.styleMask.contains(.fullScreen) || cg(UInt32(w.windowNumber)) != nil {
+    // Every window the probe made and has not closed on purpose: no exceptions. One that has vanished
+    // from the window server altogether is the loudest failure there is.
+    for (name, w) in windows where !closed.contains(name) {
         let id = UInt32(w.windowNumber)
-        guard let seen = cg(id) else { fail("\(label): \(name) (\(id)) no longer exists"); continue }
-        guard let n = st.ws[id] else { fail("\(label): \(name) (\(id)) is on no workspace in state.json"); continue }
+        guard let seen = cg(id) else { fail("\(label): \(name) (\(id)) has vanished from the window server"); continue }
+        guard let n = st.ws[id] else { fail("\(label): \(name) (\(id)) is on no workspace in state.json (the dock's model)"); continue }
         if st.shown.contains(n) {
             if !(seen.onScreen || inFullScreen(id) || w.isMiniaturized) { fail("\(label): \(name) (\(id)) is on shown workspace \(n) but not on screen") }
         } else {
@@ -164,6 +191,12 @@ func verify(_ label: String) {
             else if seen.onScreen && !stranded(seen.bounds) { fail("\(label): \(name) (\(id)) is on hidden workspace \(n) and in plain sight") }
         }
     }
+}
+/// A window in macOS full screen is still in the dock's model.
+func requireListed(_ name: String, _ label: String) {
+    guard let w = windows[name] else { return }
+    let id = UInt32(w.windowNumber)
+    if state().ws[id] == nil { fail("\(label): \(name) (\(id)) is in full screen and not in the dock's model (state.json)") }
 }
 func waitForWorkspaceList(_ names: [String]) {
     _ = until(8) { let s = state(); return names.allSatisfy { s.ws[wid($0)] != nil } }
@@ -213,6 +246,7 @@ func enterFullScreen(_ name: String, how: Int, mode: String) {
         w.toggleFullScreen(nil)
         _ = until(4) { w.styleMask.contains(.fullScreen) }
         pump(1.0)
+        requireListed(name, "native, in full screen")
     } else {
         if how % 2 == 0 { pressFullScreenKey() } else { clickGreenButton(w) }
         _ = until(3) { fills(w) }
@@ -230,7 +264,7 @@ func leaveFullScreen(_ name: String, mode: String) {
 // MARK: Setup
 
 let ghosttyBefore = state().ws.filter { state().apps[$0.key] == "Ghostty" }
-let originalMode = getMode()
+let originalMode = modeBefore
 say("probe: BaneySpaces full screen is \(originalMode); Mission Control held off: \(run("/usr/bin/defaults", ["read", "com.apple.dock", "mcx-expose-disabled"]).trimmingCharacters(in: .whitespacesAndNewlines))")
 switchTo(1)
 _ = make("A", at: NSPoint(x: 60, y: 200))
@@ -261,6 +295,7 @@ for mode in ["baneyspaces", "native"] {
         enterFullScreen("A", how: round, mode: mode)
         switchTo(2, wait: mode == "native" ? 4 : 2); verify("\(mode) round \(round + 1) at 2")
         switchTo(1, wait: mode == "native" ? 3 : 2); verify("\(mode) round \(round + 1) back at 1")
+        requireListed("A", "\(mode) round \(round + 1)")
         leaveFullScreen("A", mode: mode)
     }
     say("\(mode): 10 round trips 1→2→1 done")
@@ -315,9 +350,16 @@ for mode in ["baneyspaces", "native"] {
         windows["A"]!.refuseToLeave = true
         switchTo(2, wait: 7); verify("native refusing window carried to 2")
         if state().ws[wid("A")] != 2 { fail("native: the window that would not leave full screen was not carried to workspace 2 (it is on \(state().ws[wid("A")].map(String.init) ?? "none"))") }
+        requireListed("A", "native refusing window carried")
         switchTo(1, wait: 4); verify("native refusing window back at 1")
+        // Carried, then closed: it must leave nothing behind, and the others stay where they are.
         windows["A"]!.refuseToLeave = false
-        leaveFullScreen("A", mode: mode)
+        let aID = wid("A")
+        windows["A"]!.close()
+        closed.insert("A")
+        pump(2)
+        if cg(aID).map({ $0.onScreen }) == true { fail("native: the closed window A is still on screen") }
+        verify("native after closing the carried window")
     } else {
         notRun.append("baneyspaces: refused-and-carried (a window cannot refuse a resize; native mode covers it)")
     }
@@ -348,7 +390,7 @@ for n in [1, 2] {
     switchTo(n)
     verify("final, workspace \(n)")
     let st = state()
-    for (name, _) in windows where st.ws[wid(name)] == n {
+    for (name, _) in windows where st.ws[wid(name)] == n && !closed.contains(name) {
         if !(cg(wid(name))?.onScreen ?? false) && !inFullScreen(wid(name)) { fail("final: \(name) is on workspace \(n), which is shown, and not on screen") }
     }
 }
@@ -357,12 +399,12 @@ for (id, n) in ghosttyBefore {
     if state().ws[id] != n { fail("Ghostty window \(id) was on workspace \(n) and is on \(state().ws[id].map(String.init) ?? "none")") }
 }
 switchTo(1)
-for (_, w) in windows { w.close() }
+for (name, w) in windows where !closed.contains(name) { w.close() }
 pump(0.5)
 for line in notRun { say("not run: \(line)") }
 if failures.isEmpty {
     say("PASS: every window existed, was on its workspace and was visible when its workspace was shown, in both modes")
-    exit(0)
+    finish(0)
 }
 say("FAIL: \(failures.count) problem(s)")
-exit(1)
+finish(1)

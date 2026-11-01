@@ -24,18 +24,20 @@ final class FullScreenTests: XCTestCase {
 
     func testOrdinaryDesktopsAreNotFullScreen() {
         XCTAssertEqual(FullScreenSpaces.parse(displays(fullScreenWindow: nil, current: 3)), [])
-        XCTAssertEqual(FullScreenSpaces.parse([]), [])
     }
 
     func testADesktopThatIsNotShownIsStillFullScreen() {
-        XCTAssertEqual(FullScreenSpaces.parse(displays(current: 3)).map(\.isCurrent), [false])
+        XCTAssertEqual(FullScreenSpaces.parse(displays(current: 3))?.map(\.isCurrent), [false])
     }
 
     func testAWindowIsOnAFullScreenDesktopByItsSpaces() {
-        let fs = FullScreenSpaces.parse(displays())
+        let fs = FullScreenSpaces.parse(displays())!
         XCTAssertEqual(FullScreenSpaces.contains([3585], in: fs), .yes)
-        // Split View: a second window shares the desktop.
-        XCTAssertEqual(FullScreenSpaces.contains([3, 3585], in: fs), .yes)
+        // Split View: a second window shares the desktop and is on it only.
+        XCTAssertEqual(FullScreenSpaces.contains([3585], window: 555, in: fs), .yes)
+        // A window an app puts on every desktop is not in full screen, unless it owns the full-screen desktop.
+        XCTAssertEqual(FullScreenSpaces.contains([3, 3585], window: 555, in: fs), .no)
+        XCTAssertEqual(FullScreenSpaces.contains([3, 3585], window: 98718, in: fs), .yes)
         XCTAssertEqual(FullScreenSpaces.contains([3], in: fs), .no)
         XCTAssertEqual(FullScreenSpaces.contains([], in: fs), .no)
         XCTAssertEqual(FullScreenSpaces.contains(nil, in: fs), .unknown, "the window server not answering is not a no")
@@ -44,9 +46,25 @@ final class FullScreenTests: XCTestCase {
 
     /// A window on a full-screen desktop that the model has never heard of can't be hidden, shown or found.
     func testAFullScreenWindowTheModelDoesNotKnowIsReported() {
-        let fs = FullScreenSpaces.parse(displays())
+        let fs = FullScreenSpaces.parse(displays())!
         XCTAssertEqual(FullScreenSpaces.missing(fs, known: [98718]), [])
         XCTAssertEqual(FullScreenSpaces.missing(fs, known: [1, 2]).map(\.window), [98718])
+    }
+
+    /// A macOS point release that renames a key must never read as "no full-screen desktops".
+    func testAnUnknownShapeIsNilNotEmpty() {
+        var renamed = displays()
+        var spaces = renamed[0]["Spaces"] as! [[String: Any]]
+        spaces[1]["kind"] = spaces[1]["type"]; spaces[1]["type"] = nil          // `type` renamed
+        renamed[0]["Spaces"] = spaces
+        XCTAssertNil(FullScreenSpaces.parse(renamed))
+        var noSpaces = displays(); noSpaces[0]["Spaces"] = nil
+        XCTAssertNil(FullScreenSpaces.parse(noSpaces), "a display with no Spaces array, as during a reconfiguration")
+        var noWindow = displays(); var sp = noWindow[0]["Spaces"] as! [[String: Any]]; sp[1]["fs_wid"] = nil; noWindow[0]["Spaces"] = sp
+        XCTAssertNil(FullScreenSpaces.parse(noWindow), "a full-screen desktop without its window")
+        XCTAssertNil(FullScreenSpaces.parse([]))
+        var noId = displays(); var sp2 = noId[0]["Spaces"] as! [[String: Any]]; sp2[0]["ManagedSpaceID"] = nil; noId[0]["Spaces"] = sp2
+        XCTAssertNil(FullScreenSpaces.parse(noId))
     }
 
     // MARK: Is it in full screen
@@ -164,10 +182,19 @@ final class FullScreenTests: XCTestCase {
         XCTAssertEqual(VanishAudit.findings([obs(4, ws: 1, spot: true)], shown: [1]).map(\.kind), [.shownButParked])
     }
 
-    func testOnlyAFullScreenFindingIsRepairable() {
+    func testOnlyAFullScreenFindingIsRepairableUntilTheDesktopChanges() {
         let f = VanishAudit.findings([obs(2, ws: 2), obs(3, ws: 2, onScreen: false, fs: true)], shown: [1])
         XCTAssertEqual(f.count, 2)
         XCTAssertEqual(VanishAudit.repairable(f).map(\.id), [3])
+        XCTAssertEqual(VanishAudit.repairable(f, afterDesktopChange: true).map(\.id), [2, 3], "a window that left full screen on a hidden workspace is put away at once")
+    }
+
+    /// native, on a full-screen desktop that belongs to the current workspace: the other windows of the
+    /// workspace are on the ordinary desktop and not on screen, and none of that is a loss.
+    func testWindowsBehindTheFullScreenDesktopAreNotFindings() {
+        let w = [obs(1, ws: 1, onScreen: false), obs(2, ws: 1, onScreen: false), obs(3, ws: 1, onScreen: false, fs: true)]
+        XCTAssertEqual(VanishAudit.findings(w, shown: [1]).map(\.kind), [.shownButNotVisible, .shownButNotVisible])
+        XCTAssertEqual(VanishAudit.findings(w, shown: [1], displayOnFullScreenDesktop: true), [])
     }
 
     func testAClosedButKeptWindowIsNotAFinding() {
@@ -274,6 +301,18 @@ final class FullScreenTests: XCTestCase {
         XCTAssertNil(f.refit(7, current: small, area: CGRect(x: 0, y: 0, width: 640, height: 480)), "resized by hand since")
     }
 
+    /// A window filled with ⌃⌘F, sent to macOS full screen by Option-click and migrated back: macOS restores the
+    /// filled frame, which is near the record. A one-way fill must keep the record, not restore.
+    func testAOneWayFillKeepsTheRecord() {
+        var f = FilledWindows()
+        _ = f.toggle(7, current: small, area: area, screens: screens)
+        XCTAssertEqual(f.fill(7, current: area, area: area), .unchanged)
+        XCTAssertEqual(f.toggle(7, current: area, area: area, screens: screens), .restore(to: small), "the key still puts it back")
+        var g = FilledWindows()
+        XCTAssertEqual(g.fill(8, current: small, area: area), .fill(from: small, to: area))
+        XCTAssertTrue(g.isFilled(8))
+    }
+
     func testClosedWindowsAreForgotten() {
         var f = FilledWindows()
         _ = f.toggle(7, current: small, area: area, screens: screens)
@@ -311,6 +350,29 @@ final class FullScreenTests: XCTestCase {
         XCTAssertEqual(p, FullScreenMigration.Plan(now: [], visit: []))
     }
 
+    /// Once: a window in native full screen at any later start is there on purpose.
+    func testMigrationHappensOnceAndSparesWhatWasChosen() {
+        let ds = [fsSpace(1), fsSpace(2, current: true), fsSpace(3)]
+        XCTAssertEqual(FullScreenMigration.plan(mode: .baneyspaces, desktops: ds, listed: [2], alreadyMigrated: true), FullScreenMigration.Plan(now: [], visit: []))
+        let p = FullScreenMigration.plan(mode: .baneyspaces, desktops: ds, listed: [2], chosen: [2, 3])
+        XCTAssertEqual(p.now, [])
+        XCTAssertEqual(p.visit.map(\.window), [1])
+    }
+
+    func testANativeChoiceIsKeptByWindowAndProcess() throws {
+        var c = NativeChoices()
+        c.note(7, pid: 100)
+        XCTAssertTrue(c.contains(7, pid: 100))
+        XCTAssertFalse(c.contains(7, pid: 101), "a number reused by another process is not a choice")
+        XCTAssertFalse(c.contains(8, pid: 100))
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("bs-native-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        c.save(to: url)
+        XCTAssertEqual(NativeChoices.load(from: url), c)
+        c.keep(alive: [])
+        XCTAssertEqual(c.ids, [])
+    }
+
     func testNoFullScreenDesktopMeansNothingToMigrate() {
         XCTAssertEqual(FullScreenMigration.plan(mode: .baneyspaces, desktops: [], listed: [1]).now, [])
     }
@@ -324,5 +386,158 @@ final class FullScreenTests: XCTestCase {
         XCTAssertEqual(t.wait(now: t0.addingTimeInterval(1.01)), 0)
         t.changed(at: t0.addingTimeInterval(0.9))
         XCTAssertGreaterThan(t.wait(now: t0.addingTimeInterval(1.5)), 0.3, "a second change extends it")
+    }
+
+    // MARK: Asking to leave, step by step
+
+    private func ev(_ d: Answer, _ a: Answer) -> FullScreenEvidence { FullScreenEvidence(desktop: d, attribute: a, screenSized: .yes) }
+    private func step(elapsed: TimeInterval, wait: TimeInterval = 0, calls: [WindowID: FullScreenCall], evidence: [WindowID: FullScreenEvidence], pressed: Bool = false) -> FullScreenLeave.Step {
+        FullScreenLeave.step(asked: [1], elapsed: elapsed, transitionWait: wait, calls: calls, evidence: evidence, pressed: pressed)
+    }
+
+    func testTheGreenButtonIsNeverPressedDuringADesktopChange() {
+        let c: [WindowID: FullScreenCall] = [1: .inFullScreen("x")]
+        let e = [WindowID(1): ev(.yes, .yes)]
+        XCTAssertEqual(step(elapsed: 0.9, wait: 0.4, calls: c, evidence: e), .wait, "macOS is sliding")
+        XCTAssertEqual(step(elapsed: 0.9, wait: 0, calls: c, evidence: e), .press([1]))
+        XCTAssertEqual(step(elapsed: 0.5, calls: c, evidence: e), .wait, "the request gets 0.8 s first")
+        XCTAssertEqual(step(elapsed: 1.5, calls: c, evidence: e, pressed: true), .wait, "pressed once, never twice")
+    }
+
+    func testAWindowNobodyCanReadIsNotPressed() {
+        XCTAssertEqual(step(elapsed: 1, calls: [1: .cannotTell("x")], evidence: [1: ev(.unknown, .unknown)]), .wait)
+        XCTAssertEqual(step(elapsed: 1, calls: [1: .cannotTell("x")], evidence: [:]), .wait)
+    }
+
+    func testAtTheDeadlineTheWindowIsCarriedNotHidden() {
+        XCTAssertEqual(step(elapsed: FullScreenLeave.deadline, wait: 0.3, calls: [1: .inFullScreen("x")], evidence: [1: ev(.yes, .yes)]), .refused([1]))
+        XCTAssertEqual(step(elapsed: FullScreenLeave.deadline, calls: [1: .cannotTell("x")], evidence: [:]), .refused([1]))
+    }
+
+    func testDoneOnlyWhenProvablyOut() {
+        XCTAssertEqual(step(elapsed: 0.1, calls: [1: .notInFullScreen("x")], evidence: [:]), .done)
+        XCTAssertEqual(step(elapsed: 0.1, calls: [:], evidence: [:]), .wait, "no reading is not out")
+    }
+
+    // MARK: Presses and releases
+
+    func testASwallowedPressSwallowsItsRelease() {
+        var p = PressPairing()
+        p.armMouse(41)
+        XCTAssertEqual(p.mouseUp(number: 40, onButton: true), .pass, "another click's release is not ours")
+        XCTAssertEqual(p.mouseUp(number: 41, onButton: true), .swallowAndAct)
+        XCTAssertEqual(p.mouseUp(number: 41, onButton: true), .pass, "only once")
+    }
+
+    func testADragOffTheButtonCancels() {
+        var p = PressPairing()
+        p.armMouse(9)
+        XCTAssertEqual(p.mouseUp(number: 9, onButton: false), .swallowAndCancel, "no fill, and the app never sees a release")
+    }
+
+    func testAKeyReleaseIsSwallowedWhateverTheModifiers() {
+        var p = PressPairing()
+        p.armKey()
+        XCTAssertTrue(p.keyUp(), "Control let go before F")
+        XCTAssertFalse(p.keyUp(), "and the flag is gone, so the next press is not affected")
+    }
+
+    // MARK: The cost of an ordinary click
+
+    private func zones() -> ClickZones {
+        var list: [ClickZones.Entry] = []
+        for i in 0..<40 {
+            let frame = CGRect(x: CGFloat(i) * 20, y: CGFloat(i) * 12 + 30, width: 900, height: 600)
+            list.append(ClickZones.Entry(id: WindowID(i + 1), pid: Int32(i + 100), frame: frame))
+        }
+        return ClickZones(list)
+    }
+
+    func testClicksOutsideTheTrafficLightsMakeNoAccessibilityCall() {
+        let z = zones()
+        var looks = 0
+        for i in 0..<10_000 {
+            // Anywhere on screen except the top-left 110×56 of a window: below the title bar, off every window.
+            let p = CGPoint(x: CGFloat(i % 1400) + 0.5, y: 140 + CGFloat(i % 700))
+            if let w = z.candidate(at: p), ClickZones.zone(of: w).contains(p) { continue }
+            _ = ClickFilter.request(at: p, zones: z) { _ in looks += 1; return false }
+        }
+        XCTAssertEqual(looks, 0)
+        for i in 0..<10_000 { _ = ClickFilter.request(at: CGPoint(x: 5000 + CGFloat(i), y: 5000), zones: z) { _ in looks += 1; return false } }
+        XCTAssertEqual(looks, 0, "off every window")
+    }
+
+    func testAClickOnTheGreenButtonZoneLooksOnce() {
+        let z = ClickZones([.init(id: 1, pid: 7, frame: CGRect(x: 100, y: 100, width: 800, height: 600))])
+        var looks = 0
+        let hit = ClickFilter.request(at: CGPoint(x: 146, y: 118), zones: z) { w in looks += 1; return w.pid == 7 }
+        XCTAssertEqual(hit?.id, 1)
+        XCTAssertEqual(looks, 1)
+        XCTAssertNil(ClickFilter.request(at: CGPoint(x: 400, y: 118), zones: z) { _ in looks += 1; return true }, "the title bar away from the lights")
+        XCTAssertEqual(looks, 1)
+    }
+
+    func testOnlyTheTopWindowUnderThePointIsLookedAt() {
+        // A window in front covers the lights of the one behind.
+        let z = ClickZones([.init(id: 2, pid: 8, frame: CGRect(x: 0, y: 0, width: 600, height: 600)),
+                            .init(id: 1, pid: 7, frame: CGRect(x: 0, y: 0, width: 600, height: 600))])
+        XCTAssertEqual(z.candidate(at: CGPoint(x: 40, y: 20))?.id, 2)
+        let behind = ClickZones([.init(id: 2, pid: 8, frame: CGRect(x: 0, y: 200, width: 600, height: 300)),
+                                 .init(id: 1, pid: 7, frame: CGRect(x: 0, y: 0, width: 600, height: 600))])
+        XCTAssertNil(behind.candidate(at: CGPoint(x: 40, y: 220 + 80)), "under the front window's body, not its lights")
+    }
+
+    /// The tap must decide in microseconds: 10,000 ordinary clicks over 40 windows.
+    func testTenThousandOrdinaryClicksAreFast() {
+        let z = zones()
+        let start = Date()
+        var looks = 0
+        for i in 0..<10_000 { _ = ClickFilter.request(at: CGPoint(x: CGFloat(i % 1400), y: 200 + CGFloat(i % 600)), zones: z) { _ in looks += 1; return false } }
+        let per = Date().timeIntervalSince(start) / 10_000
+        XCTAssertLessThan(per, 0.0001, "\(per * 1e6) µs a click")
+    }
+
+    // MARK: Windows the dock must keep listing
+
+    private func info(_ id: WindowID, pid: Int32, on: Bool = true, w: CGFloat = 800, h: CGFloat = 600) -> ServerWindowInfo {
+        ServerWindowInfo(id: id, pid: pid, app: "App\(pid)", title: "t\(id)", bounds: CGRect(x: 0, y: 0, width: w, height: h), onScreen: on)
+    }
+
+    /// Excel in native full screen on its own desktop: no scan lists it, and it was on no workspace.
+    func testAFullScreenWindowNoScanListsIsStillListed() {
+        let l = ServerListings.decide(info: [info(5, pid: 50, on: false), info(6, pid: 60)], withHandle: [6], silentApps: [], fullScreenWindows: [5], known: [])
+        XCTAssertEqual(l.map(\.id), [5])
+        XCTAssertEqual(l.first?.why, .fullScreen)
+        XCTAssertEqual(l.first?.app, "App50")
+    }
+
+    /// Bible Study: its Accessibility never answers, and none of its windows were in any workspace.
+    func testAnAppThatDoesNotAnswerIsListedFromTheWindowServer() {
+        let infos = [info(1, pid: 76341), info(2, pid: 76341, w: 20, h: 20), info(3, pid: 76341, on: false), info(4, pid: 99)]
+        let l = ServerListings.decide(info: infos, withHandle: [], silentApps: [76341], fullScreenWindows: [], known: [])
+        XCTAssertEqual(l.map(\.id), [1], "on screen and window-sized; a helper, an off-screen one and another app's are not")
+        XCTAssertEqual(l.first?.why, .notResponding)
+        // A window the model already knows stays listed even when off screen (the app was hidden).
+        let k = ServerListings.decide(info: infos, withHandle: [], silentApps: [76341], fullScreenWindows: [], known: [3])
+        XCTAssertEqual(k.map(\.id), [1, 3])
+    }
+
+    func testAWindowWithAHandleIsNotRepeated() {
+        XCTAssertEqual(ServerListings.decide(info: [info(1, pid: 7)], withHandle: [1], silentApps: [7], fullScreenWindows: [1], known: [1]), [])
+    }
+
+    func testTheBadgeSaysWhy() {
+        XCTAssertEqual(ServerListings.badge(.fullScreen), "⤢ ")
+        XCTAssertEqual(ServerListings.badge(.notResponding), "◌ ")
+        XCTAssertEqual(ServerListings.badge(nil), "")
+    }
+
+    /// The closed-window rule must never drop a window the full-screen list holds.
+    func testTheClosedWindowRuleNeverDropsAFullScreenWindow() {
+        let off: [WindowID: Int32] = [5: 50, 6: 50]
+        let closed = ClosedWindows.find(candidates: [5, 6], listed: [], answered: [50], offscreen: off, heldByFullScreen: [5], onNoOtherDesktop: { _ in true })
+        XCTAssertEqual(closed, [6], "6 is a closed window Ghostty kept; 5 is on a full-screen desktop")
+        XCTAssertEqual(ClosedWindows.find(candidates: [5], listed: [], answered: [50], offscreen: off, heldByFullScreen: [], onNoOtherDesktop: { _ in false }), [])
+        XCTAssertEqual(ClosedWindows.find(candidates: [6], listed: [], answered: [], offscreen: off, heldByFullScreen: [], onNoOtherDesktop: { _ in true }), [], "an app that didn't answer closes nothing")
     }
 }
