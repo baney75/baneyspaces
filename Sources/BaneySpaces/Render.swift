@@ -89,7 +89,7 @@ enum Render {
         setup.openAtLogin = true
         setup.viewerKeys = true
         setup.parkedApps = { [.init(id: "com.apple.Safari", name: "Safari", on: false, animates: false),
-                            .init(id: "com.trycua.spaces.macos", name: "Cua Spaces", on: true, animates: false),
+                            .init(id: "com.example.automation", name: "Automation Helper", on: true, animates: false),
                             .init(id: "com.mitchellh.ghostty", name: "Ghostty", on: true, animates: true)] }
         setup.update = .init(have: "0.3.0 (abc1234)", channel: .stable, daily: true, nightlyNeedsTools: false, notice: UpdateNotice(name: "BaneySpaces 0.3.1", isNightly: false, installing: false))
         setup.finished = [.init(id: "a", label: "Claude Code · baneyspaces")]

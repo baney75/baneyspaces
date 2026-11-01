@@ -113,6 +113,15 @@ for (app, target) in [("TextEdit", doc.path), ("Finder", dir.path)] {
     Thread.sleep(forTimeInterval: 0.5)
 }
 
+// Nothing but what we handed over may be open: a window of these apps showing anything else was restored
+// from the user's own documents, and the probe fails on it.
+if let list = data(agent(["windows"]))["windows"] as? [[String: Any]] {
+    for w in list where probedApps.contains(w["app"] as? String ?? "") {
+        let title = (w["title"] as? String ?? "").lowercased()
+        if !(title.contains("notes") || title.contains(dir.lastPathComponent.lowercased())) { failures.append("restored window \(w["id"] ?? "?") (\(title)) is not what we opened") }
+    }
+}
+
 func refs(_ node: Any?, into out: inout [[String: Any]]) {
     guard let n = node as? [String: Any] else { return }
     if n["ref_id"] != nil { out.append(n) }

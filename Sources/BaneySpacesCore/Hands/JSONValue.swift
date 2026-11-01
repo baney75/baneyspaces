@@ -18,7 +18,7 @@ public enum JSONValue: Equatable, Sendable {
     public var int: Int? {
         switch self {
         case .int(let i): return i
-        case .double(let d): return d == d.rounded() ? Int(d) : nil
+        case .double(let d): return Int(exactly: d)
         case .string(let s): return Int(s)
         default: return nil
         }

@@ -1,22 +1,59 @@
 import Foundation
 
-/// Apps that exist once per user and hold his data. An agent never opens them on his Mac: that work
-/// goes to the sandbox (phase 2) unless Donovan lends the app.
-public enum OncePerUserApps {
-    public static let bundles: Set<String> = [
-        "com.apple.Safari", "com.apple.Notes", "com.apple.mail", "com.apple.MobileSMS", "com.apple.iCal",
-        "com.apple.Photos", "com.apple.reminders", "com.apple.AddressBook", "com.apple.Music", "com.apple.FaceTime",
+/// Which apps an agent may start on this Mac. Default deny: only apps verified to start a separate instance
+/// that restores nothing of Donovan's, and holds none of his data, are on the list. Everything else
+/// (every browser, password managers, Keychain Access, System Settings, mail, messages, notes, calendars, photos,
+/// terminals other than the agent's own Ghostty, Office and any app nobody has checked) answers `needs_sandbox`.
+public enum AgentAppPolicy {
+    /// Started with `-ApplePersistenceIgnoreState YES` as a new instance (`open -n`), so it opens nothing it restored.
+    public static let separateInstance: Set<String> = ["com.apple.TextEdit", "com.apple.calculator", "com.apple.Preview"]
+    /// Finder cannot run twice: an agent may only ask it to show a folder inside the handoff folder.
+    public static let folderOnly: Set<String> = ["com.apple.finder"]
+
+    public static func allowed(bundle: String) -> Bool { separateInstance.contains(bundle) || folderOnly.contains(bundle) }
+    public static func needsSeparateInstance(bundle: String) -> Bool { separateInstance.contains(bundle) }
+
+    static let kinds: [(prefixes: [String], why: String)] = [
+        (["com.google.Chrome", "org.mozilla.firefox", "company.thebrowser.Browser", "com.brave.Browser", "com.microsoft.edgemac", "com.apple.Safari", "net.imput.helium", "org.chromium.Chromium", "com.operasoftware.Opera", "com.vivaldi.Vivaldi"],
+         "a browser holds Donovan's logins (an agent gets its own browser profile in a later phase)"),
+        (["com.1password", "com.agilebits", "com.apple.Passwords", "com.bitwarden", "com.apple.keychainaccess", "org.keepassxc", "com.lastpass"],
+         "it holds Donovan's passwords"),
+        (["com.apple.systempreferences", "com.apple.Terminal", "com.googlecode.iterm2", "com.mitchellh.ghostty", "dev.warp.Warp", "co.zeit.hyper"],
+         "it controls this Mac (settings, a shell)"),
+        (["com.apple.Notes", "com.apple.mail", "com.apple.MobileSMS", "com.apple.iCal", "com.apple.Photos", "com.apple.reminders", "com.apple.AddressBook", "com.apple.Music", "com.apple.FaceTime", "com.microsoft."],
+         "it holds Donovan's own data and exists once per user"),
     ]
-    /// Office apps hold his open documents: refused only while they are running.
-    public static let whileRunning: Set<String> = ["com.microsoft.Excel", "com.microsoft.Word", "com.microsoft.Powerpoint"]
 
-    public static func refuses(bundle: String, running: Bool) -> Bool {
-        bundles.contains(bundle) || (running && whileRunning.contains(bundle))
+    /// nil when the app may start; else `needs_sandbox`, saying why.
+    public static func refusal(app: String, bundle: String) -> HandsError? {
+        if allowed(bundle: bundle) { return nil }
+        let why = kinds.first { k in k.prefixes.contains { bundle == $0 || bundle.hasPrefix($0.hasSuffix(".") ? $0 : $0 + ".") } }?.why
+            ?? "no one has checked that it starts a separate instance that restores nothing of Donovan's"
+        return HandsError(.needsSandbox, "\(app): \(why)",
+                          suggestion: "Do this work in the sandbox (arrives in a later phase), or ask Donovan to lend \(app) and be away from it while you work. Apps an agent may start today: TextEdit, Calculator, Preview, and Finder on a handoff folder.",
+                          retry: .never)
     }
+}
 
-    public static func error(app: String) -> HandsError {
-        HandsError(.needsSandbox, "\(app) holds Donovan's own data, so an agent doesn't open it on his Mac",
-                   suggestion: "Do this work in the sandbox (arrives in phase 2), or ask Donovan to lend \(app) and be away from it while you work.", retry: .never)
+/// `agent open`'s one gate, used by the router and by the deck's raw `open` (which other callers on the socket reach).
+public enum AgentOpenGate {
+    /// The files to hand over (resolved), or why not.
+    public static func check(app: String, bundle: String, targets: [String], handoff: URL) -> Result<[String], HandsError> {
+        if let e = AgentAppPolicy.refusal(app: app, bundle: bundle) { return .failure(e) }
+        var files: [String] = []
+        for t in targets {
+            if t.contains("://") {
+                return .failure(HandsError(.notSupported, "opening a URL needs an agent browser profile, which arrives in a later phase",
+                                           suggestion: "Open a file from the handoff folder instead.", retry: .never))
+            }
+            guard let r = HandoffPath.resolve(t, in: handoff) else { return .failure(HandoffPath.error(t, folder: handoff)) }
+            files.append(r.path)
+        }
+        if AgentAppPolicy.folderOnly.contains(bundle), files.isEmpty {
+            return .failure(HandsError(.needsSandbox, "\(app) shows Donovan's folders; an agent may ask it only for a folder in the handoff folder",
+                                       suggestion: "Pass a folder inside \(handoff.path).", retry: .never))
+        }
+        return .success(files)
     }
 }
 
@@ -73,5 +110,72 @@ public struct UserUse: Equatable, Sendable {
         if frontNow == pid || front == pid { return true }
         if let t = leftAt[pid] { return now.timeIntervalSince(t) < Self.quiet }
         return false
+    }
+}
+
+/// What a refmap file says about a ref's target. The engine writes refmaps as files the agent could edit, so
+/// identity is read when the snapshot is taken and compared again before each use; a ref that now points at
+/// another process or window is refused.
+public struct RefIdentity: Equatable, Sendable {
+    public var pid: Int
+    public var window: String
+    public var instance: String
+}
+
+public enum RefmapIdentity {
+    /// `@e5` -> identity, from a `refmap.json`'s bytes. Nil when it isn't the expected shape.
+    public static func table(from data: Data) -> [String: RefIdentity]? {
+        guard let root = JSONValue.parse(data), let inner = root["inner"]?.object else { return nil }
+        var out: [String: RefIdentity] = [:]
+        for (key, e) in inner {
+            guard let pid = e["pid"]?.int, let window = e["source_window_id"]?.string else { return nil }
+            out[key] = RefIdentity(pid: pid, window: window, instance: e["process_instance"]?.string ?? "")
+        }
+        return out
+    }
+
+    /// The `@eN` key of `@s8f3k2p9:e5`.
+    public static func key(forRef ref: String) -> String? {
+        guard let colon = ref.firstIndex(of: ":") else { return nil }
+        return "@" + ref[ref.index(after: colon)...]
+    }
+
+    /// Whether the ref still means what it meant when it was sealed.
+    public static func intact(sealed: [String: RefIdentity], current: Data, ref: String) -> Bool {
+        guard let k = key(forRef: ref), let was = sealed[k], let now = table(from: current)?[k] else { return false }
+        return was == now
+    }
+
+    /// Whether every ref of the snapshot targets this window and process (checked once, when it is taken).
+    public static func allTarget(_ t: [String: RefIdentity], window: UInt32, pid: Int32) -> Bool {
+        t.values.allSatisfy { $0.window == "w-\(window)" && $0.pid == Int(pid) }
+    }
+}
+
+/// Whether an event is the user's: from the hardware, not posted by a program. A click on a consent sheet counts
+/// only if it is. Synthetic events carry their sender's pid or a private/combined source; hardware ones have pid 0
+/// and the HID system state. An accessibility press carries no recent event at all.
+public enum UserEventSource {
+    public static let hidSystemState: Int64 = 1
+    public static func isGenuine(sourcePID: Int64, sourceState: Int64, age: TimeInterval) -> Bool {
+        sourcePID == 0 && sourceState == hidSystemState && age >= 0 && age < 2
+    }
+}
+
+/// What the deck socket refuses outright. Any process of this user can write to it, so the socket is not a place
+/// where Donovan's decisions can be made: lending and returning an app, and any grant of access, happen only
+/// through a consent sheet the app shows and a real click on it.
+public enum SocketPolicy {
+    public static let humanOnly: Set<String> = ["lend", "return", "grant"]
+
+    public static func refusal(for r: Wire.Request) -> String? {
+        guard r.op == .agent, let text = r.text?.lowercased(), humanOnly.contains(text) else { return nil }
+        return "\(text) is Donovan's to do: `baneyspaces agent lend <app>` asks him in a sheet in BaneySpaces; nothing sent on this socket lends an app"
+    }
+
+    /// An agent caller may move a window to the agent workspace only if its process was started for an agent.
+    public static func mayMove(windowPid: Int32?, startedForAgents: Set<Int32>) -> Bool {
+        guard let pid = windowPid else { return false }
+        return startedForAgents.contains(pid)
     }
 }

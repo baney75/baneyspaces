@@ -402,7 +402,7 @@ final class Spaces {
     /// model BaneySpaces keeps current from its own notifications: no scan, no Accessibility call. `fresh`
     /// scans first, at most twice a second, for a window that opened a moment ago.
     func handsWindows(fresh: Bool) -> [HandsWindow] {
-        if fresh, active, Date().timeIntervalSince(lastHandsScan) > 0.5 { lastHandsScan = Date(); refresh() }
+        if fresh, active, Date().timeIntervalSince(lastHandsScan) > 2 { lastHandsScan = Date(); refresh() }
         return model.home.compactMap { id, ws in handsWindow(id, ws) }
     }
 
@@ -417,6 +417,9 @@ final class Spaces {
         if handsBundles[w.pid] == nil { handsBundles[w.pid] = NSRunningApplication(processIdentifier: w.pid)?.bundleIdentifier ?? "" }
         return HandsWindow(id: id, pid: w.pid, app: w.appName, bundle: handsBundles[w.pid] ?? "", title: "", workspace: ws)
     }
+
+    /// The file a window shows, as the app reports it (AXDocument), or nil.
+    func handsDocument(_ id: UInt32) -> String? { windows[id].flatMap { $0.element.string("AXDocument") } }
 
     func handsTitles(_ ids: [UInt32]) -> [UInt32: String] {
         Dictionary(uniqueKeysWithValues: ids.compactMap { id in windows[id].map { (id, $0.title) } })

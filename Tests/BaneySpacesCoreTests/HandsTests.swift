@@ -1,3 +1,4 @@
+import Darwin
 import XCTest
 @testable import BaneySpacesCore
 
@@ -187,14 +188,71 @@ final class ScopeGuardTests: XCTestCase {
 }
 
 final class PolicyTests: XCTestCase {
-    func testOncePerUserAppsAreRefusedForTheSandbox() {
-        for b in ["com.apple.Safari", "com.apple.Notes", "com.apple.mail", "com.apple.MobileSMS", "com.apple.iCal", "com.apple.Photos"] {
-            XCTAssertTrue(OncePerUserApps.refuses(bundle: b, running: false), b)
+    func testOnlyAVerifiedAllowlistMayBeStartedAndEverythingElseIsNeedsSandbox() {
+        for ok in ["com.apple.TextEdit", "com.apple.calculator", "com.apple.Preview", "com.apple.finder"] {
+            XCTAssertNil(AgentAppPolicy.refusal(app: "A", bundle: ok), ok)
         }
-        XCTAssertFalse(OncePerUserApps.refuses(bundle: "com.apple.TextEdit", running: true))
-        XCTAssertTrue(OncePerUserApps.refuses(bundle: "com.microsoft.Excel", running: true))
-        XCTAssertFalse(OncePerUserApps.refuses(bundle: "com.microsoft.Excel", running: false))
-        XCTAssertEqual(OncePerUserApps.error(app: "Notes").code, .needsSandbox)
+        let refused = ["com.google.Chrome", "org.mozilla.firefox", "company.thebrowser.Browser", "com.brave.Browser", "com.microsoft.edgemac",
+                       "com.apple.Safari", "com.1password.1password", "com.agilebits.onepassword7", "com.apple.Passwords", "com.bitwarden.desktop",
+                       "com.apple.keychainaccess", "com.apple.systempreferences", "com.apple.Terminal", "com.googlecode.iterm2", "com.mitchellh.ghostty",
+                       "com.apple.Notes", "com.apple.mail", "com.apple.MobileSMS", "com.apple.iCal", "com.apple.Photos",
+                       "com.microsoft.Excel", "com.microsoft.Word", "com.example.NeverChecked"]
+        for b in refused {
+            let e = AgentAppPolicy.refusal(app: "X", bundle: b)
+            XCTAssertEqual(e?.code, .needsSandbox, b)
+            XCTAssertEqual(e?.retry, .never, b)
+            XCTAssertFalse(e?.suggestion.isEmpty ?? true, b)
+        }
+        XCTAssertTrue(AgentAppPolicy.needsSeparateInstance(bundle: "com.apple.TextEdit"))
+        XCTAssertFalse(AgentAppPolicy.needsSeparateInstance(bundle: "com.apple.finder"), "Finder can't run twice")
+    }
+
+    func testTheOpenGateAppliesToEveryCaller() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("gate-\(UUID().uuidString)")
+        let folder = root.appendingPathComponent("probe")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        if case .failure(let e) = AgentOpenGate.check(app: "Safari", bundle: "com.apple.Safari", targets: ["https://mail.example.com"], handoff: root) { XCTAssertEqual(e.code, .needsSandbox) } else { XCTFail() }
+        if case .failure(let e) = AgentOpenGate.check(app: "TextEdit", bundle: "com.apple.TextEdit", targets: ["https://example.com"], handoff: root) { XCTAssertEqual(e.code, .notSupported) } else { XCTFail() }
+        if case .failure(let e) = AgentOpenGate.check(app: "TextEdit", bundle: "com.apple.TextEdit", targets: ["/etc/hosts"], handoff: root) { XCTAssertEqual(e.code, .badArguments) } else { XCTFail() }
+        if case .failure(let e) = AgentOpenGate.check(app: "Finder", bundle: "com.apple.finder", targets: [], handoff: root) { XCTAssertEqual(e.code, .needsSandbox, "Finder needs a handoff folder") } else { XCTFail() }
+        guard case .success(let files) = AgentOpenGate.check(app: "Finder", bundle: "com.apple.finder", targets: [folder.path], handoff: root) else { return XCTFail() }
+        XCTAssertEqual(files.count, 1)
+        guard case .success(let none) = AgentOpenGate.check(app: "TextEdit", bundle: "com.apple.TextEdit", targets: [], handoff: root) else { return XCTFail() }
+        XCTAssertEqual(none, [])
+    }
+
+    func testRefmapIdentityDetectsARetargetedRef() throws {
+        func refmap(pid: Int, window: String, instance: String = "i1") -> Data {
+            Data(#"{"inner":{"@e1":{"pid":\#(pid),"source_window_id":"\#(window)","process_instance":"\#(instance)","role":"button"},"@e2":{"pid":\#(pid),"source_window_id":"\#(window)","process_instance":"\#(instance)"}},"counter":2}"#.utf8)
+        }
+        let sealed = try XCTUnwrap(RefmapIdentity.table(from: refmap(pid: 7, window: "w-9")))
+        XCTAssertTrue(RefmapIdentity.allTarget(sealed, window: 9, pid: 7))
+        XCTAssertFalse(RefmapIdentity.allTarget(sealed, window: 10, pid: 7))
+        XCTAssertEqual(RefmapIdentity.key(forRef: "@s8f3k2p9:e1"), "@e1")
+        XCTAssertTrue(RefmapIdentity.intact(sealed: sealed, current: refmap(pid: 7, window: "w-9"), ref: "@sX:e1"))
+        XCTAssertFalse(RefmapIdentity.intact(sealed: sealed, current: refmap(pid: 8, window: "w-9"), ref: "@sX:e1"), "another process")
+        XCTAssertFalse(RefmapIdentity.intact(sealed: sealed, current: refmap(pid: 7, window: "w-4211"), ref: "@sX:e1"), "another window")
+        XCTAssertFalse(RefmapIdentity.intact(sealed: sealed, current: refmap(pid: 7, window: "w-9", instance: "i2"), ref: "@sX:e1"), "a restarted process")
+        XCTAssertFalse(RefmapIdentity.intact(sealed: sealed, current: Data("garbage".utf8), ref: "@sX:e1"))
+        XCTAssertFalse(RefmapIdentity.intact(sealed: sealed, current: refmap(pid: 7, window: "w-9"), ref: "@sX:e99"), "a ref that wasn't sealed")
+    }
+
+    func testOnlyHardwareEventsCountAsTheUsersClick() {
+        XCTAssertTrue(UserEventSource.isGenuine(sourcePID: 0, sourceState: 1, age: 0.1))
+        XCTAssertFalse(UserEventSource.isGenuine(sourcePID: 4242, sourceState: 1, age: 0.1), "posted by a program")
+        XCTAssertFalse(UserEventSource.isGenuine(sourcePID: 0, sourceState: -1, age: 0.1), "private source")
+        XCTAssertFalse(UserEventSource.isGenuine(sourcePID: 0, sourceState: 0, age: 0.1), "combined session source")
+        XCTAssertFalse(UserEventSource.isGenuine(sourcePID: 0, sourceState: 1, age: 5), "an old event isn't the answer")
+        XCTAssertFalse(UserEventSource.isGenuine(sourcePID: 0, sourceState: 1, age: -1))
+    }
+
+    func testIntegerArgumentsOutOfRangeAreNotNumbers() {
+        XCTAssertNil(JSONValue.double(1e100).int)
+        XCTAssertNil(JSONValue.double(.nan).int)
+        XCTAssertEqual(JSONValue.double(42).int, 42)
+        guard case .failure(let e) = HandsParse.call(name: "shot", arguments: ["window": .double(1e100)]) else { return XCTFail() }
+        XCTAssertEqual(e.code, .badArguments)
     }
 
     func testOnlyFilesInsideTheHandoffFolderResolve() throws {
@@ -461,6 +519,53 @@ final class HandsEventsTests: XCTestCase {
 final class HandsWireTests: XCTestCase {
     func testNoOtherMachineMayUseTheHands() {
         XCTAssertFalse(Remote.allows(Wire.Request(op: .hands, text: "{}")))
+        XCTAssertFalse(Remote.allows(Wire.Request(op: .agent, text: "lend-ask", args: ["Excel"])))
+        XCTAssertFalse(Remote.allows(Wire.Request(op: .agent, text: "move", args: ["1"])))
+    }
+
+    /// Any process of the user can write a line to the socket. Decoded the way the server decodes it, a raw
+    /// lend, return or grant is refused before anything runs; a request to be asked is not a lend.
+    func testARawLendRequestIsRejectedAtTheSocket() throws {
+        for line in [#"{"op":"agent","text":"lend","args":["Excel","8h",""]}"#, #"{"op":"agent","text":"return","args":[]}"#,
+                     #"{"op":"agent","text":"LEND","args":["Excel"]}"#, #"{"op":"agent","text":"grant","args":["Excel"]}"#] {
+            let req = try JSONDecoder().decode(Wire.Request.self, from: Data(line.utf8))
+            let why = try XCTUnwrap(SocketPolicy.refusal(for: req), line)
+            XCTAssertTrue(why.contains("Donovan"))
+        }
+        let ask = try JSONDecoder().decode(Wire.Request.self, from: Data(#"{"op":"agent","text":"lend-ask","args":["Excel"]}"#.utf8))
+        XCTAssertNil(SocketPolicy.refusal(for: ask), "asking opens a sheet; it grants nothing")
+        XCTAssertNil(SocketPolicy.refusal(for: Wire.Request(op: .ping)))
+    }
+
+    func testOverARealSocketTheServersFirstStepRefusesALend() throws {
+        // The same steps as the server's `serve`: read a line, decode, screen it with SocketPolicy.
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("t-\(getpid())-\(UUID().uuidString.prefix(6)).sock").path
+        let listener = socket(AF_UNIX, SOCK_STREAM, 0)
+        var addr = try XCTUnwrap(Wire.address(path: path))
+        let bound = withUnsafePointer(to: &addr) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(listener, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) } }
+        XCTAssertEqual(bound, 0)
+        XCTAssertEqual(listen(listener, 1), 0)
+        defer { close(listener); unlink(path) }
+        let served = expectation(description: "served")
+        DispatchQueue.global().async {
+            let client = Darwin.accept(listener, nil, nil)
+            defer { close(client); served.fulfill() }
+            guard let line = Wire.readLine(client), let req = try? JSONDecoder().decode(Wire.Request.self, from: line) else { return }
+            let reply = SocketPolicy.refusal(for: req).map { Wire.Reply(ok: false, error: $0) } ?? Wire.Reply(ok: true)
+            var data = (try? JSONEncoder().encode(reply)) ?? Data()
+            data.append(0x0A)
+            _ = Wire.writeAll(client, data)
+        }
+        let reply = try XCTUnwrap(Wire.call(Wire.Request(op: .agent, text: "lend", args: ["Excel", "8h", ""]), timeout: 3, path: path))
+        XCTAssertFalse(reply.ok)
+        XCTAssertTrue(reply.error?.contains("Donovan") ?? false)
+        wait(for: [served], timeout: 3)
+    }
+
+    func testAnAgentMayMoveOnlyWindowsOfProcessesStartedForAgents() {
+        XCTAssertTrue(SocketPolicy.mayMove(windowPid: 10, startedForAgents: [10, 11]))
+        XCTAssertFalse(SocketPolicy.mayMove(windowPid: 12, startedForAgents: [10, 11]), "Donovan's Mail window")
+        XCTAssertFalse(SocketPolicy.mayMove(windowPid: nil, startedForAgents: [10]))
     }
 }
 
@@ -490,6 +595,12 @@ final class HandsSourceTests: XCTestCase {
     static func handsFiles() throws -> [String] {
         try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("Sources/BaneySpaces/Hands").path)
             .filter { $0.hasSuffix(".swift") }.map { "Sources/BaneySpaces/Hands/" + $0 }
+    }
+
+    /// The text from `start` up to `end`.
+    static func between(_ start: String, _ end: String, in text: String) -> String? {
+        guard let a = text.range(of: start), let b = text[a.upperBound...].range(of: end) else { return nil }
+        return String(text[a.lowerBound..<b.lowerBound])
     }
 
     func testBlockHelperFindsTheMatchingBrace() {
@@ -564,20 +675,73 @@ final class HandsSourceTests: XCTestCase {
         XCTAssertFalse(spaces.contains("caused(pid: pid)"), "never by process alone")
     }
 
-    func testScopeIsCheckedAtResolveAndRightBeforeEveryEngineCall() throws {
+    func testScopeIsCheckedAtResolveAndAtTheMomentEveryEngineCallExecutes() throws {
         let router = try Self.code("Sources/BaneySpaces/Hands/HandsRouter.swift")
         XCTAssertTrue(router.contains("let d = decide(w, agent)"), "resolve checks")
         XCTAssertTrue(router.contains("if case .denied(let e) = decide(now, agent) { return e }"), "gate checks the live window")
-        for (marker, call) in [("private func read(", "HandsEngine.shared.snapshot("), ("private func act(", "HandsEngine.shared.act("),
-                               ("private func get(", "HandsEngine.shared.get(")] {
-            let body = try XCTUnwrap(Self.block(after: marker, in: router), marker)
-            let gate = try XCTUnwrap(body.range(of: "gate(w)"), "\(marker) gates")
-            let engine = try XCTUnwrap(body.range(of: call), marker)
-            XCTAssertTrue(gate.lowerBound < engine.lowerBound, "\(marker): gate first")
+        XCTAssertTrue(router.contains("{ [self] in gate(w) ?? ref.flatMap { refProblem($0) } }"), "the check closure is scope, then the ref's identity")
+        // Every engine call the router makes hands the engine a check; none is made bare.
+        let calls = router.components(separatedBy: "HandsEngine.shared.").dropFirst()
+        XCTAssertGreaterThanOrEqual(calls.count, 6)
+        for c in calls where !c.hasPrefix("permissionProblem") {
+            XCTAssertTrue(c.prefix(260).contains("check: check(w"), "an engine call without a check: \(c.prefix(80))")
         }
-        let act = try XCTUnwrap(Self.block(after: "private func act(", in: router))
-        let lastGate = try XCTUnwrap(act.range(of: "if let e = gate(w) { return .failure(e) }", options: .backwards))
-        XCTAssertTrue(lastGate.lowerBound < act.range(of: "HandsEngine.shared.act(")!.lowerBound, "the last check is immediately before dispatch")
+        // ...and the engine runs it on the queue, right before the work, not when the call was enqueued.
+        let engine = try Self.code("Sources/BaneySpaces/Hands/HandsEngine.swift")
+        let run = try XCTUnwrap(Self.block(after: "private func run(window", in: engine))
+        let check = try XCTUnwrap(run.range(of: "if let e = check()"))
+        let work = try XCTUnwrap(run.range(of: "box.set(work())"))
+        let queued = try XCTUnwrap(run.range(of: "queue(for: w.pid).async"))
+        XCTAssertTrue(queued.lowerBound < check.lowerBound && check.lowerBound < work.lowerBound)
+        XCTAssertTrue(run.contains("if box.isCancelled { return }"), "a call whose caller timed out is dropped unrun")
+        XCTAssertTrue(run.contains("defer { AgentActivity.shared.end(token); done.signal() }"), "the focus guard lasts until the work really ends")
+        for name in ["func snapshot(window", "func get(window", "func act(window"] {
+            let sig = try XCTUnwrap(engine.range(of: name))
+            XCTAssertTrue(engine[sig.upperBound...].prefix(260).contains("check: @escaping Check"), "\(name) requires a check")
+        }
+    }
+
+    func testTheSocketCannotLendAndLendingNeedsARealClick() throws {
+        let server = try Self.code("Sources/BaneySpaces/Deck/Server.swift")
+        let serve = try XCTUnwrap(Self.block(after: "private func serve(_ client: Int32)", in: server))
+        let policy = try XCTUnwrap(serve.range(of: "SocketPolicy.refusal(for: req)"))
+        let dispatch = try XCTUnwrap(serve.range(of: "handleHands(req)"))
+        XCTAssertTrue(policy.lowerBound < dispatch.lowerBound, "screened before anything runs")
+        let deck = try Self.code("Sources/BaneySpaces/Deck/DeckController.swift")
+        XCTAssertFalse(deck.contains("case \"lend\":"), "no lend case on the socket")
+        XCTAssertFalse(deck.contains("case \"return\":"))
+        XCTAssertFalse(deck.contains("userLend") || deck.contains("userReturn"))
+        XCTAssertTrue(deck.contains("case \"lend-ask\":"))
+        let router = try Self.code("Sources/BaneySpaces/Hands/HandsRouter.swift")
+        let ask = try XCTUnwrap(Self.block(after: "func askToLend(", in: router))
+        let sheet = try XCTUnwrap(ask.range(of: "host.askToLend(name, Int(seconds / 60), false)"))
+        XCTAssertTrue(sheet.lowerBound < ask.range(of: "lends.lend(")!.lowerBound, "nothing is lent before the sheet is answered")
+        XCTAssertFalse(router.contains("func userLend"), "no lend entry point that skips the sheet")
+        let consent = try Self.code("Sources/BaneySpaces/LendConsent.swift")
+        XCTAssertTrue(consent.contains("UserEventSource.isGenuine("), "the answer must be a hardware event")
+        XCTAssertTrue(consent.contains("eventSourceUnixProcessID") && consent.contains("eventSourceStateID"))
+        XCTAssertTrue(consent.contains("alert.addButton(withTitle: \"Don't Lend\")"), "the default button refuses")
+        XCTAssertTrue(consent.contains("pause"), "sheets are rate limited")
+        let cli = try Self.code("Sources/baneyspaces-cli/Agent.swift")
+        XCTAssertFalse(cli.contains("isatty"), "no terminal check: a program can fake one")
+        XCTAssertTrue(cli.contains("text: \"lend-ask\""))
+    }
+
+    func testMovingAWindowToTheAgentWorkspaceNeedsAnAgentsOwnProcess() throws {
+        let deck = try Self.code("Sources/BaneySpaces/Deck/DeckController.swift")
+        let move = try XCTUnwrap(Self.between("case \"move\":", "default:\n            return .init(ok: false, error: \"usage", in: deck))
+        XCTAssertTrue(move.contains("SocketPolicy.mayMove(windowPid: h.pidOf(id), startedForAgents: AgentOwned.shared.pids)"))
+        XCTAssertTrue(move.contains("needs_lend"))
+        XCTAssertTrue(move.range(of: "mayMove")!.lowerBound < move.range(of: "h.move(id, n)")!.lowerBound)
+        XCTAssertTrue(deck.contains("AgentOwned.shared.add(app.processIdentifier)"))
+        XCTAssertTrue(deck.contains("AgentOwned.shared.add(pid)"), "agent run terminals count")
+    }
+
+    func testHandsRequestsNeverRunOnTheMainThread() throws {
+        let deck = try Self.code("Sources/BaneySpaces/Deck/DeckController.swift")
+        let handle = try XCTUnwrap(Self.block(after: "func handle(_ r: Wire.Request)", in: deck))
+        let hands = try XCTUnwrap(handle.range(of: "case .hands:"))
+        XCTAssertFalse(handle[hands.upperBound...].prefix(200).contains("hands.handleWire"))
     }
 
     func testARefIsBoundToItsSnapshotsWindowAndProcess() throws {
@@ -599,7 +763,7 @@ final class HandsSourceTests: XCTestCase {
     func testEngineCallsHaveABudgetAndAProcessQueue() throws {
         let engine = try Self.code("Sources/BaneySpaces/Hands/HandsEngine.swift")
         XCTAssertTrue(engine.contains("done.wait(timeout: .now() + budget) == .timedOut"))
-        XCTAssertTrue(engine.contains("queue(for: pid).async"))
+        XCTAssertTrue(engine.contains("queue(for: w.pid).async"))
         XCTAssertFalse(engine.contains("queue.sync"), "no single queue that one slow app can hold")
         let server = try Self.code("Sources/BaneySpaces/Deck/Server.swift")
         XCTAssertTrue(server.contains("req.op == .hands ? handleHands(req)"), "hands requests don't go through the main thread")
@@ -619,10 +783,8 @@ final class HandsSourceTests: XCTestCase {
         XCTAssertFalse(dispatch.contains("\"lend\""), "no agent verb lends")
         XCTAssertTrue(dispatch.contains("HandsTools.userOnly.contains(req.verb)"))
         let cli = try Self.code("Sources/baneyspaces-cli/Agent.swift")
-        XCTAssertTrue(cli.contains("isatty(STDIN_FILENO) == 1, isatty(STDOUT_FILENO) == 1"))
-        XCTAssertTrue(cli.contains("caseInsensitiveCompare(app) == .orderedSame"), "a lend asks him to type the app's name")
-        let mcp = try Self.code("Sources/baneyspaces-cli/Agent.swift")
-        XCTAssertFalse(mcp.contains("\"return\", args"), "the MCP server lends and returns nothing")
+        let mcpCommand = try XCTUnwrap(Self.block(after: "enum MCPCommand", in: cli))
+        XCTAssertFalse(mcpCommand.contains("op: .agent"), "the MCP server sends no deck op: it can't lend or return")
     }
 
     func testKeepUsableNoLongerStartsWithCua() throws {
@@ -653,15 +815,22 @@ final class AgentOpenLaunchTests: XCTestCase {
         let launch = try XCTUnwrap(HandsSourceTests.block(after: "func claimLaunch(", in: src))
         // Old behavior: only a New Window press 1.5 s later, so the app's own launch window stayed put.
         XCTAssertTrue(launch.contains("h.claim(app.processIdentifier, n, true, nil)"), "every window the launch opens is claimed")
-        XCTAssertTrue(launch.contains("AgentActivity.shared.markLaunch(pid: app.processIdentifier"))
+        XCTAssertTrue(launch.contains("AgentActivity.shared.markLaunch(pid: app.processIdentifier, for: 8)"))
+        XCTAssertTrue(launch.contains("guard !before.contains(app.processIdentifier) else { return }"), "a launch that ran inside Donovan's copy is left alone")
         let claim = try XCTUnwrap(launch.range(of: "h.claim("))
         let press = try XCTUnwrap(launch.range(of: "newWindow(app)"))
         XCTAssertTrue(claim.lowerBound < press.lowerBound, "claimed before anything else happens")
         // The launch can be seen before the completion handler runs (an app that activates itself first).
         XCTAssertTrue(src.contains("NSWorkspace.didLaunchApplicationNotification"))
         XCTAssertTrue(src.contains("AgentActivity.shared.markLaunch(bundle: bundle"), "marked by bundle before there is a pid")
-        let handler = try XCTUnwrap(HandsSourceTests.block(after: "NSWorkspace.shared.openApplication(at: url, configuration: cfg)", in: src))
-        XCTAssertTrue(handler.contains("claimLaunch(app)"))
+        // Both ways of launching (with files, and without) mark the bundle before launching and claim on first sight.
+        let open = try XCTUnwrap(HandsSourceTests.between("case \"open\":", "case \"lend-ask\":", in: src))
+        XCTAssertEqual(open.components(separatedBy: "claimLaunch(app)").count - 1, 3, "the notification, openApplication and open(files)")
+        XCTAssertTrue(open.range(of: "AgentActivity.shared.markLaunch(bundle: bundle, for: 10)")!.lowerBound < open.range(of: "NSWorkspace.shared.openApplication")!.lowerBound)
+        // Never Donovan's documents: a new instance told not to restore, not a window made inside his copy.
+        XCTAssertTrue(open.contains("cfg.createsNewApplicationInstance = true"))
+        XCTAssertTrue(open.contains("cfg.arguments = [\"-ApplePersistenceIgnoreState\", \"YES\"]"))
+        XCTAssertTrue(open.contains("AgentOpenGate.check("), "the gate is in the op itself, so the socket can't skip it")
     }
 
     func testNewProcessClaimsTakeEveryWindowOfTheLaunch() throws {
@@ -678,6 +847,7 @@ final class AgentOpenLaunchTests: XCTestCase {
         let text = try String(contentsOf: HandsSourceTests.root.appendingPathComponent("scripts/agent-hands-probe.swift"), encoding: .utf8)
         XCTAssertTrue(text.contains("stray window"))
         XCTAssertTrue(text.contains("mutating actions succeeded"), "too few successful edits is a failure, reads don't stand in")
+        XCTAssertTrue(text.contains("restored"), "the probe fails on a window of the opened apps that isn't the handoff document")
         XCTAssertFalse(text.contains("\"Notes\""), "never Notes or any once-per-user app")
     }
 }

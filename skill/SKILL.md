@@ -1,6 +1,6 @@
 ---
 name: baneyspaces
-description: See and drive what's open on Donovan's Mac through BaneySpaces - the Deck (every terminal split, browser tab and agent app in one list, with the workspace each is on) and the hands (`baneyspaces agent snapshot|click|type|…`, which read and act on desktop apps on the agent workspace without touching his screen). Use to find which terminal or tab holds something, open a URL, type into another Ghostty terminal, flag a terminal as needing him, or to operate any desktop app (TextEdit, Finder, Notes, a browser) the way a person would. Faster and safer than screenshots or GUI clicks.
+description: See and drive what's open on Donovan's Mac through BaneySpaces - the Deck (every terminal split, browser tab and agent app in one list, with the workspace each is on) and the hands (`baneyspaces agent snapshot|click|type|…`, which read and act on desktop apps on the agent workspace without touching his screen). Use to find which terminal or tab holds something, open a URL, type into another Ghostty terminal, flag a terminal as needing him, or to operate a desktop app (TextEdit, Calculator, Preview, Finder on a handoff folder) the way a person would. Faster and safer than screenshots or GUI clicks.
 ---
 
 # BaneySpaces Deck
@@ -72,13 +72,14 @@ Scope rules, enforced by the app, not by your good behavior:
 - You may act on a window only if it is on the agent workspace or its app is lent. Anything else returns
   `outside_agent_workspace`; reads (snapshot, get, find, shot) are refused the same way.
 - You cannot lend. To use an app Donovan already has open, tell him (a `needs_lend` or
-  `outside_agent_workspace` error says so): he lends it from the BaneySpaces menu or with
-  `baneyspaces agent lend <app>` in his own terminal. A lend names that process and its windows as they were then,
-  answers `in_use` while he is using the app, and ends after 30 minutes or when your session ends. Prefer
-  `agent open`, which needs nobody's permission.
+  `outside_agent_workspace` error says so). Running `baneyspaces agent lend <app>` only shows him a sheet; nothing lends
+  until he clicks Lend, and one asked for by an agent he didn't expect is a nuisance, so ask in words first. A lend names that
+  process and its windows as they were then, answers `in_use` while he is using the app, and ends after 30 minutes.
+  Prefer `agent open`, which needs nobody's permission. `agent move` only moves windows of apps started for an agent.
 - `agent open` is how you start work: the app and its windows land on the agent workspace and he stays
   where he is. Put files you want it to open in `~/Library/Application Support/BaneySpaces/hands/handoff/`; no other path is accepted,
-  and URLs wait for the agent browser profiles. Safari, Notes, Mail, Messages, Calendar and Photos answer `needs_sandbox`.
+  and URLs wait for the agent browser profiles. Only TextEdit, Calculator, Preview and Finder (on a handoff folder) start; every other
+  app, every browser and password manager included, answers `needs_sandbox`. Each starts as a separate copy that restores nothing.
   Never ask him to switch workspaces or look at the screen.
 - `press` always answers `not_supported` for now: keys reach only the app in front, and BaneySpaces never raises one for you.
   Use `type`, `set-value` or `click`.

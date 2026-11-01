@@ -565,14 +565,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         h.unclaim = { [weak self] pid in self?.spaces.cancelClaim(of: pid) }
         h.move = { [weak self] id, n in self?.run { $0.move(id, to: n) } }
         h.windows = { [weak self] in self?.spaces.agentWindows() ?? [] }
+        h.pidOf = { [weak self] id in self?.spaces.handsLive(id)?.pid }
         deck.agentHost = h
         // The agent hands: what the scope guard needs from the workspaces, and what to do when a lend changes.
+        // The engine's state folder is set here, once, on the main thread, before any engine queue exists.
+        HandsEngine.prepareEnvironment()
         deck.hands.host = HandsHost(
             agentWorkspace: { Spaces.agentWorkspace },
             windows: { [weak self] in self?.spaces.handsWindows(fresh: false) ?? [] },
             freshWindows: { [weak self] in self?.spaces.handsWindows(fresh: true) ?? [] },
             live: { [weak self] in self?.spaces.handsLive($0) },
             titles: { [weak self] in self?.spaces.handsTitles($0) ?? [:] },
+            document: { [weak self] in self?.spaces.handsDocument($0) },
+            askToLend: { app, minutes, takeBack in LendConsent.ask(app: app, minutes: minutes, takeBack: takeBack) },
             open: { [weak self] args in self?.deck.agent("open", args) ?? Wire.Reply(ok: false, error: "not ready") })
         HandsLends.shared.onChange = { [weak self] in
             DispatchQueue.main.async {
@@ -647,42 +652,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 it.isEnabled = false
             } else {
                 it.attributedTitle = NSAttributedString(string: it.title, attributes: [.font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)])
-            menu.addItem(it)
-        }
-        menu.addItem(.separator())
-        let find = item("Find or Install an App…", #selector(showLauncher))
-        if Launcher.onCmdSpace { find.keyEquivalent = " "; find.keyEquivalentModifierMask = [.command] }
-        menu.addItem(find)
-        menu.addItem(item("Show All Workspaces", #selector(showViewer)))
-        if deck.started { deck.menuItems().forEach(menu.addItem) }
-        if Spaces.agentWorkspace != nil { menu.addItem(lendItem()) }
-        menu.addItem(.separator())
-        menu.addItem(optionsItem())
-        menu.addItem(item("Settings…", #selector(showSetup), key: ","))
-        menu.addItem(.separator())
-        // A waiting update gets its own line; the rest of updates live in the submenu.
-        if let update = updateItem() { menu.addItem(update) }
-        menu.addItem(channelItem())
-        menu.addItem(item("About BaneySpaces", #selector(about)))
-        menu.addItem(item("Quit BaneySpaces", #selector(quit), key: "q"))
-    }
-
-    /// The switches and the rarely needed tools, one level down so the menu stays short.
-    private func optionsItem() -> NSMenuItem {
-        let parent = NSMenuItem(title: "Options", action: nil, keyEquivalent: "")
-        let sub = NSMenu()
-        let dockItem = item("Workspace Dock", #selector(toggleWorkspaceDock))
-        dockItem.state = WorkspaceDock.enabled ? .on : .off
-        dockItem.toolTip = "A dock of your workspaces in place of the macOS Dock. Rest the pointer on the \(WorkspaceDock.edge.title.lowercased()) edge of the screen to show it."
-        sub.addItem(dockItem)
-        if WorkspaceDock.enabled {
-            let pos = NSMenuItem(title: "Dock Position", action: nil, keyEquivalent: "")
-            let edges = NSMenu()
-            for e in DockEdge.allCases {
-                let it = item(e.title, #selector(pickDockEdge(_:)))
-                it.representedObject = e.rawValue
-                it.state = WorkspaceDock.edge == e ? .on : .off
-                edges.addItem(it)
             }
             return it
         case .separator:
@@ -709,56 +678,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Apps whose windows are parked instead of hidden, so automation can still use them: Settings >
     /// Automation. Apps with windows, plus every app already on the list, so any of them can be unchecked.
     private func parkedRows() -> [SetupModel.ParkedRow] {
-    /// "Lend to Agents": your click here is the consent. A lent app shows a check and its time left; picking
-    /// it again takes it back. Only apps with a window BaneySpaces tracks that you aren't using right now can be lent.
-    private func lendItem() -> NSMenuItem {
-        let parent = NSMenuItem(title: "Lend to Agents", action: nil, keyEquivalent: "")
-        let sub = NSMenu(title: "Lend to Agents")
-        let lent = HandsLends.shared.current().active(now: Date())
-        if !lent.isEmpty { parent.title = "Lend to Agents (\(lent.count) lent)" }
-        let note = NSMenuItem(title: "Agents may use a lent app's windows for 30 minutes, until you take it back or their session ends.", action: nil, keyEquivalent: "")
-        note.isEnabled = false
-        sub.addItem(note)
-        sub.addItem(.separator())
-        let apps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular && $0.processIdentifier != getpid() }
-            .sorted { ($0.localizedName ?? "") < ($1.localizedName ?? "") }
-        for app in apps {
-            let it = item(app.localizedName ?? "App", #selector(toggleLend(_:)))
-            it.tag = Int(app.processIdentifier)
-            if let l = lent.first(where: { $0.pid == app.processIdentifier }) {
-                it.state = .on
-                it.title = "\(app.localizedName ?? "App") — \(max(1, Int(l.until.timeIntervalSinceNow / 60))) min left"
-            }
-            it.image = app.icon.map { icon in let c = icon.copy() as! NSImage; c.size = NSSize(width: 16, height: 16); return c }
-            sub.addItem(it)
-        }
-        parent.submenu = sub
-        return parent
-    }
-
-    @objc private func toggleLend(_ sender: NSMenuItem) {
-        let pid = pid_t(sender.tag)
-        if HandsLends.shared.isLent(pid: pid) {
-            if let name = NSRunningApplication(processIdentifier: pid)?.localizedName { HandsLends.shared.giveBack(name) }
-            return
-        }
-        let env = deck.hands.userLend(pid: pid, duration: nil, session: "")
-        if let e = env.error {
-            let alert = NSAlert()
-            alert.messageText = e.code == .inUse ? "You're using that app" : "Couldn't lend it"
-            alert.informativeText = e.message + ". " + e.suggestion
-            alert.runModal()
-        }
-    }
-
-    /// Apps whose windows are parked instead of hidden, so automation can still use them.
-    private func parkedAppsItem() -> NSMenuItem {
-        let parent = NSMenuItem(title: "Keep Usable by Automation", action: nil, keyEquivalent: "")
-        let sub = NSMenu()
-        let note = NSMenuItem(title: "Checked apps aren't hidden on other workspaces, so automation tools can still click and type in them.", action: nil, keyEquivalent: "")
-        note.isEnabled = false
-        sub.addItem(note)
-        sub.addItem(.separator())
         let on = ParkedApps.bundleIDs
         let slow = SlowMovers.bundleIDs
         // The window list as it is now, as the menu did: an app's late first window shows.

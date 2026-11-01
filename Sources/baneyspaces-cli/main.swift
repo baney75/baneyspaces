@@ -24,10 +24,10 @@ usage: \(me) <command>
                               read and act on apps on the agent workspace (or lent ones) without touching
                               your screen; each prints one JSON envelope (agent <command> with no
                               arguments shows its usage). `agent open` prints one too.
-  agent lend <app> [--for 30m] | return [app]
-                              yours to run in a terminal (asks you to confirm): let agents use an app you have open
+  agent lend <app|pid> [--for 30m]   asks you, in a sheet in BaneySpaces, whether agents may use an app you have open
+                              (only a real click on Lend lends it; running this lends nothing by itself)
   mcp                         the same commands as a stdio MCP server (claude mcp add baneyspaces -- baneyspaces mcp)
-  agent move <id | words>     send a row's window there
+  agent move <id | words>     send a window there (only windows of apps started for an agent)
   phone ls|ui|shot|tap|swipe|type|key|shell|mirror   phones for agents (phone help)
   remote on|off|status|token  let your other machines (tailnet only) send agent work here
   --on HOST <command>         run ls or agent status|open|run on another machine

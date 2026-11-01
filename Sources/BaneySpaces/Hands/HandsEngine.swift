@@ -15,7 +15,9 @@ import Foundation
 ///    window, posts a mouse event, or sends a key to no particular app.
 ///  - No activate, SetFrontProcess or global CGEventPost, in this file or its neighbors.
 /// Calls for one process run one at a time on that process's queue and have a time budget: a hung app
-/// answers `timeout` and blocks nobody else.
+/// answers `timeout` and blocks nobody else. Every call carries a scope check that runs on the queue at the
+/// moment the call executes, not when it was queued; a call whose caller already timed out is dropped
+/// unrun; and the focus guard is held until the call has really finished, not until its caller gave up.
 final class HandsEngine {
     static let shared = HandsEngine()
     private let initLock = NSLock()
@@ -48,11 +50,17 @@ final class HandsEngine {
         case failed(HandsError)
     }
 
+    /// The scope check a call runs just before it touches the engine: nil to go ahead.
+    typealias Check = () -> HandsError?
+
     private final class Box: @unchecked Sendable {
         private let lock = NSLock()
         private var reply: Reply?
+        private var cancelled = false
         func set(_ r: Reply) { lock.lock(); reply = r; lock.unlock() }
         func get() -> Reply? { lock.lock(); defer { lock.unlock() }; return reply }
+        func cancel() { lock.lock(); cancelled = true; lock.unlock() }
+        var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
     }
 
     private func queue(for pid: Int32) -> DispatchQueue {
@@ -63,13 +71,21 @@ final class HandsEngine {
         return q
     }
 
-    /// Runs `work` on the process's own queue, waiting at most `budget`. A call that outlives its budget
-    /// finishes in the background; the caller has already been told `timeout`.
-    private func run(pid: Int32, budget: TimeInterval, mutating: Bool, _ work: @escaping () -> Reply) -> Reply {
+    /// Runs `work` on the window's process queue, waiting at most `budget`. The focus guard is held from here
+    /// until the work has finished or been dropped; `check` runs on the queue right before `work`. A call
+    /// that outlives its budget is told `timeout`, and if it hasn't started it never will.
+    private func run(window w: HandsWindow, budget: TimeInterval, mutating: Bool, check: @escaping Check, _ work: @escaping () -> Reply) -> Reply {
         let box = Box()
         let done = DispatchSemaphore(value: 0)
-        queue(for: pid).async { box.set(work()); done.signal() }
+        let token = AgentActivity.shared.begin(pid: w.pid, window: w.id)
+        queue(for: w.pid).async {
+            defer { AgentActivity.shared.end(token); done.signal() }
+            if box.isCancelled { return }
+            if let e = check() { return box.set(.failed(e)) }
+            box.set(work())
+        }
         if done.wait(timeout: .now() + budget) == .timedOut {
+            box.cancel()
             return .failed(HandsError(.timeout, "the app didn't answer within \(Int(budget)) s",
                                       suggestion: mutating ? "It may still land: read the element back with `baneyspaces agent get` before trying again."
                                                            : "The app is busy or showing a dialog. Try again in a moment.",
@@ -78,12 +94,17 @@ final class HandsEngine {
         return box.get() ?? .failed(HandsError(.engineError, "the engine gave no answer", suggestion: "Try again.", retry: .never))
     }
 
+    /// Sets the engine's state folder. Called once on the main thread at launch, before any engine queue exists:
+    /// setenv is not safe against another thread reading the environment.
+    static func prepareEnvironment() {
+        try? FileManager.default.createDirectory(at: home, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        setenv("AGENT_DESKTOP_HOME", home.path, 1)
+    }
+
     private func ready() -> HandsError? {
         initLock.lock(); defer { initLock.unlock() }
         if adapter != nil, evidenceAdapter != nil { return nil }
         if let failure { return failure }
-        try? FileManager.default.createDirectory(at: Self.home, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        setenv("AGENT_DESKTOP_HOME", Self.home.path, 1)
         guard ad_init(UInt32(AD_ABI_VERSION_MAJOR)) == Self.resultOK else {
             failure = HandsError(.engineError, "the hands engine library doesn't match this build", suggestion: "Reinstall BaneySpaces (make install).", retry: .never)
             return failure
@@ -153,8 +174,9 @@ final class HandsEngine {
 
     /// One window's tree with refs. `windowID` is the engine's id for it ("w-4211"). `evidence` reads use
     /// their own store, so they never push the agent's refs out.
-    func snapshot(pid: Int32, app: String?, windowID: UInt32, interactive: Bool, compact: Bool, depth: UInt8, evidence: Bool = false) -> Reply {
-        run(pid: pid, budget: Budget.snapshot, mutating: false) { [self] in
+    func snapshot(window w: HandsWindow, interactive: Bool, compact: Bool, depth: UInt8, evidence: Bool = false, check: @escaping Check) -> Reply {
+        let app: String? = w.app, windowID = w.id
+        return run(window: w, budget: Budget.snapshot, mutating: false, check: check) { [self] in
             if let e = ready() { return .failed(e) }
             guard let adapter = evidence ? evidenceAdapter : adapter else { return .failed(HandsError(.engineError, "the engine isn't ready", suggestion: "Check `baneyspaces doctor`.", retry: .never)) }
             var out: UnsafeMutablePointer<CChar>?
@@ -174,8 +196,8 @@ final class HandsEngine {
     }
 
     /// One property of a ref, read from the live element.
-    func get(pid: Int32, ref: String, property: String) -> Reply {
-        run(pid: pid, budget: Budget.get, mutating: false) { [self] in
+    func get(window w: HandsWindow, ref: String, property: String, check: @escaping Check) -> Reply {
+        run(window: w, budget: Budget.get, mutating: false, check: check) { [self] in
             if let e = ready() { return .failed(e) }
             guard let adapter else { return .failed(HandsError(.engineError, "the engine isn't ready", suggestion: "Check `baneyspaces doctor`.", retry: .never)) }
             var out: UnsafeMutablePointer<CChar>?
@@ -185,8 +207,8 @@ final class HandsEngine {
     }
 
     /// An action on a ref. Always the strict Headless policy; the auto-wait is the engine's default.
-    func act(pid: Int32, ref: String, kind: Kind, text: String? = nil, direction: Int32 = 1, amount: UInt32 = 3) -> Reply {
-        run(pid: pid, budget: Budget.act, mutating: true) { [self] in
+    func act(window w: HandsWindow, ref: String, kind: Kind, text: String? = nil, direction: Int32 = 1, amount: UInt32 = 3, check: @escaping Check) -> Reply {
+        run(window: w, budget: Budget.act, mutating: true, check: check) { [self] in
             if let e = ready() { return .failed(e) }
             guard let adapter else { return .failed(HandsError(.engineError, "the engine isn't ready", suggestion: "Check `baneyspaces doctor`.", retry: .never)) }
             var out: UnsafeMutablePointer<CChar>?

@@ -59,7 +59,12 @@ final class Server {
         guard let line = Wire.readLine(client) else { return }
         let reply: Wire.Reply
         if let req = try? JSONDecoder().decode(Wire.Request.self, from: line) {
-            reply = req.op == .hands ? handleHands(req) : DispatchQueue.main.sync { handle(req) }
+            // The socket is open to every process of this user: what only Donovan may decide is refused here.
+            if let why = SocketPolicy.refusal(for: req) {
+                reply = Wire.Reply(ok: false, error: why)
+            } else {
+                reply = req.op == .hands ? handleHands(req) : DispatchQueue.main.sync { handle(req) }
+            }
         } else {
             reply = Wire.Reply(ok: false, error: "bad request")
         }

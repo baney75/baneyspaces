@@ -402,12 +402,17 @@ baneyspaces agent windows                       # the windows an agent may use r
 claude mcp add baneyspaces -- baneyspaces mcp   # the same tools over MCP, for Claude Code and Codex
 ```
 
-You, not an agent, lend an app from your workspaces: pick it under **Lend to Agents** in the menu bar menu, or type
-`baneyspaces agent lend Excel --for 20m` in a terminal (it asks you to type the app's name; `agent return Excel` takes it back).
-A lend names that process and its windows as they are then, is refused while you use the app (`in_use`: in front, or used in the
-last 30 seconds), ends when you return it, when the agent's session ends, or after 30 minutes (up to 8 hours), and is listed in
-`state.json`. Agents can't lend: the MCP server has no such tool and an agent's `lend` answers `needs_lend`. Apps that hold your
-own data (Safari, Notes, Mail, Messages, Calendar, Photos) answer `needs_sandbox` to `agent open`; the sandbox arrives in a later phase.
+You, not an agent, lend an app from your workspaces. `baneyspaces agent lend Excel --for 20m` shows a sheet in BaneySpaces
+(Don't Lend is the default button) and only a real click on **Lend** lends it: a click posted by a program, or an
+accessibility press, is refused, and running the command (or an agent running it) lends nothing by itself. Nothing sent
+to the deck socket lends. Run the command again for an app that is lent and the sheet offers **Take Back**. A lend names
+that process and its windows as they are then, is refused while you use the app (`in_use`: in front, or used in the last 30
+seconds), ends after 30 minutes (up to 8 hours) or, if you gave `--session`, when that session ends, and is listed in
+`state.json` and `baneyspaces doctor`. Agents can't lend: the MCP server has no such tool and an agent's `lend` answers
+`needs_lend`. `agent move` moves only windows of apps BaneySpaces started for an agent; send your own window with its
+workspace key. `agent open` starts only apps verified to run a separate copy that restores nothing of yours (TextEdit,
+Calculator, Preview, and Finder on a folder in the handoff folder); every other app, browsers and password managers
+included, answers `needs_sandbox`.
 
 Every command prints one JSON envelope: `{"ok":true,"data":{…}}`, or `{"ok":false,"error":{"code","message",
 "retry","suggestion"}}` with `retry` one of `safe`, `after_snapshot`, `never`. Four rules, all enforced by the app:

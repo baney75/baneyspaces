@@ -14,6 +14,18 @@ struct AgentHost {
     var unclaim: (pid_t) -> Void = { _ in }
     var move: (UInt32, Int) -> Void = { _, _ in }
     var windows: () -> [(id: WindowID, app: String, title: String)] = { [] }
+    /// The process a window belongs to.
+    var pidOf: (UInt32) -> pid_t? = { _ in nil }
+}
+
+/// Processes BaneySpaces started for an agent (`agent open` of an app, `agent run`): the only ones an agent
+/// caller may move windows of to the agent workspace.
+final class AgentOwned {
+    static let shared = AgentOwned()
+    private let lock = NSLock()
+    private var set: Set<Int32> = []
+    func add(_ pid: Int32) { lock.lock(); set.insert(pid); lock.unlock() }
+    var pids: Set<Int32> { lock.lock(); defer { lock.unlock() }; return set.filter { kill($0, 0) == 0 } }
 }
 
 /// The Deck: the engine behind every terminal split, browser tab and coding agent BaneySpaces
@@ -348,7 +360,8 @@ final class DeckController {
         case .list:
             return .init(ok: true, items: engine.items)
         case .hands:
-            return hands.handleWire(r)
+            // Engine calls wait on semaphores: never on the main thread. The socket sends them to handleHands.
+            return .init(ok: false, error: "agent commands don't run here")
         case .event:
             guard let e = r.event else { return .init(ok: false, error: "no event") }
             engine.apply(e)
@@ -427,26 +440,32 @@ final class DeckController {
             guard let n = h.workspace() else { return .init(ok: false, error: "the agent workspace is off: baneyspaces agent on") }
             guard let name = args.first, let url = Self.appURL(name) else { return .init(ok: false, error: "no app called \(args.first ?? "")") }
             let appName = url.deletingPathExtension().lastPathComponent
-            let bundle = Bundle(url: url)?.bundleIdentifier
-            // Files, or http(s) pages for a browser.
-            let files = args.dropFirst().map { a -> URL in
-                if let u = URL(string: a), let s = u.scheme?.lowercased(), s == "http" || s == "https" { return u }
-                return URL(fileURLWithPath: (a as NSString).expandingTildeInPath)
+            let bundle = Bundle(url: url)?.bundleIdentifier ?? ""
+            // The gate every caller of this op goes through, the socket included: only apps verified to start a
+            // separate instance, only files from the handoff folder, no URLs.
+            let files: [URL]
+            switch AgentOpenGate.check(app: appName, bundle: bundle, targets: Array(args.dropFirst()), handoff: HandsRouter.handoffFolder) {
+            case .failure(let e): return .init(ok: false, error: e.message, info: ["code": e.code.rawValue, "suggestion": e.suggestion])
+            case .success(let paths): files = paths.map { URL(fileURLWithPath: $0) }
             }
-            let running = NSWorkspace.shared.runningApplications.first { $0.bundleIdentifier == bundle && bundle != nil }
+            let before = Set(NSWorkspace.shared.runningApplications.filter { $0.bundleIdentifier == bundle }.map(\.processIdentifier))
             let cfg = NSWorkspace.OpenConfiguration()
             cfg.activates = false
             cfg.addsToRecentItems = false
-            if let file = files.first {
-                // The file's window, recognized by its name, goes there; nothing else of the app.
-                let title = file.isFileURL ? file.lastPathComponent : nil
-                if let running { h.claim(running.processIdentifier, n, false, title) }
-                NSWorkspace.shared.open(files, withApplicationAt: url, configuration: cfg) { app, _ in
-                    guard let app, running == nil else { return }
-                    DispatchQueue.main.async { h.claim(app.processIdentifier, n, false, title) }
-                }
+            guard AgentAppPolicy.needsSeparateInstance(bundle: bundle) else {
+                // Finder cannot run twice: it shows the handoff folder in a window the agent claims by its name.
+                if let running = before.first { h.claim(running, n, false, files.first?.lastPathComponent) }
+                NSWorkspace.shared.open(files, withApplicationAt: url, configuration: cfg) { _, _ in }
                 return .init(ok: true, info: ["workspace": "\(n)", "app": appName, "files": "\(files.count)"])
             }
+            // A new instance every time, told not to restore what the app had open (it would be Donovan's
+            // documents), so every window it makes is the agent's. The bundle is marked now, before there is a
+            // pid, and the launch is claimed when it is first seen (the notification can come before the
+            // completion handler, and a launch may activate the app before either).
+            cfg.createsNewApplicationInstance = true
+            cfg.arguments = ["-ApplePersistenceIgnoreState", "YES"]
+            AgentActivity.shared.markLaunch(bundle: bundle, for: 10)
+            var claimed = false
             /// A new window from behind through the app's own New Window command, claimed first.
             func newWindow(_ app: NSRunningApplication) -> Bool {
                 h.claim(app.processIdentifier, n, false, nil)
@@ -457,73 +476,71 @@ final class DeckController {
                 }
                 return true
             }
-            if let running {
-                guard newWindow(running) else {
-                    return .init(ok: false, error: "\(running.localizedName ?? name) has no New Window command it would run from behind")
-                }
-                return .init(ok: true, info: ["workspace": "\(n)", "app": appName])
-            }
-            // Not running: the agent starts it, so everything it opens at launch (its first untitled
-            // window) is the agent's and goes to the agent workspace, not onto your screen. The claim
-            // is made when the launch is first seen (the notification can come before the completion
-            // handler, and a launch may activate the app before either), and the bundle is marked now,
-            // before there is a pid. An app that opens no window of its own gets one from its New Window command.
-            if let bundle { AgentActivity.shared.markLaunch(bundle: bundle, for: 10) }
-            var claimed = false
             func claimLaunch(_ app: NSRunningApplication) {
                 guard !claimed else { return }
                 claimed = true
-                AgentActivity.shared.markLaunch(pid: app.processIdentifier, for: 6)
+                // Not a new process (the app ran this launch inside Donovan's): leave it entirely alone.
+                guard !before.contains(app.processIdentifier) else { return }
+                AgentOwned.shared.add(app.processIdentifier)
+                AgentActivity.shared.markLaunch(pid: app.processIdentifier, for: 8)
                 h.claim(app.processIdentifier, n, true, nil)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                    if Windows.standardIDs(of: app.processIdentifier).isEmpty { _ = newWindow(app) }
+                if files.isEmpty {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        if Windows.standardIDs(of: app.processIdentifier).isEmpty { _ = newWindow(app) }
+                    }
                 }
             }
             var observer: NSObjectProtocol?
             observer = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main) { note in
-                guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication, app.bundleIdentifier == bundle, bundle != nil else { return }
+                guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication, app.bundleIdentifier == bundle else { return }
                 claimLaunch(app)
                 if let o = observer { NSWorkspace.shared.notificationCenter.removeObserver(o); observer = nil }
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
                 if let o = observer { NSWorkspace.shared.notificationCenter.removeObserver(o); observer = nil }
             }
-            NSWorkspace.shared.openApplication(at: url, configuration: cfg) { app, _ in
-                guard let app else { return }
-                DispatchQueue.main.async { claimLaunch(app) }
+            if files.isEmpty {
+                NSWorkspace.shared.openApplication(at: url, configuration: cfg) { app, _ in
+                    guard let app else { return }
+                    DispatchQueue.main.async { claimLaunch(app) }
+                }
+            } else {
+                NSWorkspace.shared.open(files, withApplicationAt: url, configuration: cfg) { app, _ in
+                    guard let app else { return }
+                    DispatchQueue.main.async { claimLaunch(app) }
+                }
             }
-            return .init(ok: true, info: ["workspace": "\(n)", "app": appName, "note": "starting; its window opens there in a moment"])
-        case "lend":
-            // Donovan's: the CLI asks him to confirm in a terminal; the menu is his click. args: app or pid, time, session.
+            return .init(ok: true, info: ["workspace": "\(n)", "app": appName, "note": "starting a separate copy; its window opens there in a moment"])
+        case "lend-ask":
+            // Not a grant: it shows Donovan a sheet in BaneySpaces and only a real click on it lends (see LendConsent).
             let target = args.first ?? ""
-            let env = Int32(target).map { hands.userLend(pid: $0, duration: args.dropFirst().first, session: args.dropFirst(2).first ?? "") }
-                ?? hands.userLend(app: target, duration: args.dropFirst().first, session: args.dropFirst(2).first ?? "")
-            return .init(ok: true, info: ["envelope": env.line])
-        case "return":
-            return .init(ok: true, info: ["envelope": hands.userReturn(app: args.first).line])
+            return .init(ok: true, info: ["envelope": hands.askToLend(target: target, duration: args.dropFirst().first, session: args.dropFirst(2).first ?? "").line])
         case "run":
             guard let n = h.workspace() else { return .init(ok: false, error: "the agent workspace is off: baneyspaces agent on") }
             let cmd = args.drop { $0 != "--" }.dropFirst().joined(separator: " ")
             guard !cmd.isEmpty else { return .init(ok: false, error: "usage: baneyspaces agent run [--dir DIR] -- <command>") }
             let dir = args.firstIndex(of: "--dir").flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil }
-            guard engine.newAgentTerminal(in: dir, command: cmd, opened: { pid, name in h.claim(pid, n, false, name) }) else {
+            guard engine.newAgentTerminal(in: dir, command: cmd, opened: { pid, name in AgentOwned.shared.add(pid); h.claim(pid, n, false, name) }) else {
                 return .init(ok: false, error: "couldn't start a terminal for it")
             }
             return .init(ok: true, info: ["workspace": "\(n)", "command": cmd])
         case "move":
             guard let n = h.workspace() else { return .init(ok: false, error: "the agent workspace is off: baneyspaces agent on") }
             // A window number (what `agent windows` and `agent status` show), or a row by ID or words.
-            if args.count == 1, let id = UInt32(args[0]) {
-                h.move(id, n)
-                return .init(ok: true, info: ["workspace": "\(n)", "moved": "window \(id)"])
+            var id: UInt32?
+            if args.count == 1, let w = UInt32(args[0]) { id = w }
+            else if let q = args.first, let item = engine.find(args.joined(separator: " ")) ?? engine.find(q), item.windowNumber != 0 { id = item.windowNumber }
+            guard let id else { return .init(ok: false, error: "nothing matches") }
+            // Anyone can reach this op through the socket, so it moves only windows of processes started for an agent.
+            // Sending one of your own windows here is yours to do, with the keys or the dock.
+            guard SocketPolicy.mayMove(windowPid: h.pidOf(id), startedForAgents: AgentOwned.shared.pids) else {
+                return .init(ok: false, error: "needs_lend: window \(id) isn't an agent's; only windows of apps BaneySpaces started for an agent move here",
+                             info: ["code": "needs_lend", "suggestion": "Move your own window with its workspace key (⌘⇧\(n)), or lend the app with `baneyspaces agent lend <app>`."])
             }
-            guard let q = args.first, let item = engine.find(args.joined(separator: " ")) ?? engine.find(q), item.windowNumber != 0 else {
-                return .init(ok: false, error: "nothing matches")
-            }
-            h.move(item.windowNumber, n)
-            return .init(ok: true, info: ["workspace": "\(n)", "moved": item.label])
+            h.move(id, n)
+            return .init(ok: true, info: ["workspace": "\(n)", "moved": "window \(id)"])
         default:
-            return .init(ok: false, error: "usage: baneyspaces agent status|on [N]|off|open <app> [file…]|lend <app>|return [app]|run [--dir D] -- <cmd>|move <row>")
+            return .init(ok: false, error: "usage: baneyspaces agent status|on [N]|off|open <app> [file…]|lend <app>|run [--dir D] -- <cmd>|move <row>")
         }
     }
 
