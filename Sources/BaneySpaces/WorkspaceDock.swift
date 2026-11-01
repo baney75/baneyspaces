@@ -163,7 +163,8 @@ final class WorkspaceDock {
         // Reloads wait out a drag; one that moved nothing catches up here.
         model.onDragDone = { [weak self] in self?.reload() }
         // After SwiftUI has laid out the strip, so the new size is the real one.
-        model.onLayoutChange = { [weak self] in DispatchQueue.main.async { self?.resize() } }
+        model.onLayoutChange = { [weak self] in DispatchQueue.main.async { self?.resize(); self?.syncSide() } }
+        model.panelFrame = { [weak self] in self?.panel?.frame }
         // A new dock size changes what SwiftUI measures; the panel (and the keep-zone, which is
         // taken from its frame) follows.
         appearanceObserver = NotificationCenter.default.addObserver(forName: Appearance.didChange, object: nil, queue: .main) { [weak self] note in
@@ -247,6 +248,7 @@ final class WorkspaceDock {
             model.cancelDrag()
         }
         springLoad(carrying)
+        checkSide(now: ProcessInfo.processInfo.systemUptime)
         guard !pinned else { return }
         // Once a second, so a menu window's age is known before the pointer reaches the edge.
         let uptime = ProcessInfo.processInfo.systemUptime
@@ -281,9 +283,11 @@ final class WorkspaceDock {
                 let screenFrame = (shownOn ?? p.screen)?.frame ?? p.frame
                 let bar = model.frames[DockView.barKey].map { DockEdge.screenRect($0, panel: p.frame, origin: model.origin) }
                 if let bar { barLength = edge.isVertical ? bar.height : bar.width }
-                let sideOpen = model.stripApp != nil || model.moreApps != nil
-                input.inKeepZone = edge.keepZone(bar: bar, panel: p.frame, sideOpen: sideOpen, screen: screenFrame).contains(mouse) || unmoved
-                nearBar = edge.keepZone(bar: bar, panel: p.frame, sideOpen: false, screen: screenFrame).contains(mouse)
+                // The bar, and the list or strip while one is open: its own panel, not the dock's whole
+                // (480 pt or more) panel, which kept the dock and the list up with the pointer far off them.
+                let side = sidePanel.flatMap { model.liveSide != nil && $0.isVisible ? $0.frame : nil }
+                input.inKeepZone = edge.keeps(mouse, bar: bar, panel: p.frame, side: side, screen: screenFrame) || unmoved
+                nearBar = edge.keeps(mouse, bar: bar, panel: p.frame, side: nil, screen: screenFrame)
             }
         } else if let n = edge.screen(at: mouse, among: screens.map(\.frame)) {
             let screen = screens[n]
@@ -581,6 +585,15 @@ final class WorkspaceDock {
     /// One drag's files and links, and the bundle identifiers of the apps that can open them all.
     private var openableCache: (drag: Int, urls: [URL], apps: Set<String>)?
 
+    /// `baneyspaces://dock/more` and `dock/lessmore`, for checks: the first tile's "+N" list, open or closed.
+    func openMoreForCheck() -> Bool {
+        guard isShown, let t = model.tiles.first(where: { $0.apps.count > DockModel.iconsShown + 1 }) else { return false }
+        model.more = t.id
+        return true
+    }
+
+    func closeMoreForCheck() { model.more = nil }
+
     /// `baneyspaces://dock/show`: for scripts and checks. It stays until `dock/hide`.
     func pin(_ on: Bool) {
         guard isRunning else { return }
@@ -612,16 +625,8 @@ final class WorkspaceDock {
         heldLogged = false
         let m = NSEvent.mouseLocation
         Trace.log("dock up: \(edge.rawValue) edge, pointer \(Int(m.x)),\(Int(m.y)), panel \(Int(up.width))x\(Int(up.height))" + (retried ? " (rebuilt)" : ""))
-        p.setFrame(up.offsetBy(dx: edge.away.dx, dy: edge.away.dy), display: false)
         slidingIn = true
-        p.alphaValue = 0
-        p.orderFrontRegardless()
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = 0.18
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            p.animator().setFrame(up, display: true)
-            p.animator().alphaValue = 1
-        }, completionHandler: { [weak self] in
+        let finishSlideIn = { [weak self] in
             self?.slidingIn = false
             if let self, self.isShown, self.model.frames[DockView.barKey] == nil {
                 Trace.log("dock bar unmeasured after the slide-in; the whole panel keeps the dock up")
@@ -629,7 +634,26 @@ final class WorkspaceDock {
             // The first layout may not have measured itself yet (a dock shrunk to fit settles a
             // pass later); size to what it really is now.
             self?.resize()
-        })
+        }
+        if reduceMotion {
+            // Reduce Motion: it is there, at once.
+            p.setFrame(up, display: true)
+            p.alphaValue = 1
+            p.orderFrontRegardless()
+            finishSlideIn()
+        } else {
+            // 8 pt in from its edge and a fade, in 180 ms on a curve that arrives quickly and settles.
+            // The window moves; its content isn't laid out again on the way.
+            p.setFrame(up.offsetBy(dx: edge.away.dx, dy: edge.away.dy), display: false)
+            p.alphaValue = 0
+            p.orderFrontRegardless()
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = DockMotion.dockIn
+                ctx.timingFunction = DockMotion.arrive
+                p.animator().setFrame(up, display: true)
+                p.animator().alphaValue = 1
+            }, completionHandler: finishSlideIn)
+        }
         // After hours up, the panel has been seen to stay off screen though it was ordered in
         // front. If the window server doesn't have it on screen, build a new one, once.
         guard !retried else { return }
@@ -638,6 +662,7 @@ final class WorkspaceDock {
                   // A full-screen Space (no menu bar on that display) keeps the dock off on purpose.
                   screen.visibleFrame != screen.frame, !Windows.frontIsFullScreen() else { return }
             Trace.log("dock panel not on screen; rebuilding it")
+            self.dismissSide()
             p.orderOut(nil)
             self.panel = nil
             self.isShown = false
@@ -651,11 +676,12 @@ final class WorkspaceDock {
         shownPoint = nil
         hiddenAt = ProcessInfo.processInfo.systemUptime
         model.reset()
+        dismissSide()
         let away = WorkspaceDock.edge.away
         let down = p.frame.offsetBy(dx: away.dx, dy: away.dy)
-        guard animated else { p.orderOut(nil); return }
+        guard animated, !reduceMotion else { p.orderOut(nil); return }
         NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = 0.14
+            ctx.duration = DockMotion.dockOut
             ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
             p.animator().setFrame(down, display: true)
             p.animator().alphaValue = 0
@@ -674,6 +700,7 @@ final class WorkspaceDock {
         guard size != p.frame.size else { return }
         p.setFrame(WorkspaceDock.edge.frame(size: size, screen: screen.frame, visible: screen.visibleFrame), display: true)
         spanLength = WorkspaceDock.edge.isVertical ? size.height : size.width
+        syncSide()
     }
 
     /// The screen it came up on, so a resize keeps it there.
@@ -684,6 +711,195 @@ final class WorkspaceDock {
     /// The bar's length along its edge when last up, measured from the bar itself. Forgotten with
     /// `spanLength`.
     private var barLength: CGFloat?
+
+    // MARK: The window strip and the "+N" list
+
+    /// The list or strip lives in a panel of its own, a child of the dock's, so opening or closing it
+    /// never resizes the dock panel or moves its bar (Donovan, 2026-10-31: the dock "visibly jumps"
+    /// when the list opens, and once drew it clipped mid-update).
+    private var sidePanel: DockPanel?
+    private var sideHost: FirstClickHostingView<AnyView>?
+    private var sideClosing = false
+    private var sideRetried = false
+    /// Where the open list grows from, kept for the length of its fade-out.
+    private var sideAnchorRect: CGRect?
+    private var sideGrace = DockSideGrace()
+    private var sideMonitors: [Any] = []
+
+    private var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+
+    private func sideAnchorKey(_ side: DockModel.Side) -> String {
+        switch side {
+        case .more(let tile, _): "more:\(tile.id)"
+        case .strip(let app, let n): "\(n):\(app.id)"
+        }
+    }
+
+    /// The tile or icon the open list belongs to, in screen coordinates.
+    private func sideAnchor() -> CGRect? {
+        guard let p = panel, let side = model.liveSide, let f = model.frames[sideAnchorKey(side)] else { return nil }
+        return DockEdge.screenRect(f, panel: p.frame, origin: model.origin)
+    }
+
+    private func makeSidePanel() -> DockPanel {
+        let sp = DockPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        sp.level = .statusBar
+        sp.isOpaque = false
+        sp.backgroundColor = .clear
+        sp.hasShadow = false
+        sp.hidesOnDeactivate = false
+        sp.allowsToolTipsWhenApplicationIsInactive = true
+        sp.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        let host = FirstClickHostingView(rootView: AnyView(DockView(model: model, mode: .side).environment(\.colorScheme, .dark)))
+        host.sizingOptions = [.intrinsicContentSize]
+        host.onSizeChange = { [weak self] in DispatchQueue.main.async { self?.syncSide() } }
+        host.wantsLayer = true
+        sp.contentView = host
+        sideHost = host
+        sidePanel = sp
+        return sp
+    }
+
+    /// Puts the side panel where the open list or strip belongs, opening or closing it to match the model.
+    func syncSide() {
+        guard isShown, let p = panel, let side = model.liveSide,
+              let barFrame = model.frames[DockView.barKey], let anchor = sideAnchor() else {
+            closeSidePanel()
+            return
+        }
+        let sp = sidePanel ?? makeSidePanel()
+        guard let host = sideHost else { return }
+        host.layoutSubtreeIfNeeded()
+        let size = host.fittingSize
+        guard size.width > 8, size.height > 8 else {
+            // SwiftUI hasn't drawn the content yet; once more shortly, then give up until its size changes.
+            guard !sideRetried else { return }
+            sideRetried = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in self?.sideRetried = false; self?.syncSide() }
+            return
+        }
+        let screenFrame = (shownOn ?? p.screen)?.frame ?? p.frame
+        let bar = DockEdge.screenRect(barFrame, panel: p.frame, origin: model.origin)
+        let frame = DockSide.frame(size: size, anchor: anchor, bar: bar, edge: WorkspaceDock.edge, screen: screenFrame)
+        let opening = !sp.isVisible || sideClosing
+        sideClosing = false
+        sideAnchorRect = anchor
+        if sp.frame != frame { sp.setFrame(frame, display: true) }
+        guard opening else { return }
+        Trace.log("dock list open: \(sideAnchorKey(side)), \(Int(frame.width))x\(Int(frame.height)) at \(Int(frame.minX)),\(Int(frame.minY))")
+        sideGrace.reset()
+        if sp.parent == nil { p.addChildWindow(sp, ordered: .above) }
+        installSideMonitors()
+        // 140 ms: grows from 96% at its tile while it fades in.
+        let grow = DockSide.growPoint(panel: frame, anchor: anchor, edge: WorkspaceDock.edge)
+        sp.alphaValue = reduceMotion ? 1 : 0
+        sp.orderFront(nil)
+        guard !reduceMotion else { return }
+        animateSideGrowth(sp, grow: grow, from: DockMotion.listScale, to: 1, duration: DockMotion.listIn, timing: DockMotion.arrive)
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = DockMotion.listIn
+            ctx.timingFunction = DockMotion.arrive
+            sp.animator().alphaValue = 1
+        }
+    }
+
+    /// The layer's scale about the point at its tile, from one value to another.
+    private func animateSideGrowth(_ sp: DockPanel, grow: CGPoint, from: CGFloat, to: CGFloat, duration: TimeInterval, timing: CAMediaTimingFunction) {
+        guard let layer = sp.contentView?.layer else { return }
+        let center = CGPoint(x: sp.frame.width / 2, y: sp.frame.height / 2)
+        let about = CGPoint(x: grow.x - center.x, y: grow.y - center.y)
+        let a = CABasicAnimation(keyPath: "transform")
+        a.fromValue = CATransform3DMakeAffineTransform(DockSide.growTransform(about: about, scale: from))
+        a.toValue = CATransform3DMakeAffineTransform(DockSide.growTransform(about: about, scale: to))
+        a.duration = duration
+        a.timingFunction = timing
+        layer.add(a, forKey: "grow")
+    }
+
+    /// Fades the side panel out in 100 ms and takes it away, unless something opened again meanwhile.
+    private func closeSidePanel() {
+        removeSideMonitors()
+        sideGrace.reset()
+        guard let sp = sidePanel, sp.isVisible, !sideClosing else { return }
+        let finish = { [weak self, weak sp] in
+            guard let self, let sp, self.sideClosing || !sp.isVisible else { return }
+            self.sideClosing = false
+            guard self.model.liveSide == nil else { return }
+            sp.parent?.removeChildWindow(sp)
+            sp.orderOut(nil)
+            sp.alphaValue = 1
+            sp.contentView?.layer?.removeAllAnimations()
+        }
+        sideClosing = true
+        guard !reduceMotion, isShown else { return finish() }
+        let anchor = sideAnchorRect ?? sp.frame
+        animateSideGrowth(sp, grow: DockSide.growPoint(panel: sp.frame, anchor: anchor, edge: WorkspaceDock.edge),
+                          from: 1, to: DockMotion.listScale, duration: DockMotion.listOut, timing: CAMediaTimingFunction(name: .easeIn))
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = DockMotion.listOut
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            sp.animator().alphaValue = 0
+        }, completionHandler: finish)
+    }
+
+    /// The dock went away or was rebuilt: the side panel goes at once.
+    private func dismissSide() {
+        removeSideMonitors()
+        sideGrace.reset()
+        guard let sp = sidePanel else { return }
+        sideClosing = false
+        sp.parent?.removeChildWindow(sp)
+        sp.orderOut(nil)
+        sp.alphaValue = 1
+        sp.contentView?.layer?.removeAllAnimations()
+    }
+
+    /// Closes the open list or strip now, and says why in trace.log, as the dock's own lines do.
+    private func closeSideNow(_ reason: String) {
+        guard model.liveSide != nil else { return }
+        let kind = model.moreApps != nil ? "more" : "strip"
+        Trace.log("dock list closed (\(kind)): \(reason)")
+        model.strip = nil
+        model.more = nil
+        model.onStrip = false
+    }
+
+    /// With a list or strip open: the pointer off it and off its tile for 250 ms closes it. The
+    /// dock itself goes down on its own away delay, the bar being the only thing left to hold it.
+    private func checkSide(now: TimeInterval) {
+        guard isShown, model.drag == nil, model.fileDrag == nil, let sp = sidePanel, sp.isVisible, model.liveSide != nil else {
+            sideGrace.reset()
+            return
+        }
+        let mouse = NSEvent.mouseLocation
+        let inside = DockSide.pointerWithList(mouse, list: sp.frame, anchor: sideAnchor())
+        if sideGrace.step(now: now, inside: inside) {
+            sideGrace.reset()
+            closeSideNow("pointer left it at \(Int(mouse.x)),\(Int(mouse.y))")
+        }
+    }
+
+    /// Esc and a click anywhere else close the list at once (Esc also puts the dock away). Both are
+    /// read from outside BaneySpaces, since the dock never takes the keyboard.
+    private func installSideMonitors() {
+        guard sideMonitors.isEmpty else { return }
+        if let m = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown], handler: { [weak self] _ in
+            DispatchQueue.main.async { self?.closeSideNow("click outside") }
+        }) { sideMonitors.append(m) }
+        if let m = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: { [weak self] e in
+            guard e.keyCode == 53 else { return }
+            DispatchQueue.main.async {
+                guard let self, self.model.liveSide != nil else { return }
+                self.closeSideNow("Esc")
+                if !self.pinned { self.hide() }
+            }
+        }) { sideMonitors.append(m) }
+    }
+
+    private func removeSideMonitors() {
+        sideMonitors.forEach(NSEvent.removeMonitor)
+        sideMonitors = []
+    }
 
     private func makePanel() -> DockPanel {
         let p = DockPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -825,6 +1041,7 @@ final class DockModel: ObservableObject {
             // Removed from under the pointer, it never hears the pointer leave.
             if strip == nil, more == nil { onStrip = false }
             if strip != nil { more = nil }
+            rememberSide()
             if (strip == nil) != (oldValue == nil) || strip?.app != oldValue?.app { onLayoutChange() }
         }
     }
@@ -833,8 +1050,31 @@ final class DockModel: ObservableObject {
         didSet {
             if strip == nil, more == nil { onStrip = false }
             if more != nil, strip != nil { strip = nil }
+            rememberSide()
             if more != oldValue { onLayoutChange() }
         }
+    }
+
+    /// What the side panel shows: a tile's "+N" list, or an app's window strip.
+    enum Side {
+        case more(tile: Tile, apps: [App])
+        case strip(app: App, workspace: Int)
+    }
+    /// The list or strip that's open now, if one is.
+    var liveSide: Side? {
+        if let m = moreApps { return .more(tile: m.tile, apps: m.apps) }
+        if let a = stripApp, let n = strip?.workspace { return .strip(app: a, workspace: n) }
+        return nil
+    }
+    /// The last one that was open, so the side panel has something to draw while it fades out.
+    private(set) var lastSide: Side?
+    var sideContent: Side? { liveSide ?? lastSide }
+    func rememberSide() { if let s = liveSide { lastSide = s } }
+    /// The dock panel's frame in screen coordinates, to turn a pointer in the side panel into the
+    /// dock's own space (the side panel's gestures report their own).
+    var panelFrame: () -> CGRect? = { nil }
+    func dockPoint(fromScreen m: CGPoint) -> CGPoint? {
+        panelFrame().map { DockCarry.point(m, panel: $0, origin: origin) }
     }
 
     /// The apps a tile shows as "+N", and its tile.
@@ -950,6 +1190,7 @@ final class DockModel: ObservableObject {
         // A strip for an app that's gone or down to one window closes.
         if let s = strip, (stripApp?.list.count ?? 0) < 2 || !tiles.contains(where: { $0.id == s.workspace }) { strip = nil }
         if more != nil, moreApps == nil { more = nil }
+        rememberSide()
     }
 
     /// The tile the pointer is on, by itself or one of its icons.
@@ -1044,7 +1285,13 @@ final class DockModel: ObservableObject {
         // A window that closed mid-drag is not moved; a drag with none left moves nothing.
         let alive = DockDrop.survivors(of: drag.ids, alive: liveWindows(drag.from, true))
         let to = alive.isEmpty ? nil : dropTarget
-        self.drag = nil
+        // The lifted icon settles away rather than vanishing (`DockMotion.settle`); only the
+        // dragged icon and the label change with it, and Reduce Motion makes it instant.
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            self.drag = nil
+        } else {
+            withAnimation(.easeOut(duration: DockMotion.settle)) { self.drag = nil }
+        }
         dragEnded = Date()
         if let to {
             // The strip and the "+N" list came from the workspace they left; they close rather than
@@ -1085,6 +1332,7 @@ final class DockModel: ObservableObject {
         onStrip = false
         strip = nil
         more = nil
+        lastSide = nil
     }
 
     func setHover(_ h: Hover, _ inside: Bool) {
@@ -1126,6 +1374,36 @@ private struct HoverScale: ViewModifier {
     }
 }
 
+/// A row's highlight, fading in and out in 80 ms. The animation is on the fill alone, never on a row
+/// or a tile: an animation on a parent also moved things the parent re-laid out (the tiles that slid
+/// sideways over each other, 2026-10-19). Reduce Motion makes it instant.
+private struct RowHighlight: View {
+    let on: Bool
+    let tint: Color
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 7, style: .continuous)
+            .fill(on ? tint.opacity(0.85) : .clear)
+            .animation(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? nil : .easeOut(duration: DockMotion.rowHover), value: on)
+    }
+}
+
+/// A row or tile picked up for a drag grows 4% with a soft shadow, and settles back when let go.
+/// The spring is scoped to the scale and the shadow, so nothing else in the view animates with it.
+private struct DragLift: ViewModifier {
+    let lifted: Bool
+    func body(content: Content) -> some View {
+        let spring: Animation? = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? nil : .spring(response: 0.2, dampingFraction: 0.7)
+        if #available(macOS 14, *) {
+            content.animation(spring) {
+                $0.scaleEffect(lifted ? DockMotion.lift : 1).shadow(color: .black.opacity(lifted ? 0.35 : 0), radius: 6, y: 2)
+            }
+        } else {
+            content.scaleEffect(lifted ? DockMotion.lift : 1).shadow(color: .black.opacity(lifted ? 0.35 : 0), radius: 6, y: 2)
+        }
+    }
+}
+
 private struct SizeReport: ViewModifier {
     @Binding var size: CGSize
     func body(content: Content) -> some View {
@@ -1140,6 +1418,9 @@ struct DockView: View {
     /// The key for the bar's own frame, in the dock's space. No colon, for the same reason.
     static let barKey = "bar"
     @ObservedObject var model: DockModel
+    /// The dock itself, or the panel of its own that the window strip and the "+N" list live in.
+    enum Mode { case bar, side }
+    var mode: Mode = .bar
     /// Redraws when Settings › Appearance changes.
     @ObservedObject private var appearance = Appearance.shared
     /// Settings › Appearance › Dock size: every tile, icon and button below scales by this.
@@ -1151,9 +1432,29 @@ struct DockView: View {
     @State private var barSize: CGSize = .zero
     @State private var stackSize: CGSize = .zero
 
-    var body: some View {
+    @ViewBuilder var body: some View {
+        switch mode {
+        case .bar: barBody
+        // The rows' drags name a space "dock"; here it is the panel's own, and the pointer is read from the screen.
+        case .side: sideBody.coordinateSpace(name: "dock")
+        }
+    }
+
+    /// The side panel: the open list or strip alone. It is its own window (a child of the dock's), so
+    /// opening or closing it never resizes the dock or moves its bar. After it closes it draws the
+    /// last one for the length of its fade.
+    @ViewBuilder private var sideBody: some View {
+        switch model.sideContent {
+        case .more(let tile, let apps): moreList(apps, in: tile)
+        case .strip(let app, let n): windowStrip(app, workspace: n)
+        case nil: Color.clear.frame(width: 1, height: 1)
+        }
+    }
+
+
+    private var barBody: some View {
         let edge = model.edge
-        // The label or strip goes on the screen side of the tiles: above a bottom dock, beside a side one.
+        // The label goes on the screen side of the tiles: above a bottom dock, beside a side one.
         let stack = edge.isVertical ? AnyLayout(HStackLayout(alignment: .center, spacing: 8)) : AnyLayout(VStackLayout(alignment: .center, spacing: 8))
         return stack {
             if edge == .bottom || edge == .right { side }
@@ -1165,10 +1466,13 @@ struct DockView: View {
         // The icon being dragged follows the pointer.
         .overlay(alignment: .topLeading) {
             if let drag = model.drag, !drag.carried {
+                // Picked up: a touch larger with a soft shadow; let go: it settles away (`DockModel.endDrag`).
                 Image(nsImage: drag.icon).resizable().interpolation(.high).frame(width: 36 * k, height: 36 * k)
-                    .shadow(color: .black.opacity(0.45), radius: 6, y: 2)
+                    .scaleEffect(DockMotion.lift)
+                    .shadow(color: .black.opacity(0.45), radius: 8, y: 3)
                     .position(drag.location)
                     .allowsHitTesting(false)
+                    .transition(.opacity.combined(with: .scale(scale: 0.92)))
             }
         }
         // Where the "dock" space starts in the panel, to place a pointer the panel never hears.
@@ -1226,27 +1530,23 @@ struct DockView: View {
         .modifier(SizeReport(size: $barSize))
     }
 
-    /// What the pointer is on, or the window strip, lined up with it.
+    /// A drag's pointer in the dock's own space. The side panel's gestures report that panel's own
+    /// space, so its pointer is read from the screen and converted.
+    private func dockPoint(_ local: CGPoint) -> CGPoint {
+        mode == .side ? (model.dockPoint(fromScreen: NSEvent.mouseLocation) ?? local) : local
+    }
+
+    /// What the pointer is on, lined up with it. The window strip and the "+N" list are not here:
+    /// they are a panel of their own (`mode == .side`), so this row never changes size for them.
     @ViewBuilder private var side: some View {
-        let vertical = model.edge.isVertical
-        if let app = model.stripApp, let n = model.strip?.workspace {
-            windowStrip(app, workspace: n)
-                .modifier(SizeReport(size: $sideSize))
-                .offset(sideOffset("\(n):\(app.id)"))
-        } else if let m = model.moreApps {
-            moreList(m.apps, in: m.tile)
-                .modifier(SizeReport(size: $sideSize))
-                .offset(sideOffset("more:\(m.tile.id)"))
-        } else if vertical {
+        if model.edge.isVertical {
             // As wide as the label, and nothing when there's none, so the panel (and the area that
             // keeps the dock up) never reaches far into the screen. The panel resizes with it, and
             // the bar stays put because the panel is pinned to its edge.
             label.modifier(SizeReport(size: $sideSize))
-                .offset(sideOffset(labelKey))
+                .offset(sideOffset(hoverKey))
         } else {
             label.frame(height: 24)
-                .modifier(SizeReport(size: $sideSize))
-                .offset(sideOffset(labelKey))
         }
     }
 
@@ -1315,6 +1615,8 @@ struct DockView: View {
     }
 
     private var labelText: String? {
+        // A list or strip says its own thing (and, mid-drag, where the drag lands).
+        if mode == .bar, model.liveSide != nil { return nil }
         if let file = model.fileDrag {
             switch file.target {
             case .app(let n, let id):
@@ -1368,7 +1670,7 @@ struct DockView: View {
                 // there, exactly as the tile's own icons do.
                 let ids = app.list.map(\.id)
                 MoreRow(app: app, tint: Chrome.workspace(tile.id), dragging: model.drag.map { $0.from == tile.id && $0.ids == ids } ?? false,
-                        onDrag: { model.dragged(ids, from: tile.id, icon: app.icon, name: app.name, listApp: app.id, to: $0) },
+                        onDrag: { model.dragged(ids, from: tile.id, icon: app.icon, name: app.name, listApp: app.id, to: dockPoint($0)) },
                         onDragEnd: { model.endDrag() }) {
                     guard model.clickCounts else { return }
                     model.onFocusApp(app.pid, tile.id)
@@ -1405,7 +1707,7 @@ struct DockView: View {
                 VStack(spacing: 2) {
                     ForEach(app.list) { w in
                         StripRow(window: w, icon: app.icon, tint: Chrome.workspace(n), dragging: model.drag?.ids == [w.id],
-                                 onDrag: { model.dragged([w.id], from: n, icon: app.icon, name: w.title.isEmpty ? app.name : "“\(w.title)”", to: $0) },
+                                 onDrag: { model.dragged([w.id], from: n, icon: app.icon, name: w.title.isEmpty ? app.name : "“\(w.title)”", to: dockPoint($0)) },
                                  onDragEnd: { model.endDrag() }) {
                             guard model.clickCounts else { return }
                             if let a = w.agent { model.onFocusAgent(a, n) } else { model.onFocusWindow(w.id, n) }
@@ -1795,9 +2097,10 @@ private struct MoreRow: View {
         }
         .padding(.horizontal, 8)
         .frame(height: 28)
-        .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(hovered ? tint.opacity(0.85) : .clear))
+        .background(RowHighlight(on: hovered, tint: tint))
         .contentShape(Rectangle())
         .opacity(dragging ? 0.4 : 1)
+        .modifier(DragLift(lifted: dragging))
         .onHover { hovered = $0 }
         // Drag it onto a workspace tile or the "+" to move its windows there. A press that never
         // moves 4 pt is still a click, so the list stays open under the pointer until a drag starts.
@@ -1842,9 +2145,10 @@ private struct StripRow: View {
         }
         .padding(.horizontal, 8)
         .frame(height: 28)
-        .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(hovered ? tint.opacity(0.85) : .clear))
+        .background(RowHighlight(on: hovered, tint: tint))
         .contentShape(Rectangle())
         .opacity(dragging ? 0.4 : 1)
+        .modifier(DragLift(lifted: dragging))
         .help(title)
         .onHover { hovered = $0 }
         // Drag it onto a workspace tile to move just this window there.

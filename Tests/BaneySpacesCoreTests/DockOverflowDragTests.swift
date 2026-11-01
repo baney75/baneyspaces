@@ -178,7 +178,7 @@ final class DockOverflowDragTests: XCTestCase {
     func testTheOrphanCheckComesBeforeSpringLoadAndClearsTheHold() throws {
         let text = try dockSource()
         let orphan = try XCTUnwrap(text.range(of: "if model.dragOrphaned(refresh: fresh) {"))
-        let spring = try XCTUnwrap(text.range(of: "springLoad(carrying)\n        guard !pinned"))
+        let spring = try XCTUnwrap(text.range(of: "springLoad(carrying)\n        checkSide("))
         XCTAssertLessThan(orphan.lowerBound, spring.lowerBound)
         let cancel = try XCTUnwrap(text.range(of: "func cancelDrag()"))
         let body = String(text[cancel.upperBound...].prefix(300))

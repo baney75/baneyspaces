@@ -84,15 +84,24 @@ public enum DockEdge: String, CaseIterable, Sendable {
     /// Slack around the bar you see, past which the pointer has left the dock.
     public static let barSlack: CGFloat = 12
 
-    /// The keep zone of a dock that's up. The panel is bigger than the bar you see: it keeps a
-    /// row for the hover label on the screen side and is at least 480 pt long, so a zone taken from
-    /// the panel held the dock up with the pointer 50 pt above the bar or 100 pt beside it, over
-    /// the app underneath (Donovan, 2026-10-31). The zone hugs the bar, unless the window strip or
-    /// the "+N" list is open: those are on the screen side and take clicks, so the whole panel
-    /// counts then. `bar` is nil until the dock has laid itself out; the panel stands in.
-    public func keepZone(bar: CGRect?, panel: CGRect, sideOpen: Bool, screen: CGRect) -> CGRect {
-        guard let bar, !sideOpen else { return keepZone(dock: panel, screen: screen) }
+    /// The keep zone of a dock that's up: the bar you see plus 12 pt. The panel is bigger than the
+    /// bar: it keeps a row for the hover label on the screen side and is at least 480 pt long, so a
+    /// zone taken from the panel held the dock up with the pointer 50 pt above the bar or 100 pt
+    /// beside it, over the app underneath (Donovan, 2026-10-31). `bar` is nil until the dock has
+    /// laid itself out; the panel stands in.
+    public func keepZone(bar: CGRect?, panel: CGRect, screen: CGRect) -> CGRect {
+        guard let bar else { return keepZone(dock: panel, screen: screen) }
         return keepZone(dock: bar, screen: screen, slack: DockEdge.barSlack)
+    }
+
+    /// Whether the pointer keeps the dock up. With the window strip or the "+N" list open (`side`,
+    /// that panel's own frame) it also counts over that list plus 12 pt, and nowhere else: the
+    /// whole panel used to count, which kept the dock and the list up with the pointer 100 pt to
+    /// the side of the list (Donovan, 2026-10-31, "stuck").
+    public func keeps(_ p: CGPoint, bar: CGRect?, panel: CGRect, side: CGRect?, screen: CGRect) -> Bool {
+        if keepZone(bar: bar, panel: panel, screen: screen).contains(p) { return true }
+        guard bar != nil, let side else { return false }
+        return side.insetBy(dx: -DockEdge.barSlack, dy: -DockEdge.barSlack).contains(p)
     }
 
     /// How far the pointer moves before it counts as having moved since the dock came up.
@@ -125,13 +134,14 @@ public enum DockEdge: String, CaseIterable, Sendable {
         menus.contains { $0.insetBy(dx: -48, dy: -48).contains(pointer) }
     }
 
-    /// The way it slides out of sight: toward its edge.
+    /// The way it slides out of sight: toward its edge, `DockMotion.slide` points.
     public var away: CGVector {
+        let d = DockMotion.slide
         switch self {
-        case .bottom: CGVector(dx: 0, dy: -18)
-        case .top: CGVector(dx: 0, dy: 18)
-        case .left: CGVector(dx: -18, dy: 0)
-        case .right: CGVector(dx: 18, dy: 0)
+        case .bottom: return CGVector(dx: 0, dy: -d)
+        case .top: return CGVector(dx: 0, dy: d)
+        case .left: return CGVector(dx: -d, dy: 0)
+        case .right: return CGVector(dx: d, dy: 0)
         }
     }
 }
