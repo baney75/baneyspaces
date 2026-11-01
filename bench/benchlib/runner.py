@@ -1,14 +1,19 @@
 """One task end to end: availability, setup, the monitored run, the read-back, teardown.
 
-Time is cut into three half-open windows so no event is counted twice:
-  setup [ts0, t0)   task [t0, tt0)   teardown [tt0, end)
+Time is cut into three half-open windows by stamp, so no event is counted twice:
+  setup [ts0, t0)   task [t0, tt0)   teardown [tt0, T_end)
 The sampler reports a window that appeared without a workspace only after a one-second debounce, stamped with
-when it first appeared, and BaneySpaces writes state.json a moment after a window exists. So every query waits
-`drain_s` (longer than both) first: before t0, before tt0, before the early-return setup queries and before the
-final teardown query. A change is charged to the tool unless its window belongs to a process that was already
-running with a window on Donovan's workspaces before ts0 (his own background apps): those are ambient.
+when it first appeared, and BaneySpaces writes state.json a moment after a window exists. So nothing is assigned
+to a window at the moment that window closes. The setup-leak gate waits until the sampler has published a sample
+stamped `drain_s` past its query point, and the three windows are RECOMPUTED from the full event log after
+teardown, once the sampler has gone `drain_s` past T_end. A window that shows up only in that late pass and was
+first seen before t0 invalidates the task (`infra_error`, `setup_leak`): the tool must not be charged for it, and
+the task cannot count as clean. Classification (pass, fail, refused_ok) waits for the final windows.
+A change is charged to the tool unless its window belongs to a process that was already running with a window
+on Donovan's workspaces before ts0 (his own background apps): those are ambient.
 """
 import os
+import re
 import secrets
 import shutil
 import time
@@ -22,6 +27,7 @@ from .tasks import expand
 
 DESKTOP = os.path.expanduser("~/Desktop")
 SYSTEM_APPS = {"Finder"}      # always running; never started or quit by a task
+QUIT_WAIT_S = 5.0
 
 
 class Context:
@@ -31,7 +37,7 @@ class Context:
                  state_fn=None, doing=None, clock=time.time, sleep=time.sleep, watch_dirs=(DESKTOP,),
                  availability_fn=host.availability, running_fn=host.running, aborted_fn=lambda: False,
                  cleanup_driver=None, nonce_fn=lambda: secrets.token_hex(3), drain_s=1.5,
-                 session_fn=lambda: (True, {})):
+                 session_fn=lambda: (True, {}), quiet_exec=None, alive_fn=host.pid_alive, recovery_dir=None):
         self.tool, self.workdir, self.server, self.monitor = tool, workdir, server, monitor
         self.opener, self.referee_driver, self.exec = opener, referee_driver, exec_fn
         self.cleanup_driver = cleanup_driver or referee_driver
@@ -43,24 +49,80 @@ class Context:
         self.nonce_fn = nonce_fn
         self.drain_s = drain_s         # the sampler's debounce plus state.json lag, with margin
         self.session_fn = session_fn
+        self.quiet_exec = quiet_exec   # commands that touch no window and must still run after an abort (defaults, kill)
+        self.alive_fn = alive_fn
+        self.recovery_dir = recovery_dir
         self.created_ever = set()      # every window id the bench has created this run (a leftover is ours, not foreign)
 
+    def qexec(self, *a, **k):
+        return (self.quiet_exec or self.exec)(*a, **k)
 
-def _save_defaults(ctx, domains):
-    """Capture preferences domains before an app we drive can change them. {domain: plist xml or None if absent}."""
+    def wait_reports(self, q):
+        """Return once everything that happened before `q` has been reported: the sampler has published a sample
+        stamped `drain_s` past q (its debounce is a second, state.json lags a little)."""
+        wait = getattr(self.monitor, "wait_sampled", None)
+        if wait:
+            wait(q + self.drain_s, timeout=self.drain_s + 10)
+        else:
+            self.sleep(self.drain_s)
+
+
+def _save_defaults(ctx, domains, recovery_dir):
+    """Back up preferences domains before an app we drive can change them.
+    -> ({domain: plist xml, or None when the domain is CONFIRMED absent}, problem or None).
+    Any other outcome (a timeout, a failure, empty output) is uncertain: the task is not run, because a wrong
+    guess would later delete or overwrite Donovan's preferences."""
     saved = {}
     for dom in domains:
-        rc, out, _, _ = ctx.exec(["defaults", "export", dom, "-"], timeout=15)
-        saved[dom] = out if rc == 0 and out.strip() else None
-    return saved
+        rc, out, err, _ = ctx.qexec(["defaults", "export", dom, "-"], timeout=15)
+        if rc == 0 and out.strip():
+            saved[dom] = out
+            if recovery_dir:
+                os.makedirs(recovery_dir, exist_ok=True)
+                path = os.path.join(recovery_dir, f"{dom}.plist")
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(out)
+        elif rc != 0 and re.search(r"does not exist", f"{err}\n{out}"):
+            saved[dom] = None
+        else:
+            return {}, f"could not back up {dom} (defaults export rc {rc}: {(err or out or 'no output').strip()[:100]})"
+    return saved, None
 
 
-def _restore_defaults(ctx, saved):
+def _restore_defaults(ctx, saved, recovery_dir):
+    """Put the backed-up domains back and check it. -> list of problems (empty: restored and verified; the recovery
+    file is then removed, otherwise it stays for manual recovery)."""
+    problems = []
     for dom, xml in saved.items():
         if xml is None:
-            ctx.exec(["defaults", "delete", dom], timeout=15)
-        else:
-            ctx.exec(["defaults", "import", dom, "-"], timeout=15, stdin=xml)
+            rc, out, err, _ = ctx.qexec(["defaults", "delete", dom], timeout=15)
+            if rc != 0 and not re.search(r"does not exist", f"{err}\n{out}"):
+                problems.append(f"{dom}: delete failed (rc {rc})")
+            continue
+        rc, out, err, _ = ctx.qexec(["defaults", "import", dom, "-"], timeout=15, stdin=xml)
+        if rc != 0:
+            problems.append(f"{dom}: import failed (rc {rc}: {(err or out).strip()[:80]})")
+            continue
+        rc2, now, _e, _ = ctx.qexec(["defaults", "export", dom, "-"], timeout=15)
+        if rc2 != 0 or now.strip() != xml.strip():
+            problems.append(f"{dom}: after the import the domain does not match the backup")
+    if not problems and recovery_dir:
+        for dom in saved:
+            try:
+                os.remove(os.path.join(recovery_dir, f"{dom}.plist"))
+            except OSError:
+                pass
+    return problems
+
+
+def _wait_gone(ctx, pid, seconds=QUIT_WAIT_S):
+    end = ctx.clock() + seconds
+    while ctx.alive_fn(pid):
+        if ctx.clock() >= end:
+            return False
+        ctx.sleep(0.2)
+    return True
 
 
 def run_task(task, ctx):
@@ -86,6 +148,13 @@ def run_task(task, ctx):
                    "Electron app is launched only with a fresh profile, never with Donovan's")
         return rec
 
+    # Back up preferences first. If the backup is uncertain nothing else is touched.
+    recovery_dir = os.path.join(ctx.recovery_dir, task["id"]) if ctx.recovery_dir else None
+    saved_defaults, problem = _save_defaults(ctx, task["setup"].get("restore_defaults", []), recovery_dir)
+    if problem:
+        rec.update(status="infra_error", why="setup: " + problem + "; the task is not run")
+        return rec
+
     tdir = os.path.join(ctx.workdir, task["id"])
     os.makedirs(tdir, exist_ok=True)
     env = {"tmp": tdir, "base": ctx.server.base, "port": ctx.server.port, "fixtures": tdir, "nonce": ctx.nonce_fn()}
@@ -98,30 +167,24 @@ def run_task(task, ctx):
     if missing:
         rec.update(status="infra_error", why="setup: the fixture is not at the path the task opens: " + missing[0])
         shutil.rmtree(tdir, ignore_errors=True)
+        _restore_defaults(ctx, saved_defaults, recovery_dir)
         return rec
 
     apps = {o["app"] for o in setup.get("open", [])} | set(setup.get("quit_after", []))
+    not_running_req = set(setup.get("requires", {}).get("not_running", []))
     was_running = {a: ctx.running_fn(a) for a in apps if a not in SYSTEM_APPS}
-    started_by_us = sorted(a for a, up in was_running.items() if not up)
     owners = {task["app"]} | apps | TOOL_OWNERS.get(ctx.tool, set())     # this column's own processes only
     allowed = set(task.get("allowed_change_fields", []))
-    windows, titles, created, app_of = {}, {}, [], {}
-    ambient = []
-    saved_defaults = _save_defaults(ctx, setup.get("restore_defaults", []))
+    windows, titles, created, app_of, our_pid = {}, {}, [], {}, {}
     ts0 = ctx.clock()
     ambient_pids = ctx.monitor.user_pids_now() if ctx.monitor else frozenset()
-    tt0 = None
+    t0 = tt0 = None
+    deferred = None            # (task, check_ok, outcome): classified once the final windows are known
 
-    def charge(changes):
+    def charge(changes, into):
         counted, amb = attribute(changes, owners, ambient_pids)
-        ambient.extend(amb)
+        into.extend(amb)
         return counted
-
-    def drained(t_from):
-        """Wait out the debounce, then take every change in [t_from, now)."""
-        ctx.sleep(ctx.drain_s)
-        now = ctx.clock()
-        return now, (charge(ctx.monitor.changes(t_from, now, 0)) if ctx.monitor else [])
 
     try:
         try:
@@ -133,13 +196,11 @@ def run_task(task, ctx):
                         created.append(wid)         # tracked first, so teardown closes it even if it is not isolated
                         app_of[wid] = o["app"]
                     if wid is not None and not verified:
-                        tt0, rec["setup_changes"] = drained(ts0)
                         rec.update(status="infra_error", why=f"setup: {o['app']} did not start with the fresh --user-data-dir; not using it")
                         return rec
                 else:
                     wid, _ = ctx.opener.open(o["app"], o.get("targets", []))
                 if wid is None:
-                    tt0, rec["setup_changes"] = drained(ts0)
                     rec.update(status="infra_error", why=f"setup: could not open {o['app']} on the agent workspace")
                     return rec
                 if wid not in created:
@@ -147,6 +208,9 @@ def run_task(task, ctx):
                 app_of[wid] = o["app"]
                 windows[o["as"]] = wid
                 titles[o["as"]] = o.get("title", "")
+                pid = ctx.opener.pid_of(wid) if hasattr(ctx.opener, "pid_of") else None
+                if pid:
+                    our_pid[o["app"]] = pid        # the instance `agent open` started: the only one this task may quit
             ctx.sleep(setup.get("settle_s", 0.8))
 
             # Ownership: every window we made is on the agent workspace, and the apps we started own no other window
@@ -156,37 +220,39 @@ def run_task(task, ctx):
             foreign = [w for w, (a, _t) in listing.items()
                        if a in set(app_of.values()) and w not in created and w not in ctx.created_ever]
             if lost_track or foreign:
-                tt0, rec["setup_changes"] = drained(ts0)
                 rec.update(status="infra_error",
                            why=(f"setup: window {lost_track[0]} is not on the agent workspace" if lost_track else
                                 f"setup: {listing[foreign[0]][0]} owns window {foreign[0]} that the bench did not create "
                                 "(a restored or foreign window); not running"))
                 return rec
 
-            if setup.get("hide") and setup["hide"] in started_by_us:
+            if setup.get("hide") and setup["hide"] in not_running_req and not was_running.get(setup["hide"], False):
                 ctx.exec(["osascript", "-e", 'tell application "System Events" to set visible of process '
                           f'"{setup["hide"]}" to false'], timeout=15)
                 ctx.sleep(0.4)
             for alias in setup.get("close_before_run", []):    # a window that existed and is gone: the "missing window" case
                 closed, left = close_windows(ctx.cleanup_driver, [windows[alias]], ctx.opener.windows, should_stop=ctx.aborted_fn)
                 if windows[alias] in left:
-                    tt0, rec["setup_changes"] = drained(ts0)
                     rec.update(status="infra_error", why=f"setup: could not close window {windows[alias]} for the missing-window "
                                f"task ({left[windows[alias]]}); the tool is not run against a window that still exists")
                     return rec
                 created = [w for w in created if w != windows[alias]]
             before = {d: host.list_dir(d) for d in ctx.watch_dirs}
 
-            t0, rec["setup_changes"] = drained(ts0)
-            leaks = [c for c in rec["setup_changes"] if set(c["fields"]) & set(WINDOW_FIELDS)]
+            # The early gate: wait until everything seen before `q` has been reported, then look for a leaked window.
+            q = ctx.clock()
+            ctx.wait_reports(q)
+            gate = charge(ctx.monitor.changes(ts0, q, 0), []) if ctx.monitor else []
+            leaks = [c for c in gate if set(c["fields"]) & set(WINDOW_FIELDS)]
             if leaks:
-                tt0 = ctx.clock()
-                rec.update(status="fail", why="setup leaked a window onto one of Donovan's workspaces; the tool was not run",
-                           setup_leak=leaks)
+                # shared harness code (`agent open`) put a window on his workspace: not the tool's doing and not a pass
+                rec.update(status="infra_error", setup_leak=leaks,
+                           why="setup leaked a window onto one of Donovan's workspaces; the tool was not run")
                 return rec
+            t0 = ctx.clock()
             outcome = ctx.doing(t, windows, titles)
             t1 = ctx.clock()
-            ctx.sleep(ctx.drain_s)          # a dialog the last action raised 0.3 s later is reported ~1.3 s later
+            ctx.sleep(ctx.drain_s)          # a dialog the last action raised 0.3 s later is stamped inside the task
             tt0 = ctx.clock()
 
             rec["duration_s"] = round(t1 - t0, 3)
@@ -196,11 +262,6 @@ def run_task(task, ctx):
                 if outcome.get(k) is not None:
                     rec[k] = outcome[k]
             rec["answer"] = (outcome.get("answer") or "")[:300]
-            changes = charge(ctx.monitor.changes(t0, tt0, 0)) if ctx.monitor else []
-            intended = [c for c in changes if allowed and set(c["fields"]) <= allowed]
-            rec["changes"] = [c for c in changes if c not in intended]
-            if intended:
-                rec["intended_changes"] = intended
             real, posted, by_pid = ctx.monitor.input(t0, tt0) if ctx.monitor else (0, 0, {})
             rec["hid_events"], rec["posted_input_events"] = real, posted
             if by_pid:
@@ -208,10 +269,6 @@ def run_task(task, ctx):
             rec["collateral"] = [f"{d}/{n}" for d in ctx.watch_dirs for n in host.collateral(before[d], host.list_dir(d))]
             rec["refusal"] = outcome.get("refusal")
 
-            lost = ctx.monitor.lost_between(t0, tt0) if ctx.monitor else []
-            if lost:
-                rec.update(status="monitor_lost", why=lost[0]["why"])
-                return rec
             if outcome.get("infra") or outcome.get("harness_error"):
                 rec.update(status="infra_error", why=outcome.get("infra") or outcome.get("why", "harness error"))
                 if outcome.get("fatal_infra"):
@@ -226,69 +283,136 @@ def run_task(task, ctx):
             if (t.get("requires_tool_call") or t.get("impossible")) and not outcome.get("tool_calls") and not outcome.get("tool_errors"):
                 check_ok, detail = False, "no computer-use call was made; " + detail
             rec["check"] = {"ok": check_ok, "detail": detail}
-            side = {"changes": len(rec["changes"]), "hid": real, "posted": posted, "collateral": len(rec["collateral"])}
-            rec["status"] = scoring.classify(t, check_ok, outcome, outcome.get("refusal"), side)
             if not outcome["ok"] and not t.get("impossible"):
                 rec["why"] = outcome.get("why", "")
+            deferred = (t, check_ok, outcome)
             return rec
         except Aborted as e:
-            tt0 = tt0 if tt0 is not None else ctx.clock()
             lost = ctx.monitor.losses[-1]["why"] if ctx.monitor and ctx.monitor.losses else None
             rec.update(status="monitor_lost" if lost else "not_run", why=f"stopped: {lost or e}")
             return rec
         except Exception as e:  # noqa: BLE001  whatever broke, the finally block's accounting must reach the result file
-            tt0 = tt0 if tt0 is not None else ctx.clock()
             rec.update(status="infra_error", why=f"{type(e).__name__}: {e}"[:300])
             return rec
     finally:
         tt0 = tt0 if tt0 is not None else ctx.clock()
-        pending = {"windows": [], "apps": [], "defaults": []}
+        pending = {"windows": [], "apps": [], "pids": [], "defaults": []}
         notes = []
+        aborted = ctx.aborted_fn()
         try:
-            if ctx.aborted_fn():
-                pending = {"windows": list(created), "apps": list(started_by_us), "defaults": list(saved_defaults)}
-            else:
-                left = {}
-                if created:
-                    _, left = close_windows(ctx.cleanup_driver, created, ctx.opener.windows, should_stop=ctx.aborted_fn)
-                    if left:
-                        rec["teardown_left"] = {str(k): v for k, v in left.items()}
-                        pending["windows"] = [k for k, v in left.items() if v.startswith(("interrupted", "cannot tell", "still open"))]
-                for app in started_by_us:
-                    if ctx.aborted_fn():
+            left = {}
+            if aborted:
+                pending["windows"] = list(created)
+            elif created:
+                _, left = close_windows(ctx.cleanup_driver, created, ctx.opener.windows, should_stop=ctx.aborted_fn)
+                if left:
+                    rec["teardown_left"] = {str(k): v for k, v in left.items()}
+                    pending["windows"] = [k for k, v in left.items() if v.startswith(("interrupted", "cannot tell", "still open"))]
+            # Quit only the instance this task started. After an abort teardown does not act on windows, but an
+            # instance of an app that was not running before the task (so every window of it is ours) is ended quietly
+            # when its preferences are to be restored, so the restore is not overwritten by the app's own exit.
+            for app in sorted({a for a in apps if a not in SYSTEM_APPS}):
+                pid = our_pid.get(app)
+                guaranteed_ours = app in not_running_req and not was_running.get(app, False)
+                if aborted and not (saved_defaults and guaranteed_ours and pid):
+                    pending["apps"].append(app) if (pid or guaranteed_ours) else None
+                    if pid:
+                        pending["pids"].append(pid)
+                    continue
+                if pid:
+                    ok_enum, owned = ctx.cleanup_driver.pid_windows(app, pid) if not aborted else (True, [])
+                    tracked_open = [w for w, why in left.items() if app_of.get(w) == app]
+                    if not ok_enum or owned or tracked_open:
                         pending["apps"].append(app)
+                        pending["pids"].append(pid)
+                        notes.append(f"{app} (pid {pid}) not quit: " + ("its windows could not be enumerated" if not ok_enum else
+                                     f"windows {sorted(set(owned) | set(tracked_open))} are still open"))
                         continue
-                    # An app is quit only if it is ours and NOTHING of it is left outside the verified scope: a window
-                    # that stayed open, moved off the agent workspace, or one the bench did not create would die with it.
+                    ctx.qexec(["kill", "-TERM", str(pid)], timeout=10)
+                    if not _wait_gone(ctx, pid):
+                        pending["apps"].append(app)
+                        pending["pids"].append(pid)
+                        notes.append(f"{app} (pid {pid}) did not exit within {QUIT_WAIT_S:.0f} s")
+                elif guaranteed_ours and ctx.running_fn(app):
+                    # no pid to go by: the app was not running before, so the only copy is ours; ask it to quit by name
                     try:
                         now_windows = ctx.opener.windows()
                     except Exception:  # noqa: BLE001
                         now_windows = None
                     still = [w for w, (a, _t) in (now_windows or {}).items() if a == app]
-                    kept = [w for w, why in left.items() if app_of.get(w) == app]
+                    kept = [w for w in left if app_of.get(w) == app]
                     if now_windows is None or still or kept:
                         pending["apps"].append(app)
                         notes.append(f"{app} not quit: " + ("its windows could not be listed" if now_windows is None else
                                                           f"windows {sorted(set(still) | set(kept))} are still open"))
-                    elif ctx.running_fn(app):
+                    else:
                         ctx.exec(["osascript", "-e", f'tell application "{app}" to quit'], timeout=15)
-                if saved_defaults:
-                    _restore_defaults(ctx, saved_defaults)
+                        end = ctx.clock() + QUIT_WAIT_S
+                        while ctx.running_fn(app) and ctx.clock() < end:
+                            ctx.sleep(0.2)
+                        if ctx.running_fn(app):
+                            pending["apps"].append(app)
+                            notes.append(f"{app} did not exit within {QUIT_WAIT_S:.0f} s")
+            # Preferences go back only when no copy of the app we drove is still running (its exit would overwrite them).
+            if saved_defaults:
+                still_up = [a for a in pending["apps"]]
+                if still_up:
+                    pending["defaults"] = list(saved_defaults)
+                    notes.append(f"preferences {sorted(saved_defaults)} not restored while {still_up} still run; backup kept in {recovery_dir}")
+                else:
+                    problems = _restore_defaults(ctx, saved_defaults, recovery_dir)
+                    if problems:
+                        pending["defaults"] = list(saved_defaults)
+                        notes.extend(problems + [f"backup kept in {recovery_dir}"])
         except Aborted:
-            pending = {"windows": list(created), "apps": list(started_by_us), "defaults": list(saved_defaults)}
+            pending = {"windows": list(created), "apps": sorted(apps - SYSTEM_APPS), "pids": list(our_pid.values()), "defaults": list(saved_defaults)}
         except Exception as e:  # noqa: BLE001  a broken cleanup tool must not hide the record or skip the accounting below
-            pending = {"windows": list(created), "apps": list(started_by_us), "defaults": list(saved_defaults)}
+            pending = {"windows": list(created), "apps": sorted(apps - SYSTEM_APPS), "pids": list(our_pid.values()), "defaults": list(saved_defaults)}
             notes.append(f"{type(e).__name__}: {e}"[:200])
         if any(pending.values()) or notes:
             rec["teardown_pending"] = {k: v for k, v in pending.items() if v}
             rec["teardown_pending"]["note"] = "teardown did not finish; these were left for manual recovery"
             if notes:
                 rec["teardown_pending"]["error"] = "; ".join(notes)
-        # a dialog or window raised by teardown itself is reported a second later: wait it out, then take the window
-        ctx.sleep(ctx.drain_s)
-        if ctx.monitor:
-            rec["teardown_changes"] = charge(ctx.monitor.changes(tt0, ctx.clock(), 0))
-        if ambient:
-            rec["ambient_changes"] = ambient
+            if pending["defaults"] and recovery_dir:
+                rec["teardown_pending"]["recovery"] = recovery_dir
+
+        # Late pass: wait until the sampler has gone past T_end plus its debounce, then cut all three windows from
+        # the full event log by stamp.
+        try:
+            t_end = ctx.clock()
+            ctx.wait_reports(t_end)
+            if ctx.monitor:
+                ambient = []
+                if t0 is not None:
+                    setup_final = charge(ctx.monitor.changes(ts0, t0, 0), ambient)
+                    task_final = charge(ctx.monitor.changes(t0, tt0, 0), ambient)
+                else:
+                    setup_final = charge(ctx.monitor.changes(ts0, tt0, 0), ambient)
+                    task_final = []
+                rec["setup_changes"] = setup_final
+                rec["teardown_changes"] = charge(ctx.monitor.changes(tt0, t_end, 0), ambient)
+                late_leaks = [c for c in setup_final if set(c["fields"]) & set(WINDOW_FIELDS)]
+                if late_leaks and "setup_leak" not in rec and rec.get("status") not in ("unavailable",):
+                    rec.update(status="infra_error", setup_leak=late_leaks,
+                               why="setup leaked a window onto one of Donovan's workspaces (reported only after the task ran); not counted")
+                    deferred = None
+                intended = [c for c in task_final if allowed and set(c["fields"]) <= allowed]
+                rec["changes"] = [c for c in task_final if c not in intended]
+                if intended:
+                    rec["intended_changes"] = intended
+                lost = ctx.monitor.lost_between(t0 if t0 is not None else ts0, t_end)
+                if lost and rec.get("status") not in ("infra_error",):
+                    rec.update(status="monitor_lost", why=lost[0]["why"])
+                    deferred = None
+                if ambient:
+                    rec["ambient_changes"] = ambient
+            if deferred is not None and "status" not in rec:
+                t_, check_ok, outcome = deferred
+                side = {"changes": len(rec.get("changes", [])), "hid": rec.get("hid_events", 0),
+                        "posted": rec.get("posted_input_events", 0), "collateral": len(rec.get("collateral", []))}
+                rec["status"] = scoring.classify(t_, check_ok, outcome, outcome.get("refusal"), side)
+        except Aborted:
+            rec.setdefault("status", "not_run")
         ctx.created_ever.update(created)
         shutil.rmtree(tdir, ignore_errors=True)

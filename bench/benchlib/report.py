@@ -159,6 +159,7 @@ def write_latest(directory, versions=None, today=None):
             "- `infra error` and `monitor lost` tasks are excluded from every score and never charged to a tool.",
             "- `expected` failures are features the design schedules for later phases; they count as failures here.",
             ""]
+    os.makedirs(directory, exist_ok=True)          # a run that stopped before writing any result has no directory yet
     path = os.path.join(directory, "latest.md")
     with open(path, "w", encoding="utf-8") as fh:
         fh.write("\n".join(out))

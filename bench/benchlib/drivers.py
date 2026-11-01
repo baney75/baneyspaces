@@ -85,6 +85,14 @@ class Driver:
     def snapshot(self, wid, surface=None):
         return self.run("snapshot", wid=wid, surface=surface)
 
+    def pid_windows(self, app, pid):
+        """-> (ok, [window ids]) of every window the process `pid` owns, on every workspace (agent-desktop lists them
+        all). ok is False when the listing failed, which a caller must treat as 'cannot tell', never as 'none'."""
+        res = self.run("list-windows", app=app)
+        if not res.ok or not isinstance(res.data, list):
+            return False, []
+        return True, [w.get("id") for w in res.data if w.get("pid") == pid]
+
 
 class BaneySpacesDriver(Driver):
     name = "baneyspaces"
@@ -141,13 +149,15 @@ class AgentDesktopDriver(Driver):
         return wid if str(wid).startswith("w-") else f"w-{wid}"
 
     def build(self, verb, wid=None, surface=None, ref=None, text=None, key=None, direction=None,
-              amount=None, option=None, prop=None):
+              amount=None, option=None, prop=None, app=None):
         head = ["--headed"] if self.headed else []
         a = [self.bin]
         if verb == "snapshot":
             a += ["snapshot", "--window-id", self.w(wid)]
             if surface and surface != "window":
                 a += ["--surface", surface]
+        elif verb == "list-windows":
+            a += ["list-windows", "--app", app]
         elif verb in ("click", "toggle"):
             a += [verb] + head + ["--", ref]
         elif verb in ("type", "set-value"):

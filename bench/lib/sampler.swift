@@ -52,6 +52,8 @@ func refreshAllow() {
           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
     allowPgids = Set((obj["pgids"] as? [Int]) ?? [])
     allowPids = Set((obj["pids"] as? [Int]) ?? [])
+    // acknowledge the version, so the harness knows a child's group is on the list before the child starts
+    if let v = obj["version"] as? Int { emit(["event": "allow", "t": Date().timeIntervalSince1970, "version": v]) }
 }
 /// Is the poster one of the harness's own commands (its process group) or the harness?
 func ownPoster(_ pid: Int) -> Bool {

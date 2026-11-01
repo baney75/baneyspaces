@@ -11,7 +11,8 @@ from benchlib.execs import Aborted, Exec
 
 
 class FakeMonitor:
-    """changes(t0, t1, settle) answers by call order: setup, task, teardown."""
+    """changes(t0, t1, settle) answers by call order: the early gate, then the late pass (setup, task, teardown)."""
+    SEQ = ("gate", "setup", "task", "teardown")
 
     def __init__(self, changes=0, hid=0, setup=0, teardown=0, lost=None, healthy=True, posted=0, windows=None, ambient_pids=()):
         self.c, self.h, self.s, self.td, self._lost, self._healthy, self.posted = changes, hid, setup, teardown, lost or [], healthy, posted
@@ -23,11 +24,15 @@ class FakeMonitor:
     def user_pids_now(self):
         return self.ambient_pids
 
+    def kind_of(self, n):
+        return self.SEQ[min(n, len(self.SEQ) - 1)]
+
     def changes(self, t0, t1, settle=0.0):
         self.calls.append((t0, t1, settle))
-        n = [self.s, self.c, self.td][min(len(self.calls) - 1, 2)]
+        kind = self.kind_of(len(self.calls) - 1)
+        n = {"gate": self.s, "setup": self.s, "task": self.c, "teardown": self.td}[kind]
         out = [{"t": 0.1, "fields": ["front"]}] * n
-        if self.windows and len(self.calls) == 2:
+        if self.windows and kind == "task":
             out = out + [{"t": 0.2, "fields": ["user_window"], "windows": self.windows}]
         return out
 
@@ -49,12 +54,19 @@ class FakeOpener:
         self.apps = {}
         self.given = []
         self.closed = set()
+        self.on_open = None
 
     profile_ok = True
     verified = True
+    pids = {}
+
+    def pid_of(self, wid):
+        return self.pids.get(wid)
 
     def open(self, app, targets=()):
         self.opened.append((app, list(targets)))
+        if self.on_open:
+            self.on_open()
         wid = self.ids.pop(0) if self.ids else None
         if wid is not None:
             self.given.append(wid)
@@ -66,6 +78,8 @@ class FakeOpener:
 
     def open_isolated(self, app, targets, profile_dir):
         self.opened.append((app, list(targets), profile_dir))
+        if self.on_open:
+            self.on_open()
         wid = self.ids.pop(0) if self.ids else None
         if wid is not None:
             self.given.append(wid)
@@ -171,16 +185,17 @@ class RunTask(unittest.TestCase):
         self.assertEqual(c.opener.opened, [])
 
     def test_setup_task_and_teardown_windows_do_not_overlap(self):
-        """second-S7: half-open windows, settle only on the last."""
+        """second-S7: half-open windows cut from the full log after teardown"""
         rec, c = self.run_it(monitor=FakeMonitor())
-        (s0, s1, ss), (k0, k1, ks), (d0, d1, ds) = c.monitor.calls
-        self.assertEqual((ss, ks, ds), (0, 0, 0))
-        self.assertEqual(s1, k0)          # setup ends where the task starts
-        self.assertEqual(k1, d0)          # the task ends where teardown starts
+        gate, setup, task, teardown = c.monitor.calls
+        self.assertEqual([x[2] for x in c.monitor.calls], [0, 0, 0, 0])
+        self.assertEqual(setup[1], task[0])          # setup ends where the task starts
+        self.assertEqual(task[1], teardown[0])       # the task ends where teardown starts
+        self.assertEqual(gate[0], setup[0])
 
     def test_a_late_event_is_charged_once(self):
-        rec, c = self.run_it(monitor=FakeMonitor(setup=1, changes=0))
-        self.assertEqual((len(rec["setup_changes"]), len(rec["changes"])), (1, 0))
+        rec, c = self.run_it(monitor=FakeMonitor(setup=0, changes=1))
+        self.assertEqual((len(rec["setup_changes"]), len(rec["changes"])), (0, 1))
 
     def test_a_window_from_one_of_donovans_background_apps_is_ambient_not_scored(self):
         """second-S9"""
@@ -299,17 +314,18 @@ class RunTask(unittest.TestCase):
         rec, c = self.run_it(opener=op, created_ever={41})
         self.assertEqual(rec["status"], "pass")
 
-    def test_the_app_is_not_quit_while_any_of_its_windows_is_still_open(self):
-        """sol-F2: the quit would take a window that is outside the verified scope with it"""
+    def test_the_app_is_not_quit_by_name_while_any_of_its_windows_is_still_open(self):
+        """sol-F2 (no pid known, app guaranteed ours by not_running)"""
         state = {"up": False}
 
         def doing(task, w, ti):
             state["up"] = True
             return {"ok": True, "log": []}
+        t = dict(TASK, setup=dict(TASK["setup"], requires={"not_running": ["TextEdit"]}))
         with tempfile.TemporaryDirectory() as d:
             c = ctx(d, doing, running_fn=lambda a: state["up"], closes=False)
             c.exec = fake_exec([])
-            rec = runner.run_task(TASK, c)
+            rec = runner.run_task(t, c)
             c.server_obj.stop()
         self.assertFalse(any('to quit' in " ".join(a) for a in c.exec.seen))
         self.assertEqual(rec["teardown_pending"]["apps"], ["TextEdit"])
@@ -374,8 +390,8 @@ class RunTask(unittest.TestCase):
             rec, _ = self.run_it(doing=doing, watch_dirs=(desk,))
         self.assertEqual(len(rec["collateral"]), 1)
 
-    def test_an_app_is_quit_only_if_this_task_started_it(self):
-        t = dict(TASK, setup=dict(TASK["setup"], quit_after=["Calculator"]))
+    def test_an_app_that_was_running_before_is_not_quit_by_name(self):
+        t = dict(TASK, setup=dict(TASK["setup"], requires={"not_running": ["Calculator"]}, quit_after=["Calculator"]))
         for was_running, expect in ((False, True), (True, False)):
             state = {"calc": was_running}
 
@@ -383,29 +399,74 @@ class RunTask(unittest.TestCase):
                 return True if app == "TextEdit" else state["calc"]
 
             def doing(task, w, ti):
-                state["calc"] = True            # the task has it up by the end
+                state["calc"] = True
                 return {"ok": True, "log": []}
             with tempfile.TemporaryDirectory() as d:
                 c = ctx(d, doing, running_fn=running)
-                c.exec = fake_exec([])
+                c.exec = fake_exec([(lambda a: a[0] == "osascript" and "quit" in " ".join(a), (0, "", ""))])
+                state_after = {}
+
+                orig = c.exec
+
+                def ex(argv, **kw):
+                    if argv[0] == "osascript" and "quit" in " ".join(argv):
+                        state["calc"] = False
+                    return orig(argv, **kw)
+                ex.seen = orig.seen
+                c.exec = ex
                 runner.run_task(t, c)
                 c.server_obj.stop()
-                quit_ = any('tell application "Calculator" to quit' in " ".join(a) for a in c.exec.seen)
+                quit_ = any('tell application "Calculator" to quit' in " ".join(a) for a in orig.seen)
             self.assertEqual(quit_, expect, was_running)
 
-    def test_an_exclusive_app_the_task_started_is_quit_too(self):
-        """first-F5: TextEdit left running would make the ChatGPT micro gate (TextEdit not running) n/a for good."""
-        state = {"textedit": False}
+    def pid_task(self, **kw):
+        op = FakeOpener([5])
+        op.pids = {5: 777}
+        alive = {"v": True}
+        seen = []
 
-        def doing(task, w, ti):
-            state["textedit"] = True
-            return {"ok": True, "log": []}
+        def qex(argv, timeout=60, env=None, stdin=None, cwd=None):
+            seen.append(argv)
+            if argv[:2] == ["kill", "-TERM"] and kw.get("dies", True):
+                alive["v"] = False
+            return 0, "", "", 1
+        return op, alive, seen, qex
+
+    def run_pid(self, ref_windows=(True, []), dies=True, running_other=True):
+        op, alive, seen, qex = self.pid_task(dies=dies)
         with tempfile.TemporaryDirectory() as d:
-            c = ctx(d, doing, running_fn=lambda app: state["textedit"])
-            c.exec = fake_exec([])
-            runner.run_task(TASK, c)
+            c = ctx(d, OK, opener=op, running_fn=lambda a: running_other)      # another copy of the app IS running
+            c.quiet_exec = qex
+            c.alive_fn = lambda pid: alive["v"]
+            c.ref.pid_windows_result = ref_windows
+            rec = runner.run_task(TASK, c)
             c.server_obj.stop()
-        self.assertTrue(any('tell application "TextEdit" to quit' in " ".join(a) for a in c.exec.seen))
+        return rec, seen, c
+
+    def test_only_the_instance_the_task_started_is_quit_even_when_another_copy_runs(self):
+        """first-F3: exclusive task, TextEdit already running without a window on his workspaces"""
+        rec, seen, c = self.run_pid()
+        self.assertIn(["kill", "-TERM", "777"], seen)
+        self.assertEqual([a for a in seen if a[0] == "kill"], [["kill", "-TERM", "777"]])
+        self.assertFalse(any(a[0] == "osascript" for a in c.exec.seen if hasattr(c.exec, "seen")))
+        self.assertNotIn("teardown_pending", rec)
+
+    def test_an_instance_with_a_window_outside_the_tracked_set_is_not_quit(self):
+        """sol-F2: a window on another workspace would die with it"""
+        rec, seen, c = self.run_pid(ref_windows=(True, ["w-99"]))
+        self.assertEqual([a for a in seen if a[0] == "kill"], [])
+        self.assertEqual(rec["teardown_pending"]["pids"], [777])
+        self.assertIn("still open", rec["teardown_pending"]["error"])
+
+    def test_an_instance_whose_windows_cannot_be_enumerated_is_not_quit(self):
+        rec, seen, c = self.run_pid(ref_windows=(False, []))
+        self.assertEqual([a for a in seen if a[0] == "kill"], [])
+        self.assertIn("could not be enumerated", rec["teardown_pending"]["error"])
+
+    def test_an_instance_that_does_not_exit_is_listed_not_forgotten(self):
+        rec, seen, c = self.run_pid(dies=False)
+        self.assertEqual(rec["teardown_pending"]["pids"], [777])
+        self.assertIn("did not exit", rec["teardown_pending"]["error"])
 
     def test_finder_is_never_quit(self):
         t = dict(TASK, setup=dict(TASK["setup"], open=[{"app": "Finder", "as": "doc", "targets": ["{tmp}/a.txt"]}]))
@@ -417,7 +478,7 @@ class RunTask(unittest.TestCase):
         self.assertFalse(any("Finder" in " ".join(a) for a in c.exec.seen))
 
     def test_hide_runs_only_for_an_app_the_task_started(self):
-        t = dict(TASK, setup=dict(TASK["setup"], hide="Calculator", quit_after=["Calculator"]))
+        t = dict(TASK, setup=dict(TASK["setup"], hide="Calculator", quit_after=["Calculator"], requires={"not_running": ["Calculator"]}))
         with tempfile.TemporaryDirectory() as d:
             c = ctx(d, OK)
             c.exec = fake_exec([])
@@ -456,7 +517,7 @@ class SetupLeaksAndProfiles(unittest.TestCase):
         rec, c = self.run_it(sleep=lambda s: slept.append(s), drain_s=1.5)
         self.assertIn(1.5, slept)
 
-    def test_a_window_leaked_during_setup_fails_the_task_and_the_tool_is_never_run(self):
+    def test_a_window_leaked_during_setup_is_an_infra_error_never_a_fail_and_the_tool_is_never_run(self):
         """first-F4: the 2026-10-31 incident. The event was first seen before t0 but only reported after it."""
         class Late:
             """changes() answers from a list of events stamped with their FIRST-SEEN time."""
@@ -483,7 +544,7 @@ class SetupLeaksAndProfiles(unittest.TestCase):
         clock = iter([1.0, 5.0, 5.0, 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.7, 5.8])
         called = []
         rec, c = self.run_it(monitor=Late(), clock=lambda: next(clock), doing=lambda *a: called.append(1))
-        self.assertEqual(rec["status"], "fail")
+        self.assertEqual(rec["status"], "infra_error")       # shared harness code did it: never charged to the tool
         self.assertIn("leaked", rec["why"])
         self.assertEqual(called, [])
         self.assertEqual(rec["setup_leak"][0]["fields"], ["unplaced_window"])
@@ -492,7 +553,7 @@ class SetupLeaksAndProfiles(unittest.TestCase):
         class Bg(FakeMonitor):
             def changes(self, t0, t1, settle=0.0):
                 self.calls.append((t0, t1, settle))
-                if len(self.calls) == 1:
+                if len(self.calls) in (1, 2):         # the gate and the late setup window
                     return [{"t": 1, "fields": ["user_window"], "windows": [{"id": 1, "pid": 2, "owner": "Mail"}]}]
                 return []
         rec, _ = self.run_it(monitor=Bg(ambient_pids={2}))
@@ -504,7 +565,7 @@ class SetupLeaksAndProfiles(unittest.TestCase):
         class Made(FakeMonitor):
             def changes(self, t0, t1, settle=0.0):
                 self.calls.append((t0, t1, settle))
-                if len(self.calls) == 2:
+                if len(self.calls) == 3:              # the late task window
                     return [{"t": 1, "fields": ["user_window"], "windows": [{"id": 1, "pid": 99, "owner": "Safari"}]}]
                 return []
         rec, _ = self.run_it(monitor=Made(ambient_pids={2}))

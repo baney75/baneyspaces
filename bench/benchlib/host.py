@@ -142,6 +142,31 @@ def session_gate(ok, state):
                    ". Actions on a locked or sleeping Mac fail or land on the login window; wake and unlock it, then start the run.")
 
 
+def quiet_exec(argv, timeout=60, env=None, stdin=None, cwd=None):
+    """Run a command that posts no input and touches no window (`defaults`, `kill`), by plain subprocess, so the
+    run's abort cannot stop it. Used to put Donovan's preferences back even when the run was aborted.
+    -> (rc, stdout, stderr, ms)"""
+    import time as _t
+    t0 = _t.monotonic()
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, input=stdin, env=env, cwd=cwd)
+        return p.returncode, p.stdout, p.stderr, int((_t.monotonic() - t0) * 1000)
+    except subprocess.TimeoutExpired as e:
+        return 124, (e.stdout or "") if isinstance(e.stdout, str) else "", f"timeout after {timeout}s", int((_t.monotonic() - t0) * 1000)
+    except OSError as e:
+        return 127, "", str(e), 0
+
+
+def pid_alive(pid):
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def list_dir(path):
     try:
         return sorted(os.listdir(path))

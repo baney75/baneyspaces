@@ -22,6 +22,7 @@ import json
 import os
 import secrets
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -206,6 +207,7 @@ def make_doing(level, tool, p, exec_fn, workdir, cwd=None):
         return doing
 
     # level == agent
+    os.makedirs(workdir, exist_ok=True)       # the column directory may not exist yet (the context creates it later)
     mcp_path = os.path.join(workdir, f"mcp-{tool}.json")
     cfg = agents.baneyspaces_mcp_config(p["baneyspaces"]) if tool == "baneyspaces" else agents.empty_mcp_config()
     with open(mcp_path, "w", encoding="utf-8") as fh:
@@ -268,6 +270,7 @@ class RunState:
         self.stop = False
         self.stop_reason = ""
         self.deadline = None          # monotonic time the caffeinate budget runs out; the run stops then
+        self.healthy_fn = lambda: (True, "")      # the screen-change monitor's health; set once it is running
 
     def halt(self, why):
         self.stop, self.stop_reason = True, why
@@ -275,6 +278,10 @@ class RunState:
     def gate(self):
         """Before every task (and micro run): -> None, or why the run must stop. Real idle >= 600 s, screen usable."""
         if self.abort.is_set():
+            return self.reason_text()
+        ok, why = self.healthy_fn()
+        if not ok:
+            self.reason.update(kind="lost", why=why)
             return self.reason_text()
         if self.deadline is not None and time.monotonic() > self.deadline:
             self.reason.update(kind="budget")
@@ -299,6 +306,8 @@ class RunState:
             return "the screen locked or the display went to sleep"
         if k == "budget":
             return "the level's time budget ran out"
+        if k == "signal":
+            return "the harness was interrupted (SIGINT or SIGTERM)"
         return "aborted"
 
 
@@ -338,6 +347,12 @@ def run_group(tasks, ctxs, st, run_task_fn=run_task, progress=lambda level, tool
                         rec = dict(base, status="infra_error", why=f"{type(e).__name__}: {e}"[:300])
                     if rec.get("fatal_infra"):
                         dead[tool] = f"column stopped, not measured: {rec['why']}"
+                    # teardown is part of the task: input, a lock or a lost monitor during it stops the run too
+                    if not st.abort.is_set():
+                        hok, hwhy = st.healthy_fn()
+                        if not hok:
+                            st.reason.update(kind="lost", why=hwhy)
+                            st.abort.set()
                     if st.abort.is_set() and not st.stop:
                         st.halt(st.reason_text())
             records[tool].append(rec)
@@ -444,6 +459,14 @@ def real_run(args, p):
 
     monitor.build_sampler(p["sampler_src"], p["sampler"])
     mon = monitor.Monitor([p["sampler"], "--allow-file", registry.path], on_hid=on_hid, on_lost=on_lost, on_session=on_session).start()
+    registry.waiter = mon.wait_allow_version
+    st.healthy_fn = mon.healthy
+
+    def on_signal(signum, _frame):
+        st.reason.update(kind="signal", signum=signum)
+        abort.set()
+        exec_fn.kill_all()
+    old_handlers = {s: signal.signal(s, on_signal) for s in (signal.SIGINT, signal.SIGTERM)}
     try:
         # The sampler is up: re-check what was true before the (unmonitored) compile.
         ok, msg = host.idle_gate(mon.real_idle())
@@ -460,6 +483,9 @@ def real_run(args, p):
             print("note: the input tap is unavailable (grant Input Monitoring to the sampler); the idle guard falls back to HID idle time")
         return _run_levels(args, p, tasks, plan, mon, st, abort, exec_fn, sess)
     finally:
+        exec_fn.kill_all()           # no tool child outlives the monitor and the guards
+        for s, hnd in old_handlers.items():
+            signal.signal(s, hnd)
         mon.stop()
         shutil.rmtree(sampler_dir, ignore_errors=True)
 
@@ -486,8 +512,9 @@ def _run_levels(args, p, tasks, plan, mon, st, abort, exec_fn, sess):
 
     def finish(level, tool, recs, dead):
         aborted = dead.get(tool, "")
-        aborted = aborted if aborted.startswith("column stopped") else (
-            f"stopped: {st.stop_reason}" if st.stop and any(r["status"] == "not_run" for r in recs) else "")
+        # a stopped run is aborted even if every record reached a status: the stop may have come during the last
+        # task's teardown, after it was already classified
+        aborted = aborted if aborted.startswith("column stopped") else (f"stopped: {st.stop_reason}" if st.stop else "")
         full = run_is_full(recs, args.only, aborted)
         report.write_result(results_dir, {
             "tool": tool, "level": level, "date": date, "hms": hms, "run_id": run_id, "only": args.only, "full": full,
@@ -499,7 +526,8 @@ def _run_levels(args, p, tasks, plan, mon, st, abort, exec_fn, sess):
         os.makedirs(wd, exist_ok=True)
         c = Context(tool=tool, workdir=wd, server=server, monitor=mon, opener=opener, referee_driver=referee_driver,
                     cleanup_driver=cleanup_driver, exec_fn=exec_fn, state_fn=_state, doing=doing, aborted_fn=abort.is_set,
-                    session_fn=mon.session_ok)
+                    session_fn=mon.session_ok, quiet_exec=host.quiet_exec,
+                    recovery_dir=os.path.join(TOOLS_DIR, "recovery", run_id))
         c.created_ever = created_ever
         return c
 
@@ -527,9 +555,11 @@ def _run_levels(args, p, tasks, plan, mon, st, abort, exec_fn, sess):
                             m = {"status": "n/a", "why": f"{type(e).__name__}: {e}"[:300], "latency": None}
                         if abort.is_set() and not st.stop:
                             st.halt(st.reason_text())
+                        hok, _hwhy = mon.healthy()
+                        good = m.get("status") == "ok" and not st.stop and not abort.is_set() and hok
                         report.write_result(results_dir, {"tool": tool, "level": level, "date": date, "hms": hms, "run_id": run_id,
-                                                          "only": None, "full": m.get("status") == "ok", "versions": versions,
-                                                          "micro": m, "aborted": None if m.get("status") == "ok" else m.get("why"),
+                                                          "only": None, "full": good, "versions": versions,
+                                                          "micro": m, "aborted": None if good else (m.get("why") or st.stop_reason or "not a clean measurement"),
                                                           "monitor": mon.health(), "host_state": host_state})
                     continue
                 ctxs = {tool: context(level, tool, make_doing(level, tool, p, exec_fn, os.path.join(workdir, f"{level}-{tool}"), cwd))
@@ -542,9 +572,10 @@ def _run_levels(args, p, tasks, plan, mon, st, abort, exec_fn, sess):
                 awake.terminate()
                 st.deadline = None
             if st.stop:
-                exit_code = EXIT_USER_ACTIVE
                 break
     finally:
+        if st.stop or abort.is_set():
+            exit_code = EXIT_USER_ACTIVE
         server.stop()
         shutil.rmtree(workdir, ignore_errors=True)
         shutil.rmtree(cwd, ignore_errors=True)

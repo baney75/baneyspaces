@@ -139,6 +139,8 @@ class Monitor:
         self._start_idle = 0.0
         self._real_last = None
         self._last_beat = None
+        self.last_sample_t = 0.0           # the sampler's own timestamp on its latest beat
+        self.allow_version = 0             # the latest allow-file version the sampler acknowledged
         self._lock = threading.Lock()
         self._proc = None
         self._stopping = False
@@ -188,8 +190,11 @@ class Monitor:
                     self._start_idle = float(ev.raw.get("idle") or 0.0)
                     self._last_beat = time.monotonic()
                     self._started.set()
+                elif ev.kind == "allow":
+                    self.allow_version = max(self.allow_version, int(ev.raw.get("version", 0)))
                 elif ev.kind == "beat":
                     self._last_beat = time.monotonic()
+                    self.last_sample_t = max(self.last_sample_t, ev.t)
                     self.samples = ev.raw.get("samples", self.samples)
                     gap = ev.raw.get("gap_ms", 0)
                     self.max_gap_ms = max(self.max_gap_ms, gap)
@@ -232,6 +237,27 @@ class Monitor:
             if last is not None and time.monotonic() - last > self.stall_s and not self._stopping:
                 self._lose(f"no beat for {int((time.monotonic() - last) * 1000)} ms")
                 return
+
+    def wait_sampled(self, until, timeout=10.0, poll=0.01):
+        """Block until the sampler has published a sample stamped at or after `until` (wall clock). By then every
+        event about a window first seen before `until - debounce` has been reported. -> True, or False on timeout."""
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            if self.last_sample_t >= until:
+                return True
+            if self.losses:
+                return False
+            time.sleep(poll)
+        return self.last_sample_t >= until
+
+    def wait_allow_version(self, version, timeout=0.5, poll=0.005):
+        """Block until the sampler has loaded the allow file at `version` (or newer)."""
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            if self.allow_version >= version:
+                return True
+            time.sleep(poll)
+        return self.allow_version >= version
 
     def real_idle(self, now=None):
         """Seconds since the last REAL input: from the tap while the monitor runs, from HIDIdleTime at its start."""

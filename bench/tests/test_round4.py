@@ -30,12 +30,19 @@ class FakeClock:
 
 class DelayedMonitor:
     """Events carry the time they were FIRST SEEN (stamp) but are only delivered later (arrive), like the sampler's
-    debounced unplaced_window. changes() returns what has arrived by the fake clock's now."""
+    debounced unplaced_window. changes() returns what has arrived by the fake clock's now; wait_sampled() moves the
+    clock to the requested sample time, like the real monitor waiting for the sampler."""
     def __init__(self, clock, events=()):
         self.clock, self.events = clock, list(events)      # (stamp, arrive, fields, windows)
         self.losses = []
+        self.queries = []
+
+    def wait_sampled(self, until, timeout=10.0):
+        self.clock.t = max(self.clock.t, until)
+        return True
 
     def changes(self, t0, t1, settle=0.0):
+        self.queries.append((t0, t1, self.clock.now()))
         return [{"t": st - t0, "fields": f, "windows": w} for st, arr, f, w in self.events
                 if arr <= self.clock.now() and t0 <= st < t1 + settle]
 
@@ -53,67 +60,143 @@ class DelayedMonitor:
 
 
 WIN = [{"id": 9, "pid": 5, "owner": "TextEdit"}]
+LEAK = lambda stamp, arrive: (stamp, arrive, ["unplaced_window"], WIN)
 
 
 class Drains(unittest.TestCase):
-    """first-F3, second-S8"""
+    """first-F1: nothing is assigned to a window at the moment it closes; the windows are cut from the full log
+    after teardown, once the sampler has gone past the debounce."""
 
-    def run_with(self, events_fn, doing=None, **kw):
+    def run_with(self, events, task=TASK, doing=None, teardown_takes=0.0, **kw):
         clk = FakeClock()
-        mon = DelayedMonitor(clk, events_fn(clk))
+        mon = DelayedMonitor(clk, events)
+
+        def doing_(t, w, ti):
+            clk.t += 0.5
+            return {"ok": True, "log": []}
         with tempfile.TemporaryDirectory() as d:
-            def doing_(t, w, ti):
-                clk.t += 0.5
-                return {"ok": True, "log": []}
             c = ctx(d, doing or doing_, monitor=mon, clock=clk.now, sleep=clk.sleep, drain_s=1.5, **kw)
+            if teardown_takes:
+                orig = c.ref.run
+
+                def slow(verb, timeout=60, **k2):
+                    clk.t += teardown_takes
+                    return orig(verb, timeout, **k2)
+                c.ref.run = slow
             try:
-                return runner.run_task(TASK, c)
+                return runner.run_task(task, c), mon
             finally:
                 c.server_obj.stop()
 
     def test_a_window_shown_a_third_of_a_second_after_the_last_action_is_counted_in_the_task(self):
-        # the sampler first sees it at t1+0.3 and reports it at t1+1.3; t1 is the task's end
-        def events(clk):
-            return [(100.0 + 0.8 + 0.8 + 0.3, 100.0 + 0.8 + 0.8 + 1.3, ["unplaced_window"], WIN)]
-        rec = self.run_with(events)
+        # ts0 = 100; gate wait -> t0 = 101.5; the doing runs 0.5 s -> t1 = 102.0; a window first seen at 102.3, reported at 103.3
+        rec, mon = self.run_with([LEAK(102.3, 103.3)])
         self.assertEqual(len(rec["changes"]), 1, rec)
-        self.assertEqual(rec.get("teardown_changes", []), [])
+        self.assertEqual(rec["teardown_changes"], [])
+        self.assertEqual(rec["status"], "pass")
 
     def test_a_window_a_teardown_action_raises_is_counted_in_teardown(self):
-        def events(clk):
-            return [(100.0 + 0.8 + 0.8 + 0.5 + 1.5 + 0.2, 100.0 + 0.8 + 0.8 + 0.5 + 1.5 + 1.2, ["unplaced_window"], WIN)]
-        rec = self.run_with(events)
+        rec, mon = self.run_with([LEAK(103.7, 104.7)], teardown_takes=0.6)
         self.assertEqual(len(rec["teardown_changes"]), 1, rec)
+        self.assertEqual(rec["changes"], [])
 
-    def test_a_leak_on_an_early_return_path_is_not_lost(self):
-        t = dict(TASK, setup=dict(TASK["setup"], profile="user-data-dir"))
+    def test_a_window_first_seen_late_in_the_wait_before_t0_but_reported_after_the_gate_query_invalidates_the_task(self):
+        """The gate query at q cannot see it (reported at 101.6, after the wait ended at 101.5); the late pass stamps it
+        at 100.6, inside setup. The task ran, so the result cannot be a clean pass: infra_error with setup_leak."""
+        rec, mon = self.run_with([LEAK(100.6, 101.6)])
+        self.assertEqual(rec["status"], "infra_error")
+        self.assertIn("reported only after", rec["why"])
+        self.assertEqual(len(rec["setup_leak"]), 1)
+        self.assertEqual(len(rec["setup_changes"]), 1)
+        self.assertIn("duration_s", rec)            # the tool did run; the early gate could not know
+
+    def test_the_late_pass_waits_for_the_sampler_to_get_past_the_debounce(self):
+        rec, mon = self.run_with([])
+        # the last query is taken at or after (T_end + drain): the sampler's clock was moved there first
+        last_t0, last_t1, asked_at = mon.queries[-1]
+        self.assertGreaterEqual(asked_at, last_t1 + 1.5)
+
+    def test_the_task_is_classified_only_after_the_late_pass(self):
+        t = dict(TASK, id="refuse-x", category="refusal", impossible=True, check={"kind": "nothing"})
+        refused = lambda *a: {"ok": True, "log": [], "tool_errors": 1, "refusal": {"code": "x", "suggestion": "s"}}
+
+        def doing(task, w, ti):
+            return refused()
+        # a change reported late but stamped inside the task turns a would-be refused_ok into a fail
+        rec, _ = self.run_with([(101.9, 103.0, ["pointer"], None)], task=t, doing=doing)
+        self.assertEqual(rec["status"], "fail")
+
+
+class EveryEarlyReturnIsAccountedFor(unittest.TestCase):
+    """second-S4 / second-S8: each setup path that gives up must still report a window leaked during setup,
+    however late the sampler reports it. Driven with a late-delivered, early-stamped event; would fail if a path
+    returned without the late pass."""
+
+    def case(self, task=None, opener=None, **kw):
         clk = FakeClock()
-        mon = DelayedMonitor(clk, [(100.1, 101.1, ["unplaced_window"], WIN)])
+        mon = DelayedMonitor(clk, [LEAK(100.1, 101.3)])
+        op = opener or FakeOpener([5])
+        op.on_open = lambda: clk.sleep(0.3)          # opening takes time: the window is first seen during it
+        with tempfile.TemporaryDirectory() as d:
+            c = ctx(d, OK, monitor=mon, clock=clk.now, sleep=clk.sleep, drain_s=1.5, opener=op, **kw)
+            try:
+                return runner.run_task(task or TASK, c)
+            finally:
+                c.server_obj.stop()
+
+    def check(self, rec, status="infra_error"):
+        self.assertEqual(rec["status"], status, rec)
+        self.assertEqual(len(rec["setup_changes"]), 1, rec)
+        self.assertIn("teardown_changes", rec)
+
+    def test_could_not_open(self):
+        self.check(self.case(opener=FakeOpener([])))
+
+    def test_unverified_profile(self):
         op = FakeOpener([5])
         op.verified = False
-        with tempfile.TemporaryDirectory() as d:
-            c = ctx(d, OK, monitor=mon, clock=clk.now, sleep=clk.sleep, drain_s=1.5, opener=op)
-            rec = runner.run_task(t, c)
-            c.server_obj.stop()
-        self.assertEqual(rec["status"], "infra_error")
-        self.assertEqual(len(rec["setup_changes"]), 1)
+        self.check(self.case(task=dict(TASK, setup=dict(TASK["setup"], profile="user-data-dir")), opener=op))
 
-    def test_every_query_is_preceded_by_a_drain(self):
-        src = open(os.path.join(support.BENCH, "benchlib", "runner.py")).read()
-        self.assertIn("ctx.sleep(ctx.drain_s)", src)
-        self.assertEqual(src.count("drained("), src.count("drained(") )     # early returns all go through drained()
-        self.assertNotIn("ctx.settle_s", src)
+    def test_a_window_not_on_the_agent_workspace(self):
+        self.check(self.case(opener=FakeOpener([5], listing=[])))
+
+    def test_a_foreign_window(self):
+        op = FakeOpener([5], listing=[5, 77])
+        op.apps = {77: "TextEdit"}
+        self.check(self.case(opener=op))
+
+    def test_a_window_that_would_not_close_for_the_missing_window_task(self):
+        self.check(self.case(task=dict(TASK, setup=dict(TASK["setup"], close_before_run=["doc"])), closes=False))
+
+    def test_the_gate_leak_itself(self):
+        clk = FakeClock()
+        mon = DelayedMonitor(clk, [LEAK(100.1, 100.4)])            # reported before the gate query: caught early
+        called = []
+        op = FakeOpener([5])
+        op.on_open = lambda: clk.sleep(0.3)
+        with tempfile.TemporaryDirectory() as d:
+            c = ctx(d, lambda *a: called.append(1), monitor=mon, clock=clk.now, sleep=clk.sleep, drain_s=1.5, opener=op)
+            rec = runner.run_task(TASK, c)
+            c.server_obj.stop()
+        self.assertEqual((rec["status"], called), ("infra_error", []))       # never `fail`: not the tool's doing
+        self.assertEqual(len(rec["setup_leak"]), 1)
 
 
 class MicroUsesTheRunnersSetup(unittest.TestCase):
     """first-F1, sol-F1"""
 
-    def micro_ctx(self, d, monitor, doing, opener=None, tool="agent-desktop"):
+    def micro_ctx(self, d, monitor, doing, opener=None, tool="agent-desktop", state=STATE):
         op = opener or FakeOpener([5, 6])
         ref = FakeDriver({(5, None): tree("micro.txt", ""), (6, None): tree("Calculator", "0")})
+
+        def ex(argv, timeout=60, env=None, stdin=None, cwd=None):
+            if argv[:2] == ["defaults", "export"]:
+                return 0, "<plist>basic</plist>", "", 1
+            return 0, "", "", 1
         return runner.Context(tool=tool, workdir=d, server=type("S", (), {"base": "b", "port": 1, "reset": lambda s: None})(),
-                              monitor=monitor, opener=op, referee_driver=ref, exec_fn=fake_exec([]), doing=doing,
-                              state_fn=lambda: STATE, availability_fn=lambda t, s, tool=None: None,
+                              monitor=monitor, opener=op, referee_driver=ref, exec_fn=ex, doing=doing,
+                              state_fn=lambda: state,
+                              availability_fn=lambda t, s, tool=None: host.availability(t, s, tool, installed_fn=lambda a: True, running_fn=lambda a: False),
                               running_fn=lambda a: False, sleep=lambda s: None, watch_dirs=(), drain_s=0)
 
     def test_a_window_that_leaked_during_setup_invalidates_the_measurement_and_no_action_is_sent(self):
@@ -129,7 +212,6 @@ class MicroUsesTheRunnersSetup(unittest.TestCase):
         self.assertEqual(got["status"], "invalid")
         self.assertEqual(called, [])
         self.assertTrue(got["setup_leak"])
-        self.assertTrue(got["setup_changes"])
 
     def test_a_micro_window_that_is_not_on_the_agent_workspace_is_n_a(self):
         called = []
@@ -143,9 +225,9 @@ class MicroUsesTheRunnersSetup(unittest.TestCase):
     def test_a_clean_run_returns_the_measurement_and_records_all_three_windows_of_changes(self):
         ok = lambda t, w, ti: {"ok": True, "log": [], "micro": {"status": "ok", "latency": {"snapshot": {"n": 20}}, "errors": [], "problems": []}}
         with tempfile.TemporaryDirectory() as d:
-            c = self.micro_ctx(d, FakeMonitor(setup=0, changes=0, teardown=0), ok)
+            c = self.micro_ctx(d, FakeMonitor(), ok)
             got = harness.run_micro_level("agent-desktop", c)
-        self.assertEqual(got["status"], "ok")
+        self.assertEqual(got["status"], "ok", got)
         for k in ("setup_changes", "changes", "teardown_changes"):
             self.assertIn(k, got)
 
@@ -156,12 +238,15 @@ class MicroUsesTheRunnersSetup(unittest.TestCase):
             got = harness.run_micro_level("agent-desktop", c)
         self.assertEqual(got["status"], "invalid")
 
-    def test_the_micro_pseudo_task_uses_the_same_gates_as_a_task(self):
+    def test_the_micro_pseudo_task_keeps_the_gates_of_a_task(self):
+        """would fail if the pseudo task lost its exclusive / not_running requirements"""
         t = host.micro_task("baneyspaces")
-        self.assertEqual(t["setup"]["requires"]["exclusive"], ["TextEdit"])
-        self.assertEqual(t["setup"]["requires"]["not_running"], ["Calculator"])
+        ok = dict(installed_fn=lambda a: True)
+        self.assertIsNone(host.availability(t, STATE, "baneyspaces", running_fn=lambda a: False, **ok))
+        busy = {"agentWorkspace": 9, "workspaces": {"1": [{"app": "TextEdit", "id": 1}], "9": []}}
+        self.assertIn("TextEdit", host.availability(t, busy, "baneyspaces", running_fn=lambda a: False, **ok))
+        self.assertIn("Calculator", host.availability(t, STATE, "baneyspaces", running_fn=lambda a: a == "Calculator", **ok))
         self.assertIn("com.apple.calculator", t["setup"]["restore_defaults"])
-        self.assertIn("Access", "Access")
 
 
 class Teardown(unittest.TestCase):
@@ -292,12 +377,13 @@ class Placement(unittest.TestCase):
 
 
 class Registry(unittest.TestCase):
-    """first-F2: the sampler learns which process groups are the column's own"""
+    """first-F2, sonnet-F4: the sampler learns which process groups are the column's own"""
 
-    def test_a_running_command_is_in_the_registry_file_and_leaves_it_after(self):
+    def test_a_running_command_is_in_the_registry_file_and_stays_for_a_grace_period_after(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "allow.json")
-            reg = PgidRegistry(path)
+            now = {"t": 1000.0}
+            reg = PgidRegistry(path, clock=lambda: now["t"])
             ex = Exec(registry=reg)
             seen = {}
 
@@ -314,8 +400,29 @@ class Registry(unittest.TestCase):
             ex(["/bin/sleep", "0.6"])
             th.join()
             self.assertTrue(seen["pgids"])
+            pgid = seen["pgids"][0]
+            # just after it ended an event it posted may still arrive: the group is still recognised
+            self.assertIn(pgid, json.load(open(path))["pgids"])
+            now["t"] += 6
+            reg._write()
             self.assertEqual(json.load(open(path))["pgids"], [])
             self.assertEqual(json.load(open(path))["pids"], [os.getpid()])
+
+    def test_the_file_has_a_version_and_add_waits_for_the_samplers_acknowledgement(self):
+        with tempfile.TemporaryDirectory() as d:
+            waited = []
+            reg = PgidRegistry(os.path.join(d, "a.json"), waiter=lambda v, timeout: waited.append(v) or True)
+            reg.add(4242)
+            self.assertEqual(waited, [reg.version])
+            self.assertEqual(json.load(open(os.path.join(d, "a.json")))["version"], reg.version)
+
+    def test_the_sampler_acknowledges_the_version_it_loaded(self):
+        src = open(os.path.join(support.BENCH, "lib", "sampler.swift")).read()
+        self.assertIn('emit(["event": "allow"', src)
+        m = __import__("benchlib.monitor", fromlist=["x"]).Monitor(["x"])
+        m.allow_version = 3
+        self.assertTrue(m.wait_allow_version(3, timeout=0.05))
+        self.assertFalse(m.wait_allow_version(4, timeout=0.05))
 
     def test_the_sampler_treats_any_other_poster_as_real_input(self):
         src = open(os.path.join(support.BENCH, "lib", "sampler.swift")).read()

@@ -38,6 +38,12 @@ class FakeDriver(Driver):
     def resolve(self):
         return True, "fake"
 
+    pid_windows_result = (True, [])
+
+    def pid_windows(self, app, pid):
+        self.calls.append(("pid_windows", app, pid))
+        return self.pid_windows_result
+
     def build(self, verb, **kw):
         return [verb]
 

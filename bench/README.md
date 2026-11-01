@@ -30,7 +30,10 @@ python3 -I bench/ratchet.py                  # fail if BaneySpaces regressed (se
   `not run: user active ...` and exits 3 before it builds, opens or touches anything; `harness.py` checks the same
   itself. There is no flag or variable that lowers the bar. Once the sampler is up the harness checks again, and
   **before every task** it requires 600 s of *real* idle and an awake, unlocked screen. Real input at any moment kills
-  the child tool and stops the run.
+  the child tool and stops the run. So do Ctrl-C and SIGTERM: the harness sets the abort, kills every tool process group it started
+  (they live in their own sessions and would otherwise outlive it) and only then stops the monitor and removes its directories.
+  A stopped run is marked `aborted` and is never `full`, even when every record already had a status (the stop may have come
+  during the last task's teardown), and it exits with code 3.
 - **Real input versus a tool's own input.** The sampler listens (listen-only event tap) to keyboard, mouse and scroll
   events and reads each event's source process id: pid 0 is hardware, any other pid is a program posting events. Only
   pid 0 counts as Donovan. So `agent-desktop-headed` and ChatGPT (which may post input) are not stopped by their own
@@ -57,8 +60,13 @@ python3 -I bench/ratchet.py                  # fail if BaneySpaces regressed (se
   directory of its own). Anything else (Finder, browsers, Electron apps, System Settings) answers `needs_sandbox` and the task
   is `unavailable`. After an open, if the app owns a window the bench did not create, or a window the bench did create is not
   on the agent workspace, the task is `infra_error` and the tool does not run. Calculator runs only if it is not already
-  running, and its preferences (`com.apple.calculator`) are saved before and restored after every Calculator task, so a
-  View > Scientific never reaches Donovan's Calculator. A browser or Electron app (sandbox only for now) is launched
+  running. Its preferences (`com.apple.calculator`) are exported before the task and written to a recovery file under
+  `.tools/recovery/<run>/`; if the export fails for any reason other than "domain does not exist" (a timeout, empty output) the
+  task is `infra_error` before anything is opened, and a domain is deleted afterwards only if its absence was confirmed. They are
+  imported back only after the instance the task started has exited (the app's own exit would overwrite them), the import is
+  checked by re-exporting, and on any failure, a still-running instance, or an abort, the recovery file stays and
+  `teardown_pending` names it. After an abort the instance (an app that was not running before, so every window is ours)
+  is ended quietly with `kill -TERM` and the import goes through a plain subprocess that the abort cannot stop. A browser or Electron app (sandbox only for now) is launched
   only with a fresh `--user-data-dir` under the bench temp dir (`baneyspaces agent open <app> --user-data-dir <dir>`),
   and the new window's process arguments are read back to verify it; a build whose `agent open` does not advertise that
   flag, or a launch that does not carry it, makes the task `unavailable` / `infra_error`. An environment flag alone never
@@ -68,7 +76,7 @@ python3 -I bench/ratchet.py                  # fail if BaneySpaces regressed (se
 - **Teardown closes only windows the bench created**: their ids are recorded when `baneyspaces agent open` returns them;
   one is closed only if its id is still on the agent workspace, by pressing the window's own Close button (a direct
   child of the window, never matched by text elsewhere) and, on a sheet, "Don't Save". Never "Delete" or "Discard".
-  An app (an exclusive one such as TextEdit included) is quit only if this task started it; a teardown that throws is recorded in `teardown_pending` and the accounting and temp-dir clean-up still run. Teardown shares the run's
+  The bench quits only the **instance it started**, by pid (`agent open` starts a new instance each time, so another running copy of TextEdit is never touched), and only after every window that pid owns, on every workspace, has been enumerated and is gone; a window left open or an enumeration that fails means no quit and a `teardown_pending` entry with the pid. A teardown that throws is recorded the same way and the accounting and temp-dir clean-up still run. Teardown shares the run's
   abort and checks it before every action: after an abort nothing more is done and `teardown_pending` in the result
   lists what was left on the agent workspace.
 - **The agent columns are confined.** The BaneySpaces column reaches the Mac only through `baneyspaces mcp`, which
@@ -124,16 +132,20 @@ Statuses: `pass`, `fail`, `refused_ok` are scored. Everything else is counted an
 a setup that could not open the app), `monitor_lost`, `not_run`. A fatal infra error (cua_repl will not start, quota gone)
 stops that column and leaves it `n/a` instead of scoring nothing 30 times.
 
-- **Every query waits out the debounce.** A window that appears without a workspace is reported by the sampler a second
-  later, stamped with when it first appeared on its own line (never merged into the current sample's changes), and BaneySpaces
-  writes `state.json` a moment after a window exists. So the runner waits `drain_s` (1.5 s) before `t0`, before `tt0`, on every
-  early-return setup path and before the final teardown query; a window raised by the last action or by a teardown step is
-  counted in the window it belongs to. Real input from any process outside the column's own process groups (the sampler is
-  given them through a file the harness keeps) counts as Donovan's, so his remapper or scroll tool still stops the run.
-- **A window leaked by setup fails the task** (and the tool is not run). The runner waits out the sampler's one-second
-  debounce before it takes `t0`, events are stamped with when the window first appeared, and a leak found in the setup window
-  is `fail` with `setup_leak`, never a change the tool made. The "missing window" task uses a bench window that existed and was
-  closed, so the tool's own binary (not the guard) is the one that says it is gone.
+- **Windows are cut from the whole log after teardown.** A window that appears without a workspace is reported by the
+  sampler a second later, stamped with when it first appeared on its own line (never merged into the current sample's
+  changes), and BaneySpaces writes `state.json` a moment after a window exists. So nothing is assigned to setup, the task
+  or teardown at the moment that window closes. The setup-leak gate waits until the sampler has published a sample
+  `drain_s` (1.5 s) past its query point; after teardown the runner waits for the sampler to get `drain_s` past the end and
+  cuts setup `[ts0, t0)`, task `[t0, tt0)` and teardown `[tt0, end)` from the full event log by stamp, and only then
+  classifies the task. A window first seen before `t0` that appears only in that late pass invalidates the task
+  (`infra_error`, `setup_leak`). Real input from any process outside the column's own process groups (the sampler is
+  given them through a versioned file the harness keeps, acknowledged by the sampler before a child starts, with a five-second
+  grace after it ends) counts as Donovan's, so his remapper or scroll tool still stops the run.
+- **A window leaked by setup is an `infra_error`, never a `fail`** (and the tool is not run if the leak is seen before it
+  starts). The shared `agent open` is harness code, so a leak is not the tool's doing; it is recorded as `setup_leak`, shown in
+  the report, kept out of the scored set and ignored by the ratchet. The "missing window" task uses a bench window that existed
+  and was closed, so the tool's own binary (not the guard) is the one that says it is gone.
 - **Hangs are the tool's.** A computer-use call that was issued but never returned before the timeout counts as attempted:
   the task is a `fail`, not an `infra_error`. Account, quota and start-up errors are read only from stderr and the stream's
   own error events, never from the agent's words.
@@ -209,7 +221,7 @@ Drop `bench/tasks/<id>.json` (the file name is the id). Fields:
 
 ## Status of this build
 
-Prepared and unit-tested (`bench/run_tests.sh`, 344 tests, fakes only). `bench/run.sh --dry-run --tool all` lists the 30 tasks
+Prepared and unit-tested (`bench/run_tests.sh`, 376 tests, fakes only). `bench/run.sh --dry-run --tool all` lists the 30 tasks
 and resolves every runner. agent-desktop builds from the pinned source. **No column has been measured and nothing has
 run live since the 2026-10-31 incident** (a Calculator and a TextEdit window landed on Donovan's workspace); the monitor's
 `user_window` and `unplaced_window` fields exist to catch that.
