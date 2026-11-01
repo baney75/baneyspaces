@@ -45,4 +45,5 @@ Every `baneyspaces` command and every MCP tool result is one JSON object.
 | `agent_window` | A move of an agent window to your workspaces. |
 | `no_monitor` | No monitor is connected. |
 | `compositor_error` | The compositor refused a command or did not answer. `retry` is `safe` only for a clean refusal before anything moved, otherwise `never`; `error.data` says which. The daemon re-reads the compositor before the next command. |
+| `config_invalid` | A config change was refused: it fails the schema, leaves no way to switch workspaces, binds the recovery chord, or sets an animation over 1000 ms. `error.data.issues` is a list of `{path, code, reason}` with the exact setting and why; `error.data.warnings` lists notes that did not block it. The running config did not change (`retry` never). |
 | `internal` | A bug. |

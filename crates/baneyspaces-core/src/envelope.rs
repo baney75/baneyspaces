@@ -42,7 +42,7 @@ pub struct Envelope {
 /// Every error code the envelope may carry (`spec/envelope.md`).
 pub const CODES: &[&str] = &[
     "invalid_args", "not_found", "ambiguous", "not_in_scope", "needs_lend", "in_use", "not_supported", "daemon_down",
-    "stale_ref", "single_instance", "needs_sandbox", "bad_arguments", "window_unmatched", "timeout", "engine_missing", "engine_error", "agent_window", "no_monitor", "compositor_error", "internal",
+    "stale_ref", "single_instance", "needs_sandbox", "bad_arguments", "window_unmatched", "timeout", "engine_missing", "engine_error", "agent_window", "no_monitor", "compositor_error", "config_invalid", "internal",
 ];
 
 impl Envelope {

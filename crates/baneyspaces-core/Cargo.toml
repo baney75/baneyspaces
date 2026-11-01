@@ -8,3 +8,5 @@ description = "BaneySpaces workspace model, agent scope guard, JSON envelope and
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+toml.workspace = true
+regex.workspace = true

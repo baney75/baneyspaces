@@ -1,0 +1,2087 @@
+{
+  "$defs": {
+    "action": {
+      "description": "A baneyspaces CLI command line (spec/cli.md), exec <command>, mode <name> or none.",
+      "type": "string"
+    },
+    "chord": {
+      "description": "modifiers then one key, lowercase, joined with +: mod, cmd, super, win, ctrl, alt, shift; key names are in spec/keys.json under chords.keys. Needs a modifier in keys.bindings; the recovery chord (logo+shift+escape) is never bindable.",
+      "type": "string"
+    },
+    "custom_theme": {
+      "additionalProperties": false,
+      "description": "A custom theme: extends, tokens to change, and optionally a palette.",
+      "properties": {
+        "border": {
+          "additionalProperties": false,
+          "description": "The panel border.",
+          "properties": {
+            "focused_role": {
+              "description": "for the current workspace, the selected row and the hovered tile",
+              "enum": [
+                "background",
+                "surface",
+                "sunken",
+                "foreground",
+                "strong",
+                "muted",
+                "border",
+                "accent",
+                "selection",
+                "urgent",
+                "working",
+                "done",
+                "light",
+                "workspace"
+              ]
+            },
+            "focused_width": {
+              "description": "points",
+              "maximum": 20.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            "gradient": {
+              "description": "opacity at the top, then at the bottom",
+              "items": {
+                "description": "opacity",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": "array"
+            },
+            "opacity": {
+              "description": "applies to role",
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            "role": {
+              "description": "a palette role, or light, or workspace",
+              "enum": [
+                "background",
+                "surface",
+                "sunken",
+                "foreground",
+                "strong",
+                "muted",
+                "border",
+                "accent",
+                "selection",
+                "urgent",
+                "working",
+                "done",
+                "light",
+                "workspace"
+              ]
+            },
+            "width": {
+              "description": "points",
+              "maximum": 20.0,
+              "minimum": 0.0,
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "extends": {
+          "description": "The built-in or custom theme this one starts from. Required.",
+          "pattern": "^([a-z0-9][a-z0-9_-]{0,31}|auto)$",
+          "type": "string"
+        },
+        "fill": {
+          "additionalProperties": false,
+          "description": "The panel fill.",
+          "properties": {
+            "adjustable": {
+              "description": "Settings may change the opacity",
+              "type": "boolean"
+            },
+            "material": {
+              "anyOf": [
+                {
+                  "description": "the platform's blur",
+                  "enum": [
+                    "ultra-thin",
+                    "thin",
+                    "regular",
+                    "thick",
+                    "none"
+                  ]
+                },
+                {
+                  "const": null,
+                  "description": "null: opaque"
+                }
+              ],
+              "description": "The platform's blur, or \"none\" (null in JSON) for an opaque fill in tint_role."
+            },
+            "opacity": {
+              "description": "of the whole panel",
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            "tint_opacity": {
+              "description": "of tint_role",
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            "tint_role": {
+              "description": "laid over the material",
+              "enum": [
+                "background",
+                "surface",
+                "sunken",
+                "foreground",
+                "strong",
+                "muted",
+                "border",
+                "accent",
+                "selection",
+                "urgent",
+                "working",
+                "done",
+                "light",
+                "workspace"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "font": {
+          "additionalProperties": false,
+          "description": "Type.",
+          "properties": {
+            "family": {
+              "description": "A key into themes.json fonts (system-sans, monospace) or a font family name; the first installed family is used.",
+              "maxLength": 64,
+              "type": "string"
+            },
+            "size": {
+              "description": "points",
+              "maximum": 72.0,
+              "minimum": 6.0,
+              "type": "number"
+            },
+            "weight": {
+              "description": "weight",
+              "enum": [
+                "light",
+                "regular",
+                "medium",
+                "semibold",
+                "bold"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "indicator": {
+          "description": "How a workspace shows in the dock, the bar module and the overview.",
+          "enum": [
+            "dot",
+            "bar",
+            "number-block"
+          ]
+        },
+        "label": {
+          "description": "A name to show.",
+          "maxLength": 64,
+          "type": "string"
+        },
+        "motion": {
+          "additionalProperties": false,
+          "description": "The theme's own motion tokens. The animation section decides durations; scale_from and lift are the transforms.",
+          "properties": {
+            "in_ms": {
+              "maximum": 1000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "lift": {
+              "description": "1 means no lift",
+              "maximum": 2.0,
+              "minimum": 1.0,
+              "type": "number"
+            },
+            "list_in_ms": {
+              "maximum": 1000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "list_out_ms": {
+              "maximum": 1000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "out_ms": {
+              "maximum": 1000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "row_ms": {
+              "maximum": 1000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "scale_from": {
+              "description": "1 means no scaling",
+              "maximum": 1.0,
+              "minimum": 0.5,
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "palette": {
+          "additionalProperties": false,
+          "description": "The twelve palette roles as #rrggbb.",
+          "properties": {
+            "accent": {
+              "description": "the accent color",
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "background": {
+              "description": "the background color",
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "border": {
+              "description": "the border color",
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "done": {
+              "description": "the done color",
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "foreground": {
+              "description": "the foreground color",
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "mode": {
+              "description": "dark or light",
+              "enum": [
+                "dark",
+                "light"
+              ]
+            },
+            "muted": {
+              "description": "the muted color",
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "selection": {
+              "description": "the selection color",
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "strong": {
+              "description": "the strong color",
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "sunken": {
+              "description": "the sunken color",
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "surface": {
+              "description": "the surface color",
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "urgent": {
+              "description": "the urgent color",
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            },
+            "working": {
+              "description": "the working color",
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "radius": {
+          "additionalProperties": false,
+          "description": "Corner radius in points.",
+          "properties": {
+            "bar": {
+              "description": "the dock bar",
+              "maximum": 200.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            "list": {
+              "description": "the +N list and window strip panel",
+              "maximum": 200.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            "row": {
+              "description": "a list row",
+              "maximum": 200.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            "tile": {
+              "description": "a tile",
+              "maximum": 200.0,
+              "minimum": 0.0,
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "shadow": {
+          "anyOf": [
+            {
+              "const": false,
+              "description": "false: no shadow"
+            },
+            {
+              "const": null,
+              "description": "null: no shadow"
+            },
+            {
+              "additionalProperties": false,
+              "description": "a soft shadow",
+              "properties": {
+                "opacity": {
+                  "description": "opacity of black",
+                  "maximum": 1.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                "radius": {
+                  "description": "blur radius",
+                  "maximum": 200.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                "y": {
+                  "description": "vertical offset",
+                  "maximum": 200.0,
+                  "minimum": -200.0,
+                  "type": "number"
+                }
+              },
+              "type": "object"
+            }
+          ],
+          "description": "false (or null) for none, or {radius, y, opacity}. TOML has no null, so write false."
+        },
+        "space": {
+          "additionalProperties": false,
+          "description": "Spacing in points.",
+          "properties": {
+            "gap": {
+              "description": "between tiles",
+              "maximum": 200.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            "padding": {
+              "description": "panel padding",
+              "maximum": 200.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            "tile": {
+              "description": "tile size",
+              "maximum": 400.0,
+              "minimum": 8.0,
+              "type": "number"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "extends"
+      ],
+      "type": "object"
+    },
+    "issue": {
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "code",
+        "reason"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://github.com/baney75/baneyspaces/blob/main/spec/config.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "BaneySpaces configuration (spec/config.md).",
+  "properties": {
+    "animation": {
+      "additionalProperties": false,
+      "description": "Animations. Every transition runs on the compositor.",
+      "properties": {
+        "border": {
+          "additionalProperties": false,
+          "description": "The focus border (Linux).",
+          "properties": {
+            "curve": {
+              "description": "spring | bezier | linear",
+              "enum": [
+                "spring",
+                "bezier",
+                "linear"
+              ]
+            },
+            "damping": {
+              "description": "spring: 1 = no overshoot",
+              "maximum": 3.0,
+              "minimum": 0.05,
+              "type": "number"
+            },
+            "duration_ms": {
+              "description": "bezier and linear: milliseconds, at most 1000",
+              "maximum": 1000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "points": {
+              "description": "bezier control points x1, y1, x2, y2 (x in 0..1)",
+              "items": {
+                "maximum": 3.0,
+                "minimum": -2.0,
+                "type": "number"
+              },
+              "maxItems": 4,
+              "minItems": 4,
+              "type": "array"
+            },
+            "response": {
+              "description": "spring: seconds to settle, roughly (at most 1)",
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "cursor": {
+          "additionalProperties": false,
+          "description": "The agent cursor.",
+          "properties": {
+            "glide": {
+              "additionalProperties": false,
+              "description": "glide",
+              "properties": {
+                "curve": {
+                  "description": "spring | bezier | linear",
+                  "enum": [
+                    "spring",
+                    "bezier",
+                    "linear"
+                  ]
+                },
+                "damping": {
+                  "description": "spring: 1 = no overshoot",
+                  "maximum": 3.0,
+                  "minimum": 0.05,
+                  "type": "number"
+                },
+                "duration_ms": {
+                  "description": "bezier and linear: milliseconds, at most 1000",
+                  "maximum": 1000,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "points": {
+                  "description": "bezier control points x1, y1, x2, y2 (x in 0..1)",
+                  "items": {
+                    "maximum": 3.0,
+                    "minimum": -2.0,
+                    "type": "number"
+                  },
+                  "maxItems": 4,
+                  "minItems": 4,
+                  "type": "array"
+                },
+                "response": {
+                  "description": "spring: seconds to settle, roughly (at most 1)",
+                  "maximum": 1.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                }
+              },
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "dock": {
+          "additionalProperties": false,
+          "description": "The dock.",
+          "properties": {
+            "in": {
+              "additionalProperties": false,
+              "description": "in",
+              "properties": {
+                "curve": {
+                  "description": "spring | bezier | linear",
+                  "enum": [
+                    "spring",
+                    "bezier",
+                    "linear"
+                  ]
+                },
+                "damping": {
+                  "description": "spring: 1 = no overshoot",
+                  "maximum": 3.0,
+                  "minimum": 0.05,
+                  "type": "number"
+                },
+                "duration_ms": {
+                  "description": "bezier and linear: milliseconds, at most 1000",
+                  "maximum": 1000,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "points": {
+                  "description": "bezier control points x1, y1, x2, y2 (x in 0..1)",
+                  "items": {
+                    "maximum": 3.0,
+                    "minimum": -2.0,
+                    "type": "number"
+                  },
+                  "maxItems": 4,
+                  "minItems": 4,
+                  "type": "array"
+                },
+                "response": {
+                  "description": "spring: seconds to settle, roughly (at most 1)",
+                  "maximum": 1.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                }
+              },
+              "type": "object"
+            },
+            "out": {
+              "additionalProperties": false,
+              "description": "out",
+              "properties": {
+                "curve": {
+                  "description": "spring | bezier | linear",
+                  "enum": [
+                    "spring",
+                    "bezier",
+                    "linear"
+                  ]
+                },
+                "damping": {
+                  "description": "spring: 1 = no overshoot",
+                  "maximum": 3.0,
+                  "minimum": 0.05,
+                  "type": "number"
+                },
+                "duration_ms": {
+                  "description": "bezier and linear: milliseconds, at most 1000",
+                  "maximum": 1000,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "points": {
+                  "description": "bezier control points x1, y1, x2, y2 (x in 0..1)",
+                  "items": {
+                    "maximum": 3.0,
+                    "minimum": -2.0,
+                    "type": "number"
+                  },
+                  "maxItems": 4,
+                  "minItems": 4,
+                  "type": "array"
+                },
+                "response": {
+                  "description": "spring: seconds to settle, roughly (at most 1)",
+                  "maximum": 1.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                }
+              },
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "drag_lift": {
+          "additionalProperties": false,
+          "description": "A dragged item lifting.",
+          "properties": {
+            "curve": {
+              "description": "spring | bezier | linear",
+              "enum": [
+                "spring",
+                "bezier",
+                "linear"
+              ]
+            },
+            "damping": {
+              "description": "spring: 1 = no overshoot",
+              "maximum": 3.0,
+              "minimum": 0.05,
+              "type": "number"
+            },
+            "duration_ms": {
+              "description": "bezier and linear: milliseconds, at most 1000",
+              "maximum": 1000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "points": {
+              "description": "bezier control points x1, y1, x2, y2 (x in 0..1)",
+              "items": {
+                "maximum": 3.0,
+                "minimum": -2.0,
+                "type": "number"
+              },
+              "maxItems": 4,
+              "minItems": 4,
+              "type": "array"
+            },
+            "response": {
+              "description": "spring: seconds to settle, roughly (at most 1)",
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "hover": {
+          "additionalProperties": false,
+          "description": "A tile under the pointer.",
+          "properties": {
+            "curve": {
+              "description": "spring | bezier | linear",
+              "enum": [
+                "spring",
+                "bezier",
+                "linear"
+              ]
+            },
+            "damping": {
+              "description": "spring: 1 = no overshoot",
+              "maximum": 3.0,
+              "minimum": 0.05,
+              "type": "number"
+            },
+            "duration_ms": {
+              "description": "bezier and linear: milliseconds, at most 1000",
+              "maximum": 1000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "points": {
+              "description": "bezier control points x1, y1, x2, y2 (x in 0..1)",
+              "items": {
+                "maximum": 3.0,
+                "minimum": -2.0,
+                "type": "number"
+              },
+              "maxItems": 4,
+              "minItems": 4,
+              "type": "array"
+            },
+            "response": {
+              "description": "spring: seconds to settle, roughly (at most 1)",
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "hud": {
+          "additionalProperties": false,
+          "description": "The workspace HUD.",
+          "properties": {
+            "in": {
+              "additionalProperties": false,
+              "description": "in",
+              "properties": {
+                "curve": {
+                  "description": "spring | bezier | linear",
+                  "enum": [
+                    "spring",
+                    "bezier",
+                    "linear"
+                  ]
+                },
+                "damping": {
+                  "description": "spring: 1 = no overshoot",
+                  "maximum": 3.0,
+                  "minimum": 0.05,
+                  "type": "number"
+                },
+                "duration_ms": {
+                  "description": "bezier and linear: milliseconds, at most 1000",
+                  "maximum": 1000,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "points": {
+                  "description": "bezier control points x1, y1, x2, y2 (x in 0..1)",
+                  "items": {
+                    "maximum": 3.0,
+                    "minimum": -2.0,
+                    "type": "number"
+                  },
+                  "maxItems": 4,
+                  "minItems": 4,
+                  "type": "array"
+                },
+                "response": {
+                  "description": "spring: seconds to settle, roughly (at most 1)",
+                  "maximum": 1.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                }
+              },
+              "type": "object"
+            },
+            "out": {
+              "additionalProperties": false,
+              "description": "out",
+              "properties": {
+                "curve": {
+                  "description": "spring | bezier | linear",
+                  "enum": [
+                    "spring",
+                    "bezier",
+                    "linear"
+                  ]
+                },
+                "damping": {
+                  "description": "spring: 1 = no overshoot",
+                  "maximum": 3.0,
+                  "minimum": 0.05,
+                  "type": "number"
+                },
+                "duration_ms": {
+                  "description": "bezier and linear: milliseconds, at most 1000",
+                  "maximum": 1000,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "points": {
+                  "description": "bezier control points x1, y1, x2, y2 (x in 0..1)",
+                  "items": {
+                    "maximum": 3.0,
+                    "minimum": -2.0,
+                    "type": "number"
+                  },
+                  "maxItems": 4,
+                  "minItems": 4,
+                  "type": "array"
+                },
+                "response": {
+                  "description": "spring: seconds to settle, roughly (at most 1)",
+                  "maximum": 1.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                }
+              },
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "launcher": {
+          "additionalProperties": false,
+          "description": "The launcher.",
+          "properties": {
+            "in": {
+              "additionalProperties": false,
+              "description": "in",
+              "properties": {
+                "curve": {
+                  "description": "spring | bezier | linear",
+                  "enum": [
+                    "spring",
+                    "bezier",
+                    "linear"
+                  ]
+                },
+                "damping": {
+                  "description": "spring: 1 = no overshoot",
+                  "maximum": 3.0,
+                  "minimum": 0.05,
+                  "type": "number"
+                },
+                "duration_ms": {
+                  "description": "bezier and linear: milliseconds, at most 1000",
+                  "maximum": 1000,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "points": {
+                  "description": "bezier control points x1, y1, x2, y2 (x in 0..1)",
+                  "items": {
+                    "maximum": 3.0,
+                    "minimum": -2.0,
+                    "type": "number"
+                  },
+                  "maxItems": 4,
+                  "minItems": 4,
+                  "type": "array"
+                },
+                "response": {
+                  "description": "spring: seconds to settle, roughly (at most 1)",
+                  "maximum": 1.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                }
+              },
+              "type": "object"
+            },
+            "out": {
+              "additionalProperties": false,
+              "description": "out",
+              "properties": {
+                "curve": {
+                  "description": "spring | bezier | linear",
+                  "enum": [
+                    "spring",
+                    "bezier",
+                    "linear"
+                  ]
+                },
+                "damping": {
+                  "description": "spring: 1 = no overshoot",
+                  "maximum": 3.0,
+                  "minimum": 0.05,
+                  "type": "number"
+                },
+                "duration_ms": {
+                  "description": "bezier and linear: milliseconds, at most 1000",
+                  "maximum": 1000,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "points": {
+                  "description": "bezier control points x1, y1, x2, y2 (x in 0..1)",
+                  "items": {
+                    "maximum": 3.0,
+                    "minimum": -2.0,
+                    "type": "number"
+                  },
+                  "maxItems": 4,
+                  "minItems": 4,
+                  "type": "array"
+                },
+                "response": {
+                  "description": "spring: seconds to settle, roughly (at most 1)",
+                  "maximum": 1.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                }
+              },
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "list": {
+          "additionalProperties": false,
+          "description": "The +N list and window strip.",
+          "properties": {
+            "in": {
+              "additionalProperties": false,
+              "description": "in",
+              "properties": {
+                "curve": {
+                  "description": "spring | bezier | linear",
+                  "enum": [
+                    "spring",
+                    "bezier",
+                    "linear"
+                  ]
+                },
+                "damping": {
+                  "description": "spring: 1 = no overshoot",
+                  "maximum": 3.0,
+                  "minimum": 0.05,
+                  "type": "number"
+                },
+                "duration_ms": {
+                  "description": "bezier and linear: milliseconds, at most 1000",
+                  "maximum": 1000,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "points": {
+                  "description": "bezier control points x1, y1, x2, y2 (x in 0..1)",
+                  "items": {
+                    "maximum": 3.0,
+                    "minimum": -2.0,
+                    "type": "number"
+                  },
+                  "maxItems": 4,
+                  "minItems": 4,
+                  "type": "array"
+                },
+                "response": {
+                  "description": "spring: seconds to settle, roughly (at most 1)",
+                  "maximum": 1.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                }
+              },
+              "type": "object"
+            },
+            "out": {
+              "additionalProperties": false,
+              "description": "out",
+              "properties": {
+                "curve": {
+                  "description": "spring | bezier | linear",
+                  "enum": [
+                    "spring",
+                    "bezier",
+                    "linear"
+                  ]
+                },
+                "damping": {
+                  "description": "spring: 1 = no overshoot",
+                  "maximum": 3.0,
+                  "minimum": 0.05,
+                  "type": "number"
+                },
+                "duration_ms": {
+                  "description": "bezier and linear: milliseconds, at most 1000",
+                  "maximum": 1000,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "points": {
+                  "description": "bezier control points x1, y1, x2, y2 (x in 0..1)",
+                  "items": {
+                    "maximum": 3.0,
+                    "minimum": -2.0,
+                    "type": "number"
+                  },
+                  "maxItems": 4,
+                  "minItems": 4,
+                  "type": "array"
+                },
+                "response": {
+                  "description": "spring: seconds to settle, roughly (at most 1)",
+                  "maximum": 1.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                }
+              },
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "overview": {
+          "additionalProperties": false,
+          "description": "The overview.",
+          "properties": {
+            "in": {
+              "additionalProperties": false,
+              "description": "in",
+              "properties": {
+                "curve": {
+                  "description": "spring | bezier | linear",
+                  "enum": [
+                    "spring",
+                    "bezier",
+                    "linear"
+                  ]
+                },
+                "damping": {
+                  "description": "spring: 1 = no overshoot",
+                  "maximum": 3.0,
+                  "minimum": 0.05,
+                  "type": "number"
+                },
+                "duration_ms": {
+                  "description": "bezier and linear: milliseconds, at most 1000",
+                  "maximum": 1000,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "points": {
+                  "description": "bezier control points x1, y1, x2, y2 (x in 0..1)",
+                  "items": {
+                    "maximum": 3.0,
+                    "minimum": -2.0,
+                    "type": "number"
+                  },
+                  "maxItems": 4,
+                  "minItems": 4,
+                  "type": "array"
+                },
+                "response": {
+                  "description": "spring: seconds to settle, roughly (at most 1)",
+                  "maximum": 1.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                }
+              },
+              "type": "object"
+            },
+            "out": {
+              "additionalProperties": false,
+              "description": "out",
+              "properties": {
+                "curve": {
+                  "description": "spring | bezier | linear",
+                  "enum": [
+                    "spring",
+                    "bezier",
+                    "linear"
+                  ]
+                },
+                "damping": {
+                  "description": "spring: 1 = no overshoot",
+                  "maximum": 3.0,
+                  "minimum": 0.05,
+                  "type": "number"
+                },
+                "duration_ms": {
+                  "description": "bezier and linear: milliseconds, at most 1000",
+                  "maximum": 1000,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "points": {
+                  "description": "bezier control points x1, y1, x2, y2 (x in 0..1)",
+                  "items": {
+                    "maximum": 3.0,
+                    "minimum": -2.0,
+                    "type": "number"
+                  },
+                  "maxItems": 4,
+                  "minItems": 4,
+                  "type": "array"
+                },
+                "response": {
+                  "description": "spring: seconds to settle, roughly (at most 1)",
+                  "maximum": 1.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                }
+              },
+              "type": "object"
+            },
+            "tile": {
+              "additionalProperties": false,
+              "description": "tile",
+              "properties": {
+                "curve": {
+                  "description": "spring | bezier | linear",
+                  "enum": [
+                    "spring",
+                    "bezier",
+                    "linear"
+                  ]
+                },
+                "damping": {
+                  "description": "spring: 1 = no overshoot",
+                  "maximum": 3.0,
+                  "minimum": 0.05,
+                  "type": "number"
+                },
+                "duration_ms": {
+                  "description": "bezier and linear: milliseconds, at most 1000",
+                  "maximum": 1000,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "points": {
+                  "description": "bezier control points x1, y1, x2, y2 (x in 0..1)",
+                  "items": {
+                    "maximum": 3.0,
+                    "minimum": -2.0,
+                    "type": "number"
+                  },
+                  "maxItems": 4,
+                  "minItems": 4,
+                  "type": "array"
+                },
+                "response": {
+                  "description": "spring: seconds to settle, roughly (at most 1)",
+                  "maximum": 1.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                }
+              },
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "preset": {
+          "default": "baneyspaces",
+          "description": "The motion everything starts from.",
+          "enum": [
+            "baneyspaces",
+            "omarchy",
+            "snappy",
+            "smooth",
+            "off"
+          ]
+        },
+        "respect_reduce_motion": {
+          "default": true,
+          "description": "Reduce Motion sets every duration to 0 unless this is false.",
+          "type": "boolean"
+        },
+        "row": {
+          "additionalProperties": false,
+          "description": "A list row.",
+          "properties": {
+            "curve": {
+              "description": "spring | bezier | linear",
+              "enum": [
+                "spring",
+                "bezier",
+                "linear"
+              ]
+            },
+            "damping": {
+              "description": "spring: 1 = no overshoot",
+              "maximum": 3.0,
+              "minimum": 0.05,
+              "type": "number"
+            },
+            "duration_ms": {
+              "description": "bezier and linear: milliseconds, at most 1000",
+              "maximum": 1000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "points": {
+              "description": "bezier control points x1, y1, x2, y2 (x in 0..1)",
+              "items": {
+                "maximum": 3.0,
+                "minimum": -2.0,
+                "type": "number"
+              },
+              "maxItems": 4,
+              "minItems": 4,
+              "type": "array"
+            },
+            "response": {
+              "description": "spring: seconds to settle, roughly (at most 1)",
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "speed": {
+          "default": 1.0,
+          "description": "Multiplies every duration; 0 = off, 0.5 = twice as fast. A result over 1000 ms is refused.",
+          "maximum": 10.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        "switcher": {
+          "additionalProperties": false,
+          "description": "The window switcher.",
+          "properties": {
+            "in": {
+              "additionalProperties": false,
+              "description": "in",
+              "properties": {
+                "curve": {
+                  "description": "spring | bezier | linear",
+                  "enum": [
+                    "spring",
+                    "bezier",
+                    "linear"
+                  ]
+                },
+                "damping": {
+                  "description": "spring: 1 = no overshoot",
+                  "maximum": 3.0,
+                  "minimum": 0.05,
+                  "type": "number"
+                },
+                "duration_ms": {
+                  "description": "bezier and linear: milliseconds, at most 1000",
+                  "maximum": 1000,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "points": {
+                  "description": "bezier control points x1, y1, x2, y2 (x in 0..1)",
+                  "items": {
+                    "maximum": 3.0,
+                    "minimum": -2.0,
+                    "type": "number"
+                  },
+                  "maxItems": 4,
+                  "minItems": 4,
+                  "type": "array"
+                },
+                "response": {
+                  "description": "spring: seconds to settle, roughly (at most 1)",
+                  "maximum": 1.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                }
+              },
+              "type": "object"
+            },
+            "out": {
+              "additionalProperties": false,
+              "description": "out",
+              "properties": {
+                "curve": {
+                  "description": "spring | bezier | linear",
+                  "enum": [
+                    "spring",
+                    "bezier",
+                    "linear"
+                  ]
+                },
+                "damping": {
+                  "description": "spring: 1 = no overshoot",
+                  "maximum": 3.0,
+                  "minimum": 0.05,
+                  "type": "number"
+                },
+                "duration_ms": {
+                  "description": "bezier and linear: milliseconds, at most 1000",
+                  "maximum": 1000,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "points": {
+                  "description": "bezier control points x1, y1, x2, y2 (x in 0..1)",
+                  "items": {
+                    "maximum": 3.0,
+                    "minimum": -2.0,
+                    "type": "number"
+                  },
+                  "maxItems": 4,
+                  "minItems": 4,
+                  "type": "array"
+                },
+                "response": {
+                  "description": "spring: seconds to settle, roughly (at most 1)",
+                  "maximum": 1.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                }
+              },
+              "type": "object"
+            },
+            "select": {
+              "additionalProperties": false,
+              "description": "select",
+              "properties": {
+                "curve": {
+                  "description": "spring | bezier | linear",
+                  "enum": [
+                    "spring",
+                    "bezier",
+                    "linear"
+                  ]
+                },
+                "damping": {
+                  "description": "spring: 1 = no overshoot",
+                  "maximum": 3.0,
+                  "minimum": 0.05,
+                  "type": "number"
+                },
+                "duration_ms": {
+                  "description": "bezier and linear: milliseconds, at most 1000",
+                  "maximum": 1000,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "points": {
+                  "description": "bezier control points x1, y1, x2, y2 (x in 0..1)",
+                  "items": {
+                    "maximum": 3.0,
+                    "minimum": -2.0,
+                    "type": "number"
+                  },
+                  "maxItems": 4,
+                  "minItems": 4,
+                  "type": "array"
+                },
+                "response": {
+                  "description": "spring: seconds to settle, roughly (at most 1)",
+                  "maximum": 1.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                }
+              },
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "workspace": {
+          "additionalProperties": false,
+          "description": "Workspace switches. Off by default.",
+          "properties": {
+            "curve": {
+              "description": "spring | bezier | linear",
+              "enum": [
+                "spring",
+                "bezier",
+                "linear"
+              ]
+            },
+            "damping": {
+              "description": "spring: 1 = no overshoot",
+              "maximum": 3.0,
+              "minimum": 0.05,
+              "type": "number"
+            },
+            "duration_ms": {
+              "description": "bezier and linear: milliseconds, at most 1000",
+              "maximum": 1000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "points": {
+              "description": "bezier control points x1, y1, x2, y2 (x in 0..1)",
+              "items": {
+                "maximum": 3.0,
+                "minimum": -2.0,
+                "type": "number"
+              },
+              "maxItems": 4,
+              "minItems": 4,
+              "type": "array"
+            },
+            "response": {
+              "description": "spring: seconds to settle, roughly (at most 1)",
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            "style": {
+              "description": "off (the default) switches instantly; fade and slide draw over a snapshot, windows never move",
+              "enum": [
+                "off",
+                "fade",
+                "slide"
+              ]
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "bangs": {
+      "default": [],
+      "description": "(Linux) your own launcher bangs, such as !jira PROJ-1.",
+      "items": {
+        "additionalProperties": false,
+        "description": "A launcher bang.",
+        "properties": {
+          "agent": {
+            "description": "Ask an agent instead of opening a page.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "A name to show.",
+            "maxLength": 64,
+            "type": "string"
+          },
+          "trigger": {
+            "description": "The word after ! in the launcher.",
+            "pattern": "^([a-z0-9][a-z0-9_-]{0,31}|auto)$",
+            "type": "string"
+          },
+          "url": {
+            "description": "An http(s) address with {q} where the words go.",
+            "maxLength": 500,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "maxItems": 100,
+      "minItems": 0,
+      "type": "array"
+    },
+    "behavior": {
+      "additionalProperties": false,
+      "description": "Behavior.",
+      "properties": {
+        "dock": {
+          "additionalProperties": false,
+          "description": "The dock.",
+          "properties": {
+            "auto_hide": {
+              "default": true,
+              "description": "(Linux) false keeps the dock up and reserves its space.",
+              "type": "boolean"
+            },
+            "badges": {
+              "default": true,
+              "description": "(Linux) agent status on app icons",
+              "type": "boolean"
+            },
+            "edge": {
+              "default": "bottom",
+              "description": "Which edge reveals the dock.",
+              "enum": [
+                "bottom",
+                "left",
+                "right"
+              ]
+            },
+            "enabled": {
+              "default": true,
+              "description": "Same as dock.enabled in themes.md.",
+              "type": "boolean"
+            },
+            "hide_ms": {
+              "default": 400,
+              "description": "Wait before the dock goes down.",
+              "maximum": 10000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "in_fullscreen": {
+              "default": false,
+              "description": "(Linux) come up over a full-screen window",
+              "type": "boolean"
+            },
+            "reveal_ms": {
+              "default": 0,
+              "description": "Wait before the dock comes up.",
+              "maximum": 5000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "size": {
+              "default": "medium",
+              "description": "(Linux) the size of the tiles",
+              "enum": [
+                "small",
+                "medium",
+                "large"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "follow_focus": {
+          "default": true,
+          "description": "Switch to a window's workspace when you activate it yourself.",
+          "type": "boolean"
+        },
+        "launcher": {
+          "additionalProperties": false,
+          "description": "The launcher (Linux).",
+          "properties": {
+            "agent": {
+              "default": "claude",
+              "description": "(Linux) the bang trigger of the agent a leading ? asks",
+              "maxLength": 32,
+              "type": "string"
+            },
+            "enabled": {
+              "default": true,
+              "description": "(Linux) false turns the launcher off",
+              "type": "boolean"
+            },
+            "files": {
+              "default": true,
+              "description": "(Linux) search files and folders in your home folder",
+              "type": "boolean"
+            },
+            "install": {
+              "default": true,
+              "description": "(Linux) offer to install and remove apps (omarchy pkg)",
+              "type": "boolean"
+            },
+            "search_engine": {
+              "default": "ddg",
+              "description": "(Linux) the bang trigger of the engine a plain search goes to",
+              "maxLength": 32,
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "new_window": {
+          "default": "current",
+          "description": "current | app (where the app's other windows are)",
+          "enum": [
+            "current",
+            "app"
+          ]
+        },
+        "overview": {
+          "additionalProperties": false,
+          "description": "The overview.",
+          "properties": {
+            "empty": {
+              "default": "compact",
+              "description": "how empty workspaces show",
+              "enum": [
+                "compact",
+                "full",
+                "hidden"
+              ]
+            },
+            "enabled": {
+              "default": true,
+              "description": "(Linux) false turns the overview off",
+              "type": "boolean"
+            },
+            "layout": {
+              "default": "adaptive",
+              "description": "adaptive gives workspaces with windows the room",
+              "enum": [
+                "adaptive",
+                "grid"
+              ]
+            },
+            "previews": {
+              "default": "live",
+              "description": "live needs screen capture permission",
+              "enum": [
+                "live",
+                "icons"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "switcher": {
+          "additionalProperties": false,
+          "description": "The window switcher.",
+          "properties": {
+            "enabled": {
+              "default": true,
+              "description": "(Linux) false turns the switcher off",
+              "type": "boolean"
+            },
+            "hold_ms": {
+              "default": 120,
+              "description": "how long a hold before it shows",
+              "maximum": 2000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mode": {
+              "default": "windows",
+              "description": "what the switcher lists",
+              "enum": [
+                "windows",
+                "apps"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "workspace_names": {
+          "additionalProperties": {
+            "description": "a name",
+            "maxLength": 32,
+            "type": "string"
+          },
+          "default": {},
+          "description": "Workspace number to name.",
+          "maxProperties": 9,
+          "propertyNames": {
+            "pattern": "^[1-9]$"
+          },
+          "type": "object"
+        },
+        "workspace_tints": {
+          "additionalProperties": {
+            "description": "a tint",
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "type": "string"
+          },
+          "default": {},
+          "description": "Workspace number to #rrggbb.",
+          "maxProperties": 9,
+          "propertyNames": {
+            "pattern": "^[1-9]$"
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "hooks": {
+      "additionalProperties": false,
+      "description": "Commands run as you on these events, logged. Shown in Settings.",
+      "properties": {
+        "on_switch": {
+          "default": "",
+          "description": "a command run as you after a workspace switch",
+          "maxLength": 1000,
+          "type": "string"
+        },
+        "on_window_open": {
+          "default": "",
+          "description": "a command run as you when a window opens",
+          "maxLength": 1000,
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "keys": {
+      "additionalProperties": false,
+      "description": "Key bindings.",
+      "properties": {
+        "bindings": {
+          "additionalProperties": {
+            "description": "A baneyspaces CLI command line, or exec <command>, mode <name>, or none.",
+            "maxLength": 1000,
+            "type": "string"
+          },
+          "description": "Chord to action. \"none\" unbinds a default.",
+          "maxProperties": 512,
+          "propertyNames": {
+            "pattern": "^[a-z0-9+]{1,64}$"
+          },
+          "type": "object"
+        },
+        "mod": {
+          "description": "The platform modifier. cmd, ctrl, alt on macOS; super on Linux; win, ctrl, alt on Windows.",
+          "enum": [
+            "cmd",
+            "ctrl",
+            "alt",
+            "super",
+            "win"
+          ]
+        },
+        "modes": {
+          "additionalProperties": {
+            "additionalProperties": {
+              "description": "A baneyspaces CLI command line, or exec <command>, mode <name>, or none.",
+              "maxLength": 1000,
+              "type": "string"
+            },
+            "description": "Chord to action inside the mode.",
+            "maxProperties": 512,
+            "propertyNames": {
+              "pattern": "^[a-z0-9+]{1,64}$"
+            },
+            "type": "object"
+          },
+          "description": "Named sets of bindings. escape leaves a mode unless it is rebound.",
+          "maxProperties": 32,
+          "propertyNames": {
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$"
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "rules": {
+      "default": [],
+      "description": "Window rules, first match wins.",
+      "items": {
+        "additionalProperties": false,
+        "description": "First match wins.",
+        "properties": {
+          "app": {
+            "description": "An app name or bundle id.",
+            "maxLength": 200,
+            "type": "string"
+          },
+          "float": {
+            "description": "Keep the window floating.",
+            "type": "boolean"
+          },
+          "title": {
+            "description": "A regular expression the window title must match.",
+            "maxLength": 500,
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Send the window to this workspace.",
+            "maximum": 9,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "maxItems": 200,
+      "minItems": 0,
+      "type": "array"
+    },
+    "theme": {
+      "additionalProperties": false,
+      "description": "The look.",
+      "properties": {
+        "name": {
+          "description": "A built-in theme or a file in themes/.",
+          "pattern": "^([a-z0-9][a-z0-9_-]{0,31}|auto)$",
+          "type": "string"
+        },
+        "override": {
+          "additionalProperties": false,
+          "description": "Any token from themes.json, for this machine only.",
+          "properties": {
+            "border": {
+              "additionalProperties": false,
+              "description": "The panel border.",
+              "properties": {
+                "focused_role": {
+                  "description": "for the current workspace, the selected row and the hovered tile",
+                  "enum": [
+                    "background",
+                    "surface",
+                    "sunken",
+                    "foreground",
+                    "strong",
+                    "muted",
+                    "border",
+                    "accent",
+                    "selection",
+                    "urgent",
+                    "working",
+                    "done",
+                    "light",
+                    "workspace"
+                  ]
+                },
+                "focused_width": {
+                  "description": "points",
+                  "maximum": 20.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                "gradient": {
+                  "description": "opacity at the top, then at the bottom",
+                  "items": {
+                    "description": "opacity",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "type": "number"
+                  },
+                  "maxItems": 2,
+                  "minItems": 2,
+                  "type": "array"
+                },
+                "opacity": {
+                  "description": "applies to role",
+                  "maximum": 1.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                "role": {
+                  "description": "a palette role, or light, or workspace",
+                  "enum": [
+                    "background",
+                    "surface",
+                    "sunken",
+                    "foreground",
+                    "strong",
+                    "muted",
+                    "border",
+                    "accent",
+                    "selection",
+                    "urgent",
+                    "working",
+                    "done",
+                    "light",
+                    "workspace"
+                  ]
+                },
+                "width": {
+                  "description": "points",
+                  "maximum": 20.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                }
+              },
+              "type": "object"
+            },
+            "fill": {
+              "additionalProperties": false,
+              "description": "The panel fill.",
+              "properties": {
+                "adjustable": {
+                  "description": "Settings may change the opacity",
+                  "type": "boolean"
+                },
+                "material": {
+                  "anyOf": [
+                    {
+                      "description": "the platform's blur",
+                      "enum": [
+                        "ultra-thin",
+                        "thin",
+                        "regular",
+                        "thick",
+                        "none"
+                      ]
+                    },
+                    {
+                      "const": null,
+                      "description": "null: opaque"
+                    }
+                  ],
+                  "description": "The platform's blur, or \"none\" (null in JSON) for an opaque fill in tint_role."
+                },
+                "opacity": {
+                  "description": "of the whole panel",
+                  "maximum": 1.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                "tint_opacity": {
+                  "description": "of tint_role",
+                  "maximum": 1.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                "tint_role": {
+                  "description": "laid over the material",
+                  "enum": [
+                    "background",
+                    "surface",
+                    "sunken",
+                    "foreground",
+                    "strong",
+                    "muted",
+                    "border",
+                    "accent",
+                    "selection",
+                    "urgent",
+                    "working",
+                    "done",
+                    "light",
+                    "workspace"
+                  ]
+                }
+              },
+              "type": "object"
+            },
+            "font": {
+              "additionalProperties": false,
+              "description": "Type.",
+              "properties": {
+                "family": {
+                  "description": "A key into themes.json fonts (system-sans, monospace) or a font family name; the first installed family is used.",
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                "size": {
+                  "description": "points",
+                  "maximum": 72.0,
+                  "minimum": 6.0,
+                  "type": "number"
+                },
+                "weight": {
+                  "description": "weight",
+                  "enum": [
+                    "light",
+                    "regular",
+                    "medium",
+                    "semibold",
+                    "bold"
+                  ]
+                }
+              },
+              "type": "object"
+            },
+            "indicator": {
+              "description": "How a workspace shows in the dock, the bar module and the overview.",
+              "enum": [
+                "dot",
+                "bar",
+                "number-block"
+              ]
+            },
+            "motion": {
+              "additionalProperties": false,
+              "description": "The theme's own motion tokens. The animation section decides durations; scale_from and lift are the transforms.",
+              "properties": {
+                "in_ms": {
+                  "maximum": 1000,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "lift": {
+                  "description": "1 means no lift",
+                  "maximum": 2.0,
+                  "minimum": 1.0,
+                  "type": "number"
+                },
+                "list_in_ms": {
+                  "maximum": 1000,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "list_out_ms": {
+                  "maximum": 1000,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "out_ms": {
+                  "maximum": 1000,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "row_ms": {
+                  "maximum": 1000,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "scale_from": {
+                  "description": "1 means no scaling",
+                  "maximum": 1.0,
+                  "minimum": 0.5,
+                  "type": "number"
+                }
+              },
+              "type": "object"
+            },
+            "radius": {
+              "additionalProperties": false,
+              "description": "Corner radius in points.",
+              "properties": {
+                "bar": {
+                  "description": "the dock bar",
+                  "maximum": 200.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                "list": {
+                  "description": "the +N list and window strip panel",
+                  "maximum": 200.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                "row": {
+                  "description": "a list row",
+                  "maximum": 200.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                "tile": {
+                  "description": "a tile",
+                  "maximum": 200.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                }
+              },
+              "type": "object"
+            },
+            "shadow": {
+              "anyOf": [
+                {
+                  "const": false,
+                  "description": "false: no shadow"
+                },
+                {
+                  "const": null,
+                  "description": "null: no shadow"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "a soft shadow",
+                  "properties": {
+                    "opacity": {
+                      "description": "opacity of black",
+                      "maximum": 1.0,
+                      "minimum": 0.0,
+                      "type": "number"
+                    },
+                    "radius": {
+                      "description": "blur radius",
+                      "maximum": 200.0,
+                      "minimum": 0.0,
+                      "type": "number"
+                    },
+                    "y": {
+                      "description": "vertical offset",
+                      "maximum": 200.0,
+                      "minimum": -200.0,
+                      "type": "number"
+                    }
+                  },
+                  "type": "object"
+                }
+              ],
+              "description": "false (or null) for none, or {radius, y, opacity}. TOML has no null, so write false."
+            },
+            "space": {
+              "additionalProperties": false,
+              "description": "Spacing in points.",
+              "properties": {
+                "gap": {
+                  "description": "between tiles",
+                  "maximum": 200.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                "padding": {
+                  "description": "panel padding",
+                  "maximum": 200.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                "tile": {
+                  "description": "tile size",
+                  "maximum": 400.0,
+                  "minimum": 8.0,
+                  "type": "number"
+                }
+              },
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "palette": {
+          "default": "auto",
+          "description": "auto, a palette in palettes.json, or a custom theme's palette.",
+          "pattern": "^([a-z0-9][a-z0-9_-]{0,31}|auto)$",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "title": "BaneySpaces config.toml",
+  "type": "object"
+}

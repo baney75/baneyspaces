@@ -15,7 +15,7 @@ pub fn tools() -> Value {
     let s = |d: &str| json!({ "type": "string", "description": d });
     let reference = json!({ "type": "string", "pattern": "^@s[a-z0-9]+:e[0-9]+$", "description": "A ref from a snapshot, such as @s8f3k2p9:e8." });
     let window = s("A window id from agent_windows or agent_open (the Hyprland address, 0x...).");
-    json!([
+    let agent = json!([
         { "name": "agent_status", "description": "What is on the agent workspace: windows, processes, whether it is showing.",
           "inputSchema": r("", json!({}), &[]) },
         { "name": "agent_windows", "description": "Windows on the agent workspace you may act on.",
@@ -42,7 +42,37 @@ pub fn tools() -> Value {
           "inputSchema": r("", json!({ "ref": reference, "direction": { "type": "string", "enum": ["up", "down", "left", "right"] }, "amount": { "type": "integer", "minimum": 1 } }), &["ref", "direction"]) },
         { "name": "agent_shot", "description": "Capture one agent window. Returned only when asked for.",
           "inputSchema": r("", json!({ "window": window }), &["window"]) }
-    ])
+    ]);
+    let mut all = agent.as_array().cloned().unwrap_or_default();
+    all.extend(config_tools());
+    Value::Array(all)
+}
+
+/// The configuration tools (`spec/config.md`, Interface): the same set as the CLI, validated
+/// before anything changes, every change recorded with the caller.
+pub fn config_tools() -> Vec<Value> {
+    let r = |props: Value, req: &[&str]| json!({ "type": "object", "properties": props, "required": req, "additionalProperties": false });
+    let s = |d: &str| json!({ "type": "string", "description": d });
+    let path = s("A setting by dotted path, such as animation.dock.in.duration_ms or keys.bindings.\"mod+1\".");
+    let doc = s("A whole config document as TOML or JSON text.");
+    let name = s("A theme name: built-in (baneyspaces, omarchy, minimal) or a custom one.");
+    vec![
+        json!({ "name": "config_schema", "description": "Read this first: the JSON Schema of config.toml, every setting with its type, range and default.", "inputSchema": r(json!({}), &[]) }),
+        json!({ "name": "config_get", "description": "The effective value of a setting (defaults filled in), or the whole config when no path is given.", "inputSchema": r(json!({ "path": path }), &[]) }),
+        json!({ "name": "config_set", "description": "Change one setting. Validated first and applied live; refused changes name the exact path and reason (config_invalid) and change nothing. value is any JSON.", "inputSchema": r(json!({ "path": path, "value": { "description": "The new value, as JSON: a string, number, boolean, array or table." } }), &["path", "value"]) }),
+        json!({ "name": "config_unset", "description": "Put one setting back to its default.", "inputSchema": r(json!({ "path": path }), &["path"]) }),
+        json!({ "name": "config_apply", "description": "Replace the whole config with a TOML or JSON document, validated as one change.", "inputSchema": r(json!({ "text": doc }), &["text"]) }),
+        json!({ "name": "config_validate", "description": "Check a document without applying it.", "inputSchema": r(json!({ "text": doc }), &["text"]) }),
+        json!({ "name": "config_diff", "description": "What differs from the defaults, or from a history version.", "inputSchema": r(json!({ "version": { "type": "integer", "minimum": 1, "description": "A version from config_history." } }), &[]) }),
+        json!({ "name": "config_undo", "description": "Step back n versions (default 1). The last 50 are kept.", "inputSchema": r(json!({ "n": { "type": "integer", "minimum": 1 } }), &[]) }),
+        json!({ "name": "config_history", "description": "The versions kept, newest first, each with time, caller and a one-line summary.", "inputSchema": r(json!({}), &[]) }),
+        json!({ "name": "config_reset", "description": "Put a section (keys, theme, animation, behavior, rules, hooks) or everything back to the defaults. Always works.", "inputSchema": r(json!({ "section": { "type": "string", "enum": ["keys", "theme", "animation", "behavior", "rules", "hooks"] } }), &[]) }),
+        json!({ "name": "theme_list", "description": "Built-in and custom themes, and the palettes.", "inputSchema": r(json!({}), &[]) }),
+        json!({ "name": "theme_show", "description": "A theme's resolved tokens and palette.", "inputSchema": r(json!({ "name": name }), &["name"]) }),
+        json!({ "name": "theme_create", "description": "Create a custom theme (themes/<name>.toml) that extends another, with optional tokens to change and an optional palette of the twelve roles.", "inputSchema": r(json!({ "name": s("Lowercase letters, digits, - and _."), "extends": name, "tokens": { "type": "object", "description": "Tokens to change, as in spec/themes.json." }, "palette": { "type": "object", "description": "The twelve palette roles as #rrggbb, and optionally mode." }, "label": s("A name to show.") }), &["name", "extends"]) }),
+        json!({ "name": "theme_set", "description": "Switch to a theme.", "inputSchema": r(json!({ "name": name }), &["name"]) }),
+        json!({ "name": "theme_delete", "description": "Delete a custom theme. Refused while the config uses it.", "inputSchema": r(json!({ "name": name }), &["name"]) }),
+    ]
 }
 
 pub fn tool_names() -> Vec<String> {
@@ -65,7 +95,7 @@ pub fn handle(msg: &Value, call: &mut dyn FnMut(&str, &Value) -> Envelope) -> Op
                 "protocolVersion": ver,
                 "capabilities": { "tools": { "listChanged": false } },
                 "serverInfo": { "name": SERVER_NAME, "version": env!("CARGO_PKG_VERSION") },
-                "instructions": "Agent computer use on the agent workspace only. Open an app with agent_open, snapshot it, act on refs, and read the evidence in each result. Nothing here touches the user's workspaces."
+                "instructions": "Agent computer use on the agent workspace only. Open an app with agent_open, snapshot it, act on refs, and read the evidence in each result. Nothing here touches the user's workspaces. config_* and theme_* tools change the BaneySpaces configuration (keys, themes, animations, behavior): read config_schema first; every change is validated, applied live and recorded in history under your name."
             }})
         }
         "ping" => json!({ "jsonrpc": "2.0", "id": id, "result": {} }),
@@ -153,7 +183,7 @@ mod tests {
     #[test]
     fn no_tool_reaches_the_users_workspaces() {
         for n in tool_names() {
-            assert!(n.starts_with("agent_"), "{n}");
+            assert!(n.starts_with("agent_") || n.starts_with("config_") || n.starts_with("theme_"), "{n}");
             assert!(!n.contains("switch") && !n.contains("move"), "{n}");
         }
     }

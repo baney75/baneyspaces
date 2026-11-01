@@ -1,0 +1,679 @@
+{
+  "note": "Generated from crates/baneyspaces-core/src/animation.rs (UPDATE_SPEC=1 cargo test -p baneyspaces-core). A spring's response is seconds to settle; duration_ms is milliseconds; speed multiplies both.",
+  "omarchy": {
+    "curves": {
+      "border": {
+        "curve": "bezier",
+        "duration_ms": 539,
+        "points": [
+          0.23,
+          1.0,
+          0.32,
+          1.0
+        ]
+      },
+      "fade-in": {
+        "curve": "bezier",
+        "duration_ms": 173,
+        "points": [
+          0.5,
+          0.5,
+          0.75,
+          1.0
+        ]
+      },
+      "fade-out": {
+        "curve": "bezier",
+        "duration_ms": 146,
+        "points": [
+          0.5,
+          0.5,
+          0.75,
+          1.0
+        ]
+      },
+      "layers-in": {
+        "curve": "bezier",
+        "duration_ms": 400,
+        "points": [
+          0.23,
+          1.0,
+          0.32,
+          1.0
+        ]
+      },
+      "layers-out": {
+        "curve": "linear",
+        "duration_ms": 150
+      },
+      "pop-in": {
+        "curve": "bezier",
+        "duration_ms": 410,
+        "points": [
+          0.23,
+          1.0,
+          0.32,
+          1.0
+        ]
+      },
+      "pop-out": {
+        "curve": "linear",
+        "duration_ms": 149
+      },
+      "workspaces": "off"
+    },
+    "note": "Hyprland speed 1 = 100 ms. The leaves are Omarchy's looknfeel.lua.",
+    "surface_follows": {
+      "border": "border",
+      "cursor.glide": "pop-in",
+      "dock.in": "layers-in",
+      "dock.out": "layers-out",
+      "drag_lift": "pop-in",
+      "hover": "fade-in",
+      "hud.in": "pop-in",
+      "hud.out": "pop-out",
+      "launcher.in": "layers-in",
+      "launcher.out": "layers-out",
+      "list.in": "layers-in",
+      "list.out": "layers-out",
+      "overview.in": "layers-in",
+      "overview.out": "layers-out",
+      "overview.tile": "pop-in",
+      "row": "fade-out",
+      "switcher.in": "layers-in",
+      "switcher.out": "layers-out",
+      "switcher.select": "fade-in",
+      "workspace": "fade-in"
+    }
+  },
+  "presets": {
+    "baneyspaces": {
+      "surfaces": {
+        "border": {
+          "curve": "spring",
+          "damping": 1.0,
+          "response": 0.18
+        },
+        "cursor.glide": {
+          "curve": "spring",
+          "damping": 0.9,
+          "response": 0.22
+        },
+        "dock.in": {
+          "curve": "spring",
+          "damping": 0.86,
+          "response": 0.18
+        },
+        "dock.out": {
+          "curve": "spring",
+          "damping": 1.0,
+          "response": 0.14
+        },
+        "drag_lift": {
+          "curve": "spring",
+          "damping": 0.7,
+          "response": 0.2
+        },
+        "hover": {
+          "curve": "spring",
+          "damping": 0.72,
+          "response": 0.25
+        },
+        "hud.in": {
+          "curve": "spring",
+          "damping": 0.86,
+          "response": 0.18
+        },
+        "hud.out": {
+          "curve": "spring",
+          "damping": 1.0,
+          "response": 0.14
+        },
+        "launcher.in": {
+          "curve": "spring",
+          "damping": 0.86,
+          "response": 0.18
+        },
+        "launcher.out": {
+          "curve": "spring",
+          "damping": 1.0,
+          "response": 0.14
+        },
+        "list.in": {
+          "curve": "spring",
+          "damping": 0.86,
+          "response": 0.14
+        },
+        "list.out": {
+          "curve": "spring",
+          "damping": 1.0,
+          "response": 0.1
+        },
+        "overview.in": {
+          "curve": "spring",
+          "damping": 0.86,
+          "response": 0.18
+        },
+        "overview.out": {
+          "curve": "spring",
+          "damping": 1.0,
+          "response": 0.14
+        },
+        "overview.tile": {
+          "curve": "spring",
+          "damping": 0.86,
+          "response": 0.18
+        },
+        "row": {
+          "curve": "spring",
+          "damping": 1.0,
+          "response": 0.08
+        },
+        "switcher.in": {
+          "curve": "spring",
+          "damping": 0.86,
+          "response": 0.18
+        },
+        "switcher.out": {
+          "curve": "spring",
+          "damping": 1.0,
+          "response": 0.14
+        },
+        "switcher.select": {
+          "curve": "spring",
+          "damping": 1.0,
+          "response": 0.08
+        },
+        "workspace": {
+          "curve": "spring",
+          "damping": 1.0,
+          "response": 0.18
+        }
+      }
+    },
+    "off": {
+      "surfaces": {
+        "border": {
+          "curve": "linear",
+          "duration_ms": 0
+        },
+        "cursor.glide": {
+          "curve": "linear",
+          "duration_ms": 0
+        },
+        "dock.in": {
+          "curve": "linear",
+          "duration_ms": 0
+        },
+        "dock.out": {
+          "curve": "linear",
+          "duration_ms": 0
+        },
+        "drag_lift": {
+          "curve": "linear",
+          "duration_ms": 0
+        },
+        "hover": {
+          "curve": "linear",
+          "duration_ms": 0
+        },
+        "hud.in": {
+          "curve": "linear",
+          "duration_ms": 0
+        },
+        "hud.out": {
+          "curve": "linear",
+          "duration_ms": 0
+        },
+        "launcher.in": {
+          "curve": "linear",
+          "duration_ms": 0
+        },
+        "launcher.out": {
+          "curve": "linear",
+          "duration_ms": 0
+        },
+        "list.in": {
+          "curve": "linear",
+          "duration_ms": 0
+        },
+        "list.out": {
+          "curve": "linear",
+          "duration_ms": 0
+        },
+        "overview.in": {
+          "curve": "linear",
+          "duration_ms": 0
+        },
+        "overview.out": {
+          "curve": "linear",
+          "duration_ms": 0
+        },
+        "overview.tile": {
+          "curve": "linear",
+          "duration_ms": 0
+        },
+        "row": {
+          "curve": "linear",
+          "duration_ms": 0
+        },
+        "switcher.in": {
+          "curve": "linear",
+          "duration_ms": 0
+        },
+        "switcher.out": {
+          "curve": "linear",
+          "duration_ms": 0
+        },
+        "switcher.select": {
+          "curve": "linear",
+          "duration_ms": 0
+        },
+        "workspace": {
+          "curve": "linear",
+          "duration_ms": 0
+        }
+      }
+    },
+    "omarchy": {
+      "surfaces": {
+        "border": {
+          "curve": "bezier",
+          "duration_ms": 539,
+          "points": [
+            0.23,
+            1.0,
+            0.32,
+            1.0
+          ]
+        },
+        "cursor.glide": {
+          "curve": "bezier",
+          "duration_ms": 410,
+          "points": [
+            0.23,
+            1.0,
+            0.32,
+            1.0
+          ]
+        },
+        "dock.in": {
+          "curve": "bezier",
+          "duration_ms": 400,
+          "points": [
+            0.23,
+            1.0,
+            0.32,
+            1.0
+          ]
+        },
+        "dock.out": {
+          "curve": "linear",
+          "duration_ms": 150
+        },
+        "drag_lift": {
+          "curve": "bezier",
+          "duration_ms": 410,
+          "points": [
+            0.23,
+            1.0,
+            0.32,
+            1.0
+          ]
+        },
+        "hover": {
+          "curve": "bezier",
+          "duration_ms": 173,
+          "points": [
+            0.5,
+            0.5,
+            0.75,
+            1.0
+          ]
+        },
+        "hud.in": {
+          "curve": "bezier",
+          "duration_ms": 410,
+          "points": [
+            0.23,
+            1.0,
+            0.32,
+            1.0
+          ]
+        },
+        "hud.out": {
+          "curve": "linear",
+          "duration_ms": 149
+        },
+        "launcher.in": {
+          "curve": "bezier",
+          "duration_ms": 400,
+          "points": [
+            0.23,
+            1.0,
+            0.32,
+            1.0
+          ]
+        },
+        "launcher.out": {
+          "curve": "linear",
+          "duration_ms": 150
+        },
+        "list.in": {
+          "curve": "bezier",
+          "duration_ms": 400,
+          "points": [
+            0.23,
+            1.0,
+            0.32,
+            1.0
+          ]
+        },
+        "list.out": {
+          "curve": "linear",
+          "duration_ms": 150
+        },
+        "overview.in": {
+          "curve": "bezier",
+          "duration_ms": 400,
+          "points": [
+            0.23,
+            1.0,
+            0.32,
+            1.0
+          ]
+        },
+        "overview.out": {
+          "curve": "linear",
+          "duration_ms": 150
+        },
+        "overview.tile": {
+          "curve": "bezier",
+          "duration_ms": 410,
+          "points": [
+            0.23,
+            1.0,
+            0.32,
+            1.0
+          ]
+        },
+        "row": {
+          "curve": "bezier",
+          "duration_ms": 146,
+          "points": [
+            0.5,
+            0.5,
+            0.75,
+            1.0
+          ]
+        },
+        "switcher.in": {
+          "curve": "bezier",
+          "duration_ms": 400,
+          "points": [
+            0.23,
+            1.0,
+            0.32,
+            1.0
+          ]
+        },
+        "switcher.out": {
+          "curve": "linear",
+          "duration_ms": 150
+        },
+        "switcher.select": {
+          "curve": "bezier",
+          "duration_ms": 173,
+          "points": [
+            0.5,
+            0.5,
+            0.75,
+            1.0
+          ]
+        },
+        "workspace": {
+          "curve": "bezier",
+          "duration_ms": 173,
+          "points": [
+            0.5,
+            0.5,
+            0.75,
+            1.0
+          ]
+        }
+      }
+    },
+    "smooth": {
+      "surfaces": {
+        "border": {
+          "curve": "spring",
+          "damping": 0.8,
+          "response": 0.234
+        },
+        "cursor.glide": {
+          "curve": "spring",
+          "damping": 0.8,
+          "response": 0.286
+        },
+        "dock.in": {
+          "curve": "spring",
+          "damping": 0.8,
+          "response": 0.234
+        },
+        "dock.out": {
+          "curve": "spring",
+          "damping": 0.8,
+          "response": 0.182
+        },
+        "drag_lift": {
+          "curve": "spring",
+          "damping": 0.8,
+          "response": 0.26
+        },
+        "hover": {
+          "curve": "spring",
+          "damping": 0.8,
+          "response": 0.325
+        },
+        "hud.in": {
+          "curve": "spring",
+          "damping": 0.8,
+          "response": 0.234
+        },
+        "hud.out": {
+          "curve": "spring",
+          "damping": 0.8,
+          "response": 0.182
+        },
+        "launcher.in": {
+          "curve": "spring",
+          "damping": 0.8,
+          "response": 0.234
+        },
+        "launcher.out": {
+          "curve": "spring",
+          "damping": 0.8,
+          "response": 0.182
+        },
+        "list.in": {
+          "curve": "spring",
+          "damping": 0.8,
+          "response": 0.182
+        },
+        "list.out": {
+          "curve": "spring",
+          "damping": 0.8,
+          "response": 0.13
+        },
+        "overview.in": {
+          "curve": "spring",
+          "damping": 0.8,
+          "response": 0.234
+        },
+        "overview.out": {
+          "curve": "spring",
+          "damping": 0.8,
+          "response": 0.182
+        },
+        "overview.tile": {
+          "curve": "spring",
+          "damping": 0.8,
+          "response": 0.234
+        },
+        "row": {
+          "curve": "spring",
+          "damping": 0.8,
+          "response": 0.104
+        },
+        "switcher.in": {
+          "curve": "spring",
+          "damping": 0.8,
+          "response": 0.234
+        },
+        "switcher.out": {
+          "curve": "spring",
+          "damping": 0.8,
+          "response": 0.182
+        },
+        "switcher.select": {
+          "curve": "spring",
+          "damping": 0.8,
+          "response": 0.104
+        },
+        "workspace": {
+          "curve": "spring",
+          "damping": 0.8,
+          "response": 0.234
+        }
+      }
+    },
+    "snappy": {
+      "surfaces": {
+        "border": {
+          "curve": "spring",
+          "damping": 1.0,
+          "response": 0.108
+        },
+        "cursor.glide": {
+          "curve": "spring",
+          "damping": 1.0,
+          "response": 0.132
+        },
+        "dock.in": {
+          "curve": "spring",
+          "damping": 1.0,
+          "response": 0.108
+        },
+        "dock.out": {
+          "curve": "spring",
+          "damping": 1.0,
+          "response": 0.084
+        },
+        "drag_lift": {
+          "curve": "spring",
+          "damping": 1.0,
+          "response": 0.12
+        },
+        "hover": {
+          "curve": "spring",
+          "damping": 1.0,
+          "response": 0.15
+        },
+        "hud.in": {
+          "curve": "spring",
+          "damping": 1.0,
+          "response": 0.108
+        },
+        "hud.out": {
+          "curve": "spring",
+          "damping": 1.0,
+          "response": 0.084
+        },
+        "launcher.in": {
+          "curve": "spring",
+          "damping": 1.0,
+          "response": 0.108
+        },
+        "launcher.out": {
+          "curve": "spring",
+          "damping": 1.0,
+          "response": 0.084
+        },
+        "list.in": {
+          "curve": "spring",
+          "damping": 1.0,
+          "response": 0.084
+        },
+        "list.out": {
+          "curve": "spring",
+          "damping": 1.0,
+          "response": 0.06
+        },
+        "overview.in": {
+          "curve": "spring",
+          "damping": 1.0,
+          "response": 0.108
+        },
+        "overview.out": {
+          "curve": "spring",
+          "damping": 1.0,
+          "response": 0.084
+        },
+        "overview.tile": {
+          "curve": "spring",
+          "damping": 1.0,
+          "response": 0.108
+        },
+        "row": {
+          "curve": "spring",
+          "damping": 1.0,
+          "response": 0.048
+        },
+        "switcher.in": {
+          "curve": "spring",
+          "damping": 1.0,
+          "response": 0.108
+        },
+        "switcher.out": {
+          "curve": "spring",
+          "damping": 1.0,
+          "response": 0.084
+        },
+        "switcher.select": {
+          "curve": "spring",
+          "damping": 1.0,
+          "response": 0.048
+        },
+        "workspace": {
+          "curve": "spring",
+          "damping": 1.0,
+          "response": 0.108
+        }
+      }
+    }
+  },
+  "surfaces": [
+    "dock.in",
+    "dock.out",
+    "list.in",
+    "list.out",
+    "row",
+    "hover",
+    "drag_lift",
+    "overview.in",
+    "overview.out",
+    "overview.tile",
+    "switcher.in",
+    "switcher.out",
+    "switcher.select",
+    "launcher.in",
+    "launcher.out",
+    "hud.in",
+    "hud.out",
+    "cursor.glide",
+    "workspace",
+    "border"
+  ],
+  "version": 1,
+  "workspace_style_default": "off"
+}

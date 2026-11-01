@@ -7,11 +7,15 @@ exclude = ["platforms/linux/third_party"]
 [workspace.package]
 edition = "2021"
 license = "MIT"
-rust-version = "1.85"
+rust-version = "1.89"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# TOML for the config file (spec/config.md). No datetime or edit features: the file is parsed to a value and written back from one.
+toml = { version = "1", default-features = false, features = ["std", "serde", "parse", "display"] }
+# Rule titles are regexes (spec/config.md). Only the Unicode tables that \\w, \\d, \\s and (?i) need; the perf extras are left off.
+regex = { version = "1", default-features = false, features = ["std", "unicode-perl", "unicode-case"] }
 
 [profile.release]
 opt-level = 3
