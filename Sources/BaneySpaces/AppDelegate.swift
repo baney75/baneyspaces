@@ -196,6 +196,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         keys.onTabUp = { [weak self] in self?.switcher.tabReleased() }
         keys.onCmdReleased = { [weak self] in self?.switcher.commit() }
         keys.onCancel = { [weak self] in self?.switcher.cancel() }
+        keys.onArrow = { [weak self] forward in self?.switcher.arrow(forward: forward) }
         return keys
     }()
     private lazy var setup: SetupWindowController = {

@@ -1186,14 +1186,14 @@ final class Spaces {
         switchTo(model.current, takeFocus: false, announce: false)
     }
 
-    /// The ⌘Tab switcher's list: the current workspace, then others with windows, most recent
-    /// first, then any remaining ones in number order.
+    /// The ⌘Tab switcher's list: the current workspace (even when empty), then others with
+    /// windows, most recent first, then any remaining ones with windows in number order.
     func switcherOrder() -> [Int] {
         refresh()
-        // Empty workspaces stay listed so ⌘Tab in workspaces mode can land on them (F1).
         return WorkspaceSwitcherOrder.make(
             current: model.current,
             recent: recent,
+            occupied: Set(Workspaces.range.filter(isOccupied)),
             range: Array(Workspaces.range)
         )
     }

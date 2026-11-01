@@ -7,7 +7,7 @@
 ## Unreleased
 
 - **Rotating `trace.log`.** When the active file would pass 200 KB it becomes `trace.log.1` (and `.2`), instead of being deleted. `os.Logger` (subsystem `com.baney.baneyspaces`) is unchanged. Guarded by `FileTraceTests`.
-- **⌘Tab workspaces mode lists empty workspaces.** A single occupied workspace no longer makes ⌘Tab a no-op. The workspace row wraps so nine tiles still fit a 1,024 pt display. Window-bar hold eligibility is pinned by `WindowBarGateTests`.
+- **⌘Tab workspaces mode shows only the workspaces you're using.** Empty workspaces are left out again, except the one you're on, which is always first and marked with its color and "Here". The rest follow most recently used first, then by number. The panel is one row tall for one row of tiles, wraps only when the display you're on is too narrow, and is centered inside that display's visible area (left of the main display too), never past its edges. Tab, ⇧Tab and now the arrow keys (→ ↓ forward, ← ↑ back) step through the cards in the order drawn. Pinned by `WorkspaceSwitcherOrderTests`, `SwitcherLayoutTests`, `SwitcherPanelFrameTests`, `SwitcherSelectionTests`, `SwitcherWiringTests` and `WindowBarGateTests`.
 
 ## Unreleased
 
