@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Rotating `trace.log`.** When the active file would pass 200 KB it becomes `trace.log.1` (and `.2`), instead of being deleted. `os.Logger` (subsystem `com.baney.baneyspaces`) is unchanged. Guarded by `FileTraceTests`.
+
+## Unreleased
+
 - **Agent hands, phase 4: keys and a pointer for windows that are not in front.** `agent press` now sends keys (several,
   separated by spaces) to the one process, and `agent click-at` and `agent drag` post window-local mouse events to it,
   without activating, raising, switching a Space, moving the real pointer, or posting to the session. Only to a process
