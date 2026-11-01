@@ -36,3 +36,56 @@ public enum MenuLayout {
         return names.prefix(shownApps).joined(separator: ", ") + " +\(names.count - shownApps)"
     }
 }
+
+/// A release waiting to be installed, or installing, as the menu bar menu and Settings word it.
+public struct UpdateNotice: Equatable, Sendable {
+    public let name: String
+    public let isNightly: Bool
+    public let installing: Bool
+
+    public init(name: String, isNightly: Bool, installing: Bool) {
+        self.name = name
+        self.isNightly = isNightly
+        self.installing = installing
+    }
+
+    /// "Update to BaneySpaces 0.3.1…" or "Update to the Nightly Build…"; "Updating to …" while it installs.
+    public var menuTitle: String {
+        installing ? "Updating to \(isNightly ? "the Nightly Build" : name)…" : "Update to \(isNightly ? "the Nightly Build" : name)…"
+    }
+
+    /// A sentence of its own: "BaneySpaces 0.3.1 is available." / "The nightly build is available."
+    public var sentence: String {
+        isNightly ? "The nightly build is available." : "\(name) is available."
+    }
+}
+
+/// The menu bar menu, as a list of what it holds. The app builds exactly these and nothing else, so
+/// a test can read what a person would see (Donovan, 2026-10-31: five kinds of rows). A row for
+/// finished agents or a waiting update is there only while there is something to act on.
+public enum MenuEntry: Equatable, Sendable {
+    case workspace(MenuLayout.Row)
+    case showAll, find, settings, quit
+    /// "N agents finished while you were away", a submenu listing them.
+    case finished(count: Int)
+    case update(UpdateNotice)
+    case separator
+}
+
+extension MenuLayout {
+    public static func entries(rows: [Row], finished: Int, update: UpdateNotice?) -> [MenuEntry] {
+        var out = rows.map(MenuEntry.workspace)
+        out += [.separator, .showAll, .find]
+        var pending: [MenuEntry] = []
+        if finished > 0 { pending.append(.finished(count: finished)) }
+        if let update { pending.append(.update(update)) }
+        if !pending.isEmpty { out.append(.separator); out += pending }
+        out += [.separator, .settings, .quit]
+        return out
+    }
+
+    /// "1 Agent Finished While You Were Away" / "3 Agents Finished While You Were Away".
+    public static func finishedTitle(_ count: Int) -> String {
+        "\(count) \(count == 1 ? "Agent Finished" : "Agents Finished") While You Were Away"
+    }
+}

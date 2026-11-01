@@ -762,7 +762,7 @@ final class LauncherModel: ObservableObject {
                                     NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Software-Update-Settings.extension")!)
                                 }))
         out.append(LauncherItem(id: "upd:self", section: "Update", title: "Check for BaneySpaces Updates",
-                                subtitle: "Stable or Nightly, as set in the menu bar", icon: .symbol("square.grid.3x3.fill"),
+                                subtitle: "Stable or Nightly, as set in Settings > Updates", icon: .symbol("square.grid.3x3.fill"),
                                 run: { [weak self] in self?.close(); self?.actions.checkForUpdates() }))
         return out
     }

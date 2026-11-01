@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Drag an app out of a tile's "+N" list.** Each app in the list that opens over a workspace tile
+  drags like the tile's own icons: onto another workspace's tile, or the dashed "+", to move its
+  windows there. A click still goes to the app, and the list stays open as the drag starts.
+- **A shorter menu bar menu.** It keeps the workspaces, Show All Workspaces, Find or Install an App,
+  Settings (⌘,) and Quit. What was under Options, Updates and About is in Settings: the switches are
+  where they were, Keep Usable by Automation and Bring Every Window Back are under **Automation**,
+  and the update channel, daily check, Check for Updates Now, and About are under **Updates**. Agents
+  that finished while you were away list under **Dock**. When agents have finished, or an update
+  is waiting, a row for it appears in the menu (and goes away when there's nothing to act on); the
+  update controls are also in Settings > Updates.
 - **The Workspace Dock goes down once the pointer leaves it.** It used to stay up while the pointer
   rested above or beside it, over the app underneath, because it counted the empty room it keeps for
   its hover label. Now only the dock itself counts, plus the window strip while it's open.

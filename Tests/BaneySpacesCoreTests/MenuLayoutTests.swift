@@ -45,11 +45,118 @@ final class MenuLayoutTests: XCTestCase {
             .split(separator: "\n").map { $0.components(separatedBy: "//")[0] }.joined(separator: "\n")
     }
 
-    func testMenuBarMenuDropsTheHintRowAndFoldsTheSwitchesAway() throws {
+    func testMenuBarMenuDropsTheHintRowAndMovesTheSwitchesToSettings() throws {
         let text = try code("Sources/BaneySpaces/AppDelegate.swift")
         XCTAssertFalse(text.contains("\"Add ⇧ to send the front window there\""), "the ⇧ hint row is gone; setup teaches it")
         XCTAssertTrue(text.contains("MenuLayout.rows("), "the workspace rows come from MenuLayout")
-        XCTAssertTrue(text.contains("optionsItem()"), "the switches live in one Options submenu")
+        for gone in ["optionsItem()", "channelItem()", "updateItem()", "parkedAppsItem()", "\"About BaneySpaces\"", "deck.menuItems()", "toolTip = updater"] {
+            XCTAssertFalse(text.contains(gone), "\(gone) moved into Settings (Donovan, 2026-10-31)")
+        }
+    }
+
+    /// Donovan, 2026-10-31: the menu keeps the workspace rows, Show All Workspaces, Find or Install
+    /// an App, Settings and Quit. Finished agents and a waiting update get a row only while there is
+    /// something to act on (review of #100: a tooltip and a Settings tab are not a notice).
+    func testMenuIsFiveKindsOfRowsWhenNothingIsPending() {
+        let rows = MenuLayout.rows(current: 1, apps: [1: ["Ghostty"]])
+        let e = MenuLayout.entries(rows: rows, finished: 0, update: nil)
+        XCTAssertEqual(e, rows.map(MenuEntry.workspace) + [.separator, .showAll, .find, .separator, .settings, .quit])
+    }
+
+    func testFinishedAgentsAndAWaitingUpdateAddOneRowEachAndOnlyWhileTheyAreThere() {
+        let rows = MenuLayout.rows(current: 1, apps: [:])
+        let notice = UpdateNotice(name: "BaneySpaces 0.3.1", isNightly: false, installing: false)
+        let tail: ([MenuEntry]) -> [MenuEntry] = { Array($0.dropFirst(rows.count)) }
+        XCTAssertEqual(tail(MenuLayout.entries(rows: rows, finished: 2, update: nil)),
+                       [.separator, .showAll, .find, .separator, .finished(count: 2), .separator, .settings, .quit])
+        XCTAssertEqual(tail(MenuLayout.entries(rows: rows, finished: 0, update: notice)),
+                       [.separator, .showAll, .find, .separator, .update(notice), .separator, .settings, .quit])
+        XCTAssertEqual(tail(MenuLayout.entries(rows: rows, finished: 1, update: notice)),
+                       [.separator, .showAll, .find, .separator, .finished(count: 1), .update(notice), .separator, .settings, .quit])
+    }
+
+    func testUpdateWordingIsCapitalizedWhereASentenceStarts() {
+        let stable = UpdateNotice(name: "BaneySpaces 0.3.1", isNightly: false, installing: false)
+        let nightly = UpdateNotice(name: "nightly-2026-10-31", isNightly: true, installing: false)
+        XCTAssertEqual(stable.menuTitle, "Update to BaneySpaces 0.3.1…")
+        XCTAssertEqual(stable.sentence, "BaneySpaces 0.3.1 is available.")
+        XCTAssertEqual(nightly.menuTitle, "Update to the Nightly Build…")
+        XCTAssertEqual(nightly.sentence, "The nightly build is available.")
+        XCTAssertEqual(UpdateNotice(name: "x", isNightly: true, installing: true).menuTitle, "Updating to the Nightly Build…")
+        XCTAssertEqual(MenuLayout.finishedTitle(1), "1 Agent Finished While You Were Away")
+        XCTAssertEqual(MenuLayout.finishedTitle(3), "3 Agents Finished While You Were Away")
+    }
+
+    /// The status item's count of finished agents and the way to reach them travel together, so
+    /// the number never counts something the menu won't show.
+    func testTheCountBesideTheIconComesWithARowForThoseAgents() throws {
+        let text = try code("Sources/BaneySpaces/AppDelegate.swift")
+        XCTAssertTrue(text.contains("deck.unseenCount"))
+        XCTAssertTrue(text.contains("finished: deck.started ? deck.unseenCount : 0"), "the menu row counts the same agents as the badge")
+        XCTAssertTrue(text.contains("deck.finishedMenuItem(title:"))
+        XCTAssertFalse(text.contains("toolTip = updater"), "a tooltip is no notice of an update")
+    }
+
+    /// Every item the menu builds: a literal title in `item(`, `NSMenuItem(title:` or `addItem(withTitle:`,
+    /// and one `NSMenuItem(` call in the helper that every other item goes through. A row added any
+    /// other way fails here, and a new title has to be added to this list on purpose.
+    func testNoMenuItemIsBuiltOutsideTheKnownOnes() throws {
+        let text = try code("Sources/BaneySpaces/AppDelegate.swift")
+        let titlePatterns = [#"item\("([^"]+)""#, #"NSMenuItem\(title: "([^"]+)""#, #"addItem\(withTitle: "([^"]+)""#]
+        var titles = Set<String>()
+        for pattern in titlePatterns {
+            let re = try NSRegularExpression(pattern: pattern)
+            for m in re.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+                titles.insert(String(text[Range(m.range(at: 1), in: text)!]))
+            }
+        }
+        // `item(` also matches "menuItem(for:" and "updateItem(": only quoted titles are captured.
+        XCTAssertEqual(titles, ["Show All Workspaces", "Find or Install an App…", "Settings…", "Quit BaneySpaces",
+                                "Waiting for AeroSpace to quit", "BaneySpaces needs permission to arrange windows", "Allow BaneySpaces…"])
+        XCTAssertEqual(text.components(separatedBy: "NSMenuItem(").count - 1, 1, "only the item(_:_:key:) helper builds one")
+        XCTAssertEqual(text.components(separatedBy: ".addItem(withTitle:").count - 1, 2, "only the not-started notices")
+        XCTAssertEqual(text.components(separatedBy: "NSMenu()").count - 1, 1, "only the status item's own menu; no submenu built here")
+        // The one other place a menu row is built, the finished-agents submenu, is the Deck's.
+        let deck = try code("Sources/BaneySpaces/Deck/DeckController.swift")
+        XCTAssertEqual(deck.components(separatedBy: "NSMenuItem(").count - 1, 2, "the finished row and one item for each agent")
+    }
+
+    /// Review of #100: Settings' lists were read only on a tab change, a clicked row stayed, the
+    /// command line tools were asked once, and Automation worked before BaneySpaces had started.
+    func testSettingsListsRefreshAndAutomationWaitsForAccessibility() throws {
+        let setup = try code("Sources/BaneySpaces/Setup.swift")
+        let app = try code("Sources/BaneySpaces/AppDelegate.swift")
+        XCTAssertTrue(setup.contains("if tab == .automation { reloadParked() }\n    }"), "the parked list reads again on every refresh while the tab is up")
+        XCTAssertTrue(setup.contains("NSWindow.didBecomeKeyNotification, object: window"), "the lists read again when the window takes the keyboard")
+        XCTAssertTrue(setup.contains("onFocusFinished?(id)\n        finished = finishedRows()"), "a clicked row leaves the list at once")
+        XCTAssertTrue(setup.contains("model.focusFinished(row.id)"))
+        XCTAssertTrue(setup.contains("if tab == .updates { onUpdatesShown?() }"), "the command line tools are looked for when Updates comes up")
+        XCTAssertTrue(app.contains("let found = Updater.hasCommandLineTools"))
+        XCTAssertFalse(app.contains("lazy var commandLineTools"), "asked once at first use goes stale when the tools are installed")
+        XCTAssertEqual(setup.components(separatedBy: ".disabled(!model.ready)").count - 1, 2, "the app list and Bring Every Window Back wait for Accessibility")
+        XCTAssertTrue(setup.contains("Available once BaneySpaces has Accessibility access"))
+        for name in ["private func bringBack() {", "private func toggleParked(_ id: String) {"] {
+            let start = try XCTUnwrap(app.range(of: name))
+            XCTAssertTrue(app[start.upperBound...].prefix(60).contains("guard started else { return }"), "\(name) acts only once started")
+        }
+    }
+
+    func testEveryActionTheMenuHadIsInSettings() throws {
+        let setup = try code("Sources/BaneySpaces/Setup.swift")
+        let wired = try code("Sources/BaneySpaces/AppDelegate.swift")
+        // Each used to be a menu item; each is now a control in Settings, wired in the app delegate.
+        for control in ["Workspace Dock in place of the macOS Dock", "Position on screen",
+                        "Show what coding agents are doing on their app icons",
+                        "⌘Space opens the BaneySpaces launcher instead of Spotlight",
+                        "Keep usable by automation", "Bring Every Window Back", "Uninstall BaneySpaces…",
+                        "Stable: tested releases", "Check for updates daily", "Check for Updates Now…",
+                        "Button(notice.menuTitle)", "About BaneySpaces…", "Finished while you were away"] {
+            XCTAssertTrue(setup.contains(control), "Settings lacks \"\(control)\"")
+        }
+        for wire in ["onBringBack", "onAbout", "onToggleParked", "onCheckForUpdates", "onOfferUpdate",
+                     "onSetUpdateChannel", "onSetCheckDaily", "onFocusFinished", "onUninstall", "onUpdatesShown"] {
+            XCTAssertTrue(wired.contains("c.model.\(wire) ="), "\(wire) isn't wired")
+        }
     }
 
     func testDockMenusAreShortAndForceQuitHidesBehindOption() throws {
