@@ -93,6 +93,11 @@ pub fn run_engine(engine: &std::path::Path, args: &[String], timeout: Duration) 
     debug_assert!(!args.iter().any(|a| a == "--headed"));
     let mut cmd = Command::new(engine);
     cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    // The engine keeps its snapshots in a private directory it insists this user owns, so give it
+    // one of ours rather than a shared default another (elevated) process may have created.
+    let home = crate::paths::Paths::from_env().state.join("engine-state");
+    let _ = std::fs::create_dir_all(&home);
+    cmd.env("AGENT_DESKTOP_HOME", &home);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

@@ -73,6 +73,20 @@ pub fn lock(s: &Shared) -> MutexGuard<'_, Core> {
     s.lock().unwrap_or_else(|p| p.into_inner())
 }
 
+static LOG: OnceLock<Mutex<std::fs::File>> = OnceLock::new();
+
+/// A line of daemon output: to the log file when there is one (the daemon has no console then),
+/// else to stderr. Never panics: a closed console must not take the daemon down.
+pub fn say(msg: &str) {
+    if let Some(f) = LOG.get() {
+        if let Ok(mut f) = f.lock() {
+            let _ = writeln!(f, "{msg}");
+        }
+    } else {
+        let _ = writeln!(std::io::stderr(), "{msg}");
+    }
+}
+
 static STOPPING: AtomicBool = AtomicBool::new(false);
 static FINISHED: AtomicBool = AtomicBool::new(false);
 static CTRL_TX: OnceLock<Sender<Msg>> = OnceLock::new();
@@ -80,7 +94,7 @@ static CTRL_TX: OnceLock<Sender<Msg>> = OnceLock::new();
 impl Core {
     fn log(&self, msg: &str) {
         if self.trace {
-            eprintln!("[baneyspaces] {msg}");
+            say(&format!("[baneyspaces] {msg}"));
         }
     }
 
@@ -810,9 +824,13 @@ fn hands(shared: &Shared, agent: &str, args: &Value) -> Envelope {
 /// start after a crash, a clean exit and a panic alike. Returns what it did.
 pub fn restore_from_file(paths: &Paths, keep_agents: bool) -> (usize, usize) {
     let left = hidden::parse_state(&paths.read("state.json").unwrap_or_default());
+    // A cloaked or parked window is put back whenever the handle is still a window: undoing a cloak
+    // on a window that is not cloaked does nothing, so a reused handle costs nothing, and a Store
+    // app's process id cannot be read reliably from a cloaked frame. A ghost is different: undoing
+    // it rewrites the window's styles, so its process must still be the one that was recorded.
     let exists = |h: &Hidden| {
         let w = to_hwnd(h.hwnd);
-        winapi::exists(w) && (h.pid == 0 || winapi::real_pid(w) == h.pid) && (h.start == 0 || winapi::process_start(h.pid) == h.start)
+        winapi::exists(w) && (h.how != How::Ghost || ((h.pid == 0 || winapi::real_pid(w) == h.pid) && (h.start == 0 || winapi::process_start(h.pid) == h.start)))
     };
     let alive = |pid, start| keep_agents && winapi::alive(pid, start);
     let plan = hidden::recovery_plan(&left, exists, alive);
@@ -838,6 +856,26 @@ pub fn restore_from_file(paths: &Paths, keep_agents: bool) -> (usize, usize) {
     v["hidden"] = serde_json::to_value(&still).unwrap_or_default();
     paths.write_atomic("state.json", &serde_json::to_string_pretty(&v).unwrap_or_default());
     (shown, kept)
+}
+
+/// Safety net for a window a lost run left cloaked with no record of it: shell-cloaked, titled, an
+/// app window, and on the current virtual desktop (so not just another desktop's). Shown again.
+pub fn rescue_stray_cloaks(our_pid: u32) -> usize {
+    let cloaker = Cloaker::new().ok();
+    let mut n = 0;
+    for h in winapi::list_top_level() {
+        if winapi::cloaked(h) == 2 && winapi::is_visible(h) {
+            say(&format!("[baneyspaces] stray? {} manageable={} on_current_desktop={:?}", window_name(id_of(h)), winapi::is_manageable(h, true, our_pid), cloak::on_current_desktop(h)));
+        }
+        if winapi::cloaked(h) == 2 && winapi::is_visible(h) && winapi::is_manageable(h, true, our_pid) && cloak::on_current_desktop(h) == Some(true) {
+            if let Some(c) = cloaker.as_ref() {
+                if c.set(h, false).is_ok() {
+                    n += 1;
+                }
+            }
+        }
+    }
+    n
 }
 
 // ---- the control pipe -----------------------------------------------------------------------
@@ -959,23 +997,32 @@ unsafe extern "system" fn ctrl_handler(kind: u32) -> i32 {
     1
 }
 
-pub fn run(trace: bool) -> i32 {
+pub fn run(trace: bool, log: Option<PathBuf>) -> i32 {
+    if let Some(p) = log {
+        if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+            let _ = LOG.set(Mutex::new(f));
+        }
+    }
     let paths = Paths::from_env();
     if let Err(e) = paths.ensure() {
-        eprintln!("baneyspaces daemon: {e}");
+        say(&format!("baneyspaces daemon: {e}"));
         return 1;
     }
     if ipc::call(&paths, &json!({ "op": "ping" })).ok {
-        eprintln!("baneyspaces daemon: already running");
+        say(&format!("baneyspaces daemon: already running"));
         return 1;
     }
     // 1. Whatever a previous run left hidden comes back first, before anything else is done.
     let (shown, kept) = restore_from_file(&paths, true);
     if shown + kept > 0 {
-        eprintln!("baneyspaces daemon: put back {shown} window(s) a previous run left hidden; {kept} agent window(s) stay on the agent workspace");
+        say(&format!("baneyspaces daemon: put back {shown} window(s) a previous run left hidden; {kept} agent window(s) stay on the agent workspace"));
+    }
+    let strays = rescue_stray_cloaks(std::process::id());
+    if strays > 0 {
+        say(&format!("baneyspaces daemon: showed {strays} window(s) that were cloaked with no record of it"));
     }
     let Some(mut server) = pipe::Server::new(&paths.pipe_name()) else {
-        eprintln!("baneyspaces daemon: cannot read your account to protect the control pipe");
+        say(&format!("baneyspaces daemon: cannot read your account to protect the control pipe"));
         return 1;
     };
     let (tx, rx): (Sender<Msg>, Receiver<Msg>) = channel();
@@ -1028,7 +1075,7 @@ pub fn run(trace: bool) -> i32 {
         c.persist();
         let problems = hook::start(tx.clone(), keys::bindings());
         for p in &problems {
-            eprintln!("baneyspaces daemon: {p}");
+            say(&format!("baneyspaces daemon: {p}"));
         }
         c.problems.extend(problems);
         c.persist();
@@ -1043,13 +1090,13 @@ pub fn run(trace: bool) -> i32 {
                     std::thread::spawn(move || serve_conn(shared, conn));
                 }
                 Err(e) => {
-                    eprintln!("baneyspaces daemon: {e}");
+                    say(&format!("baneyspaces daemon: {e}"));
                     std::thread::sleep(Duration::from_millis(500));
                 }
             }
         });
     }
-    eprintln!("baneyspaces daemon: ready ({})", paths.pipe_name());
+    say(&format!("baneyspaces daemon: ready ({})", paths.pipe_name()));
     // The worker: hook messages as they come, a poll when quiet.
     let mut last_poll = Instant::now();
     loop {
@@ -1070,7 +1117,7 @@ pub fn run(trace: bool) -> i32 {
                 }
                 let env = handle(&shared, &req);
                 if !env.ok {
-                    eprintln!("baneyspaces daemon: chord {args:?}: {}", env.to_json());
+                    say(&format!("baneyspaces daemon: chord {args:?}: {}", env.to_json()));
                 }
             }
             Ok(Msg::Win { event, hwnd }) => {
@@ -1096,7 +1143,7 @@ pub fn run(trace: bool) -> i32 {
         c.persist();
     }
     let (shown, kept) = restore_from_file(&paths, true);
-    eprintln!("baneyspaces daemon: stopped; {shown} window(s) put back, {kept} agent window(s) still on the agent workspace");
+    say(&format!("baneyspaces daemon: stopped; {shown} window(s) put back, {kept} agent window(s) still on the agent workspace"));
     FINISHED.store(true, Ordering::SeqCst);
     0
 }

@@ -25,6 +25,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{WS_EX_LAYERED, WS_EX_NOACTIVAT
 const CLSID_IMMERSIVE_SHELL: GUID = GUID::from_u128(0xC2F03A33_21F5_47FA_B4BB_156362A2F239);
 const IID_ISERVICE_PROVIDER: GUID = GUID::from_u128(0x6D5140C1_7436_11CE_8034_00AA006009FA);
 const IID_IAPPLICATION_VIEW_COLLECTION: GUID = GUID::from_u128(0x1841c6d7_4f9d_42c0_af41_8747538f10e5);
+const CLSID_VIRTUAL_DESKTOP_MANAGER: GUID = GUID::from_u128(0xAA509086_5CA9_4C25_8F95_589D3C07B48A);
+const IID_IVIRTUAL_DESKTOP_MANAGER: GUID = GUID::from_u128(0xa5cd92ff_29be_454c_8d04_d82879fb3f1b);
 const CLSID_TASKBAR_LIST: GUID = GUID::from_u128(0x56FDF344_FD6D_11d0_958A_006097C9A090);
 const IID_ITASKBAR_LIST: GUID = GUID::from_u128(0x56FDF342_FD6D_11d0_958A_006097C9A090);
 
@@ -168,5 +170,23 @@ pub fn show(entry: &Hidden, cloaker: Option<&Cloaker>) {
                 }
             }
         }
+    }
+}
+
+/// Is this window on the virtual desktop you are looking at? (The documented IVirtualDesktopManager.)
+/// A window the shell cloaked that *is* on your desktop was cloaked by something other than Windows'
+/// own desktops: most likely a BaneySpaces run that never got to put it back.
+pub fn on_current_desktop(h: HWND) -> Option<bool> {
+    COM.with(|_| ());
+    unsafe {
+        let mut m: *mut c_void = std::ptr::null_mut();
+        if CoCreateInstance(&CLSID_VIRTUAL_DESKTOP_MANAGER, std::ptr::null_mut(), CLSCTX_ALL, &IID_IVIRTUAL_DESKTOP_MANAGER, &mut m) < 0 || m.is_null() {
+            return None;
+        }
+        let f: unsafe extern "system" fn(*mut c_void, HWND, *mut i32) -> i32 = std::mem::transmute(slot(m, 3));
+        let mut on = 0;
+        let hr = f(m, h, &mut on);
+        release(m);
+        (hr >= 0).then_some(on != 0)
     }
 }

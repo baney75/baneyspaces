@@ -50,7 +50,8 @@ const HELP: &str = "baneyspaces (Windows)
   agent shot --window W          agent log [--since SECS]
   agent press|key|pointer ...    not supported yet (phase 3-4)
   keys                           the key map for this platform
-  daemon [--trace]               run the daemon (the Startup shortcut runs it)
+  daemon [--trace] [--log FILE]  run the daemon in this console
+  daemon --background            run it with no console window (the Startup shortcut runs this)
   daemon stop                    ask the running daemon to restore every window and exit
   mcp                            MCP server on stdio (agent tools only)
   doctor                         what works and what does not
@@ -309,11 +310,38 @@ fn doctor(paths: &paths::Paths) -> Envelope {
 fn run_daemon(args: &[String]) -> i32 {
     #[cfg(windows)]
     {
+        let paths = paths::Paths::from_env();
         if args.get(1).map(String::as_str) == Some("stop") {
-            let paths = paths::Paths::from_env();
             return print(&ipc::call(&paths, &json!({ "op": "quit" })), false);
         }
-        daemon::run(args.iter().any(|a| a == "--trace"))
+        let mut rest = args[1..].to_vec();
+        let log = take(&mut rest, "--log").map(std::path::PathBuf::from);
+        let trace = rest.iter().any(|a| a == "--trace");
+        if rest.iter().any(|a| a == "--background") {
+            // Start the daemon again with no console window and wait until it answers. This is what
+            // the Startup shortcut runs.
+            use std::os::windows::process::CommandExt;
+            let _ = paths.ensure();
+            let log = log.unwrap_or_else(|| paths.state.join("daemon.log"));
+            let mut cmd = std::process::Command::new(std::env::current_exe().unwrap_or_default());
+            cmd.arg("daemon").arg("--log").arg(&log);
+            if trace {
+                cmd.arg("--trace");
+            }
+            cmd.creation_flags(0x0800_0000 | 0x0000_0008).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+            if let Err(e) = cmd.spawn() {
+                return print(&fail("internal", &format!("cannot start the daemon: {e}"), ""), false);
+            }
+            for _ in 0..40 {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                let r = ipc::call(&paths, &json!({ "op": "ping" }));
+                if r.ok {
+                    return print(&Envelope::ok(json!({ "running": true, "log": log.display().to_string() })), false);
+                }
+            }
+            return print(&fail("timeout", "the daemon did not answer within 6 s", &format!("Read {}", log.display())), false);
+        }
+        daemon::run(trace, log)
     }
     #[cfg(not(windows))]
     {
