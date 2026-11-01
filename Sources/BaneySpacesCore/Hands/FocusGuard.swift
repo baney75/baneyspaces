@@ -53,6 +53,12 @@ public struct FocusGuard: Equatable, Sendable {
         return running.values.contains(k) || (tailUntil[k] ?? .distantPast) > now
     }
 
+    /// Whether any action on any window of this process is running, just ended, or is a launch of it.
+    public func causedByAnyAction(pid: Int32, bundle: String?, now: Date) -> Bool {
+        if caused(pid: pid, window: nil, bundle: bundle, now: now) { return true }
+        return running.values.contains { $0.pid == pid } || tailUntil.contains { $0.key.pid == pid && $0.value > now }
+    }
+
     public mutating func prune(now: Date) {
         tailUntil = tailUntil.filter { $0.value > now }
         launchPid = launchPid.filter { $0.value > now }
@@ -94,6 +100,12 @@ public final class AgentActivity: @unchecked Sendable {
     public func clearLaunch(bundle: String) {
         lock.lock(); defer { lock.unlock() }
         guardrail.clearLaunch(bundle: bundle)
+    }
+
+    /// Whether an agent's action or launch is on this process at all (for telling his use of an app from theirs).
+    public func causedByAnyAction(pid: Int32, bundle: String? = nil) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return guardrail.causedByAnyAction(pid: pid, bundle: bundle, now: clock())
     }
 
     /// Whether this activation is an agent's: false for any window the agent isn't working on.

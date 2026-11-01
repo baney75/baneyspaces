@@ -70,7 +70,7 @@ public enum HandsTools {
             refParam,
             HandsParam("value", .string, "The new value.", required: true, positional: true, rest: true),
         ], acts: true),
-        HandsTool(verb: "press", summary: "Press a key or combination (Return, cmd+a, shift+tab) in an element's app, aimed at that app's process only.", params: [
+        HandsTool(verb: "press", summary: "Press a key or combination (Return, cmd+a, shift+tab). Always answers not_supported for now: keys reach only the app in front, and BaneySpaces never raises one for an agent (background keys arrive in a later phase).", params: [
             refParam,
             HandsParam("key", .string, "Key name with optional modifiers, like cmd+shift+z.", required: true, positional: true),
         ], acts: true),

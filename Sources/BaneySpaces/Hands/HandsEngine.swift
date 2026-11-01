@@ -79,7 +79,7 @@ final class HandsEngine {
     /// Runs `work` on the window's process queue, waiting at most `budget`. The focus guard is held from here
     /// until the work has finished or been dropped; `check` runs on the queue right before `work`. A call
     /// that outlives its budget is told `timeout`, and if it hasn't started it never will.
-    private func run(window w: HandsWindow, budget: TimeInterval, mutating: Bool, check: @escaping Check, _ work: @escaping () -> Reply) -> Reply {
+    private func run(window w: HandsWindow, budget: TimeInterval, mutating: Bool, check: @escaping Check, _ work: @escaping (_ cancelled: () -> Bool) -> Reply) -> Reply {
         let box = Box()
         let done = DispatchSemaphore(value: 0)
         let token = AgentActivity.shared.begin(pid: w.pid, window: w.id)
@@ -87,7 +87,7 @@ final class HandsEngine {
             defer { AgentActivity.shared.end(token); done.signal() }
             if box.isCancelled { return }
             if let e = check() { return box.set(.failed(e)) }
-            box.set(work())
+            box.set(work { box.isCancelled })
         }
         if done.wait(timeout: .now() + budget) == .timedOut {
             box.cancel()
@@ -186,21 +186,16 @@ final class HandsEngine {
     /// One window's tree with refs. `windowID` is the engine's id for it ("w-4211"). `evidence` reads use
     /// their own store, so they never push the agent's refs out.
     func snapshot(window w: HandsWindow, interactive: Bool, compact: Bool, depth: UInt8, evidence: Bool = false, check: @escaping Check) -> Reply {
-        let app: String? = w.app, windowID = w.id
-        return run(window: w, budget: Budget.snapshot, mutating: false, check: check) { [self] in
+        let windowID = w.id
+        return run(window: w, budget: Budget.snapshot, mutating: false, check: check) { [self] _ in
             if let e = ready() { return .failed(e) }
             guard let adapter = evidence ? evidenceAdapter : adapter else { return .failed(HandsError(.engineError, "the engine isn't ready", suggestion: "Check `baneyspaces doctor`.", retry: .never)) }
             var out: UnsafeMutablePointer<CChar>?
             let id = "w-\(windowID)"
-            let code: Int32
-            if let app {
-                code = app.withCString { a in id.withCString { w in
-                    ad_snapshot_window(adapter, a, w, Self.surfaceWindow, depth, interactive, compact, &out)
-                } }
-            } else {
-                code = id.withCString { w in
-                    ad_snapshot_window(adapter, nil, w, Self.surfaceWindow, depth, interactive, compact, &out)
-                }
+            // The exact window id alone names the window. The app's name is not passed: two copies of an app share
+            // it, and the engine would match by name first.
+            let code = id.withCString { w in
+                ad_snapshot_window(adapter, nil, w, Self.surfaceWindow, depth, interactive, compact, &out)
             }
             return finish(code, out)
         }
@@ -208,7 +203,7 @@ final class HandsEngine {
 
     /// One property of a ref, read from the live element.
     func get(window w: HandsWindow, ref: String, property: String, check: @escaping Check) -> Reply {
-        run(window: w, budget: Budget.get, mutating: false, check: check) { [self] in
+        run(window: w, budget: Budget.get, mutating: false, check: check) { [self] cancelled in
             if let e = ready() { return .failed(e) }
             guard let adapter else { return .failed(HandsError(.engineError, "the engine isn't ready", suggestion: "Check `baneyspaces doctor`.", retry: .never)) }
             var out: UnsafeMutablePointer<CChar>?
@@ -219,7 +214,7 @@ final class HandsEngine {
 
     /// An action on a ref. Always the strict Headless policy; the auto-wait is the engine's default.
     func act(window w: HandsWindow, ref: String, kind: Kind, text: String? = nil, direction: Int32 = 1, amount: UInt32 = 3, check: @escaping Check) -> Reply {
-        run(window: w, budget: Budget.act, mutating: true, check: check) { [self] in
+        run(window: w, budget: Budget.act, mutating: true, check: check) { [self] cancelled in
             if let e = ready() { return .failed(e) }
             guard let adapter else { return .failed(HandsError(.engineError, "the engine isn't ready", suggestion: "Check `baneyspaces doctor`.", retry: .never)) }
             var out: UnsafeMutablePointer<CChar>?
@@ -236,14 +231,21 @@ final class HandsEngine {
             // The engine would wait up to 5 s inside one call for the target to become actionable, with no way to
             // look at the scope meanwhile. It is told not to (0 = single shot); the wait is here, and the scope is
             // checked again before every attempt.
-            let giveUp = Date().addingTimeInterval(Self.actionableWait)
-            while true {
-                out = nil
-                let code = text.map { $0.withCString { dispatch($0) } } ?? dispatch(nil)
-                let reply = finish(code, out)
-                guard case .failed(let e) = reply, e.code == .timeout, Date() < giveUp else { return reply }
-                Thread.sleep(forTimeInterval: 0.1)
-                if let stop = check() { return .failed(stop) }
+            let result: Result<JSONValue, HandsError> = EngineRetry.run(
+                attempt: {
+                    out = nil
+                    let code = text.map { $0.withCString { dispatch($0) } } ?? dispatch(nil)
+                    switch finish(code, out) {
+                    case .ok(let d): return .success(d)
+                    case .failed(let e): return .failure(e)
+                    }
+                },
+                stop: check, cancelled: cancelled,
+                giveUp: Date().addingTimeInterval(Self.actionableWait),
+                pause: { Thread.sleep(forTimeInterval: 0.1) })
+            switch result {
+            case .success(let d): return .ok(d)
+            case .failure(let e): return .failed(e)
             }
         }
     }

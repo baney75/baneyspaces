@@ -177,7 +177,8 @@ case "mcp":
 case "agent" where HandsTools.userOnly.contains(rest.first ?? ""):
     HandsCLI.lendOrReturn(rest)
 
-case "agent" where HandsTools.tool(verb: rest.first ?? "") != nil:
+// `--on HOST agent open …` is the deck's own op (the hands run on this Mac only): it falls through to the arm below.
+case "agent" where HandsTools.tool(verb: rest.first ?? "") != nil && !(remoteHost != nil && rest.first == "open"):
     HandsCLI.run(rest)
 
 case "agent":

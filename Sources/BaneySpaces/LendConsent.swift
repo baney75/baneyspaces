@@ -20,10 +20,11 @@ enum LendConsent {
     /// Must run on the main thread. False for "Don't Lend", a timeout, a second sheet while one is up or
     /// within the pause of the last, and any answer that did not come from a real click or key.
     static func ask(app: String, minutes: Int, takeBack: Bool) -> Bool {
-        guard Thread.isMainThread, !showing, Date().timeIntervalSince(lastShown) >= pause else { return false }
-        if let r = refusals[app], r.count >= maxRefusals, Date().timeIntervalSince(r.last) < 3600 { return false }
+        // Taking back narrows access: it is never throttled, counted, or stopped.
+        guard Thread.isMainThread, !showing, takeBack || Date().timeIntervalSince(lastShown) >= pause else { return false }
+        if !takeBack, let r = refusals[app], r.count >= maxRefusals, Date().timeIntervalSince(r.last) < 3600 { return false }
         showing = true
-        defer { showing = false; lastShown = Date() }
+        defer { showing = false; if !takeBack { lastShown = Date() } }
         let alert = NSAlert()
         alert.alertStyle = .warning
         if takeBack {
@@ -33,7 +34,7 @@ enum LendConsent {
             alert.messageText = "Let agents use \(app)?"
             alert.informativeText = "A program on this Mac asked. If you didn't start it, choose Don't Lend. Agents could read and act on \(app)'s windows as they are now for \(minutes) minutes, but never while you are using it."
         }
-        alert.addButton(withTitle: "Don't Lend")                // first button: the default (Return)
+        alert.addButton(withTitle: takeBack ? "Keep Lent" : "Don't Lend")   // first button: the default (Return)
         alert.addButton(withTitle: takeBack ? "Take Back" : "Lend")
         let button = alert.buttons[1]
         button.isEnabled = false
@@ -46,6 +47,7 @@ enum LendConsent {
         defer { timer.invalidate(); enable.invalidate() }
         let response = alert.runModal()
         func refuse(_ why: String) -> Bool {
+            if takeBack { return false }
             let r = refusals[app] ?? (0, .distantPast)
             refusals[app] = (r.count + 1, Date())
             pause = min(pause * 2, 600)

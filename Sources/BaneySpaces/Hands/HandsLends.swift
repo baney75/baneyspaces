@@ -72,8 +72,8 @@ final class UserActivity {
     private let lock = NSLock()
     private var use = UserUse()
 
-    func activated(_ pid: pid_t) {
-        lock.lock(); use.activated(pid, now: Date()); lock.unlock()
+    func activated(_ pid: pid_t, byAgent: Bool = false) {
+        lock.lock(); use.activated(pid, now: Date(), byAgent: byAgent); lock.unlock()
     }
 
     /// In front now, or in front within the last 30 s.

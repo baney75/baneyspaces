@@ -571,6 +571,136 @@ final class HandsEventsTests: XCTestCase {
     }
 }
 
+/// A fake engine that counts its dispatches.
+final class EngineRetryTests: XCTestCase {
+    let t0 = Date(timeIntervalSince1970: 1000)
+
+    func run(_ script: [Result<Int, HandsError>], stop: HandsError? = nil, cancelAfter: Int = .max) -> (Result<Int, HandsError>, Int) {
+        var calls = 0
+        let r = EngineRetry.run(attempt: { defer { calls += 1 }; return script[min(calls, script.count - 1)] },
+                                stop: { stop }, cancelled: { calls >= cancelAfter },
+                                giveUp: t0.addingTimeInterval(5), now: { self.t0 }, pause: {})
+        return (r, calls)
+    }
+
+    func timeout(_ retry: HandsRetry) -> HandsError { HandsError(.timeout, "slow", suggestion: "x", retry: retry) }
+
+    func testATimeoutThatMayHaveLandedIsDispatchedExactlyOnce() {
+        for unsafe in [HandsRetry.never, .afterSnapshot] {
+            let (r, calls) = run([.failure(timeout(unsafe)), .success(1)])
+            XCTAssertEqual(calls, 1, "an unsafe or unknown disposition is never dispatched again")
+            guard case .failure(let e) = r else { return XCTFail() }
+            XCTAssertEqual(e.code, .timeout)
+            XCTAssertEqual(e.retry, unsafe)
+        }
+    }
+
+    func testOnlyAFailureTheEngineCallsSafeIsRepeated() {
+        let (r, calls) = run([.failure(timeout(.safe)), .failure(timeout(.safe)), .success(7)])
+        XCTAssertEqual(calls, 3)
+        guard case .success(7) = r else { return XCTFail() }
+        // A different error, even a safe one, is final.
+        let other = HandsError(.notSupported, "no", suggestion: "x", retry: .safe)
+        XCTAssertEqual(run([.failure(other), .success(1)]).1, 1)
+    }
+
+    func testTheLoopStopsWhenTheCallerLeftOrTheScopeChanged() {
+        XCTAssertEqual(run([.failure(timeout(.safe))], cancelAfter: 1).1, 1, "the caller gave up: no second dispatch")
+        let gone = HandsError(.outsideAgentWorkspace, "moved", suggestion: "x")
+        let (r, calls) = run([.failure(timeout(.safe)), .success(1)], stop: gone)
+        XCTAssertEqual(calls, 1)
+        guard case .failure(let e) = r else { return XCTFail() }
+        XCTAssertEqual(e.code, .outsideAgentWorkspace)
+    }
+
+    func testTheLoopGivesUpAtItsDeadline() {
+        var calls = 0
+        var now = t0
+        _ = EngineRetry.run(attempt: { calls += 1; return Result<Int, HandsError>.failure(self.timeout(.safe)) }, stop: { nil }, cancelled: { false },
+                            giveUp: t0.addingTimeInterval(1), now: { now }, pause: { now = now.addingTimeInterval(0.4) })
+        XCTAssertEqual(calls, 4, "0, 0.4, 0.8, then 1.2 s is past the deadline")
+    }
+}
+
+/// Sheets are children of their document window, so a window with one attached is off limits.
+final class AttachedSheetTests: XCTestCase {
+    func window(children: [AXNodeInfo]) -> AXNodeInfo { AXNodeInfo(role: "AXWindow", subrole: "AXStandardWindow", identifier: nil, title: "Untitled", children: children) }
+
+    func testAPlainDocumentWindowIsFine() {
+        let tree = window(children: [AXNodeInfo(role: "AXScrollArea", children: [AXNodeInfo(role: "AXTextArea")]), AXNodeInfo(role: "AXToolbar")])
+        XCTAssertFalse(PanelDetector.windowIsOffLimits(tree))
+    }
+
+    func testAnAttachedSheetMakesTheWholeWindowOffLimits() {
+        XCTAssertTrue(PanelDetector.windowIsOffLimits(window(children: [AXNodeInfo(role: "AXScrollArea"), AXNodeInfo(role: "AXSheet", title: "Save")])))
+        XCTAssertTrue(PanelDetector.windowIsOffLimits(window(children: [AXNodeInfo(role: "AXGroup", children: [AXNodeInfo(role: "AXSheet")])])), "a sheet below a group")
+        XCTAssertTrue(PanelDetector.windowIsOffLimits(window(children: [AXNodeInfo(role: "AXGroup", identifier: "save-panel")])), "a panel descendant")
+    }
+
+    func testAPanelWindowItselfIsOffLimits() {
+        XCTAssertTrue(PanelDetector.windowIsOffLimits(AXNodeInfo(role: "AXWindow", subrole: "AXDialog", identifier: "open-panel", title: "Open")))
+        XCTAssertFalse(PanelDetector.windowIsOffLimits(AXNodeInfo(role: "AXWindow", subrole: "AXFloatingWindow", title: "Fonts")))
+    }
+
+    func testTheInspectionReadsOneLevelDownWithAShortTimeout() throws {
+        let spaces = try HandsSourceTests.code("Sources/BaneySpaces/Spaces.swift")
+        let inspect = try XCTUnwrap(HandsSourceTests.block(after: "func handsInspect(", in: spaces))
+        XCTAssertTrue(inspect.contains("AXUIElementSetMessagingTimeout(e, 0.25)"))
+        XCTAssertTrue(inspect.contains("PanelDetector.windowIsOffLimits(info(e, children: true))"))
+    }
+}
+
+final class UserUseAfterAgentActivationTests: XCTestCase {
+    func testAnAgentsActivationDoesNotMakeItHisAppAndDoesNotLoseTheLeftOne() {
+        var u = UserUse()
+        let t = Date(timeIntervalSince1970: 100)
+        u.activated(1, now: t)                       // he is in the lent app
+        u.activated(2, now: t.addingTimeInterval(5), byAgent: true)   // an agent's action brings its own app forward
+        XCTAssertTrue(u.inUse(1, frontNow: 2, now: t.addingTimeInterval(20)), "he left it 15 s ago")
+        XCTAssertFalse(u.inUse(1, frontNow: 2, now: t.addingTimeInterval(40)), "and 35 s ago he didn't")
+        XCTAssertFalse(u.inUse(2, frontNow: 1, now: t.addingTimeInterval(6)), "not recorded as his")
+    }
+
+    func testAnyActionOnAProcessMakesItsActivationTheAgents() {
+        var g = FocusGuard()
+        let t = Date(timeIntervalSince1970: 50)
+        let token = g.begin(pid: 5, window: 11)
+        XCTAssertFalse(g.caused(pid: 5, window: nil, bundle: nil, now: t), "per-window rule unchanged")
+        XCTAssertTrue(g.causedByAnyAction(pid: 5, bundle: nil, now: t))
+        g.end(token, now: t)
+        XCTAssertTrue(g.causedByAnyAction(pid: 5, bundle: nil, now: t.addingTimeInterval(1)))
+        XCTAssertFalse(g.causedByAnyAction(pid: 5, bundle: nil, now: t.addingTimeInterval(2)))
+        XCTAssertFalse(g.causedByAnyAction(pid: 6, bundle: nil, now: t))
+    }
+}
+
+final class FinalRoundSourceTests: XCTestCase {
+    func testTakingBackIsNeverThrottled() throws {
+        let consent = try HandsSourceTests.code("Sources/BaneySpaces/LendConsent.swift")
+        XCTAssertTrue(consent.contains("takeBack || Date().timeIntervalSince(lastShown) >= pause"))
+        XCTAssertTrue(consent.contains("if takeBack { return false }"), "a refused take-back isn't counted")
+        XCTAssertTrue(consent.contains("\"Keep Lent\""))
+    }
+
+    func testRemoteOpenStillReachesTheDeckOp() throws {
+        let main = try HandsSourceTests.code("Sources/baneyspaces-cli/main.swift")
+        XCTAssertTrue(main.contains("!(remoteHost != nil && rest.first == \"open\")"))
+        XCTAssertTrue(Remote.allows(Wire.Request(op: .agent, text: "open", args: ["TextEdit"])))
+    }
+
+    func testAgentOnRefusesAWorkspaceInUse() throws {
+        let deck = try HandsSourceTests.code("Sources/BaneySpaces/Deck/DeckController.swift")
+        let on = try XCTUnwrap(HandsSourceTests.between("let n = args.first.flatMap(Int.init)", "case \"off\":", in: deck))
+        XCTAssertTrue(on.contains("h.occupied(n)"))
+        XCTAssertTrue(on.range(of: "h.occupied(n)")!.lowerBound < on.range(of: "h.setWorkspace(n)")!.lowerBound)
+    }
+
+    func testThePressToolDoesNotPromiseWhatItCannotDo() {
+        let press = HandsTools.tool(verb: "press")
+        XCTAssertTrue(press?.summary.contains("not_supported") ?? false)
+    }
+}
+
 final class HandsWireTests: XCTestCase {
     func testNoOtherMachineMayUseTheHands() {
         XCTAssertFalse(Remote.allows(Wire.Request(op: .hands, text: "{}")))
@@ -696,7 +826,9 @@ final class HandsSourceTests: XCTestCase {
         // The policy is one constant, passed as is, and no function takes a policy from its caller.
         // Single shot: the engine's own 5 s wait would run with no scope check. The wait is ours, checked each attempt.
         XCTAssertTrue(engine.contains("ad_execute_by_ref_timeout(adapter, r, &action, Self.headlessPolicy, 0, &out)"))
-        XCTAssertTrue(engine.contains("if let stop = check() { return .failed(stop) }"), "the scope is checked between attempts")
+        XCTAssertTrue(engine.contains("stop: check, cancelled: cancelled"), "the scope and the caller's wait are checked between attempts")
+        XCTAssertTrue(engine.contains("EngineRetry.run("))
+        XCTAssertFalse(engine.contains("ad_snapshot_window(adapter, a,"), "the exact window id alone, never the app's shared name")
         XCTAssertTrue(engine.contains("static let headlessPolicy: Int32 = 0"))
         XCTAssertFalse(engine.contains("policy:"), "no caller can pass a policy")
         let act = try XCTUnwrap(Self.block(after: "func act(", in: engine))
@@ -747,7 +879,7 @@ final class HandsSourceTests: XCTestCase {
         let engine = try Self.code("Sources/BaneySpaces/Hands/HandsEngine.swift")
         let run = try XCTUnwrap(Self.block(after: "private func run(window", in: engine))
         let check = try XCTUnwrap(run.range(of: "if let e = check()"))
-        let work = try XCTUnwrap(run.range(of: "box.set(work())"))
+        let work = try XCTUnwrap(run.range(of: "box.set(work { box.isCancelled })"))
         let queued = try XCTUnwrap(run.range(of: "queue(for: w.pid).async"))
         XCTAssertTrue(queued.lowerBound < check.lowerBound && check.lowerBound < work.lowerBound)
         XCTAssertTrue(run.contains("if box.isCancelled { return }"), "a call whose caller timed out is dropped unrun")
@@ -777,7 +909,7 @@ final class HandsSourceTests: XCTestCase {
         let consent = try Self.code("Sources/BaneySpaces/LendConsent.swift")
         XCTAssertTrue(consent.contains("UserEventSource.isGenuine("), "the answer must be a hardware event")
         XCTAssertTrue(consent.contains("eventSourceUnixProcessID") && consent.contains("eventSourceStateID"))
-        XCTAssertTrue(consent.contains("alert.addButton(withTitle: \"Don't Lend\")"), "the default button refuses")
+        XCTAssertTrue(consent.contains("alert.addButton(withTitle: takeBack ? \"Keep Lent\" : \"Don't Lend\")"), "the default button refuses")
         XCTAssertTrue(consent.contains("pause"), "sheets are rate limited")
         XCTAssertTrue(consent.contains("button.isEnabled = false"), "Lend is disabled for the first second")
         XCTAssertTrue(consent.contains("ConsentClick.valid("))

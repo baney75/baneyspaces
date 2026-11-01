@@ -98,7 +98,7 @@ let sampler = Thread {
 }
 sampler.start()
 
-// A temporary folder in the agent handoff folder: a text file for TextEdit, and the folder itself for Finder.
+// A temporary folder in the agent handoff folder: a text file for TextEdit.
 let handoff = home.appendingPathComponent("Library/Application Support/BaneySpaces/hands/handoff")
 let dir = handoff.appendingPathComponent("probe-\(Int(Date().timeIntervalSince1970))")
 try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -138,11 +138,17 @@ func first(_ nodes: [[String: Any]], role: String, name: String? = nil) -> Strin
     nodes.first { ($0["role"] as? String) == role && (name == nil || ($0["name"] as? String) == name) }?["ref_id"] as? String
 }
 
-var ok = 0, total = 0, mutatingOK = 0, mutatingTotal = 0
+var ok = 0, total = 0, mutatingOK = 0, mutatingTotal = 0, unverified = 0
 func run(_ args: [String], mutating: Bool) {
     total += 1
     if mutating { mutatingTotal += 1 }
-    if isOK(agent(args)) { ok += 1; if mutating { mutatingOK += 1 } }
+    let r = agent(args)
+    guard isOK(r) else { return }
+    ok += 1
+    // A mutation counts only when the result says it was verified (value or state read back, or the tree changed).
+    if mutating {
+        if data(r)["verified"] as? Bool == true { mutatingOK += 1 } else { unverified += 1 }
+    }
 }
 /// An action whose ref is missing counts as a failed action: it is never replaced by a read.
 func missing(mutating: Bool) { total += 1; if mutating { mutatingTotal += 1 } }
@@ -175,8 +181,8 @@ lock.lock(); running = false; lock.unlock()
 Thread.sleep(forTimeInterval: 0.2)
 
 let needed = 90
-if mutatingOK < needed { failures.append("only \(mutatingOK) mutating actions succeeded (\(needed) needed, \(mutatingTotal) tried)") }
-print("samples: \(samples) (every 50 ms), actions: \(total), succeeded: \(ok), mutating: \(mutatingOK)/\(mutatingTotal)")
+if mutatingOK < needed { failures.append("only \(mutatingOK) mutating actions succeeded and were verified (\(needed) needed, \(mutatingTotal) tried)") }
+print("samples: \(samples) (every 50 ms), actions: \(total), succeeded: \(ok), mutating verified: \(mutatingOK)/\(mutatingTotal), delivered but unverified: \(unverified)")
 failures.forEach { print("fail: \($0)") }
 changes.prefix(20).forEach { print("change: \($0)") }
 if changes.isEmpty && failures.isEmpty {

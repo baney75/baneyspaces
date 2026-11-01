@@ -108,15 +108,17 @@ public struct UserUse: Equatable, Sendable {
     public init() {}
 
     /// `pid` came to the front (the app before it just left).
-    public mutating func activated(_ pid: Int32, now: Date) {
+    /// `byAgent`: an agent's action or launch brought it forward. The app before it still counts as just left, but the
+    /// agent's app is not one he chose.
+    public mutating func activated(_ pid: Int32, now: Date, byAgent: Bool = false) {
         if let old = front, old != pid { leftAt[old] = now }
-        front = pid
-        leftAt[pid] = nil
+        front = byAgent ? nil : pid
+        if !byAgent { leftAt[pid] = nil }
     }
 
     /// Whether `pid` is in front (`frontNow`, read from the system), or was within the last 30 s.
     public func inUse(_ pid: Int32, frontNow: Int32?, now: Date) -> Bool {
-        if frontNow == pid || front == pid { return true }
+        if frontNow == pid { return true }
         if let t = leftAt[pid] { return now.timeIntervalSince(t) < Self.quiet }
         return false
     }
@@ -189,8 +191,49 @@ public enum SocketPolicy {
     }
 }
 
+/// What the engine may be asked a second time. Only a failure the engine itself reports as "nothing was delivered"
+/// (retry safe) is ever repeated, and only while the caller is still waiting and the scope still holds. A timeout or
+/// an unresponsive app after dispatch is unsafe or unknown: it goes back to the caller as `timeout`, `retry: never`.
+public enum EngineRetry {
+    public static func mayRepeat(_ e: HandsError) -> Bool { e.code == .timeout && e.retry == .safe }
+
+    /// Runs `attempt` until it succeeds or fails for good. Between attempts the caller's wait and the scope are
+    /// checked, so nothing is dispatched for a caller that left or into a window that is out of scope.
+    public static func run<T>(attempt: () -> Result<T, HandsError>, stop: () -> HandsError?, cancelled: () -> Bool,
+                              giveUp: Date, now: () -> Date = Date.init, pause: () -> Void) -> Result<T, HandsError> {
+        while true {
+            let r = attempt()
+            guard case .failure(let e) = r, mayRepeat(e), now() < giveUp, !cancelled() else { return r }
+            pause()
+            if cancelled() { return r }
+            if let s = stop() { return .failure(s) }
+        }
+    }
+}
+
+/// A window as the accessibility tree shows it, as much of it as the panel check needs.
+public struct AXNodeInfo: Equatable, Sendable {
+    public var role: String?, subrole: String?, identifier: String?, title: String?
+    public var children: [AXNodeInfo]
+    public init(role: String? = nil, subrole: String? = nil, identifier: String? = nil, title: String? = nil, children: [AXNodeInfo] = []) {
+        self.role = role; self.subrole = subrole; self.identifier = identifier; self.title = title; self.children = children
+    }
+}
+
 /// Windows an agent never works in: the Open and Save panels of the apps it starts. They browse Donovan's files.
 public enum PanelDetector {
+    /// Whether the window is such a panel, or has one (or any sheet) attached: a sheet is a child of its document
+    /// window, so the window is refused for every snapshot, action and ref while one is up.
+    public static func windowIsOffLimits(_ w: AXNodeInfo) -> Bool {
+        if isOpenOrSavePanel(identifier: w.identifier, subrole: w.subrole, title: w.title) { return true }
+        func sheetOrPanel(_ n: AXNodeInfo, depth: Int) -> Bool {
+            if n.role == "AXSheet" || n.subrole == "AXSheet" { return true }
+            if isOpenOrSavePanel(identifier: n.identifier, subrole: n.subrole, title: n.title) { return true }
+            return depth < 3 && n.children.contains { sheetOrPanel($0, depth: depth + 1) }
+        }
+        return w.children.contains { sheetOrPanel($0, depth: 1) }
+    }
+
     public static func isOpenOrSavePanel(identifier: String?, subrole: String?, title: String?) -> Bool {
         let id = (identifier ?? "").lowercased()
         if id.contains("open-panel") || id.contains("save-panel") || id.contains("openpanel") || id.contains("savepanel") { return true }

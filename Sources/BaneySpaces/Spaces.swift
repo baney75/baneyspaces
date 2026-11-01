@@ -423,9 +423,18 @@ final class Spaces {
     /// What a window shows (AXDocument), and whether it is an Open or Save panel.
     func handsInspect(_ id: UInt32) -> (document: String?, panel: Bool) {
         guard let e = windows[id]?.element else { return (nil, false) }
-        let panel = PanelDetector.isOpenOrSavePanel(identifier: e.string("AXIdentifier"), subrole: e.string(kAXSubroleAttribute), title: e.string(kAXTitleAttribute))
-        return (e.string("AXDocument"), panel)
+        // An app that doesn't answer must not hold the main thread: short timeout, and anything unreadable is off limits.
+        AXUIElementSetMessagingTimeout(e, 0.25)
+        func info(_ el: AXUIElement, children: Bool) -> AXNodeInfo {
+            AXNodeInfo(role: el.string(kAXRoleAttribute), subrole: el.string(kAXSubroleAttribute), identifier: el.string("AXIdentifier"), title: el.string(kAXTitleAttribute),
+                       children: children ? ((el.value(kAXChildrenAttribute) as [AXUIElement]?) ?? []).prefix(40).map { info($0, children: false) } : [])
+        }
+        // A sheet (a Save or Open panel on a document) is a child of its window: look one level down.
+        return (e.string("AXDocument"), PanelDetector.windowIsOffLimits(info(e, children: true)))
     }
+
+    /// Whether workspace `n` holds any window: `agent on N` refuses a workspace someone is using.
+    func isOccupied(_ n: Int) -> Bool { !model.windows(on: n).isEmpty }
 
     func handsTitles(_ ids: [UInt32]) -> [UInt32: String] {
         Dictionary(uniqueKeysWithValues: ids.compactMap { id in windows[id].map { (id, $0.title) } })

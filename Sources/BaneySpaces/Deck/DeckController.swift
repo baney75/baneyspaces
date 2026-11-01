@@ -16,6 +16,8 @@ struct AgentHost {
     var windows: () -> [(id: WindowID, app: String, title: String)] = { [] }
     /// The process a window belongs to.
     var pidOf: (UInt32) -> pid_t? = { _ in nil }
+    /// Whether a workspace holds any window.
+    var occupied: (Int) -> Bool = { _ in false }
 }
 
 /// Processes BaneySpaces started for an agent (`agent open` of an app, `agent run`): the only ones an agent
@@ -456,6 +458,10 @@ final class DeckController {
         case "on":
             let n = args.first.flatMap(Int.init) ?? h.workspace() ?? 9
             guard Workspaces.range.contains(n) else { return .init(ok: false, error: "pick a workspace from 1 to 9") }
+            // Every window on the agent workspace is open to agents: a workspace with windows on it is someone's.
+            if n != h.workspace(), h.occupied(n) {
+                return .init(ok: false, error: "workspace \(n) has windows on it; pick an empty workspace: baneyspaces agent on <N>")
+            }
             h.setWorkspace(n)
             return agentStatus()
         case "off":

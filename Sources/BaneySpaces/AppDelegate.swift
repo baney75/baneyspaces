@@ -329,7 +329,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self, let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
             self.switcher.noteActivated(app.processIdentifier)
             // An activation an agent's launch or action caused isn't Donovan using the app.
-            if !AgentActivity.shared.caused(pid: app.processIdentifier, window: nil, bundle: app.bundleIdentifier) { UserActivity.shared.activated(app.processIdentifier) }
+            UserActivity.shared.activated(app.processIdentifier, byAgent: AgentActivity.shared.causedByAnyAction(pid: app.processIdentifier, bundle: app.bundleIdentifier))
             guard self.started else { return }
             self.spaces.appActivated(app)
             self.deck.appChanged()
@@ -567,6 +567,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         h.move = { [weak self] id, n in self?.run { $0.move(id, to: n) } }
         h.windows = { [weak self] in self?.spaces.agentWindows() ?? [] }
         h.pidOf = { [weak self] id in self?.spaces.handsLive(id)?.pid }
+        h.occupied = { [weak self] n in self?.spaces.isOccupied(n) ?? false }
         deck.agentHost = h
         // The agent hands: what the scope guard needs from the workspaces, and what to do when a lend changes.
         // The engine's state folder is set here, once, on the main thread, before any engine queue exists.
