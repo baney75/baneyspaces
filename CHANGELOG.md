@@ -9,6 +9,16 @@
   back, and an unproved one is `unverified` (retry never). SkyLight's per-process post is found by name at run time with
   the public call as the fallback. Prepared and unit-tested; `scripts/agent-keys-probe.swift` runs on `main` after merge
   when Donovan has been idle 10 minutes. Logic ported from cua-driver (MIT), see NOTICE.
+- **Themes, 22 palettes and a dock switch.** Settings › Appearance has a theme (**BaneySpaces**, the
+  look it has always had; **Omarchy**, square corners, 2 px borders, monospace and numbered blocks;
+  **Minimal**) and a palette (**Auto** or one of Omarchy's 22), shared with the other platforms from
+  `spec/themes.json` and `spec/palettes.json`. The dock, the "+N" list and strip, ⌘Tab, the launcher, the
+  overview, the HUD, the menu bar number and Settings all draw from the theme and apply at once. The
+  BaneySpaces theme renders pixel for pixel what it did (every product shot compares equal).
+  `baneyspaces set|get appearance.theme|appearance.palette|dock.enabled` from a terminal. Agents may use them too (each change is logged with its caller in `trace.log`); workspace and window commands stay user-only. The dock
+  switch (Settings › Dock, now also in the menu bar item's menu) takes the dock down completely: no
+  panel, no edge watcher, no "+N" list and no bottom drag, while the top drag and everything else
+  stay. Settings › Appearance loses the small dock strip; each theme's card is its preview.
 - **BaneySpaces for Linux, part 1 (Omarchy, Hyprland).** `spec/` now holds the workspace rules, the
   key map, the JSON envelope, the MCP tools and 89 conformance cases every platform replays;
   `crates/baneyspaces-core` implements them in Rust; `platforms/linux` is a daemon that drives

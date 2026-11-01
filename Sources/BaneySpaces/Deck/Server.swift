@@ -170,6 +170,8 @@ final class RemoteServer {
             } else if !Remote.allows(req) {
                 reply = Wire.Reply(ok: false, error: "not allowed from another machine")
             } else {
+                // Logged as who it says it is, under the token it came with (never the token).
+                req.caller = "remote \(Remote.fingerprint(req.token ?? "")) (\(req.caller ?? "unnamed"))"
                 req.token = nil
                 reply = DispatchQueue.main.sync { handle(req) }
             }

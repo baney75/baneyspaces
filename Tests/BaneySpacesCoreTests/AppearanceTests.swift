@@ -267,9 +267,9 @@ final class AppearanceTests: XCTestCase {
 
     /// The view code lives in the app target, which tests can't import, so this reads the source.
     func testChromeReadsFromAppearanceNotConstants() throws {
-        let text = try appSource("WorkspaceSwitcher.swift")
+        let text = try appSource("Theming.swift")
         let chrome = try XCTUnwrap(text.range(of: "enum Chrome {"))
-        let end = try XCTUnwrap(text.range(of: "extension NSWindow", range: chrome.upperBound..<text.endIndex))
+        let end = try XCTUnwrap(text.range(of: "extension Appearance", range: chrome.upperBound..<text.endIndex))
         let body = String(text[chrome.upperBound..<end.lowerBound])
         XCTAssertTrue(body.contains("static var accent: Color { Appearance.shared.accent }"), "Chrome.accent must follow Settings")
         XCTAssertTrue(body.contains("Appearance.shared.workspace(n)"), "Chrome.workspace must follow Settings")
@@ -293,7 +293,7 @@ final class AppearanceTests: XCTestCase {
     func testTheDockScalesFromTheDockSizeSetting() throws {
         let text = try appSource("WorkspaceDock.swift")
         XCTAssertTrue(text.contains("appearance.settings.dockSize.scale"))
-        XCTAssertTrue(text.contains("private var tileSize: CGFloat { 64 * k }"))
+        XCTAssertTrue(text.contains("private var tileSize: CGFloat { Chrome.tileBase * k }"))
         XCTAssertTrue(text.contains("forName: Appearance.didChange"), "a new size must re-frame the dock's panel")
     }
 
