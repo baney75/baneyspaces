@@ -7,13 +7,27 @@
 //! one checked live to run as its own process while a copy of yours is open. Anything else is refused
 //! before launch with `needs_sandbox`.
 
-/// Verified in the Windows 11 VM with Notepad windows of the user's already open: the agent's launch
-/// was a new process (a different pid) with a window of its own, and the user's windows were untouched.
+/// Verified in the Windows 11 VM: with no copy running (or an elevated one, which a normal process
+/// cannot forward into) the launch is a new process with a window of its own. With a normal copy
+/// running it forwards, so see `FORWARDS`.
 const SEPARATE: &[&str] = &["notepad"];
 
 fn base(app: &str) -> String {
     let name = app.rsplit(['\\', '/']).next().unwrap_or(app).to_lowercase();
     name.strip_suffix(".exe").map(String::from).unwrap_or(name)
+}
+
+/// Apps that hand a new launch to a copy already running at the same level (Windows App SDK
+/// single-instance redirection). Seen live: with the user's Notepad open, a second `notepad`
+/// opened its window in the user's process. Such an app is only started when no copy is running.
+const FORWARDS: &[&str] = &["notepad"];
+
+pub fn forwards_to_running(app: &str) -> bool {
+    FORWARDS.contains(&base(app).as_str())
+}
+
+pub fn process_name(app: &str) -> String {
+    base(app)
 }
 
 pub fn allowed() -> Vec<&'static str> {
@@ -38,6 +52,8 @@ mod tests {
     #[test]
     fn only_listed_apps_may_start() {
         assert!(known("notepad"));
+        assert!(forwards_to_running(r"C:\\Windows\\notepad.exe"));
+        assert!(!forwards_to_running("mspaint"));
         assert!(known("Notepad.EXE"));
         assert!(known(r"C:\Windows\System32\notepad.exe"));
         for unlisted in ["explorer", "calc", "msedge", "cmd", "powershell", "mspaint", "baneyspaces", ""] {

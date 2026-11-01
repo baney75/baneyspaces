@@ -694,7 +694,10 @@ fn launch_on_agent(shared: &Shared, agent: &str, label: &str, exe: PathBuf, args
     }
     let c = lock(shared);
     let alive = winapi::alive(spawned.pid, spawned.start);
-    let env = if !alive {
+    let appeared: Vec<String> = c.model.window_ids().into_iter().filter(|w| !known.contains(*w) && !c.model.is_agent_window(w)).map(String::from).collect();
+    let env = if !appeared.is_empty() {
+        Envelope::err("single_instance", format!("{label} opened its window in a copy that was already running, not in a process of its own"), Retry::Never, "Nothing was driven. The window that opened is left where it is, on your workspace.").with_data(json!({ "windows_that_appeared": appeared }))
+    } else if !alive {
         Envelope::err("single_instance", format!("{label} exited without a window of its own: it most likely handed the request to an instance that was already running"), Retry::Never, "Agents only drive a process BaneySpaces started. Use the app's files or command line instead, or ask the user to lend it.")
     } else {
         Envelope::err("timeout", format!("{label} is running (pid {}) but opened no window within 8 s", spawned.pid), Retry::Never, "Check `baneyspaces agent status`; the app may be slow to start.")
@@ -717,6 +720,23 @@ fn agent_open(shared: &Shared, agent: &str, args: &Value) -> Envelope {
         .with_data(json!({ "allowed": apps::allowed() }));
         record(&lock(shared), agent, "open", None, None, None, "preflight", &env);
         return env;
+    }
+    if apps::forwards_to_running(app) {
+        let (mine, agents): (Vec<u32>, Vec<u32>) = {
+            let c = lock(shared);
+            winapi::same_level_processes(&apps::process_name(app)).into_iter().partition(|p| c.model.agent_proc(*p).is_none() && !c.jobs.iter().any(|(_, j)| agent::in_job(j, *p)))
+        };
+        if !mine.is_empty() {
+            let env = Envelope::err(
+                "single_instance",
+                format!("{app} is already running for you (pid {}): a new launch would open its window in your copy, so nothing was started", mine[0]),
+                Retry::Never,
+                "Close your copy first, or use the app's files or command line instead. Nothing of yours was touched.",
+            )
+            .with_data(json!({ "running_copies": mine, "agent_copies": agents, "started": false }));
+            record(&lock(shared), agent, "open", None, None, None, "preflight", &env);
+            return env;
+        }
     }
     let Some(exe) = cmdline::find_program(app, &path_dirs(), |p| p.is_file()) else {
         return Envelope::err("not_found", format!("no program {app:?} on PATH"), Retry::Never, "Give an executable name or a full path.");

@@ -22,7 +22,7 @@ daemon_start() { scp "${SSH_OPTS[@]}" -q "$HERE/daemon-task.ps1" baney@192.168.1
 
 say "== 0. clean start"
 scp "${SSH_OPTS[@]}" -q "$HERE/readback.ps1" "$HERE/watch.ps1" baney@192.168.122.50:C:/
-vmx 'C:\bs\baneyspaces\target\release\baneyspaces.exe stop | Out-Null; Start-Sleep 1; taskkill /F /IM baneyspaces.exe 2>&1 | Out-Null; Get-Process notepad,CalculatorApp,Calculator -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep 1; Remove-Item -Recurse -Force $env:LOCALAPPDATA\BaneySpaces -ErrorAction SilentlyContinue' >/dev/null
+vmx 'C:\bs\baneyspaces\target\release\baneyspaces.exe stop | Out-Null; Start-Sleep 1; taskkill /F /IM baneyspaces.exe 2>&1 | Out-Null; Get-Process notepad,CalculatorApp,Calculator -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep 1; Remove-Item -Recurse -Force $env:LOCALAPPDATA\BaneySpaces -ErrorAction SilentlyContinue; $n="$env:LOCALAPPDATA\Packages\Microsoft.WindowsNotepad_8wekyb3d8bbwe\LocalState"; Remove-Item -Recurse -Force "$n\TabState","$n\WindowState" -ErrorAction SilentlyContinue; Remove-Item -Recurse -Force C:\bs\harness-state -ErrorAction SilentlyContinue' >/dev/null
 sleep 2
 daemon_start
 cli doctor | grep -q '"healthy":true' && ok "doctor is healthy with the daemon up" || bad "doctor"
@@ -75,7 +75,18 @@ has "$S" "Notepad" "restart: Notepad is back"; has "$S" "Calculator" "restart: C
 RB=$(readback); grep -q 'cloaked=2' <<<"$RB" && bad "something is still cloaked after restart" || ok "nothing is left cloaked after restart"
 cli switch 1 >/dev/null
 
-say "== 6. agent: open notepad, snapshot, type. It must never show on workspace 1"
+say "== 6a. your own Notepad is open at normal level: an agent launch would forward into it, so it is refused"
+BEFORE=$(readback | grep -c 'class=Notepad ')
+O=$(cli agent open notepad)
+grep -q '"code":"single_instance"' <<<"$O" && grep -q '"started":false' <<<"$O" && ok "agent open notepad is refused with single_instance before anything starts" || bad "expected single_instance: ${O:0:300}"
+sleep 2; AFTER=$(readback | grep -c 'class=Notepad ')
+[[ "$BEFORE" == "$AFTER" ]] && ok "no Notepad window appeared (still $AFTER)" || bad "Notepad windows went $BEFORE -> $AFTER"
+
+say "== 6b. the agent flow, with your Notepad running elevated (Windows will not forward a launch into it)"
+vmx 'Get-Process notepad -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep 1; $n="$env:LOCALAPPDATA\Packages\Microsoft.WindowsNotepad_8wekyb3d8bbwe\LocalState"; Remove-Item -Recurse -Force "$n\TabState","$n\WindowState" -ErrorAction SilentlyContinue' >/dev/null
+cli switch 1 >/dev/null
+vmi 'Start-Process notepad; Start-Sleep 4' >/dev/null
+RB=$(readback); NOTEPADS=$(grep 'class=Notepad ' <<<"$RB" | grep 'SEEN=True' | sed 's/ .*//' | tr '\n' ' '); say "your notepad windows: $NOTEPADS"
 (vmi 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\watch.ps1 -Seconds 14' > "$OUT/watch-open.txt" 2>&1) &
 WATCH=$!
 sleep 5
