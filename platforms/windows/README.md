@@ -47,10 +47,20 @@ hide it from the engine, so it is not used.)
    (An agent's window is the exception to the exception: it is kept off your screen even when the record
    cannot be saved, because it is the agent's, not yours.)
 2. **Forget last.** An entry is removed only after the window reads back as shown (cloak off, back in place,
-   ghost styles restored). A show that fails (explorer.exe restarting, the shell's COM down) keeps its entry
+   and for a ghost every property that decides what you see: the layered bit, the alpha, click-through, no-activate,
+   each as it was before the ghost; the original alpha and styles are in the record). A show that fails (explorer.exe restarting, the shell's COM down) keeps its entry
    and every poll retries it; `TaskbarCreated` (explorer.exe rebuilt the taskbar) triggers a look at once.
 3. **Tracked while it exists.** A hidden window stays in the set for as long as `IsWindow` is true, whatever its
    title or styles become (an empty title, a tool-window style, an owner). Only a destroyed window leaves.
+
+A handle is only touched if it is still **the window that was hidden**: the record keeps its class and the
+process that owned it (pid and start time). After a reboot, or once a window was destroyed and its handle reused,
+those no longer match and the entry is dropped and logged without touching anything.
+
+**Virtual desktops.** Windows cloaks every window of the desktop you leave. Those windows have not gone: they stay
+tracked, on their workspace, are neither shown nor hidden while off the current desktop
+(`IVirtualDesktopManager`), and come back as they were. (Driven live: a second desktop is created and closed
+and every window keeps its workspace.)
 
 And what is hidden is **read back from Windows on every poll**, never taken from memory: a cloak the shell
 dropped (a virtual-desktop switch re-evaluates them), a parked window an app moved back, a ghost an app reset
@@ -67,6 +77,9 @@ is hidden again within a poll, keeping the position it will be restored to.
 - **Agent windows are the exception.** They belong off your screen, so after a restart they stay ghosted while
   their process (pid and start time) still runs. If it is gone they are shown, never lost. The daemon does
   not close an agent's app when it exits: use `agent-workspace show` after a restart.
+- **Sign-out and shutdown vs a request in flight.** Restoring takes the daemon's lock, sets "stopping" under it,
+  restores and reloads the record, all before anyone else can write; from then on requests that would hide a
+  window are refused. Every write of `state.json` uses its own temporary file.
 - **One daemon.** A named mutex and the pipe's first instance (`FILE_FLAG_FIRST_PIPE_INSTANCE`) are taken
   before anything is touched, so a second start exits without putting the first one's windows back. Two
   listeners keep a free pipe instance at all times, and the client waits out `ERROR_PIPE_BUSY`.
@@ -103,7 +116,7 @@ opens joins the workspace its display shows (R-P1). Focus never rests on a windo
 `baneyspaces agent open <app>` starts the app as its own process, **in the user's agent job object** (named, so a restarted daemon opens the same job and an agent's app that is still running is still recognized; a process that cannot join the job is not started) (Linux
 uses a launch token in the environment; a job answers "is this process one we started, or a child of
 one?" directly), minimized and without focus, so a window that honors the show command is never drawn
-on your screen. The model registers the pid and its start time before the first window can be seen. Every window of an
+on your screen. The model registers the pid and its start time (read from the process handle before it runs) before the first window can be seen. A registration only holds for that process: the live start time must still match, and a process that exits is unregistered on the next poll, so a pid Windows hands to another program is never taken for an agent's. Every window of an
 agent's process is ghosted, owned or not: a dialog or popup its app opens is caught from the WinEvent when it is
 created (if it has a frame) or shown, and is an agent window like the first, so the agent can still drive it. This
 is measured, not claimed away: one dialog was visible in 1 of ~110,000 polls (under a frame) before the ghost took.
@@ -122,10 +135,14 @@ through to the engine. `press`, `key` and `pointer` are `not_supported` (phase 3
   **Follow-up: a Windows sandbox phase**, where the agent's apps run apart from your session
   (Windows Sandbox or a Hyper-V VM). Single-instance forwarding is handled there as well; the
   `single_instance` error, with `windows_that_appeared`, stays as the backstop if an app forwards anyway.
+- **A window that refuses the ghost** (Windows would not take a constant alpha, as for a window that draws with per-pixel alpha) is
+  parked, recorded as parked, and left alone: it is not tried again each poll. If it later takes the ghost it is
+  recorded as a ghost with the styles to put back. `agent move` of one of *your* windows hides it the way yours
+  are hidden (recorded first, `agent: false`), not as an agent's ghost.
 - **Tests only: `bs-testapp`** (`platforms/windows/testapp`) is a window with a text box: its own exe,
-  its own process every time, nothing remembered, no forwarding. A daemon started with
-  `BANEYSPACES_TEST_OPS` set may start it (and, for the live test's agent-peer check, any program);
-  a normal daemon never does. `live.sh` starts a test daemon for the agent flow.
+  its own process every time, nothing remembered, no forwarding. A daemon **built with the
+  `test-ops` feature** and started with `BANEYSPACES_TEST_OPS` set may start it (and `cmd`, for the agent-peer
+  check). A release build made without the feature ignores the variable, whatever the environment holds. `live.sh` starts a test daemon for the agent flow.
 - `agent run` is `needs_sandbox`: a console window belongs to Windows Terminal, not to the process we
   would start, so it cannot be tied to the agent.
 - An agent's own process (a pid in a job, or registered) is refused every user operation
@@ -133,6 +150,12 @@ through to the engine. `press`, `key` and `pointer` are `not_supported` (phase 3
   client pid decides, never the request. The control pipe is `\\.\pipe\baneyspaces-<your SID>` (not the user name, which can collide), with an ACL for you and
   SYSTEM only and remote clients rejected; the client checks that the server process runs as you and opens the pipe for
   identification only.
+- The engine is found in `%LOCALAPPDATA%\BaneySpaces\engine` only. A test build (`test-ops`, debug) also honors
+  `BANEYSPACES_ENGINE` and looks in the source tree above the exe; a release build never walks up directories (they
+  reach the drive root, where another account may have planted a file).
+- The job and the peer check are **advisory**: any process of your own user can open the job by name or start a
+  process outside it, so this stops an agent's own app and its children by accident, not a hostile process of your user.
+  Only the sandbox phase makes it a boundary.
 - The engine keeps its snapshots in `%LOCALAPPDATA%\BaneySpaces\engine-state` (`AGENT_DESKTOP_HOME`),
   because it refuses a directory an elevated process created.
 
@@ -149,7 +172,8 @@ value). Workspace and window operations stay user-only.
 ```powershell
 cargo test -p baneyspaces-core -p baneyspaces-windows --locked   # the Linux crate is unix-only, so test by package
 cargo build --release --locked -p baneyspaces-windows
-platforms/windows/scripts/build-engine.ps1                       # the pinned agent-desktop (platforms/linux/engine.pin)
+cargo build --release -p baneyspaces-windows --features baneyspaces-windows/test-ops -p baneyspaces-testapp   # what live.sh runs
+platforms/windows/scripts/build-engine.ps1 -Install              # the pinned agent-desktop (platforms/linux/engine.pin), copied to %LOCALAPPDATA%\BaneySpaces\engine
 baneyspaces daemon --background                                  # no console window; --log FILE, --trace
 ```
 

@@ -125,6 +125,38 @@ vmx 'Stop-Process -Name explorer -Force; Start-Sleep 9' >/dev/null
 cli switch 2 >/dev/null; sleep 2
 [[ "$(helper cloaked "$UT" | tr -d '\r\n ')" == 0 ]] && ok "and it shows again when its workspace is shown" || bad "could not show it after the restart"
 cli switch 1 >/dev/null
+# agent move of one of YOUR windows: it is hidden as yours are (recorded first), not ghosted as an agent's.
+cli switch 2 >/dev/null; sleep 2
+vmx 'icacls "$env:LOCALAPPDATA\BaneySpaces" /deny "baney:(OI)(CI)(WD,AD)" | Out-Null' >/dev/null
+O=$(cli agent move "w-$UT"); grep -q 'nothing was hidden' <<<"$O" && ok "agent move of your window is refused when the record cannot be saved" || bad "agent move with unwritable state: ${O:0:300}"
+[[ "$(helper cloaked "$UT" | tr -d '\r\n ')" == 0 ]] && ok "and your window is still showing (not ghosted unrecorded)" || bad "your window was hidden unrecorded"
+vmx 'icacls "$env:LOCALAPPDATA\BaneySpaces" /remove:d "baney" | Out-Null' >/dev/null
+cli agent move "w-$UT" | grep -q '"ok":true' && ok "agent move works once it can be recorded" || bad "agent move"
+sleep 1
+ST=$(cli state)
+python3 -c "
+import sys,json
+d=json.loads(sys.stdin.read())['data']
+e=[h for h in d['hidden'] if h['hwnd']==$UT]
+print('ENTRY', e[0]['how'] if e else 'none', e[0]['agent'] if e else '-')" <<<"$ST" | tee -a "$LOG" | grep -q "ENTRY cloak False" && ok "it is recorded as yours (cloak, agent false), not as an agent's ghost" || bad "wrong record for a user window sent to the agent workspace"
+cli agent bring "w-$UT" >/dev/null; sleep 1
+[[ "$(helper cloaked "$UT" | tr -d '\r\n ')" == 0 ]] && ok "agent bring puts it back" || bad "agent bring"
+# A handle that is no longer the window that was hidden is never touched: change the recorded class, kill the daemon, start again.
+cli move 2 --stay --window "w-$UT" >/dev/null; cli switch 1 >/dev/null; sleep 1
+vmx 'taskkill /F /IM baneyspaces.exe | Out-Null; Start-Sleep 1; $f="$env:LOCALAPPDATA\BaneySpaces\state.json"; $q=[char]34; (Get-Content $f -Raw).Replace("${q}class${q}: ${q}BaneySpacesTestApp${q}", "${q}class${q}: ${q}SomeOtherClass${q}") | Set-Content $f' >/dev/null
+daemon_start; sleep 2
+[[ "$(helper cloaked "$UT" | tr -d '\r\n ')" == 2 ]] && ok "a recorded window whose class no longer matches was left alone (still cloaked, not touched)" || bad "a mismatched entry was touched"
+vmx 'Get-Content C:\bs\daemon.log | Select-String "left alone" | select -Last 1 | % { $_.Line }' | tee -a "$LOG" | grep -q "left alone" && ok "and it was logged" || bad "no log line for the mismatch"
+helper uncloak "$UT" >/dev/null
+# Virtual desktops: Windows cloaks every window of the desktop you leave. They have not gone, and come back where they were.
+S0=$(cli state | python3 -c "import sys,json; d=json.loads(sys.stdin.read())['data']; print(sorted((k,v['home']) for k,v in d['windows'].items()))")
+virsh -c qemu:///system send-key win11-bs KEY_LEFTMETA KEY_LEFTCTRL KEY_D >/dev/null; sleep 3
+S1=$(cli state | python3 -c "import sys,json; d=json.loads(sys.stdin.read())['data']; print(sorted((k,v['home']) for k,v in d['windows'].items()))")
+[[ "$S0" == "$S1" ]] && ok "on a second virtual desktop every window is still tracked, on the same workspace" || bad "windows lost or moved on the other desktop"
+virsh -c qemu:///system send-key win11-bs KEY_LEFTMETA KEY_LEFTCTRL KEY_F4 >/dev/null; sleep 3
+S2=$(cli state | python3 -c "import sys,json; d=json.loads(sys.stdin.read())['data']; print(sorted((k,v['home']) for k,v in d['windows'].items()))")
+[[ "$S0" == "$S2" ]] && ok "and after closing it they are all back, with the same workspaces" || bad "workspaces changed across a virtual-desktop round trip"
+cli switch 1 >/dev/null
 vmx 'Get-Process bs-testapp -ErrorAction SilentlyContinue | Stop-Process -Force' >/dev/null
 
 say "== 6. production refuses every agent launch (no Windows sandbox yet)"
@@ -138,9 +170,10 @@ say "== 6b. the agent flow with the bundled test app (a test daemon, BANEYSPACES
 cli stop >/dev/null; sleep 2
 vmx 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\daemon-task.ps1 start-test' >> "$LOG"
 cli switch 1 >/dev/null
+vmx 'Remove-Item C:\bs\watch-ready -ErrorAction SilentlyContinue' >/dev/null
 (vmi 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\watch.ps1 -Seconds 14' > "$OUT/watch-open.txt" 2>&1) &
 WATCH=$!
-sleep 5
+for _ in $(seq 40); do vmx 'Test-Path C:\bs\watch-ready' | grep -q True && break; sleep 1; done
 O=$(cli agent open "$TESTAPP"); echo "$O" | grep -q '"ok":true' && ok "agent open bs-testapp" || bad "agent open: $O"
 AW=$(sed -n 's/.*"window":"\(w-[0-9]*\)".*/\1/p' <<<"$O")
 wait $WATCH
@@ -172,9 +205,10 @@ def w(n):
         if r: return r
 print(w(d['data']['result']['tree']) or '')" <<<"$SN")
 [[ -n "$BTN" ]] && ok "the snapshot has the test app's Open dialog button ($BTN)" || bad "no Open dialog button in the snapshot"
-(vmi 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\watch.ps1 -Seconds 9 -All' > "$OUT/watch-dialog.txt" 2>&1) &
+vmx 'Remove-Item C:\bs\watch-ready -ErrorAction SilentlyContinue' >/dev/null
+(vmi 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\watch.ps1 -Seconds 12 -All' > "$OUT/watch-dialog.txt" 2>&1) &
 WATCH2=$!
-sleep 5
+for _ in $(seq 40); do vmx 'Test-Path C:\bs\watch-ready' | grep -q True && break; sleep 1; done
 C=$(cli agent click "'$BTN'"); echo "$C" | grep -q '"ok":true' && ok "agent click on Open dialog" || bad "click: ${C:0:300}"
 wait $WATCH2
 DL=$(grep "Test dialog" "$OUT/watch-dialog.txt")
@@ -206,6 +240,27 @@ grep "^$AW " <<<"$RB" | grep -q 'SEEN=False' && ok "the agent's window is still 
 U=$(vmi '$env:AGENT_DESKTOP_HOME="C:\bs\harness-state"; $e="C:\bs\baneyspaces\platforms\windows\engine\agent-desktop.exe"; foreach($w in "'"${NOTEPADS// /\",\"}"'"){ if($w){ $s=(& $e snapshot --window-id $w | ConvertFrom-Json); $v=(& $e get "@$($s.data.snapshot_id):e1" --property value | ConvertFrom-Json).data.value; "[$w] value=[$v]" } }')
 echo "$U" >> "$LOG"; grep -q 'agent' <<<"$U" && bad "your Notepad has the agent's text: $U" || ok "your Notepad windows hold none of the agent's text"
 cli agent log --since 120 | grep -q '"verb":"type"' && ok "the action log recorded the type (no content)" || bad "no log record"
+
+# The ghost restores exactly: alpha opaque and the styles back while shown, a ghost again when hidden.
+cli agent-workspace show >/dev/null; sleep 1
+RB=$(readback); grep "^$AW " <<<"$RB" | grep -q 'alpha=255' && grep "^$AW " <<<"$RB" | grep -q 'SEEN=True' && ok "agent-workspace show: the agent's window is opaque and showing again" || bad "ghost not restored: $(grep "^$AW " <<<"$RB")"
+cli agent-workspace hide >/dev/null; sleep 1
+RB=$(readback); grep "^$AW " <<<"$RB" | grep -q 'alpha=0' && ok "agent-workspace hide: a ghost again" || bad "not ghosted again"
+# A window that refuses the ghost (a test build makes the one titled "(refuses ghost)" refuse) is parked, recorded as parked, and not tried again every poll.
+before=$(vmx 'Get-Content C:\bs\daemon.log | Select-String "is not hidden any more" | measure | % Count' | tr -d '\r\n ')
+PP=$(cli agent open "$TESTAPP" --refuse-ghost); echo "$PP" | grep -q '"ok":true' && ok "agent open of a window that refuses the ghost" || bad "refuse-ghost open: ${PP:0:300}"
+PW=$(sed -n 's/.*"window":"\(w-[0-9]*\)".*/\1/p' <<<"$PP"); PPN=$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' <<<"$PP")
+sleep 4
+E1=$(cli state | python3 -c "import sys,json; d=json.loads(sys.stdin.read())['data']; e=[h for h in d['hidden'] if 'w-%d'%h['hwnd']=='$PW']; print(e[0]['how'] if e else 'none', e[0]['agent'] if e else '-')")
+[[ "$E1" == "park True" ]] && ok "it is parked and recorded as parked (agent)" || bad "record for a window that refuses ghosting: $E1"
+sleep 3
+after=$(vmx 'Get-Content C:\bs\daemon.log | Select-String "is not hidden any more" | measure | % Count' | tr -d '\r\n ')
+[[ "$before" == "$after" ]] && ok "and it is not re-hidden over and over (no retry loop)" || bad "the daemon keeps re-hiding it ($before -> $after)"
+RB=$(readback); grep "^$PW " <<<"$RB" | grep -q 'SEEN=False' && ok "it is not on your screen" || bad "refusing window visible: $(grep "^$PW " <<<"$RB")"
+cli agent-workspace show >/dev/null; sleep 1; cli agent-workspace hide >/dev/null; sleep 1
+E2=$(cli state | python3 -c "import sys,json; d=json.loads(sys.stdin.read())['data']; e=[h for h in d['hidden'] if 'w-%d'%h['hwnd']=='$PW']; print(e[0]['how'] if e else 'none')")
+[[ "$E2" == "park" ]] && ok "show then hide leaves it parked and recorded" || bad "after show/hide: $E2"
+vmx "Stop-Process -Id $PPN -Force -ErrorAction SilentlyContinue" >/dev/null
 
 say "== 7. deny by default, settings, and agent peers"
 cli get | grep -q '"dock.enabled":true' && ok "settings default: dock true, theme baneyspaces, palette auto" || bad "settings defaults"

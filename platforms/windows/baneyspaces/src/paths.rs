@@ -24,7 +24,17 @@ impl Paths {
     }
 
     pub fn ensure(&self) -> Result<(), String> {
-        fs::create_dir_all(&self.state).map_err(|e| format!("cannot create {}: {e}", self.state.display()))
+        fs::create_dir_all(&self.state).map_err(|e| format!("cannot create {}: {e}", self.state.display()))?;
+        // Temporary files a run that was killed mid-write left behind.
+        if let Ok(rd) = fs::read_dir(&self.state) {
+            for e in rd.flatten() {
+                let n = e.file_name().to_string_lossy().to_string();
+                if n.starts_with('.') && n.ends_with(".tmp") {
+                    let _ = fs::remove_file(e.path());
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn read(&self, name: &str) -> Option<String> {
@@ -36,7 +46,11 @@ impl Paths {
     /// process (antivirus, a backup, the indexer) may hold the target open for a moment. Returns why
     /// it failed, so a caller that must not go on without it (hiding a window) can refuse.
     pub fn write_atomic(&self, name: &str, text: &str) -> Result<(), String> {
-        let tmp = self.state.join(format!(".{name}.tmp"));
+        // A temporary name no other write shares (this process, this call): two writers can never truncate
+        // each other's file or rename the wrong one.
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = self.state.join(format!(".{name}.{}.{n}.tmp", std::process::id()));
         let dst = self.state.join(name);
         fs::File::create(&tmp)
             .and_then(|mut f| f.write_all(text.as_bytes()).and_then(|_| f.sync_all()))
@@ -102,6 +116,30 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_writes_never_corrupt_the_file() {
+        let dir = std::env::temp_dir().join(format!("bsw-conc-{}", std::process::id()));
+        let p = Paths { state: dir.clone() };
+        p.ensure().unwrap();
+        let threads: Vec<_> = (0..8)
+            .map(|t| {
+                let p = p.clone();
+                std::thread::spawn(move || {
+                    for i in 0..40 {
+                        let body = format!("{{\"writer\":{t},\"i\":{i},\"pad\":\"{}\"}}", "x".repeat(2000));
+                        let _ = p.write_atomic("c.json", &body);
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        let text = p.read("c.json").unwrap();
+        assert!(serde_json::from_str::<serde_json::Value>(&text).is_ok(), "the file is whole JSON, not a mix of two writes");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn a_failed_write_says_so() {
         // The state directory does not exist: the write must fail, not pretend.
         let p = Paths { state: std::env::temp_dir().join(format!("bsw-missing-{}/nope", std::process::id())) };
@@ -119,7 +157,8 @@ mod tests {
         let t = std::time::Instant::now();
         assert!(p.write_atomic("held.json", "x").is_err());
         assert!(t.elapsed() >= std::time::Duration::from_millis(100), "it did not retry");
-        assert!(!dir.join(".held.json.tmp").exists());
+        let left: Vec<_> = fs::read_dir(&dir).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".tmp")).collect();
+        assert!(left.is_empty(), "a temporary file was left behind");
         let _ = fs::remove_dir_all(dir);
     }
 

@@ -9,6 +9,11 @@ description = "BaneySpaces for Windows: the `baneyspaces` CLI and `baneyspaces d
 name = "baneyspaces"
 path = "src/main.rs"
 
+[features]
+# The live tests' hooks: BANEYSPACES_TEST_OPS is honored only in a build made with this feature. A release build
+# made without it ignores the variable, whatever is in the environment.
+test-ops = []
+
 [dependencies]
 baneyspaces-core = { path = "../../../crates/baneyspaces-core" }
 serde.workspace = true

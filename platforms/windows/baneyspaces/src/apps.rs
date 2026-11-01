@@ -13,8 +13,8 @@
 //!
 //! The live tests need something to drive. `bs-testapp` (platforms/windows/testapp) is a window with a
 //! text box, its own process every time, nothing remembered. A daemon started with
-//! `BANEYSPACES_TEST_OPS` set may start it (and, for the tests' agent-peer check, any program).
-//! A normal daemon never does.
+//! `BANEYSPACES_TEST_OPS` set, **built with the `test-ops` feature**, may start it (and `cmd`, for the tests'
+//! agent-peer check). A release build made without the feature ignores the variable.
 
 /// The test window's program name.
 const TEST_APP: &str = "bs-testapp";
@@ -34,19 +34,25 @@ pub fn is_test_app(app: &str) -> bool {
     base(app) == TEST_APP
 }
 
-/// May the daemon start `app` for an agent? Only a test daemon may, and only when it says so.
+/// What a test build may start besides the test window: only `cmd`, which the live test runs
+/// `baneyspaces` from inside an agent's job with, to check that user operations are refused to it.
+const TEST_EXTRA: &[&str] = &["cmd"];
+
+/// The rule, as a pure function: with test ops off nothing starts; with them on, the test window and
+/// the one extra program.
+pub fn may_start_with(app: &str, test_ops: bool) -> bool {
+    test_ops && (is_test_app(app) || TEST_EXTRA.contains(&base(app).as_str()))
+}
+
+/// Test ops are on only in a build made with the `test-ops` feature, and then only when the daemon
+/// was started with `BANEYSPACES_TEST_OPS` set. A production build (no feature) ignores the variable.
+pub fn test_ops_enabled() -> bool {
+    cfg!(feature = "test-ops") && std::env::var_os("BANEYSPACES_TEST_OPS").is_some()
+}
+
+/// May the daemon start `app` for an agent?
 pub fn may_start(app: &str) -> bool {
-    test_ops() && (is_test_app(app) || any_for_tests())
-}
-
-fn test_ops() -> bool {
-    std::env::var_os("BANEYSPACES_TEST_OPS").is_some()
-}
-
-/// The live test runs `baneyspaces` from inside an agent's job to check that user operations are
-/// refused to it; that needs a launch of an arbitrary program (cmd.exe), so a test daemon allows any.
-fn any_for_tests() -> bool {
-    test_ops()
+    may_start_with(app, test_ops_enabled())
 }
 
 #[cfg(test)]
@@ -56,11 +62,28 @@ mod tests {
     #[test]
     fn production_allows_nothing() {
         assert!(allowed().is_empty());
-        // Without BANEYSPACES_TEST_OPS nothing may start, not even the test window.
-        if std::env::var_os("BANEYSPACES_TEST_OPS").is_none() {
-            for app in ["notepad", "explorer", "bs-testapp", r"C:\x\bs-testapp.exe", "cmd.exe", ""] {
-                assert!(!may_start(app), "{app}");
-            }
+        for app in ["notepad", "explorer", "bs-testapp", r"C:\x\bs-testapp.exe", "cmd.exe", "powershell", ""] {
+            assert!(!may_start_with(app, false), "{app}");
+        }
+    }
+
+    #[test]
+    fn test_ops_allow_the_test_window_and_cmd_and_nothing_else() {
+        assert!(may_start_with(r"C:\bs\target\release\bs-testapp.exe", true));
+        assert!(may_start_with("cmd.exe", true));
+        for app in ["notepad", "explorer", "powershell", "msedge", "calc", "baneyspaces"] {
+            assert!(!may_start_with(app, false) && !may_start_with(app, true), "{app}");
+        }
+    }
+
+    #[test]
+    fn a_build_without_the_feature_ignores_the_environment() {
+        // Whatever BANEYSPACES_TEST_OPS holds, a build without the feature is not in test mode.
+        if !cfg!(feature = "test-ops") {
+            std::env::set_var("BANEYSPACES_TEST_OPS", "1");
+            assert!(!test_ops_enabled());
+            assert!(!may_start("bs-testapp"));
+            std::env::remove_var("BANEYSPACES_TEST_OPS");
         }
     }
 

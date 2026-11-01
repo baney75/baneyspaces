@@ -13,24 +13,33 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// Finds the pinned engine: `$BANEYSPACES_ENGINE`, `engine\` beside the binary or in the source
-/// tree, or `%LOCALAPPDATA%\BaneySpaces\engine\`.
+/// Finds the pinned engine: `%LOCALAPPDATA%\BaneySpaces\engine\` (where `build-engine.ps1 -Install` puts it).
+/// Only a test build (the `test-ops` feature, or a debug or test build) also honors `$BANEYSPACES_ENGINE` and
+/// looks in the source tree above the executable. A release build never walks up directories: those reach the
+/// drive root, where another local account may have created a folder with a planted `agent-desktop.exe` in it.
 pub fn locate() -> Option<PathBuf> {
     let name = if cfg!(windows) { "agent-desktop.exe" } else { "agent-desktop" };
     let mut c: Vec<PathBuf> = vec![];
-    if let Ok(p) = std::env::var("BANEYSPACES_ENGINE") {
-        c.push(p.into());
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        for up in exe.ancestors().skip(1).take(5) {
-            c.push(up.join("engine").join(name));
-            c.push(up.join("platforms/windows/engine").join(name));
-        }
-    }
     if let Ok(h) = std::env::var("LOCALAPPDATA") {
         c.push(std::path::Path::new(&h).join("BaneySpaces/engine").join(name));
     }
+    if dev_search() {
+        if let Ok(p) = std::env::var("BANEYSPACES_ENGINE") {
+            c.push(p.into());
+        }
+        if let Ok(exe) = std::env::current_exe() {
+            for up in exe.ancestors().skip(1).take(5) {
+                c.push(up.join("engine").join(name));
+                c.push(up.join("platforms/windows/engine").join(name));
+            }
+        }
+    }
     c.into_iter().find(|p| p.is_file())
+}
+
+/// A test, debug or `test-ops` build looks around the source tree.
+pub fn dev_search() -> bool {
+    cfg!(any(test, debug_assertions, feature = "test-ops"))
 }
 
 /// The snapshot id inside a ref: `@s8f3k2p9:e8` -> `s8f3k2p9`.

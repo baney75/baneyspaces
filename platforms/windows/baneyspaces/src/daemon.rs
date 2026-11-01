@@ -175,6 +175,9 @@ impl Core {
     /// A request that changes what is hidden (switch, move, agent workspace). If the record cannot be
     /// saved, the model is put back and the caller gets an error; no window was touched.
     pub fn apply_checked(&mut self, ev: Event) -> Result<Vec<Effect>, Envelope> {
+        if STOPPING.load(Ordering::SeqCst) {
+            return Err(Envelope::err("internal", "the daemon is shutting down (sign-out or stop): no window is being hidden", Retry::Safe, "Try again when it is back."));
+        }
         self.events_seen += 1;
         let backup = self.model.clone();
         let effects = self.model.apply(ev).map_err(model_err)?;
@@ -227,9 +230,41 @@ impl Core {
         self.model.monitors().filter_map(|m| self.model.current(m)).filter(|n| *n != 0).collect()
     }
 
-    /// Is `pid` a process BaneySpaces started for an agent, or one of its children?
+    /// Is `pid` a process BaneySpaces started for an agent, or one of its children? A registration holds only for
+    /// the process it was made for: the live process must still have the start time that was registered, so a
+    /// pid Windows has handed to a new program is not an agent's. (Job membership is by process, so it is safe.)
     fn is_agent_pid(&self, pid: u32) -> bool {
-        pid != 0 && (self.model.agent_proc(pid).is_some() || self.job.as_ref().is_some_and(|j| agent::in_job(j, pid)))
+        if pid == 0 {
+            return false;
+        }
+        if let Some(registered) = self.model.agent_proc(pid) {
+            let live = winapi::process_start(pid);
+            if registered != 0 && live == registered {
+                return true;
+            }
+        }
+        self.job.as_ref().is_some_and(|j| agent::in_job(j, pid))
+    }
+
+    /// An entry as it is written before a window is hidden: how, where it was, the styles to put back and who
+    /// it belongs to. `agent` follows the window's *process*, not where the model put it.
+    fn entry_for(&self, hwnd: i64, pid: u32, start: u64, how: How) -> Hidden {
+        let h = to_hwnd(hwnd);
+        let owner_pid = winapi::pid_of(h);
+        let agent = self.is_agent_pid(pid) || self.is_agent_pid(owner_pid);
+        Hidden {
+            hwnd,
+            pid,
+            start,
+            how,
+            rect: winapi::rect(h),
+            agent,
+            ex_style: (how == How::Ghost).then(|| winapi::ex_style(h)),
+            alpha: if how == How::Ghost { winapi::layered_alpha(h) } else { None },
+            class: winapi::class(h),
+            owner_pid,
+            owner_start: winapi::process_start(owner_pid),
+        }
     }
 
     /// Hides and shows windows so what you see is what the model says. Shows first, so a switch
@@ -245,13 +280,16 @@ impl Core {
         #[derive(Clone, Copy, PartialEq)]
         enum Want {
             Visible,
+            /// Out of sight the way your windows are (cloak, parked if refused).
             HideUser,
+            /// Out of sight as an agent's window is (a ghost, parked if refused).
             HideAgent,
         }
         // (hwnd, pid, start, what is wanted)
         let mut wants: Vec<(i64, u32, u64, Want)> = vec![];
         let mut tracked: BTreeSet<i64> = BTreeSet::new();
-        for (id, i) in &self.info {
+        let infos: Vec<(String, WinInfo)> = self.info.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        for (id, i) in &infos {
             let w = match self.model.home(id) {
                 Some(Home::Workspace { n }) => {
                     if shown.contains(n) {
@@ -263,8 +301,12 @@ impl Core {
                 Some(Home::Agent) => {
                     if agent_shown {
                         Want::Visible
-                    } else {
+                    } else if self.is_agent_pid(i.pid) {
                         Want::HideAgent
+                    } else {
+                        // A window of yours that `agent move` sent to the agent workspace: it is yours, so it is
+                        // hidden the way yours are, recorded first, and shown again by `agent bring`.
+                        Want::HideUser
                     }
                 }
                 None => continue,
@@ -280,8 +322,6 @@ impl Core {
             // Sign-out in progress: everything is shown by the restore; hide nothing.
             wants.retain(|w| w.3 == Want::Visible);
         }
-        // 0. A window recorded the wrong way for what it is wanted as (an agent's ghost that is now
-        //    a user's) is put right first.
         let mut cloaker: Option<Option<Cloaker>> = None;
         let get = |c: &mut Option<Option<Cloaker>>| -> Option<*const Cloaker> {
             if c.is_none() {
@@ -289,9 +329,12 @@ impl Core {
             }
             c.as_ref().and_then(|o| o.as_ref()).map(|x| x as *const Cloaker)
         };
+        // 0. A window recorded the wrong way for what it is wanted as (an agent's ghost that is now yours, a
+        //    cloak where a ghost is wanted) is put right first. A parked agent window is right: it is what a
+        //    window that refuses ghosting gets, and it stays parked rather than being tried again every poll.
         for (hwnd, _, _, w) in &wants {
             if let Some(e) = self.hidden.get(*hwnd).cloned() {
-                let wrong = (*w == Want::HideUser && e.how == How::Ghost) || (*w == Want::HideAgent && e.how != How::Ghost);
+                let wrong = (*w == Want::HideUser && e.how == How::Ghost) || (*w == Want::HideAgent && e.how == How::Cloak);
                 if wrong {
                     let c = get(&mut cloaker);
                     if cloak::show(&e, c.map(|p| unsafe { &*p })) {
@@ -308,8 +351,8 @@ impl Core {
                 continue;
             }
             match w {
-                Want::HideUser => add.push(Hidden { hwnd: *hwnd, pid: *pid, start: *start, how: How::Cloak, rect: winapi::rect(h), agent: false, ex_style: None }),
-                Want::HideAgent => add.push(Hidden { hwnd: *hwnd, pid: *pid, start: *start, how: How::Ghost, rect: winapi::rect(h), agent: true, ex_style: Some(winapi::ex_style(h)) }),
+                Want::HideUser => add.push(self.entry_for(*hwnd, *pid, *start, How::Cloak)),
+                Want::HideAgent => add.push(self.entry_for(*hwnd, *pid, *start, How::Ghost)),
                 Want::Visible => {}
             }
         }
@@ -320,8 +363,9 @@ impl Core {
             }
             if let Err(e) = self.persist() {
                 self.hidden = before;
-                // An agent's window is the agent's, not yours: it is kept off your screen even with the record
-                // unsaved. Yours are never hidden unrecorded: the request is refused, with nothing touched.
+                // A window of an agent's process is the agent's, not yours: it is kept off your screen even with
+                // the record unsaved. Yours (whatever workspace the model put them on) are never hidden unrecorded:
+                // the request is refused, with nothing touched.
                 let agents: Vec<Hidden> = add.iter().filter(|x| x.agent).cloned().collect();
                 for a in &agents {
                     self.hidden.insert(a.clone());
@@ -336,12 +380,16 @@ impl Core {
             }
         }
         // 2. Show. An entry goes only after the window reads back as shown; a failure keeps it and the
-        //    next poll tries again (explorer.exe restarting is the usual reason).
+        //    next poll tries again (explorer.exe restarting is the usual reason). A window on another virtual
+        //    desktop is cloaked by Windows itself and cannot be shown from here: it waits.
         for (hwnd, _, _, w) in &wants {
             if *w != Want::Visible {
                 continue;
             }
             if let Some(e) = self.hidden.get(*hwnd).cloned() {
+                if cloak::on_current_desktop(to_hwnd(*hwnd)) == Some(false) {
+                    continue;
+                }
                 let c = get(&mut cloaker);
                 if cloak::show(&e, c.map(|p| unsafe { &*p })) {
                     self.hidden.remove(*hwnd);
@@ -351,7 +399,9 @@ impl Core {
                 }
             }
         }
-        // 3. Hide, and read it back: re-apply whatever Windows no longer agrees with.
+        // 3. Hide, and read it back: re-apply whatever Windows no longer agrees with. The method recorded is
+        //    always the one actually applied.
+        let mut changed = !add.is_empty();
         for (hwnd, _, _, w) in &wants {
             let h = to_hwnd(*hwnd);
             if *w == Want::Visible || !winapi::exists(h) {
@@ -366,7 +416,11 @@ impl Core {
             if cloak::still_hidden(&e) {
                 continue;
             }
+            if cloak::on_current_desktop(h) == Some(false) {
+                continue; // another virtual desktop: Windows has it cloaked, and it is not ours to hide from here
+            }
             self.log(&format!("{} is not hidden any more ({:?}); hiding it again", window_name(*hwnd), e.how));
+            let was = e.how;
             match *w {
                 Want::HideUser => {
                     if e.how == How::Park && !winapi::is_iconic(h) {
@@ -379,22 +433,40 @@ impl Core {
                         self.problem(format!("cloak refused for {}: parked it instead", window_name(*hwnd)));
                     }
                 }
-                Want::HideAgent => {
-                    if cloak::ghost(h).is_none() {
-                        // It would not take a constant alpha: park it rather than leave it drawn on your screen.
-                        self.problem(format!("{} would not ghost: parked it instead", window_name(*hwnd)));
+                Want::HideAgent => match cloak::ghost(h) {
+                    Some(undo) => {
+                        // It took the ghost this time (it was parked because it refused before): back to the
+                        // place it had, and recorded as a ghost with the styles to put back.
+                        if was == How::Park {
+                            if let Some(r) = e.rect {
+                                if winapi::is_parked(h) {
+                                    winapi::set_pos(h, r[0], r[1]);
+                                }
+                            }
+                        }
+                        e.how = How::Ghost;
+                        if e.ex_style.is_none() {
+                            e.ex_style = Some(undo.ex_style);
+                            e.alpha = undo.alpha;
+                        }
+                    }
+                    None => {
+                        // Refused again: parked, recorded as parked, and left alone until it moves itself.
+                        if was != How::Park {
+                            self.problem(format!("{} would not ghost: parked it instead", window_name(*hwnd)));
+                        }
                         e.how = How::Park;
                         winapi::set_pos(h, cloak::PARK, cloak::PARK);
                     }
-                    if winapi::is_iconic(h) {
-                        winapi::restore_minimized_no_activate(h);
-                    }
-                }
+                },
                 Want::Visible => {}
+            }
+            if e.how != was {
+                changed = true;
             }
             self.hidden.insert(e);
         }
-        if !add.is_empty() || !wants.is_empty() {
+        if changed {
             let _ = self.persist();
         }
         Ok(())
@@ -426,14 +498,17 @@ impl Core {
 
     /// Registers `pid` as an agent process if it is one BaneySpaces started (or a descendant).
     fn adopt_agent_pid(&mut self, pid: u32) -> bool {
-        if self.model.agent_proc(pid).is_some() {
+        if self.is_agent_pid(pid) && self.model.agent_proc(pid).is_some() {
             return true;
         }
         if !self.job.as_ref().is_some_and(|j| agent::in_job(j, pid)) {
             return false;
         }
-        self.log(&format!("pid {pid} is in the agent job"));
         let start = winapi::process_start(pid);
+        if start == 0 {
+            return false; // never register a process whose identity cannot be read
+        }
+        self.log(&format!("pid {pid} is in the agent job"));
         let _ = self.apply(Event::AgentRegister { pid, start });
         true
     }
@@ -454,13 +529,13 @@ impl Core {
         self.info.insert(id.clone(), info.clone());
         if existing {
             // Already open: exactly where it is. Agent windows (parked from a previous run) stay parked.
-            let on_agent = self.model.agent_proc(info.pid).is_some() || self.hidden.get(hwnd).is_some_and(|h| h.how == How::Ghost);
+            let on_agent = self.is_agent_pid(info.pid) || self.hidden.get(hwnd).is_some_and(|h| h.agent);
             let workspace = if on_agent { None } else { monitor.as_deref().and_then(|m| self.model.current(m)).filter(|n| *n != 0).or(Some(1)) };
             let _ = self.apply(Event::ObserveWindow { window: id, pid: info.pid, start: info.start, app: info.app, workspace });
             return;
         }
         let _ = self.apply(Event::Open { window: id.clone(), pid: info.pid, start: info.start, app: info.app, monitor, workspace: None });
-        if self.model.agent_proc(info.pid).is_some() && !matches!(self.model.home(&id), Some(Home::Agent)) {
+        if self.is_agent_pid(info.pid) && !matches!(self.model.home(&id), Some(Home::Agent)) {
             let _ = self.apply(Event::AgentSend { window: id });
         }
     }
@@ -503,7 +578,9 @@ impl Core {
         let live_set: BTreeSet<i64> = live.iter().copied().collect();
         // Gone: destroyed, or no longer a window we would manage and not one we hid. A window we hid stays
         // tracked for as long as it exists, whatever its title or styles turn into.
-        let gone: Vec<String> = self.info.iter().filter(|(_, i)| !winapi::exists(to_hwnd(i.hwnd)) || (!live_set.contains(&i.hwnd) && !self.hidden.contains(i.hwnd))).map(|(id, _)| id.clone()).collect();
+        // A window cloaked by someone else (Windows does this to every window of another virtual desktop) has not
+        // gone: it keeps its workspace and comes back when its desktop does.
+        let gone: Vec<String> = self.info.iter().filter(|(_, i)| !winapi::exists(to_hwnd(i.hwnd)) || (!live_set.contains(&i.hwnd) && !self.hidden.contains(i.hwnd) && winapi::cloaked(to_hwnd(i.hwnd)) == 0)).map(|(id, _)| id.clone()).collect();
         for id in gone {
             self.close_window(&id);
         }
@@ -511,9 +588,11 @@ impl Core {
             self.open_window(hwnd, existing);
         }
         // Entries for windows that were destroyed are done with.
-        let dead: Vec<i64> = self.hidden.entries().filter(|e| !winapi::exists(to_hwnd(e.hwnd))).map(|e| e.hwnd).collect();
+        // A handle that is no longer that window (destroyed, or reused by another) is done with, and never touched.
+        let dead: Vec<i64> = self.hidden.entries().filter(|e| !cloak::identity_ok(e)).map(|e| e.hwnd).collect();
         if !dead.is_empty() {
             for d in dead {
+                self.log(&format!("{} is not the window that was hidden any more; dropped from the record", window_name(d)));
                 self.hidden.remove(d);
             }
             let _ = self.persist();
@@ -547,12 +626,13 @@ impl Core {
             return;
         }
         let pid = winapi::real_pid(h);
-        let e = Hidden { hwnd: id, pid, start: winapi::process_start(pid), how: How::Ghost, rect: winapi::rect(h), agent: true, ex_style: Some(winapi::ex_style(h)) };
+        let e = self.entry_for(id, pid, winapi::process_start(pid), How::Ghost);
         self.hidden.insert(e.clone());
         if let Err(why) = self.persist() {
             self.problem(format!("could not save the record of an agent window ({why}); it is hidden anyway"));
         }
         if cloak::ghost(h).is_none() {
+            // It refused: parked, and recorded as parked (the method actually applied), and left alone.
             self.problem(format!("{} would not ghost: parked it instead", window_name(id)));
             winapi::set_pos(h, cloak::PARK, cloak::PARK);
             if let Some(mut e) = self.hidden.remove(id) {
@@ -1106,13 +1186,15 @@ fn hands(shared: &Shared, agent: &str, args: &Value) -> Envelope {
 /// keeps its entry, for the next try. Returns (shown and verified, kept on the agent workspace, still hidden).
 pub fn restore_from_file(paths: &Paths, keep_agents: bool) -> (usize, usize, usize) {
     let left = hidden::parse_state(&paths.read("state.json").unwrap_or_default());
-    // A cloaked or parked window is put back whenever the handle is still a window: undoing a cloak
-    // on a window that is not cloaked does nothing, so a reused handle costs nothing, and a Store
-    // app's process id cannot be read reliably from a cloaked frame. A ghost is different: undoing
-    // it rewrites the window's styles, so its process must still be the one that was recorded.
+    // Only the window the entry was written for is touched: the class and the owning process (pid and start
+    // time) must still match. After a reboot, or once the window was destroyed and its handle reused, they do not,
+    // and the entry is dropped and logged without touching anything.
     let exists = |h: &Hidden| {
-        let w = to_hwnd(h.hwnd);
-        winapi::exists(w) && (h.how != How::Ghost || ((h.pid == 0 || winapi::real_pid(w) == h.pid) && (h.start == 0 || winapi::process_start(h.pid) == h.start)))
+        let ok = cloak::identity_ok(h);
+        if !ok && winapi::exists(to_hwnd(h.hwnd)) {
+            say(&format!("baneyspaces daemon: {} is not the window that was hidden (a different class or process); left alone", window_name(h.hwnd)));
+        }
+        ok && (h.how != How::Ghost || ((h.pid == 0 || winapi::real_pid(to_hwnd(h.hwnd)) == h.pid) && (h.start == 0 || winapi::process_start(h.pid) == h.start)))
     };
     let alive = |pid, start| keep_agents && winapi::alive(pid, start);
     let plan = hidden::recovery_plan(&left, exists, alive);
@@ -1286,12 +1368,15 @@ fn on_end_session(e: EndSession) {
     let (Some(paths), Some(shared)) = (PATHS.get(), SHARED.get()) else { return };
     match e {
         EndSession::Query | EndSession::Ending => {
+            // One critical section: STOPPING is set *under the lock* (so a poll or request in flight finishes
+            // first, and every later one sees it), the windows are restored from the record, and the in-memory
+            // set is reloaded from what the restore left, all before anyone else can write. Nothing re-hides
+            // a window while this runs, and nothing else writes state.json.
+            let mut c = lock(shared);
             STOPPING.store(true, Ordering::SeqCst);
             let r = restore_from_file(paths, true);
-            {
-                let mut c = lock(shared);
-                c.reload_hidden_from_file();
-            }
+            c.reload_hidden_from_file();
+            drop(c);
             say(&format!("baneyspaces daemon: {e:?}: {} window(s) put back, {} agent window(s) stay, {} not restored", r.0, r.1, r.2));
             if e == EndSession::Ending {
                 std::process::exit(0);
@@ -1299,6 +1384,7 @@ fn on_end_session(e: EndSession) {
         }
         EndSession::Cancelled => {
             // Cancelled: carry on. The next poll hides again what belongs on a hidden workspace.
+            let _c = lock(shared);
             STOPPING.store(false, Ordering::SeqCst);
         }
     }
@@ -1330,6 +1416,12 @@ impl Core {
 
     /// One poll: monitors, windows, what is hidden checked against Windows, focus.
     fn poll(&mut self) {
+        // An agent process that exited, or whose pid Windows gave to another program, is forgotten.
+        for (pid, start) in self.model.agent_pids() {
+            if !winapi::alive(pid, start) || start == 0 {
+                let _ = self.apply(Event::AgentExit { pid });
+            }
+        }
         self.sync_monitors();
         self.resync_windows(false);
         if let Err(e) = self.sync_visibility() {
@@ -1401,7 +1493,22 @@ pub fn run(trace: bool, log: Option<PathBuf>) -> i32 {
         let prev = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             prev(info);
+            STOPPING.store(true, Ordering::SeqCst);
+            // Take the lock if it can be had (the panicking thread may hold it): then no other writer is in the
+            // middle of recording a window. If not, restore anyway; the temporary file of every write is its own.
+            let guard = SHARED.get().and_then(|s| {
+                let t = Instant::now();
+                loop {
+                    match s.try_lock() {
+                        Ok(g) => return Some(g),
+                        Err(std::sync::TryLockError::Poisoned(p)) => return Some(p.into_inner()),
+                        Err(std::sync::TryLockError::WouldBlock) if t.elapsed() < Duration::from_millis(300) => std::thread::sleep(Duration::from_millis(5)),
+                        Err(_) => return None,
+                    }
+                }
+            });
             let _ = restore_from_file(&paths, true);
+            drop(guard);
             std::process::exit(101);
         }));
     }
@@ -1483,13 +1590,15 @@ pub fn run(trace: bool, log: Option<PathBuf>) -> i32 {
             lock(&shared).poll();
         }
     }
-    // Shutting down: stop the hooks, write the file, put your windows back.
+    // Shutting down: stop the hooks, then, under the lock with STOPPING set (requests that arrive meanwhile are
+    // refused, and a poll in flight has finished), write the record and put your windows back.
     hook::stop();
-    {
+    let (shown, kept, failed) = {
         let c = lock(&shared);
+        STOPPING.store(true, Ordering::SeqCst);
         let _ = c.persist();
-    }
-    let (shown, kept, failed) = restore_from_file(&paths, true);
+        restore_from_file(&paths, true)
+    };
     say(&format!("baneyspaces daemon: stopped; {shown} window(s) put back, {kept} agent window(s) still on the agent workspace, {failed} not restored (kept in state.json)"));
     FINISHED.store(true, Ordering::SeqCst);
     0

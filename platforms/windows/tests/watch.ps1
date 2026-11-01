@@ -3,6 +3,7 @@
 param([int]$Seconds = 14, [switch]$All)
 . { $src = Get-Content C:\readback.ps1 -Raw; Invoke-Expression ($src.Substring(0, $src.IndexOf('[RB]::Run()')).Replace('param([switch]$All)', '').Replace('# This script runs elevated', '#')) }
 [RB]::All = [bool]$All; [RB]::Run(); $base = @{}; [RB]::Rows | % { $base[($_ -split ' ')[0]] = 1 }
+Set-Content C:\bs\watch-ready 1
 $new = @{}; $sw = [Diagnostics.Stopwatch]::StartNew(); $polls = 0
 while ($sw.Elapsed.TotalSeconds -lt $Seconds) {
   [RB]::Run(); $polls++

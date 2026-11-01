@@ -13,7 +13,6 @@
 //! the show command is never drawn on your screen before the daemon hides it.
 
 use crate::cmdline;
-use crate::winapi;
 use std::path::Path;
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob};
@@ -76,10 +75,27 @@ pub fn spawn(exe: &Path, args: &[String], cwd: Option<&str>, job: &Job, console:
             CloseHandle(pi.hProcess);
             return Err(format!("the process could not join the agent job (error {why}), so it was not started"));
         }
+        // The start time is read from the handle we hold, before the process runs: a launcher that exits at
+        // once still leaves a real start time, never 0 (which would match any later process with that pid).
+        let start = {
+            let z = windows_sys::Win32::Foundation::FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+            let (mut c, mut e, mut k, mut u) = (z, z, z, z);
+            if GetProcessTimes(pi.hProcess, &mut c, &mut e, &mut k, &mut u) != 0 {
+                ((c.dwHighDateTime as u64) << 32) | c.dwLowDateTime as u64
+            } else {
+                0
+            }
+        };
+        if start == 0 {
+            TerminateProcess(pi.hProcess, 1);
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+            return Err("the new process's start time could not be read, so it was not started".into());
+        }
         ResumeThread(pi.hThread);
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
-        Ok(Spawned { pid: pi.dwProcessId, start: winapi::process_start(pi.dwProcessId) })
+        Ok(Spawned { pid: pi.dwProcessId, start })
     }
 }
 

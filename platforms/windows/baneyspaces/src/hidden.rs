@@ -39,6 +39,25 @@ pub struct Hidden {
     /// A ghosted window's extended style before we changed it, to put back.
     #[serde(default)]
     pub ex_style: Option<i64>,
+    /// A ghosted window's constant alpha before we changed it (when it was already layered with one).
+    #[serde(default)]
+    pub alpha: Option<u8>,
+    /// The window's class when it was hidden, and the process that owned it (pid and start time of the
+    /// window's own thread). A handle that no longer matches is a different window: it is never touched.
+    #[serde(default)]
+    pub class: String,
+    #[serde(default)]
+    pub owner_pid: u32,
+    #[serde(default)]
+    pub owner_start: u64,
+}
+
+impl Hidden {
+    /// An entry with nothing but what a test needs.
+    #[cfg(test)]
+    pub fn base(hwnd: i64, pid: u32, start: u64, how: How) -> Self {
+        Self { hwnd, pid, start, how, rect: None, agent: false, ex_style: None, alpha: None, class: String::new(), owner_pid: 0, owner_start: 0 }
+    }
 }
 
 /// An agent process BaneySpaces started, so a restarted daemon still knows it.
@@ -131,7 +150,7 @@ mod tests {
     use super::*;
 
     fn h(hwnd: i64, pid: u32, agent: bool) -> Hidden {
-        Hidden { hwnd, pid, start: 7, how: How::Cloak, rect: None, agent, ex_style: None }
+        Hidden { agent, ..Hidden::base(hwnd, pid, 7, How::Cloak) }
     }
 
     #[test]
@@ -144,6 +163,13 @@ mod tests {
         assert_eq!(left.hidden.len(), 2);
         assert_eq!(left.hidden[1].rect, Some([1, 2, 3, 4]));
         assert_eq!(left.agents, vec![AgentProc { pid: 2, start: 7 }]);
+    }
+
+    #[test]
+    fn an_entry_from_an_older_build_still_parses_without_identity_fields() {
+        let l = parse_state(r#"{"hidden":[{"hwnd":5,"pid":1,"start":2,"how":"ghost","agent":true,"ex_style":256}]}"#);
+        assert_eq!(l.hidden.len(), 1);
+        assert_eq!((l.hidden[0].class.as_str(), l.hidden[0].owner_pid, l.hidden[0].alpha), ("", 0, None));
     }
 
     #[test]

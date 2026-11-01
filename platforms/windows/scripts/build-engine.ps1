@@ -2,7 +2,7 @@
 # The pin is the same file the Linux build reads (platforms/linux/engine.pin): one commit on every platform.
 # Output: platforms/windows/engine/agent-desktop.exe
 # Usage: build-engine.ps1 [-Profile release]
-param([string]$Profile = 'release')
+param([string]$Profile = 'release', [switch]$Install)
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $PSScriptRoot            # platforms/windows
 $pinFile = Join-Path (Split-Path -Parent $here) 'linux\engine.pin'
@@ -39,3 +39,10 @@ Set-Content -NoNewline -Path (Join-Path $out 'COMMIT') -Value $commit
 Copy-Item -Force (Join-Path $src 'LICENSE') (Join-Path $out 'LICENSE')
 if (Test-Path (Join-Path $src 'NOTICE')) { Copy-Item -Force (Join-Path $src 'NOTICE') (Join-Path $out 'NOTICE') }
 Write-Output "engine built: $out\agent-desktop.exe ($commit)"
+if ($Install) {
+  # Where a release build looks for it (and only there).
+  $dest = Join-Path $env:LOCALAPPDATA 'BaneySpaces\engine'
+  New-Item -ItemType Directory -Force $dest | Out-Null
+  Copy-Item -Force (Join-Path $out '*') $dest
+  Write-Output "engine installed: $dest"
+}

@@ -8,6 +8,9 @@
 //! A second control, a button named "Open dialog", opens a MessageBox owned by the window: the live test
 //! uses it to check that a dialog an agent's app opens is hidden too.
 //!
+//! `--refuse-ghost` titles the window so that a `test-ops` daemon refuses to ghost it (Windows has no easy way to
+//! make a window refuse), to check what happens to an agent's window that cannot be ghosted.
+//!
 //! It is only ever started by the live tests (`BANEYSPACES_TEST_OPS`); the daemon refuses to start
 //! it otherwise. The first `ShowWindow` honors the launcher's show command, so a launch with
 //! `SW_SHOWMINNOACTIVE` starts minimized and never draws.
@@ -98,7 +101,9 @@ fn main() {
             lpszClassName: class.as_ptr(),
         };
         RegisterClassW(&wc);
-        let title = wide("BaneySpaces test app");
+        // `--refuse-ghost` only changes the title: a build with the `test-ops` feature makes the daemon's ghost step
+        // refuse a window with this title, so the live test can drive the "window that refuses the ghost" path.
+        let title = wide(if std::env::args().any(|a| a == "--refuse-ghost") { "BaneySpaces test app (refuses ghost)" } else { "BaneySpaces test app" });
         let hwnd = CreateWindowExW(0, class.as_ptr(), title.as_ptr(), WS_OVERLAPPEDWINDOW, 140, 140, 420, 280, std::ptr::null_mut(), std::ptr::null_mut(), hi, std::ptr::null());
         ShowWindow(hwnd, SW_SHOWDEFAULT);
         let mut msg: MSG = std::mem::zeroed();
