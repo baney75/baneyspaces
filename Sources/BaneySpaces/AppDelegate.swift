@@ -513,6 +513,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // ⌘Space goes back to Spotlight while BaneySpaces isn't running; the next launch takes it again.
         SystemShortcuts.spotlightQueue.sync { SystemShortcuts.restoreSpotlight() }
         spaces.flushWrites()
+        // A clean quit, not a crash, for the next launch's crash-loop check.
+        CrashLoop.launchEnded()
         // Last: a fault in the private framework while letting go must not skip anything above.
         trackpadSwipe.stop()
         hotCorners.stop()
