@@ -52,7 +52,19 @@ counts as a crash. After 3 within 5 minutes the next launch puts Mission Control
 the drag to the top back, says so in an alert (Quit, or Start Anyway, which clears the crashes) and
 doesn't start. `--render` keeps its own `crash-ledger-render.json` and exits 75 instead. Knobs:
 `defaults write com.baney.baneyspaces crashLoopLimit -int N` (0 never stops) and
-`crashLoopWindowMinutes -float M`. `trace.log` says `crash loop: …`.
+`crashLoopWindowMinutes -float M`.
+
+Logs: every guarded launch writes `launch: BaneySpaces <version> (<commit>), normal|setup|render, pid N`,
+then `crash loop: start|stop (<mode>), N of 3 crashes in 5 minutes, ledger ~/…/crash-ledger.json`. A stop
+adds `crash loop: Dock and drag to the top restored, Mission Control saved settings restored|no saved settings changed` (its time is
+when Mission Control came back), then `Quit, staying stopped` or `Start Anyway, N crashes forgiven`; a clean
+quit writes `crash loop: clean quit (<mode>), pid N cleared from the ledger`. The text lives in
+`CrashLoopReport` (pinned by `CrashLoopReportTests`). Read it back from the file
+(`grep -E 'launch:|crash loop:' ~/Library/Application\ Support/BaneySpaces/trace.log`, epoch seconds first,
+cut at 200 KB) or the unified log, which survives the file's cut:
+`/usr/bin/log show --last 1h --predicate 'subsystem == "com.baney.baneyspaces"' | grep -E 'launch:|crash loop:'`.
+The crash itself is in `~/Library/Logs/DiagnosticReports/BaneySpaces-*.ips`. These lines hold counts, pids,
+the build and `~` paths, never window titles or the user name; keep it that way.
 
 ## Linux (`platforms/linux`, `crates/`, `spec/`)
 
