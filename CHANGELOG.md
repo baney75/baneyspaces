@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Simulators, emulators and virtual machines (window management).** An emulator's toolbar and
+  extended controls now follow its window to another workspace and are not counted as windows of their
+  own; a device that rotated while parked comes back at the size it has; the workspace keys work
+  inside UTM, Parallels, VMware Fusion and VirtualBox (and in virt-viewer and Boxes on Linux); an
+  agent's emulator window, which belongs to a child of the process it started, goes to the agent
+  workspace; the emulator floats on Hyprland. One table for every platform: `spec/devices.json`. Survey
+  and what is untested live: `docs/devices-and-vms.md`.
 - **Themes, 22 palettes and a dock switch.** Settings › Appearance has a theme (**BaneySpaces**, the
   look it has always had; **Omarchy**, square corners, 2 px borders, monospace and numbered blocks;
   **Minimal**) and a palette (**Auto** or one of Omarchy's 22), shared with the other platforms from
