@@ -377,7 +377,7 @@ hidden, so agents can still click and type in them from behind. Nothing
 on it coming forward takes you there: you go with ⌘9, its Dock tile or a launcher row. And a window
 an agent opens in the background lands there, not on your workspace. `agent run` starts a
 Ghostty of its own for the agent, a separate process from yours, so nothing the agent does
-there can stall your terminals. `scripts/agent-workspace-probe.sh` proves it on your Mac: an
+there can stall your terminals. `scripts/agent-hands-probe.swift` (phase 1) proves it on your Mac: an
 agent's command runs there, and only your own keyboard and mouse change what you see.
 
 BaneySpaces is also the hands agents use there: snapshot an app, act on what's in it, check the
@@ -401,7 +401,7 @@ incoming connections first.
 ### Keep apps usable by automation
 
 BaneySpaces hides an app whose windows all sit on other workspaces, the way ⌘H does. macOS
-refuses background clicks and keystrokes to a hidden app, so tools that drive apps from behind,
+refuses background clicks and keystrokes to a hidden app, so tools that drive apps from behind
 can't use it until you switch back. Put the app
 under **Options › Keep Usable by Automation** in the menu bar menu and its windows are parked just out of
 view instead, where those tools can still click and type.

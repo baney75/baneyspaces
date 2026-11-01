@@ -21,10 +21,12 @@ A change is done when all of these pass on the installed build (`make install`):
    For anything that decides what each display shows (`Workspaces.shown`, `displays`, `carry`,
    `noteMovedAcrossDisplays`): `swift scripts/displays-probe.swift` with two displays (Sidecar counts).
 4. The gesture Donovan reported, done live on his Mac (the real keys, the real hold, the real
-   click), with the result read back from the screen, `trace.log` or `state.json`. Cua's driver
-   is gone from the fleet (2026-10-31); use the probes in `scripts/` and, once phase 1 of
-   [docs/agent-computer-use.md](docs/agent-computer-use.md) ships, `baneyspaces agent`. Never
-   drive his own workspaces while he works.
+   click), with the result read back from the screen, `trace.log` or `state.json`. Pointer and key
+   probes run only when he has been idle 10 minutes (`ioreg -c IOHIDSystem` HIDIdleTime); otherwise
+   the PR lists the exact steps for him to try and says "untested live". Agent tools
+   (`baneyspaces agent`) act only on the agent workspace or the sandbox, so they can't stand in for
+   a gesture on his own workspaces. Only `main` is installed on his Mac: branches build and test,
+   and never run `make install` there.
 
 Unit tests and CI only prove the plan logic. They have never caught a visible bug here. If step 4
 can't run, say "untested live" in the report and don't call the bug fixed.
