@@ -5,3 +5,6 @@ build/
 engine/.cache/
 engine/.src/
 engine/lib/
+*.pyc
+__pycache__/
+.tools/

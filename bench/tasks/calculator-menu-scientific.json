@@ -1,0 +1,56 @@
+{
+  "id": "calculator-menu-scientific",
+  "app": "Calculator",
+  "category": "menu",
+  "goal": "Switch Calculator to its Scientific view with the View menu.",
+  "place": "host",
+  "setup": {
+    "requires": {
+      "installed": [
+        "Calculator"
+      ],
+      "not_running": [
+        "Calculator"
+      ]
+    },
+    "quit_after": [
+      "Calculator"
+    ],
+    "settle_s": 1.2,
+    "open": [
+      {
+        "app": "Calculator",
+        "as": "calc",
+        "title": "Calculator"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "menu",
+      "window": "calc",
+      "path": [
+        "View",
+        "Scientific"
+      ]
+    },
+    {
+      "do": "wait",
+      "ms": 800
+    }
+  ],
+  "check": {
+    "kind": "ax",
+    "window": "calc",
+    "target": {
+      "role": "button",
+      "text": "sine"
+    }
+  },
+  "expected_fail": {
+    "baneyspaces": {
+      "phase": "later",
+      "why": "phase 1 reads the window surface only; the menu bar surface is not in its verb list"
+    }
+  }
+}

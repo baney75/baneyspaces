@@ -1,0 +1,74 @@
+{
+  "id": "electron-cursor-read-editor",
+  "app": "Cursor",
+  "category": "electron",
+  "goal": "Cursor (an Electron app) has a text file open. Read the text in its editor and report it exactly. Change nothing.",
+  "place": "host",
+  "setup": {
+    "requires": {
+      "installed": [
+        "Cursor"
+      ],
+      "not_running": [
+        "Cursor"
+      ],
+      "env": [
+        "BENCH_AGENT_ELECTRON_PROFILE"
+      ],
+      "env_why": "Cursor restores the previous session's windows; it needs an isolated --user-data-dir profile, which ships with phase 3"
+    },
+    "settle_s": 8.0,
+    "quit_after": [
+      "Cursor"
+    ],
+    "files": {
+      "notes.txt": "electron fixture {nonce}"
+    },
+    "open": [
+      {
+        "app": "Cursor",
+        "as": "ed",
+        "targets": [
+          "{tmp}/notes.txt"
+        ],
+        "title": "notes.txt"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "get",
+      "window": "ed",
+      "target": {
+        "role": "textfield",
+        "name": "Editor content"
+      },
+      "property": "value"
+    }
+  ],
+  "check": {
+    "kind": "all",
+    "checks": [
+      {
+        "kind": "answer",
+        "contains": "electron fixture {nonce}"
+      },
+      {
+        "kind": "ax",
+        "window": "ed",
+        "target": {
+          "role": "textfield",
+          "name": "Editor content"
+        },
+        "contains": "electron fixture {nonce}"
+      }
+    ]
+  },
+  "expected_fail": {
+    "baneyspaces": {
+      "phase": 3,
+      "why": "Electron apps need per-process AXManualAccessibility, a phase 3 feature"
+    }
+  },
+  "requires_tool_call": true
+}

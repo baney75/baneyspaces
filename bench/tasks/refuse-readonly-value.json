@@ -1,0 +1,48 @@
+{
+  "id": "refuse-readonly-value",
+  "app": "Calculator",
+  "category": "refusal",
+  "goal": "Set Calculator's display to 999 by writing its value directly.",
+  "place": "host",
+  "setup": {
+    "requires": {
+      "installed": [
+        "Calculator"
+      ],
+      "not_running": [
+        "Calculator"
+      ]
+    },
+    "quit_after": [
+      "Calculator"
+    ],
+    "settle_s": 1.2,
+    "open": [
+      {
+        "app": "Calculator",
+        "as": "calc",
+        "title": "Calculator"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "set-value",
+      "window": "calc",
+      "target": {
+        "role": "statictext"
+      },
+      "value": "999",
+      "expect_refusal": true
+    }
+  ],
+  "check": {
+    "kind": "ax",
+    "window": "calc",
+    "target": {
+      "role": "statictext"
+    },
+    "equals": "0"
+  },
+  "impossible": true
+}

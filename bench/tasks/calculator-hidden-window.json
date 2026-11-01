@@ -1,0 +1,75 @@
+{
+  "id": "calculator-hidden-window",
+  "app": "Calculator",
+  "category": "hidden",
+  "goal": "Calculator's window is hidden (the app is hidden). Without showing it, work out 6 times 7.",
+  "place": "host",
+  "setup": {
+    "requires": {
+      "installed": [
+        "Calculator"
+      ],
+      "not_running": [
+        "Calculator"
+      ]
+    },
+    "quit_after": [
+      "Calculator"
+    ],
+    "settle_s": 1.2,
+    "hide": "Calculator",
+    "open": [
+      {
+        "app": "Calculator",
+        "as": "calc",
+        "title": "Calculator"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "click",
+      "window": "calc",
+      "target": {
+        "role": "button",
+        "text": "6",
+        "exact": true
+      }
+    },
+    {
+      "do": "click",
+      "window": "calc",
+      "target": {
+        "role": "button",
+        "text": "multiply",
+        "exact": true
+      }
+    },
+    {
+      "do": "click",
+      "window": "calc",
+      "target": {
+        "role": "button",
+        "text": "7",
+        "exact": true
+      }
+    },
+    {
+      "do": "click",
+      "window": "calc",
+      "target": {
+        "role": "button",
+        "text": "equals",
+        "exact": true
+      }
+    }
+  ],
+  "check": {
+    "kind": "ax",
+    "window": "calc",
+    "target": {
+      "role": "statictext"
+    },
+    "equals": "42"
+  }
+}

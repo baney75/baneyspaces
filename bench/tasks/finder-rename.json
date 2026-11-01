@@ -1,0 +1,82 @@
+{
+  "id": "finder-rename",
+  "app": "Finder",
+  "category": "finder",
+  "goal": "In the open Finder window rename the file old.txt to new.txt.",
+  "place": "host",
+  "setup": {
+    "requires": {
+      "installed": [
+        "Finder"
+      ],
+      "exclusive": [
+        "Finder"
+      ]
+    },
+    "files": {
+      "rn/old.txt": "x"
+    },
+    "open": [
+      {
+        "app": "Finder",
+        "as": "win",
+        "targets": [
+          "{tmp}/rn"
+        ],
+        "title": "rn"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "click",
+      "window": "win",
+      "target": {
+        "text": "old.txt"
+      }
+    },
+    {
+      "do": "press",
+      "window": "win",
+      "key": "Return"
+    },
+    {
+      "do": "set-value",
+      "window": "win",
+      "target": {
+        "role": "textfield",
+        "text": "old"
+      },
+      "value": "new.txt"
+    },
+    {
+      "do": "press",
+      "window": "win",
+      "key": "Return"
+    },
+    {
+      "do": "wait",
+      "ms": 500
+    }
+  ],
+  "check": {
+    "kind": "all",
+    "checks": [
+      {
+        "kind": "file",
+        "path": "{tmp}/rn/new.txt"
+      },
+      {
+        "kind": "file",
+        "path": "{tmp}/rn/old.txt",
+        "absent": true
+      }
+    ]
+  },
+  "expected_fail": {
+    "baneyspaces": {
+      "phase": 4,
+      "why": "phase 1 types through the accessibility tree only; keys refuse with not_supported until per-process keys ship"
+    }
+  }
+}

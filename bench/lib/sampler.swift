@@ -1,0 +1,258 @@
+// bench-sample: the screen-change monitor's eyes. Every 50 ms (--interval-ms) it reads
+//   front      the frontmost app (bundle id and pid)
+//   workspace  BaneySpaces' current workspace (state.json "current")
+//   pointer    the pointer position
+//   key        the front-most normal window on screen (window id and owner pid)
+//   user_window    a window id that newly appears on a workspace other than the agent workspace
+//                  (state.json), i.e. a window on one of Donovan's workspaces
+//   unplaced_window  a new on-screen normal window that state.json lists on no workspace for a full
+//                  second (a debounce: BaneySpaces writes state.json a moment after a window appears)
+// Every window event carries {id, pid, owner} so the harness can tell the tool's windows from Donovan's
+// own background apps. A sheet, alert or popover belongs to its parent window: a window that state.json
+// does not list, owned by a process that owns an agent-workspace window and lying inside that window's
+// frame (8 pt slack), is a child. It is neither `unplaced_window` nor the key window.
+//
+// Input: a listen-only event tap counts keyboard, mouse and scroll events and reads each one's source
+// process id. Pid 0 is real hardware (Donovan); any other pid is a program posting events, which is what
+// the tools under test do. `input` lines carry {real: n, posted: {pid: n}}. Needs Input Monitoring; when
+// the tap cannot be created `tap` is false in the start line and the harness falls back to HID idle time.
+//
+// Session: `session` lines say whether the screen is locked, the display asleep, the session off the
+// console, or loginwindow in front.
+//
+// It prints a "beat" on EVERY sample (the harness treats 200 ms without one, or the process exiting, as a
+// lost monitor), one JSON line when anything above changes, and a "hid" line while HID idle < 5 s.
+// Read-only: it posts no events.
+import AppKit
+import CoreGraphics
+import Foundation
+
+setvbuf(stdout, nil, _IOLBF, 0)
+var intervalMs = 50
+if let i = CommandLine.arguments.firstIndex(of: "--interval-ms"), i + 1 < CommandLine.arguments.count,
+   let v = Int(CommandLine.arguments[i + 1]) { intervalMs = max(10, v) }
+let statePath = NSHomeDirectory() + "/Library/Application Support/BaneySpaces/state.json"
+
+struct Snap: Equatable {
+    var front = ""
+    var frontPid = 0
+    var workspace = -1
+    var px = 0.0, py = 0.0
+    var key = 0
+    var keyPid = 0
+}
+struct Win { var id: Int; var pid: Int; var owner: String; var r: CGRect }
+
+var stateStamp: (Date, Int)? = nil
+var stateCurrent = -1
+var stateUser = Set<Int>()    // window ids on workspaces other than the agent workspace
+var stateAgent = Set<Int>()   // window ids on the agent workspace
+var stateAll = Set<Int>()     // window ids on any workspace
+var agentWins: [Win] = []     // frames of the agent workspace's windows (refreshed once a second)
+var agentPids = Set<Int>()
+
+func workspace() -> Int {
+    let attrs = try? FileManager.default.attributesOfItem(atPath: statePath)
+    let stamp = ((attrs?[.modificationDate] as? Date) ?? .distantPast, (attrs?[.size] as? Int) ?? 0)
+    if let s = stateStamp, s == stamp { return stateCurrent }
+    stateStamp = stamp
+    if let data = FileManager.default.contents(atPath: statePath),
+       let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+       let cur = obj["current"] as? Int {
+        stateCurrent = cur
+        let agent = obj["agentWorkspace"] as? Int ?? -1
+        var user = Set<Int>(), ag = Set<Int>(), all = Set<Int>()
+        for (ws, wins) in (obj["workspaces"] as? [String: [[String: Any]]]) ?? [:] {
+            for w in wins {
+                guard let id = w["id"] as? Int else { continue }
+                all.insert(id)
+                if Int(ws) == agent { ag.insert(id) } else { user.insert(id) }
+            }
+        }
+        stateUser = user; stateAgent = ag; stateAll = all
+        refreshAgentWindows()
+    }
+    return stateCurrent
+}
+
+func windows(onScreenOnly: Bool) -> [Win] {
+    let opts: CGWindowListOption = onScreenOnly ? [.optionOnScreenOnly, .excludeDesktopElements] : [.optionAll]
+    guard let list = CGWindowListCopyWindowInfo(opts, kCGNullWindowID) as? [[String: Any]] else { return [] }
+    var out: [Win] = []
+    for w in list {
+        guard (w[kCGWindowLayer as String] as? Int) == 0,
+              (w[kCGWindowAlpha as String] as? Double ?? 1) > 0.01,
+              let b = w[kCGWindowBounds as String] as? [String: Double],
+              (b["Width"] ?? 0) > 60, (b["Height"] ?? 0) > 40,
+              let id = w[kCGWindowNumber as String] as? Int else { continue }
+        out.append(Win(id: id, pid: w[kCGWindowOwnerPID as String] as? Int ?? 0,
+                       owner: w[kCGWindowOwnerName as String] as? String ?? "",
+                       r: CGRect(x: b["X"] ?? 0, y: b["Y"] ?? 0, width: b["Width"] ?? 0, height: b["Height"] ?? 0)))
+    }
+    return out
+}
+
+func refreshAgentWindows() {
+    agentWins = windows(onScreenOnly: false).filter { stateAgent.contains($0.id) }
+    agentPids = Set(agentWins.map { $0.pid })
+}
+
+/// A sheet, alert or popover of an agent-workspace window: not listed, same process, inside the parent's frame.
+func isChild(_ w: Win) -> Bool {
+    if stateAll.contains(w.id) || !agentPids.contains(w.pid) { return false }
+    return agentWins.contains { $0.pid == w.pid && $0.r.insetBy(dx: -8, dy: -8).contains(w.r) }
+}
+
+func take(_ onScreen: [Win]) -> Snap {
+    var s = Snap()
+    let app = NSWorkspace.shared.frontmostApplication
+    s.front = app?.bundleIdentifier ?? app?.localizedName ?? ""
+    s.frontPid = Int(app?.processIdentifier ?? 0)
+    s.workspace = workspace()
+    let p = CGEvent(source: nil)?.location ?? .zero
+    s.px = Double(p.x); s.py = Double(p.y)
+    if let k = onScreen.first(where: { !isChild($0) }) { s.key = k.id; s.keyPid = k.pid }
+    return s
+}
+
+func idleSeconds() -> Double {
+    CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: CGEventType(rawValue: ~0)!)
+}
+
+func emit(_ o: [String: Any]) {
+    guard let d = try? JSONSerialization.data(withJSONObject: o, options: [.sortedKeys]),
+          let s = String(data: d, encoding: .utf8) else { return }
+    print(s)
+}
+
+func json(_ s: Snap) -> [String: Any] {
+    ["front": s.front, "front_pid": s.frontPid, "workspace": s.workspace,
+     "pointer": [s.px, s.py], "key_window": s.key, "key_pid": s.keyPid]
+}
+
+func winJSON(_ w: Win) -> [String: Any] { ["id": w.id, "pid": w.pid, "owner": w.owner] }
+
+// ---- session: locked screen, display asleep, off the console, loginwindow in front
+func sessionState(front: String) -> [String: Any] {
+    let d = CGSessionCopyCurrentDictionary() as? [String: Any] ?? [:]
+    return ["locked": (d["CGSSessionScreenIsLocked"] as? Bool) ?? false,
+            "console": (d["kCGSSessionOnConsoleKey"] as? Bool) ?? true,
+            "asleep": CGDisplayIsAsleep(CGMainDisplayID()) != 0,
+            "loginwindow": front == "com.apple.loginwindow"]
+}
+
+// ---- input tap: real hardware (source pid 0) versus programs posting events
+var realInputs = 0
+var postedInputs: [Int: Int] = [:]
+var tapOK = false
+let tapCallback: CGEventTapCallBack = { _, _, event, _ in
+    let pid = Int(event.getIntegerValueField(.eventSourceUnixProcessID))
+    if pid == 0 { realInputs += 1 } else { postedInputs[pid, default: 0] += 1 }
+    return Unmanaged.passUnretained(event)
+}
+func installTap() {
+    let types: [CGEventType] = [.keyDown, .keyUp, .flagsChanged, .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp,
+                                .otherMouseDown, .otherMouseUp, .mouseMoved, .leftMouseDragged, .rightMouseDragged, .scrollWheel]
+    var mask: CGEventMask = 0
+    for t in types { mask |= CGEventMask(1) << CGEventMask(t.rawValue) }
+    guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .listenOnly,
+                                      eventsOfInterest: mask, callback: tapCallback, userInfo: nil) else { return }
+    let src = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+    CFRunLoopAddSource(CFRunLoopGetMain(), src, .commonModes)
+    CGEvent.tapEnable(tap: tap, enable: true)
+    tapOK = true
+}
+installTap()
+
+var onScreen0 = windows(onScreenOnly: true)
+var last = take(onScreen0)
+var lastSession = sessionState(front: last.front)
+var knownUser = stateUser
+var knownOnScreen = Set(onScreen0.map { $0.id })
+var pendingUnplaced: [Int: Double] = [:]      // window id -> when it first appeared unlisted
+emit(["event": "start", "t": Date().timeIntervalSince1970, "state": json(last), "interval_ms": intervalMs,
+      "tap": tapOK, "idle": idleSeconds(), "session": lastSession])
+var samples = 0
+var prevTick = Date().timeIntervalSince1970
+var refreshedAt = prevTick
+var prevIdle = idleSeconds()
+var hidLow = false
+
+func tick() {
+    let now = Date().timeIntervalSince1970
+    let gap = now - prevTick
+    prevTick = now
+    samples += 1
+    if now - refreshedAt >= 1 { refreshAgentWindows(); refreshedAt = now }
+    let onScreen = windows(onScreenOnly: true)
+    let cur = take(onScreen)
+    var fields: [String] = []
+    if cur.front != last.front || cur.frontPid != last.frontPid { fields.append("front") }
+    if cur.workspace != last.workspace { fields.append("workspace") }
+    if abs(cur.px - last.px) > 0.5 || abs(cur.py - last.py) > 0.5 { fields.append("pointer") }
+    if cur.key != last.key || cur.keyPid != last.keyPid { fields.append("key_window") }
+
+    var newWindows: [[String: Any]] = []
+    let newUser = stateUser.subtracting(knownUser)
+    if !newUser.isEmpty {
+        let all = windows(onScreenOnly: false)
+        for id in newUser.sorted() {
+            newWindows.append(all.first(where: { $0.id == id }).map(winJSON) ?? ["id": id, "pid": 0, "owner": ""])
+        }
+        fields.append("user_window")
+    }
+    knownUser = stateUser
+
+    // unplaced: unlisted for a full second, and still on screen, and not a sheet of an agent window
+    for w in onScreen where !knownOnScreen.contains(w.id) && !stateAll.contains(w.id) && pendingUnplaced[w.id] == nil {
+        pendingUnplaced[w.id] = now
+    }
+    let ids = Set(onScreen.map { $0.id })
+    var stamp = now
+    for (id, since) in pendingUnplaced {
+        if !ids.contains(id) || stateAll.contains(id) { pendingUnplaced[id] = nil; continue }
+        if now - since >= 1.0 {
+            pendingUnplaced[id] = nil
+            if let w = onScreen.first(where: { $0.id == id }) {
+                refreshAgentWindows()
+                if !isChild(w) { newWindows.append(winJSON(w)); fields.append("unplaced_window"); stamp = min(stamp, since) }
+            }
+        }
+    }
+    knownOnScreen = ids
+    if !fields.isEmpty {
+        emit(["event": "change", "windows": newWindows, "t": stamp, "fields": Array(Set(fields)).sorted(), "from": json(last), "to": json(cur)])
+        last = cur
+    }
+
+    if realInputs > 0 || !postedInputs.isEmpty {
+        let posted = Dictionary(uniqueKeysWithValues: postedInputs.map { (String($0.key), $0.value) })
+        emit(["event": "input", "t": now, "real": realInputs, "posted": posted])
+        realInputs = 0; postedInputs = [:]
+    }
+    let idle = idleSeconds()
+    if !tapOK, idle < 5, (!hidLow || idle < prevIdle - 0.001) {
+        emit(["event": "hid", "t": now, "idle": idle])
+    }
+    hidLow = idle < 5
+    prevIdle = idle
+
+    let sess = sessionState(front: cur.front)
+    if (sess as NSDictionary) != (lastSession as NSDictionary) {
+        emit(["event": "session", "t": now, "state": sess])
+        lastSession = sess
+    }
+    emit(["event": "beat", "t": now, "samples": samples, "gap_ms": Int(gap * 1000), "idle": idle])
+}
+
+for sig in [SIGTERM, SIGINT] {
+    signal(sig, SIG_IGN)
+    let src = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+    src.setEventHandler {
+        emit(["event": "end", "t": Date().timeIntervalSince1970, "samples": samples])
+        exit(0)
+    }
+    src.resume()
+}
+Timer.scheduledTimer(withTimeInterval: Double(intervalMs) / 1000, repeats: true) { _ in tick() }
+RunLoop.main.run()

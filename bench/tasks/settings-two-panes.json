@@ -1,0 +1,56 @@
+{
+  "id": "settings-two-panes",
+  "app": "System Settings",
+  "category": "settings",
+  "goal": "In System Settings open Accessibility, then its Display pane. Change nothing.",
+  "place": "host",
+  "setup": {
+    "requires": {
+      "installed": [
+        "System Settings"
+      ],
+      "exclusive": [
+        "System Settings"
+      ]
+    },
+    "settle_s": 2.0,
+    "open": [
+      {
+        "app": "System Settings",
+        "as": "win",
+        "title": "System Settings"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "click",
+      "window": "win",
+      "target": {
+        "text": "Accessibility",
+        "exact": true
+      }
+    },
+    {
+      "do": "wait",
+      "ms": 700
+    },
+    {
+      "do": "click",
+      "window": "win",
+      "target": {
+        "text": "Display",
+        "exact": true
+      }
+    },
+    {
+      "do": "wait",
+      "ms": 600
+    }
+  ],
+  "check": {
+    "kind": "window_title",
+    "window": "win",
+    "equals": "Display"
+  }
+}

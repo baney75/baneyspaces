@@ -1,0 +1,61 @@
+{
+  "id": "textedit-menu-make-plain-text",
+  "app": "TextEdit",
+  "category": "menu",
+  "goal": "Use the Format menu to turn the rich text document into plain text.",
+  "place": "host",
+  "setup": {
+    "requires": {
+      "installed": [
+        "TextEdit"
+      ],
+      "exclusive": [
+        "TextEdit"
+      ]
+    },
+    "files": {
+      "rich.rtf": {
+        "rtf": true
+      }
+    },
+    "open": [
+      {
+        "app": "TextEdit",
+        "as": "doc",
+        "targets": [
+          "{tmp}/rich.rtf"
+        ],
+        "title": "rich.rtf"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "menu",
+      "window": "doc",
+      "path": [
+        "Format",
+        "Make Plain Text"
+      ]
+    },
+    {
+      "do": "wait",
+      "ms": 500
+    }
+  ],
+  "check": {
+    "kind": "ax",
+    "window": "doc",
+    "surface": "menubar",
+    "target": {
+      "role": "menuitem",
+      "name": "Make Rich Text"
+    }
+  },
+  "expected_fail": {
+    "baneyspaces": {
+      "phase": "later",
+      "why": "phase 1 reads the window surface only; the menu bar surface is not in its verb list"
+    }
+  }
+}

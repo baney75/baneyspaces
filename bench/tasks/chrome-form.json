@@ -1,0 +1,77 @@
+{
+  "id": "chrome-form",
+  "app": "Google Chrome",
+  "category": "browser",
+  "goal": "In Chrome fill the form at {base}/form with name \"Ada Lovelace\" and email \"ada@example.com\", press Send, and confirm the page was submitted.",
+  "place": "host",
+  "setup": {
+    "requires": {
+      "installed": [
+        "Google Chrome"
+      ],
+      "not_running": [
+        "Google Chrome"
+      ],
+      "env": [
+        "BENCH_AGENT_BROWSER_PROFILE"
+      ],
+      "env_why": "an agent browser profile (--user-data-dir) ships in phase 3; a URL handed to a running browser would land in Donovan's session"
+    },
+    "settle_s": 3.0,
+    "open": [
+      {
+        "app": "Google Chrome",
+        "as": "page",
+        "targets": [
+          "{base}/form"
+        ],
+        "title": "Bench form"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "type",
+      "window": "page",
+      "target": {
+        "role": "textfield",
+        "name": "Name"
+      },
+      "text": "Ada Lovelace"
+    },
+    {
+      "do": "type",
+      "window": "page",
+      "target": {
+        "role": "textfield",
+        "name": "Email"
+      },
+      "text": "ada@example.com"
+    },
+    {
+      "do": "click",
+      "window": "page",
+      "target": {
+        "role": "button",
+        "name": "Send"
+      }
+    },
+    {
+      "do": "wait",
+      "ms": 600
+    }
+  ],
+  "check": {
+    "kind": "form",
+    "fields": {
+      "name": "Ada Lovelace",
+      "email": "ada@example.com"
+    }
+  },
+  "expected_fail": {
+    "baneyspaces": {
+      "phase": 3,
+      "why": "browsers (agent profiles over the debugging pipe; Safari and Firefox in the sandbox) ship in phase 3"
+    }
+  }
+}

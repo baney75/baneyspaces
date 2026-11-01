@@ -1,0 +1,79 @@
+{
+  "id": "preview-two-windows",
+  "app": "Preview",
+  "category": "two-window",
+  "goal": "Two PDFs are open in Preview, a.pdf (2 pages) and b.pdf (3 pages). Go to the next page of b.pdf only.",
+  "place": "host",
+  "setup": {
+    "requires": {
+      "installed": [
+        "Preview"
+      ],
+      "exclusive": [
+        "Preview"
+      ]
+    },
+    "settle_s": 1.5,
+    "files": {
+      "a.pdf": {
+        "pdf_pages": 2
+      },
+      "b.pdf": {
+        "pdf_pages": 3
+      }
+    },
+    "open": [
+      {
+        "app": "Preview",
+        "as": "a",
+        "targets": [
+          "{tmp}/a.pdf"
+        ],
+        "title": "a.pdf"
+      },
+      {
+        "app": "Preview",
+        "as": "b",
+        "targets": [
+          "{tmp}/b.pdf"
+        ],
+        "title": "b.pdf"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "menu",
+      "window": "b",
+      "path": [
+        "Go",
+        "Next Page"
+      ]
+    },
+    {
+      "do": "wait",
+      "ms": 600
+    }
+  ],
+  "check": {
+    "kind": "all",
+    "checks": [
+      {
+        "kind": "window_title",
+        "window": "b",
+        "contains": "page 2 of 3"
+      },
+      {
+        "kind": "window_title",
+        "window": "a",
+        "contains": "page 1 of 2"
+      }
+    ]
+  },
+  "expected_fail": {
+    "baneyspaces": {
+      "phase": "later",
+      "why": "phase 1 reads the window surface only; the menu bar surface is not in its verb list"
+    }
+  }
+}

@@ -1,0 +1,69 @@
+{
+  "id": "finder-go-to-folder-sheet",
+  "app": "Finder",
+  "category": "dialog",
+  "goal": "In the open Finder window use Go to Folder (the sheet) to open the folder target-dir.",
+  "place": "host",
+  "setup": {
+    "requires": {
+      "installed": [
+        "Finder"
+      ],
+      "exclusive": [
+        "Finder"
+      ]
+    },
+    "files": {
+      "gt/target-dir/f.txt": "x"
+    },
+    "open": [
+      {
+        "app": "Finder",
+        "as": "win",
+        "targets": [
+          "{tmp}/gt"
+        ],
+        "title": "gt"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "press",
+      "window": "win",
+      "key": "cmd+shift+g"
+    },
+    {
+      "do": "set-value",
+      "window": "win",
+      "surfaces": [
+        "window",
+        "sheet"
+      ],
+      "target": {
+        "role": "textfield"
+      },
+      "value": "{tmp}/gt/target-dir"
+    },
+    {
+      "do": "press",
+      "window": "win",
+      "key": "Return"
+    },
+    {
+      "do": "wait",
+      "ms": 800
+    }
+  ],
+  "check": {
+    "kind": "window_title",
+    "window": "win",
+    "equals": "target-dir"
+  },
+  "expected_fail": {
+    "baneyspaces": {
+      "phase": 4,
+      "why": "phase 1 types through the accessibility tree only; keys refuse with not_supported until per-process keys ship"
+    }
+  }
+}

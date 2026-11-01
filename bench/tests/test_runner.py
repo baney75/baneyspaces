@@ -1,0 +1,397 @@
+import os
+import tempfile
+import threading
+import time
+import unittest
+
+import support
+from support import FakeDriver, fake_exec, node
+from benchlib import fixtures, runner
+from benchlib.execs import Aborted, Exec
+
+
+class FakeMonitor:
+    """changes(t0, t1, settle) answers by call order: setup, task, teardown."""
+
+    def __init__(self, changes=0, hid=0, setup=0, teardown=0, lost=None, healthy=True, posted=0, windows=None):
+        self.c, self.h, self.s, self.td, self._lost, self._healthy, self.posted = changes, hid, setup, teardown, lost or [], healthy, posted
+        self.calls = []
+        self.losses = []
+        self.windows = windows
+
+    def changes(self, t0, t1, settle=0.0):
+        self.calls.append((t0, t1, settle))
+        n = [self.s, self.c, self.td][min(len(self.calls) - 1, 2)]
+        out = [{"t": 0.1, "fields": ["front"]}] * n
+        if self.windows and len(self.calls) == 2:
+            out = out + [{"t": 0.2, "fields": ["user_window"], "windows": self.windows}]
+        return out
+
+    def input(self, t0, t1, settle=0.0):
+        return self.h, self.posted
+
+    def lost_between(self, t0, t1, settle=0.0):
+        return self._lost
+
+    def healthy(self):
+        return self._healthy, "" if self._healthy else "sampler exited"
+
+
+class FakeOpener:
+    def __init__(self, ids, listing=None):
+        self.ids = list(ids)
+        self.opened = []
+        self.listing = listing
+
+    def open(self, app, targets=()):
+        self.opened.append((app, list(targets)))
+        return (self.ids.pop(0) if self.ids else None), 5
+
+    def windows(self):
+        return {w: ("X", "t") for w in (self.listing if self.listing is not None else [5, 6, 7])}
+
+
+def tree(title, text):
+    return node("window", title, children=[node("textfield", value=text, ref="@s:e1"), node("button", "Close", ref="@s:e2")])
+
+
+TASK = {"id": "t1", "app": "TextEdit", "category": "textedit", "goal": "g",
+        "setup": {"files": {"a.txt": "hi"}, "open": [{"app": "TextEdit", "as": "doc", "targets": ["{tmp}/a.txt"]}], "settle_s": 0},
+        "steps": [{"do": "type", "window": "doc", "target": {"role": "textfield"}, "text": "x"}],
+        "check": {"kind": "ax", "window": "doc", "target": {"role": "textfield"}, "equals": "x"}}
+OK = lambda t, w, ti: {"ok": True, "log": [], "tool_ms": 12}
+
+
+def ctx(tmp, doing, **kw):
+    server = fixtures.FixtureServer().start()
+    ref = FakeDriver({(5, None): kw.pop("ref_tree", None) or tree("a.txt", "x")})
+    args = dict(tool="baneyspaces", workdir=tmp, server=server, monitor=FakeMonitor(), opener=FakeOpener([5]),
+                referee_driver=ref, exec_fn=fake_exec([]), doing=doing, sleep=lambda s: None, watch_dirs=(),
+                availability_fn=lambda t, s: None, running_fn=lambda a: False, settle_s=0)
+    args.update(kw)
+    c = runner.Context(**args)
+    c.ref, c.server_obj = ref, server
+    return c
+
+
+class RunTask(unittest.TestCase):
+    def run_it(self, task=TASK, doing=OK, **kw):
+        with tempfile.TemporaryDirectory() as d:
+            c = ctx(d, doing, **kw)
+            try:
+                return runner.run_task(task, c), c
+            finally:
+                c.server_obj.stop()
+
+    def test_a_pass_records_time_changes_and_the_readback(self):
+        rec, c = self.run_it(monitor=FakeMonitor(changes=2, setup=1, hid=1))
+        self.assertEqual(rec["status"], "pass")
+        self.assertEqual((len(rec["setup_changes"]), len(rec["changes"])), (1, 2))
+        self.assertEqual(rec["hid_events"], 1)
+        self.assertTrue(rec["check"]["ok"])
+
+    def test_nonce_and_tmp_placeholders_expand(self):
+        seen = {}
+        t = dict(TASK, setup=dict(TASK["setup"], files={"doc-{nonce}.txt": "x {nonce}"},
+                                  open=[{"app": "TextEdit", "as": "doc", "targets": ["{tmp}/doc-{nonce}.txt"]}]))
+
+        def doing(task, w, ti):
+            seen["t"] = task["setup"]["open"][0]["targets"][0]
+            return {"ok": True, "log": []}
+        self.run_it(task=t, doing=doing, nonce_fn=lambda: "abc123")
+        self.assertTrue(seen["t"].endswith("/t1/doc-abc123.txt"))
+
+    def test_a_failed_readback_fails_the_task(self):
+        rec, _ = self.run_it(ref_tree=tree("a.txt", "WRONG"))
+        self.assertEqual(rec["status"], "fail")
+
+    def test_unavailable_never_opens_anything(self):
+        called = []
+        rec, c = self.run_it(doing=lambda *a: called.append(1), availability_fn=lambda t, s: "unavailable: nope")
+        self.assertEqual((rec["status"], called, c.opener.opened), ("unavailable", [], []))
+
+    def test_the_keys_of_a_files_spec_are_expanded_and_the_fixture_is_where_the_task_opens_it(self):
+        """sol-F1, second-S1: a {nonce} in a file name must give a file at the expanded open target."""
+        t = dict(TASK, setup=dict(TASK["setup"], files={"f-{nonce}.txt": "x"},
+                                  open=[{"app": "TextEdit", "as": "doc", "targets": ["{tmp}/f-{nonce}.txt"]}]))
+        seen = {}
+
+        def doing(task, w, ti):
+            seen["exists"] = os.path.exists(task["setup"]["open"][0]["targets"][0])
+            return {"ok": True, "log": []}
+        self.run_it(task=t, doing=doing, nonce_fn=lambda: "c0ffee")
+        self.assertTrue(seen["exists"])
+
+    def test_a_fixture_missing_at_the_opened_path_is_an_infra_error_not_a_window_with_no_document(self):
+        t = dict(TASK, setup=dict(TASK["setup"], files={"other.txt": "x"},
+                                  open=[{"app": "TextEdit", "as": "doc", "targets": ["{tmp}/nope.txt"]}]))
+        rec, c = self.run_it(task=t)
+        self.assertEqual(rec["status"], "infra_error")
+        self.assertIn("fixture", rec["why"])
+        self.assertEqual(c.opener.opened, [])
+
+    def test_setup_task_and_teardown_windows_do_not_overlap(self):
+        """second-S7: half-open windows, settle only on the last."""
+        rec, c = self.run_it(monitor=FakeMonitor())
+        (s0, s1, ss), (k0, k1, ks), (d0, d1, ds) = c.monitor.calls
+        self.assertEqual((ss, ks), (0, 0))
+        self.assertEqual(s1, k0)          # setup ends where the task starts
+        self.assertEqual(k1, d0)          # the task ends where teardown starts
+        self.assertGreater(ds, 0)
+
+    def test_a_late_event_is_charged_once(self):
+        rec, c = self.run_it(monitor=FakeMonitor(setup=1, changes=0))
+        self.assertEqual((len(rec["setup_changes"]), len(rec["changes"])), (1, 0))
+
+    def test_a_window_from_one_of_donovans_background_apps_is_ambient_not_scored(self):
+        """second-S9"""
+        mon = FakeMonitor(windows=[{"id": 9, "pid": 4, "owner": "Mail"}])
+        rec, _ = self.run_it(monitor=mon)
+        self.assertEqual(rec["ambient_changes"][0]["windows"][0]["owner"], "Mail")
+        self.assertEqual(rec["changes"], [])
+        mon2 = FakeMonitor(windows=[{"id": 9, "pid": 4, "owner": "TextEdit"}])
+        rec2, _ = self.run_it(monitor=mon2)
+        self.assertEqual(len(rec2["changes"]), 1)           # the task's own app: charged
+
+    def test_the_intended_change_of_a_task_is_not_charged(self):
+        """first-F9: the stale-ref task closes its own window on purpose."""
+        t = dict(TASK, allowed_change_fields=["front"])
+        rec, _ = self.run_it(task=t, monitor=FakeMonitor(changes=2))
+        self.assertEqual(rec["changes"], [])
+        self.assertEqual(len(rec["intended_changes"]), 2)
+
+    def test_a_shell_shortcut_fails_the_task(self):
+        rec, _ = self.run_it(doing=lambda *a: {"ok": True, "log": [], "shortcut": "a shell command"})
+        self.assertEqual(rec["status"], "fail")
+        self.assertIn("shell", rec["why"])
+
+    def test_a_harness_side_selector_miss_on_a_refusal_step_is_infra_not_a_refusal(self):
+        t = dict(TASK, id="refuse-x", category="refusal", impossible=True, check={"kind": "nothing"})
+        rec, _ = self.run_it(task=t, doing=lambda *a: {"ok": False, "log": [], "harness_error": True, "why": "not a tool refusal"})
+        self.assertEqual(rec["status"], "infra_error")
+
+    def test_a_locked_screen_means_not_run(self):
+        rec, c = self.run_it(session_fn=lambda: (False, {"locked": True}))
+        self.assertEqual(rec["status"], "not_run")
+        self.assertIn("locked", rec["why"])
+        self.assertEqual(c.opener.opened, [])
+
+    def test_a_dead_monitor_means_the_task_does_not_start(self):
+        rec, c = self.run_it(monitor=FakeMonitor(healthy=False))
+        self.assertEqual(rec["status"], "monitor_lost")
+        self.assertEqual(c.opener.opened, [])
+
+    def test_a_monitor_lost_during_the_task_is_never_a_pass(self):
+        rec, _ = self.run_it(monitor=FakeMonitor(lost=[{"t": 1, "why": "no beat for 400 ms"}]))
+        self.assertEqual(rec["status"], "monitor_lost")
+        self.assertIn("no beat", rec["why"])
+
+    def test_setup_that_cannot_open_is_infra_not_a_tool_failure_and_keeps_its_disturbance(self):
+        rec, _ = self.run_it(opener=FakeOpener([]), monitor=FakeMonitor(setup=1))
+        self.assertEqual(rec["status"], "infra_error")
+        self.assertEqual(len(rec["setup_changes"]), 1)
+
+    def test_an_agent_side_infra_failure_is_excluded_and_can_stop_the_column(self):
+        rec, _ = self.run_it(doing=lambda *a: {"ok": False, "log": [], "infra": "cua_repl did not start", "fatal_infra": True})
+        self.assertEqual((rec["status"], rec["fatal_infra"]), ("infra_error", True))
+
+    def test_expected_failure_is_attached(self):
+        t = dict(TASK, expected_fail={"baneyspaces": {"phase": 2, "why": "w"}})
+        rec, _ = self.run_it(task=t, ref_tree=tree("a.txt", "WRONG"))
+        self.assertEqual((rec["expected_fail"]["phase"], rec["status"]), (2, "fail"))
+
+    def test_refusal_task(self):
+        t = dict(TASK, id="refuse-x", category="refusal", impossible=True, check={"kind": "nothing"})
+        refused = lambda *a: {"ok": True, "log": [], "tool_errors": 1, "refusal": {"code": "not_supported", "suggestion": "use the keyboard"}}
+        self.assertEqual(self.run_it(task=t, doing=refused)[0]["status"], "refused_ok")
+        self.assertEqual(self.run_it(task=t, doing=lambda *a: {"ok": True, "log": [], "refusal": None})[0]["status"], "fail")
+
+    def test_a_refusal_that_moved_the_screen_is_a_failure(self):
+        t = dict(TASK, id="refuse-x", category="refusal", impossible=True, check={"kind": "nothing"})
+        refused = lambda *a: {"ok": True, "log": [], "tool_errors": 1, "refusal": {"code": "x", "suggestion": "s"}}
+        self.assertEqual(self.run_it(task=t, doing=refused, monitor=FakeMonitor(changes=1))[0]["status"], "fail")
+        self.assertEqual(self.run_it(task=t, doing=refused, monitor=FakeMonitor(posted=0, hid=1))[0]["status"], "fail")
+
+    def test_a_refusal_with_no_tool_call_at_all_is_not_credited(self):
+        """second-S5: a no-op agent that just writes REFUSED."""
+        t = dict(TASK, id="refuse-x", category="refusal", impossible=True, check={"kind": "nothing"})
+        prose = lambda *a: {"ok": True, "log": [], "refusal": {"code": "agent_refused", "suggestion": "list windows first"}}
+        self.assertEqual(self.run_it(task=t, doing=prose)[0]["status"], "fail")
+
+    def test_a_read_task_needs_the_answer_and_a_computer_use_call(self):
+        """sol-F4: a normally completed no-op agent must not pass."""
+        t = dict(TASK, requires_tool_call=True, check={"kind": "answer", "contains": "{nonce}"})
+        said = lambda a, calls: (lambda *x: {"ok": True, "log": [], "answer": a, "tool_calls": calls})
+        nonce = dict(nonce_fn=lambda: "ff00aa")
+        self.assertEqual(self.run_it(task=t, doing=said("DONE the code is ff00aa", 3), **nonce)[0]["status"], "pass")
+        self.assertEqual(self.run_it(task=t, doing=said("DONE the code is ff00aa", 0), **nonce)[0]["status"], "fail")   # guessed / no call
+        self.assertEqual(self.run_it(task=t, doing=said("DONE nothing to report", 3), **nonce)[0]["status"], "fail")
+        self.assertEqual(self.run_it(task=t, doing=said("", 0), **nonce)[0]["status"], "fail")                          # the no-op agent
+
+    def test_only_the_windows_it_opened_are_closed(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = ctx(d, OK)
+            runner.run_task(TASK, c)
+            c.server_obj.stop()
+            clicks = [call for call in c.ref.calls if call[0] == "click"]
+            self.assertTrue(clicks)
+            self.assertTrue(all(call[1].get("ref") == "@s:e2" for call in clicks))
+
+    def test_a_window_that_left_the_agent_workspace_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = ctx(d, OK, opener=FakeOpener([5], listing=[]))
+            rec = runner.run_task(TASK, c)
+            c.server_obj.stop()
+            self.assertEqual([x for x in c.ref.calls if x[0] == "click"], [])
+            self.assertIn("5", rec["teardown_left"])
+
+    def test_teardown_is_skipped_after_an_abort_and_the_record_survives_an_aborted_task(self):
+        """second-S6: an Aborted raised inside the task keeps teardown_pending and the setup disturbance."""
+        def aborted(*a):
+            raise Aborted("stopped: input was seen on this Mac")
+        with tempfile.TemporaryDirectory() as d:
+            flag = {"abort": False}
+            c = ctx(d, aborted, aborted_fn=lambda: flag["abort"], monitor=FakeMonitor(setup=1))
+            orig = c.doing
+
+            def doing(*a):
+                flag["abort"] = True
+                return orig(*a)
+            c.doing = doing
+            rec = runner.run_task(TASK, c)
+            c.server_obj.stop()
+        self.assertEqual(rec["status"], "not_run")
+        self.assertEqual(rec["teardown_pending"]["windows"], [5])
+        self.assertEqual(len(rec["setup_changes"]), 1)
+        self.assertEqual([x for x in c.ref.calls if x[0] == "click"], [])
+
+    def test_teardown_is_skipped_after_an_abort_and_says_which_windows_it_left(self):
+        rec, c = self.run_it(aborted_fn=lambda: True)
+        self.assertEqual(rec["teardown_pending"]["windows"], [5])
+        self.assertEqual([x for x in c.ref.calls if x[0] == "click"], [])
+
+    def test_windows_are_closed_even_when_the_run_raises(self):
+        def boom(*a):
+            raise RuntimeError("tool crashed")
+        with tempfile.TemporaryDirectory() as d:
+            c = ctx(d, boom)
+            with self.assertRaises(RuntimeError):
+                runner.run_task(TASK, c)
+            c.server_obj.stop()
+            self.assertTrue(any(call[0] == "click" for call in c.ref.calls))
+            self.assertFalse(os.path.exists(os.path.join(d, "t1")))
+
+    def test_new_entries_on_the_desktop_are_collateral(self):
+        with tempfile.TemporaryDirectory() as desk:
+            def doing(t, w, ti):
+                open(os.path.join(desk, "untitled folder"), "w").close()
+                return {"ok": True, "log": []}
+            rec, _ = self.run_it(doing=doing, watch_dirs=(desk,))
+        self.assertEqual(len(rec["collateral"]), 1)
+
+    def test_an_app_is_quit_only_if_this_task_started_it(self):
+        t = dict(TASK, setup=dict(TASK["setup"], quit_after=["Calculator"]))
+        for was_running, expect in ((False, True), (True, False)):
+            state = {"calc": was_running}
+
+            def running(app):
+                return True if app == "TextEdit" else state["calc"]
+
+            def doing(task, w, ti):
+                state["calc"] = True            # the task has it up by the end
+                return {"ok": True, "log": []}
+            with tempfile.TemporaryDirectory() as d:
+                c = ctx(d, doing, running_fn=running)
+                c.exec = fake_exec([])
+                runner.run_task(t, c)
+                c.server_obj.stop()
+                quit_ = any('tell application "Calculator" to quit' in " ".join(a) for a in c.exec.seen)
+            self.assertEqual(quit_, expect, was_running)
+
+    def test_an_exclusive_app_the_task_started_is_quit_too(self):
+        """first-F5: TextEdit left running would make the ChatGPT micro gate (TextEdit not running) n/a for good."""
+        state = {"textedit": False}
+
+        def doing(task, w, ti):
+            state["textedit"] = True
+            return {"ok": True, "log": []}
+        with tempfile.TemporaryDirectory() as d:
+            c = ctx(d, doing, running_fn=lambda app: state["textedit"])
+            c.exec = fake_exec([])
+            runner.run_task(TASK, c)
+            c.server_obj.stop()
+        self.assertTrue(any('tell application "TextEdit" to quit' in " ".join(a) for a in c.exec.seen))
+
+    def test_finder_is_never_quit(self):
+        t = dict(TASK, setup=dict(TASK["setup"], open=[{"app": "Finder", "as": "doc", "targets": ["{tmp}/a.txt"]}]))
+        with tempfile.TemporaryDirectory() as d:
+            c = ctx(d, OK, running_fn=lambda a: False)
+            c.exec = fake_exec([])
+            runner.run_task(t, c)
+            c.server_obj.stop()
+        self.assertFalse(any("Finder" in " ".join(a) for a in c.exec.seen))
+
+    def test_hide_runs_only_for_an_app_the_task_started(self):
+        t = dict(TASK, setup=dict(TASK["setup"], hide="Calculator", quit_after=["Calculator"]))
+        with tempfile.TemporaryDirectory() as d:
+            c = ctx(d, OK)
+            c.exec = fake_exec([])
+            runner.run_task(t, c)
+            c.server_obj.stop()
+            self.assertTrue(any("set visible of process" in " ".join(a) for a in c.exec.seen))
+        with tempfile.TemporaryDirectory() as d:
+            c = ctx(d, OK, running_fn=lambda a: True)
+            c.exec = fake_exec([])
+            runner.run_task(t, c)
+            c.server_obj.stop()
+            self.assertFalse(any("set visible of process" in " ".join(a) for a in c.exec.seen))
+
+
+class Exec_(unittest.TestCase):
+    def test_runs_and_times(self):
+        rc, out, err, ms = Exec()(["/bin/echo", "hi"])
+        self.assertEqual((rc, out.strip()), (0, "hi"))
+
+    def test_timeout(self):
+        self.assertEqual(Exec()(["/bin/sleep", "5"], timeout=0.3)[0], 124)
+
+    def test_cwd_is_the_process_cwd(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Exec()(["/bin/pwd"], cwd=d)[1].strip()
+        self.assertEqual(os.path.realpath(out), os.path.realpath(d))
+
+    def test_abort_kills_the_child_and_raises(self):
+        ev = threading.Event()
+        ex = Exec(abort=ev)
+        threading.Timer(0.3, ev.set).start()
+        t0 = time.monotonic()
+        with self.assertRaises(Aborted):
+            ex(["/bin/sleep", "10"], timeout=20)
+        self.assertLess(time.monotonic() - t0, 3)
+        with self.assertRaises(Aborted):
+            ex(["/bin/echo", "never"])
+
+
+class Server(unittest.TestCase):
+    def test_form_page_and_submissions(self):
+        import urllib.request
+        s = fixtures.FixtureServer().start()
+        try:
+            self.assertIn('name="email"', urllib.request.urlopen(s.base + "/form").read().decode())
+            urllib.request.urlopen(urllib.request.Request(s.base + "/submit", data=b"name=Ada&email=a%40b.c", method="POST")).read()
+            self.assertEqual(s.submissions, [{"name": "Ada", "email": "a@b.c"}])
+            self.assertTrue(s.base.startswith("http://127.0.0.1:"))
+        finally:
+            s.stop()
+
+    def test_fixtures_write(self):
+        with tempfile.TemporaryDirectory() as d:
+            fixtures.write_files(d, {"a/b.txt": "x", "long.txt": {"lines": 3}, "p.pdf": {"pdf_pages": 2}, "r.rtf": {"rtf": True}, "dd": {"dir": True}})
+            self.assertEqual(open(os.path.join(d, "a/b.txt")).read(), "x")
+            pdf = open(os.path.join(d, "p.pdf"), "rb").read()
+            self.assertTrue(pdf.startswith(b"%PDF-1.4") and pdf.rstrip().endswith(b"%%EOF"))
+            self.assertTrue(os.path.isdir(os.path.join(d, "dd")))
+
+
+if __name__ == "__main__":
+    unittest.main()

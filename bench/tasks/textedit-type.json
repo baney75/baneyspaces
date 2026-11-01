@@ -1,0 +1,48 @@
+{
+  "id": "textedit-type",
+  "app": "TextEdit",
+  "category": "textedit",
+  "goal": "Type the sentence \"Hello from the bench\" into the open TextEdit document.",
+  "place": "host",
+  "setup": {
+    "requires": {
+      "installed": [
+        "TextEdit"
+      ],
+      "exclusive": [
+        "TextEdit"
+      ]
+    },
+    "files": {
+      "empty.txt": ""
+    },
+    "open": [
+      {
+        "app": "TextEdit",
+        "as": "doc",
+        "targets": [
+          "{tmp}/empty.txt"
+        ],
+        "title": "empty.txt"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "type",
+      "window": "doc",
+      "target": {
+        "role": "textfield"
+      },
+      "text": "Hello from the bench"
+    }
+  ],
+  "check": {
+    "kind": "ax",
+    "window": "doc",
+    "target": {
+      "role": "textfield"
+    },
+    "equals": "Hello from the bench"
+  }
+}
