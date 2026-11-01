@@ -49,17 +49,20 @@ final class FileTraceTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("trace.log.1").path))
     }
 
-    func testConcurrentAppendsKeepEveryLine() throws {
+    func testConcurrentAppendsKeepEveryLineAndRotate() throws {
         let group = DispatchGroup()
         let total = 200
+        // 200 short lines exceed 700 bytes so concurrent writers must rotate too (Sol nonblocking note).
         for i in 0..<total {
             group.enter()
             DispatchQueue.global(qos: .userInitiated).async {
                 defer { group.leave() }
-                try? FileTrace.append("line-\(i)", directory: self.dir, maxBytes: 2_000, maxFiles: 3)
+                try? FileTrace.append("line-\(i)", directory: self.dir, maxBytes: 700, maxFiles: 3)
             }
         }
         XCTAssertEqual(group.wait(timeout: .now() + 5), .success)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent("trace.log").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent("trace.log.1").path))
         var body = ""
         for name in ["trace.log", "trace.log.1", "trace.log.2"] {
             let url = dir.appendingPathComponent(name)
