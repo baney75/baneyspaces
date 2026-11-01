@@ -60,11 +60,16 @@ adds `crash loop: Dock and drag to the top restored, Mission Control saved setti
 when Mission Control came back), then `Quit, staying stopped` or `Start Anyway, N crashes forgiven`; a clean
 quit writes `crash loop: clean quit (<mode>), pid N cleared from the ledger`. The text lives in
 `CrashLoopReport` (pinned by `CrashLoopReportTests`). Read it back from the file
-(`grep -E 'launch:|crash loop:' ~/Library/Application\ Support/BaneySpaces/trace.log`, epoch seconds first,
-cut at 200 KB) or the unified log, which survives the file's cut:
+(`grep -E 'launch:|crash loop:' ~/Library/Application\ Support/BaneySpaces/trace.log`, epoch seconds first;
+the file rotates at 200 KB into `trace.log.1` and `trace.log.2`) or the unified log, which survives rotation:
 `/usr/bin/log show --last 1h --predicate 'subsystem == "com.baney.baneyspaces"' | grep -E 'launch:|crash loop:'`.
 The crash itself is in `~/Library/Logs/DiagnosticReports/BaneySpaces-*.ips`. These lines hold counts, pids,
 the build and `~` paths, never window titles or the user name; keep it that way.
+
+
+## Stable releases
+
+Do not mark a GitHub release as Latest / stable until `scripts/soak-check.sh` prints `SOAK PASSED` on rectory1 (or another Mac with the build installed and running) and Sol APPROVE includes the soak receipt path. `--ci` mode is for the script self-check only; it is not a live soak. Never unpublish or retag an already-published stable (including 0.3.0). Updater defaults to the stable channel (`UpdateChannel.stable`).
 
 ## Linux (`platforms/linux`, `crates/`, `spec/`)
 

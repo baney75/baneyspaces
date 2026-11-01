@@ -1,4 +1,5 @@
 #!/bin/bash
+# Soak gate: run scripts/soak-check.sh on rectory1 and keep the receipt before marking Latest/stable.
 # Builds, signs and uploads the prebuilt app for a stable release. Run it on the owner's Mac
 # (the signing key never leaves it) after pushing the tag:
 #   git tag v0.2.2 && git push origin v0.2.2     # the Release workflow writes the notes
