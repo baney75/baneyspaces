@@ -214,6 +214,13 @@ final class LauncherController: NSObject, NSWindowDelegate {
         if let field = model.field { p.makeFirstResponder(field) }
     }
 
+    /// The one entry point for opening an app on a workspace without the launcher on screen: the
+    /// overview's strip slots and the "+" on a selected tile, and `scripts/open-here-probe.swift`.
+    /// The same call Return makes on an app's row (`OpenHere.plan`), for workspace `target`.
+    func openHere(app path: String, target: Int, remember: Bool = false) {
+        model.openHere(app: path, target: target, remember: remember)
+    }
+
     func hide() {
         if let m = clickMonitor { NSEvent.removeMonitor(m); clickMonitor = nil }
         guard let p = panel, p.isVisible else { return }
@@ -375,6 +382,14 @@ final class LauncherModel: ObservableObject {
     }
 
     func shown(on screen: NSScreen) -> Int { actions.shownOn(screen) }
+
+    /// What Return does on an app's row, for callers with no row to press (see `LauncherController.openHere`).
+    func openHere(app path: String, target: Int, remember: Bool) {
+        guard path.hasSuffix(".app"), FileManager.default.fileExists(atPath: path), Workspaces.range.contains(target) else { return }
+        self.target = target
+        let name = FileManager.default.displayName(atPath: path).replacingOccurrences(of: ".app", with: "")
+        open(apps.first { $0.path == path } ?? AppEntry(name: name, path: path, folder: ""), remember: remember)
+    }
 
     func prepare(scope: Scope, target: Int? = nil) {
         actions.willShow()
@@ -732,10 +747,13 @@ final class LauncherModel: ObservableObject {
     /// Opens an app on the workspace this launcher was opened for (`OpenHere`): started if it isn't
     /// running, a new window if it can make one, its window brought over if it can't. ⌥ (⌥↩, or ⌥-click) and
     /// `behavior.launcher.open = go` go to where the app already is.
-    private func open(_ a: AppEntry) {
+    private func open(_ a: AppEntry, remember: Bool = true) {
         close()
-        recents.used(a.path)
-        UserDefaults.standard.set(recents.paths, forKey: "launcherRecents")
+        // A check opens apps too, and mustn't change what the launcher lists first.
+        if remember {
+            recents.used(a.path)
+            UserDefaults.standard.set(recents.paths, forKey: "launcherRecents")
+        }
         let modifier = NSEvent.modifierFlags.contains(.option)
         let mode = actions.openMode()
         let target = self.target ?? actions.current()

@@ -125,6 +125,8 @@ final class OpenHereTests: XCTestCase {
         let delegate = try Repo.code("Sources/BaneySpaces/AppDelegate.swift")
         XCTAssertTrue(delegate.contains("a.openApp = "), "AppDelegate wires the open")
         XCTAssertTrue(delegate.contains("OpenHere.Mode(setting: "), "the mode is read from the stored setting")
+        XCTAssertTrue(delegate.contains("func openHere(app: String, target: Int)"), "one entry point for the overview and the probe")
+        XCTAssertTrue(launcher.contains("func openHere(app path: String, target: Int"), "the launcher exposes the same open by app and target")
     }
 
     /// Dock and overview entry points hand their workspace to the launcher.

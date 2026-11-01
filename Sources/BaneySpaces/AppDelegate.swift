@@ -905,6 +905,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// `behavior.launcher.open` (spec/config.md), kept like the other settings until the config file lands.
     static let launcherOpenKey = "launcherOpen"
 
+    /// Opens the app at `app` on workspace `target`, as Return in the launcher does: the single entry point
+    /// the overview's strip slots and the "+" on a selected tile call (spec/overview.md).
+    func openHere(app: String, target: Int) { launcher.openHere(app: app, target: target) }
+
     /// Opens an app the way `OpenHere.plan` decided, for workspace `target`. You end on `target` for
     /// everything but `goThere`; the activation an open causes is never followed to the app's other
     /// workspace (`Spaces.opening`).
@@ -1036,6 +1040,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case "viewer": run { _ in viewer.toggle() }
         // Opening it changes nothing on its own, so a web page may: every action inside needs a key press.
         case "launcher": launcher.show(scope: LauncherModel.Scope(rawValue: url.lastPathComponent) ?? .root, takeKeys: false)
+        // For `scripts/open-here-probe.swift`: opens an app the way the launcher's Return does, for workspace
+        // <n>: `baneyspaces://open-here/3?app=/System/Applications/Calculator.app`. It starts apps and moves
+        // windows, so only when `defaults write com.baney.baneyspaces openHereURLCommands -bool true` says so
+        // (the probe sets it for its run and puts it back); a web page can't.
+        case "open-here":
+            let path = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "app" }?.value
+            guard UserDefaults.standard.bool(forKey: "openHereURLCommands"), let path else {
+                return NSLog("BaneySpaces: open-here refused: %@", text)
+            }
+            run { _ in openHere(app: path, target: n) }
         case "dock":
             // Turning it off or hiding it is always allowed: a pinned dock must never outlive
             // its check (2026-10-14, a hide that raced the setting going off left it stuck up).
