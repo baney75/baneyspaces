@@ -576,3 +576,10 @@ MIT. See [LICENSE](LICENSE).
 <!-- sponsors:start -->
 No sponsors yet. [Sponsor on GitHub](https://github.com/sponsors/baney75) and your name appears here automatically.
 <!-- sponsors:end -->
+
+## Demo
+
+A short walk through the live page at [dbaney.com/baneyspaces](https://dbaney.com/baneyspaces/):
+
+[demo clip](docs/demo/baneyspaces-demo.mp4)
+
