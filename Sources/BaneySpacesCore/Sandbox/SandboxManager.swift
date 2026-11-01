@@ -780,10 +780,12 @@ public final class SandboxManager {
             }
         }
         // A guest that fills its handoff folder fills the host's disk: past the cap it is stopped.
+        var overQuota = false
         if let w = currentWorking() {
             let limit = handoffLimit()
             let used = SandboxHandoff.size(of: w.slot, stopAfter: limit)
             if (used ?? .max) > limit {
+                overQuota = true
                 destroyWorking()
                 fail(used == nil
                      ? "handoff_full: the guest's handoff folder could not be measured (nested too deep, too many entries, or unreadable); the sandbox was stopped"
@@ -791,8 +793,9 @@ public final class SandboxManager {
                 set(.error)
             }
         }
-        // Without the lock another manager may be giving back its own slots: only the owner retries.
-        if isOwner, !snapshot().pendingDeletes.isEmpty || !pendingRestoresLocked().isEmpty { _ = retryPending() }
+        // Without the lock another manager may be giving back its own slots: only the owner retries. A guest just
+        // stopped for its quota was retried by `destroyWorking`; retrying again would replace the reason it stopped.
+        if isOwner, !overQuota, !snapshot().pendingDeletes.isEmpty || !pendingRestoresLocked().isEmpty { _ = retryPending() }
         state.lock()
         let hold = warmState == .ready && warmLocation == .memory
         let last = lastActivity, running = warmProc?.isRunning ?? false
