@@ -723,7 +723,7 @@ public final class SandboxManager {
         state.unlock()
         do {
             try tart.suspend(vm: name)
-            guard p.waitForExit(timeout: 60) else { dropWarm() }
+            guard p.waitForExit(timeout: 60) else { dropWarm(); return }
             Self.preread(SandboxPaths.tartHome.appendingPathComponent("vms/\(name)/state.vzvmsave"))
             state.lock()
             if warmName == name { warmProc = nil; warmLocation = .disk }
