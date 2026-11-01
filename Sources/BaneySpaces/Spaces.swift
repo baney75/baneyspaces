@@ -647,7 +647,8 @@ final class Spaces {
         // whether the switch changes workspace or only rearranges the one you're on: a window that
         // can't be hidden must never be sent where it would have to be.
         let why = "switch \(leaving)->\(n)"
-        let begin = FullScreenFlow.begin(plan: plan, model: &model, to: n, refused: &refusedFullScreen, now: Date()) { hide in
+        let unaskable = Set(serverOnly.filter { $0.value.why == .fullScreen }.keys)
+        let begin = FullScreenFlow.begin(plan: plan, model: &model, to: n, refused: &refusedFullScreen, now: Date(), unaskable: unaskable) { hide in
             fullScreenCalls(among: hide, why: why).calls
         }
         if !begin.ask.isEmpty || !begin.carried.isEmpty { fullScreenInvolved = true }
@@ -700,14 +701,22 @@ final class Spaces {
         let server = Windows.serverWindows()
         var needing: [Window] = [], calls: [WindowID: FullScreenCall] = [:]
         for id in ids {
-            guard let w = windows[id] else { continue }
+            guard let w = windows[id] else {
+                // Known to the window server alone and on a full-screen desktop (Excel, found at start): there is no
+                // handle to ask it to leave, so the switch carries it and never hides its app.
+                if let l = serverOnly[id], l.why == .fullScreen {
+                    calls[id] = .inFullScreen("on a full-screen desktop (window server); no Accessibility handle to ask it to leave")
+                    Trace.log("fullscreen check window=\(id) app=\(l.app) in-full-screen: on a full-screen desktop and listed from the window server alone, so it cannot be asked to leave; it is carried and its app is not hidden (\(why))")
+                }
+                continue
+            }
             let app = NSRunningApplication(processIdentifier: w.pid)
             let bounds = server[id]?.bounds
             var ev = Windows.fullScreenEvidence(for: w, desktops: desktops, bounds: bounds, sizes: sizes, readAttribute: false)
             let sized = ev.screenSized == .yes
             // The app's attribute is read when it can change the answer: the window server didn't rule
             // it out, the window is screen-sized, or it was in full screen when last looked at.
-            if (desktops == nil ? false : ev.desktop != .no) || sized || fullScreenSeen[id] != nil {
+            if FullScreenEvidence.shouldReadAttribute(desktopsReadable: desktops != nil, desktop: ev.desktop, screenSized: ev.screenSized, seenInFullScreen: fullScreenSeen[id] != nil) {
                 if app?.isHidden == true && ev.desktop != .yes {
                     // A hidden app's windows aren't on screen, and a hidden app can be slow to answer.
                     Trace.log("fullscreen check window=\(id) app=\(w.appName) skipped: the app is hidden and the window server shows it on no full-screen desktop (\(why))")
@@ -816,15 +825,21 @@ final class Spaces {
     /// with the windows that refused, which are remembered so they aren't asked again. A window
     /// is out only when it is provably out: an app that stops answering during the transition
     /// has not left, and is treated as refusing, so it is carried and never hidden.
-    private func leaveFullScreen(_ fullScreen: [Window], fill: Bool, why: String, then: @escaping ([Window]) -> Void) {
+    private func leaveFullScreen(_ fullScreen: [Window], fill: Bool, why: String, since: Date = Date(), then: @escaping ([Window]) -> Void) {
         // Never while macOS slides between desktops: a window asked to leave full screen mid-slide shrinks
         // while another slides in over it (the recording of 2026-11-01, 11:56).
         let wait = transition.wait(now: Date())
+        // One deadline for the whole ask, from the switch's start; desktop changes never extend it.
+        if wait > 0, Date().timeIntervalSince(since) + wait + 0.05 >= FullScreenLeave.deadline {
+            Trace.log("fullscreen ask gave up after \(Int(Date().timeIntervalSince(since))) s of desktop changes for window(s) \(fullScreen.map { "\($0.id) \($0.appName)" }.joined(separator: ", ")): they are carried, not hidden (\(why))")
+            for w in fullScreen { refusedFullScreen.refuse(w.id, now: Date()) }
+            return then(fullScreen)
+        }
         if wait > 0 {
             Trace.log("fullscreen ask delayed \(String(format: "%.2f", wait)) s for window(s) \(fullScreen.map { "\($0.id) \($0.appName)" }.joined(separator: ", ")): macOS is changing desktop (\(why))")
             DispatchQueue.main.asyncAfter(deadline: .now() + wait + 0.05) { [self] in
                 guard active else { return }
-                leaveFullScreen(fullScreen, fill: fill, why: why, then: then)
+                leaveFullScreen(fullScreen, fill: fill, why: why, since: since, then: then)
             }
             return
         }
@@ -836,7 +851,7 @@ final class Spaces {
         // pressed only once, only for a window that positively still reports full screen, and never while
         // macOS is changing desktop: the exit's own slide, or a desktop change meanwhile, is waited out up
         // to a hard deadline, and a window still in full screen then is carried (see `FullScreenLeave`).
-        let started = Date()
+        let askedAt = Date(), started = since
         var pressed = false, deferredSaid = false
         func tick() {
             guard active else { return }
@@ -848,10 +863,10 @@ final class Spaces {
                 calls[w.id] = FullScreenDecision.call(e)
             }
             let wait = transition.wait(now: Date())
-            switch FullScreenLeave.step(asked: fullScreen.map(\.id), elapsed: Date().timeIntervalSince(started), transitionWait: wait,
+            switch FullScreenLeave.step(asked: fullScreen.map(\.id), elapsed: Date().timeIntervalSince(started), sinceAsk: Date().timeIntervalSince(askedAt), transitionWait: wait,
                                         calls: calls, evidence: evidence, pressed: pressed) {
             case .wait:
-                if wait > 0, !deferredSaid, Date().timeIntervalSince(started) >= FullScreenLeave.pressAfter {
+                if wait > 0, !deferredSaid, Date().timeIntervalSince(askedAt) >= FullScreenLeave.pressAfter {
                     deferredSaid = true
                     Trace.log("fullscreen ask: waiting for macOS to finish changing desktop before deciding about window(s) \(fullScreen.map { "\($0.id) \($0.appName)" }.joined(separator: ", ")) (\(why))")
                 }
@@ -866,7 +881,7 @@ final class Spaces {
             case .done, .refused:
                 // The exit animation keeps resizing the window for a moment after the flag flips; once the window
                 // server has dropped the desktop it is over. A desktop change still in flight is waited out too.
-                let margin = max(desktops == nil ? 0.6 : 0.15, wait)
+                let margin = min(max(desktops == nil ? 0.6 : 0.15, wait), SpaceTransition.duration)
                 DispatchQueue.main.asyncAfter(deadline: .now() + margin) { [self] in
                     guard active else { return }
                     var refused: [Window] = []
@@ -1628,7 +1643,7 @@ final class Spaces {
         fullScreenInvolved = false
         let now = Date()
         // A window on a full-screen desktop that no scan listed: nothing can hide, show or find it.
-        for d in FullScreenSpaces.missing(desktops, known: Set(windows.keys)) {
+        for d in FullScreenSpaces.missing(desktops, known: Set(windows.keys).union(serverOnly.keys)) {
             guard let id = d.window else { continue }
             let key = "missing \(id)"
             guard (auditNoted[key].map { now.timeIntervalSince($0) > 60 } ?? true) else { continue }
@@ -1648,11 +1663,17 @@ final class Spaces {
             seen.append(WindowObservation(id: id, app: w.appName, workspace: ws, onScreen: snap.onScreen[id] != nil, parked: saved.frames[id] != nil,
                                           appHidden: hidden, atHidingSpot: atSpot, onFullScreenDesktop: onDesktop))
         }
+        // Windows listed from the window server alone: only a full-screen one can be put right (carried), so only it is audited.
+        for (id, l) in serverOnly where l.why == .fullScreen {
+            guard let ws = model.workspace(of: id) else { continue }
+            seen.append(WindowObservation(id: id, app: l.app, workspace: ws, onScreen: snap.onScreen[id] != nil, parked: false,
+                                          appHidden: NSRunningApplication(processIdentifier: l.pid)?.isHidden == true, onFullScreenDesktop: true))
+        }
         let shown = Set(model.shown.isEmpty ? [model.current] : Array(model.shown.values))
         var findings = VanishAudit.findings(seen, shown: shown, displayOnFullScreenDesktop: desktops.contains { $0.isCurrent })
         // A minimized window, and a window its app closed but keeps, are not lost; they are read only when they would be a finding.
         findings = findings.filter { f in
-            guard let w = windows[f.id] else { return true }
+            guard let w = windows[f.id] else { return serverOnly[f.id] != nil }
             if f.kind != .hiddenButInFullScreen, w.isMinimized { return false }
             if f.kind == .neitherShownNorHidden || f.kind == .shownButNotVisible,
                !Windows.lists(f.id, pid: w.pid), Windows.onNoOtherDesktop(f.id) { return false }

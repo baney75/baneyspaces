@@ -58,7 +58,7 @@ final class FullScreenKeys {
 
     /// A swallowed press and what it is waiting for. Under `lock`.
     private static var pairing = PressPairing()
-    private static var armed: (request: Request, button: AXUIElement?, pid: pid_t)?
+    private static var armed: (request: Request, button: AXUIElement?, pid: pid_t, window: WindowID)?
 
     /// The tap could not be made (Input Monitoring not granted): said once, retried quietly each minute.
     private static var failedAt: Date?
@@ -143,7 +143,18 @@ final class FullScreenKeys {
             guard let raw = read(e, attribute), CFGetTypeID(raw) == AXUIElementGetTypeID() else { return nil }
             return (raw as! AXUIElement)
         }
-        func bool(_ e: AXUIElement, _ attribute: String) -> Bool { (read(e, attribute) as? NSNumber)?.boolValue == true }
+        /// nil when it could not be read in time: "don't know", never "no".
+        func bool(_ e: AXUIElement, _ attribute: String) -> Bool? {
+            let left = end - CFAbsoluteTimeGetCurrent()
+            guard left > 0.001 else { return nil }
+            AXUIElementSetMessagingTimeout(e, Float(left))
+            var raw: CFTypeRef?
+            switch AXUIElementCopyAttributeValue(e, attribute as CFString, &raw) {
+            case .success: return (raw as? NSNumber)?.boolValue
+            case .attributeUnsupported, .noValue: return false
+            default: return nil
+            }
+        }
     }
 
     private static func modifiers(_ e: CGEvent) -> FullScreenRoute.Modifiers {
@@ -157,12 +168,14 @@ final class FullScreenKeys {
         let app = AXUIElementCreateApplication(pid)
         guard pid != getpid(), let window = budget.element(app, kAXFocusedWindowAttribute),
               budget.element(window, kAXFullScreenButtonAttribute) != nil else { return nil }
-        return (window, budget.bool(window, "AXFullScreen"))
+        // An answer that didn't come in time is "don't know": the key passes to macOS untouched.
+        guard let native = budget.bool(window, "AXFullScreen") else { return nil }
+        return (window, native)
     }
 
     /// The green button of a window of `pid` that lies under `point`, with its window and whether that
     /// window is in macOS full screen.
-    private static func greenButton(at point: CGPoint, pid: pid_t) -> (button: AXUIElement, window: AXUIElement, native: Bool)? {
+    private static func greenButton(at point: CGPoint, pid: pid_t, expecting id: WindowID) -> (button: AXUIElement, window: AXUIElement, native: Bool)? {
         let budget = Budget()
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, 0.02)
@@ -173,7 +186,9 @@ final class FullScreenKeys {
         let subrole = budget.read(button, kAXSubroleAttribute) as? String
         // The window's full-screen button is the green one; Zoom-only windows have no such button.
         guard subrole == "AXFullScreenButton" || budget.element(window, kAXFullScreenButtonAttribute).map({ CFEqual($0, button) }) == true else { return nil }
-        return (button, window, budget.bool(window, "AXFullScreen"))
+        // The topmost window at the point must be the one these lights belong to.
+        guard window.windowID == id, let native = budget.bool(window, "AXFullScreen") else { return nil }
+        return (button, window, native)
     }
 
     private static let callback: CGEventTapCallBack = { _, type, event, _ in
@@ -213,7 +228,7 @@ final class FullScreenKeys {
             var found: (button: AXUIElement, window: AXUIElement, native: Bool)?
             // In memory first: only a click in a window's traffic-light corner is looked at.
             guard let entry = ClickFilter.request(at: event.location, zones: z, look: { w in
-                found = greenButton(at: event.location, pid: w.pid)
+                found = greenButton(at: event.location, pid: w.pid, expecting: w.id)
                 return found != nil
             }), let hit = found else { return pass }
             let req = FullScreenRoute.click(mode: mode, m, windowInNativeFullScreen: hit.native)
@@ -225,7 +240,7 @@ final class FullScreenKeys {
             }
             lock.lock()
             pairing.armMouse(event.getIntegerValueField(.mouseEventNumber))
-            armed = (request, hit.button, entry.pid)
+            armed = (request, hit.button, entry.pid, entry.id)
             lock.unlock()
             return nil
         case .leftMouseDragged:
@@ -240,7 +255,7 @@ final class FullScreenKeys {
             lock.unlock()
             guard mine, let a else { return pass }
             // Still on the same button at the release, or the press was a drag away and does nothing.
-            let on = greenButton(at: event.location, pid: a.pid).map { hit in a.button.map { CFEqual($0, hit.button) } ?? false } ?? false
+            let on = greenButton(at: event.location, pid: a.pid, expecting: a.window).map { hit in a.button.map { CFEqual($0, hit.button) } ?? false } ?? false
             lock.lock()
             let release = pairing.mouseUp(number: number, onButton: on)
             armed = nil

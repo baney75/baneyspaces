@@ -99,7 +99,38 @@ final class FullScreenTests: XCTestCase {
         XCTAssertTrue(call(.no, .no, .yes).isOut)
         XCTAssertTrue(call(.no, .unknown, .yes).isOut, "an app that doesn't answer doesn't make it full screen")
         XCTAssertTrue(call(.unknown, .no, .yes).isOut)
-        XCTAssertTrue(call(.unknown, .unknown, .no).isOut)
+        // Nobody can say and it isn't screen-sized: Split View windows are half a screen, so that clears nothing.
+        XCTAssertEqual(call(.unknown, .unknown, .no).word, "cannot-tell")
+        XCTAssertTrue(call(.unknown, .unknown, .no).needsLeaving)
+    }
+
+    /// The window server's list unreadable: the app's own answer is read for every window, whatever its size.
+    func testTheFallbackReadsTheAppForEveryWindow() {
+        typealias E = FullScreenEvidence
+        XCTAssertTrue(E.shouldReadAttribute(desktopsReadable: false, desktop: .unknown, screenSized: .no, seenInFullScreen: false),
+                      "a Split View window, half a screen, never seen before")
+        XCTAssertTrue(E.shouldReadAttribute(desktopsReadable: false, desktop: .unknown, screenSized: .unknown, seenInFullScreen: false))
+        // Readable: only where the window server didn't rule it out, or size or memory says look.
+        XCTAssertFalse(E.shouldReadAttribute(desktopsReadable: true, desktop: .no, screenSized: .no, seenInFullScreen: false))
+        XCTAssertTrue(E.shouldReadAttribute(desktopsReadable: true, desktop: .no, screenSized: .yes, seenInFullScreen: false))
+        XCTAssertTrue(E.shouldReadAttribute(desktopsReadable: true, desktop: .yes, screenSized: .no, seenInFullScreen: false))
+        XCTAssertTrue(E.shouldReadAttribute(desktopsReadable: true, desktop: .no, screenSized: .no, seenInFullScreen: true))
+    }
+
+    /// Excel, known to the window server alone: nothing can be asked, so the plan carries it.
+    func testAWindowWithNoHandleIsCarriedNotAsked() {
+        let p = FullScreenSwitch.plan(hide: [5, 6], calls: [5: .inFullScreen("x"), 6: .inFullScreen("x")], refused: RefusedFullScreen(), now: t0, unaskable: [5])
+        XCTAssertEqual(p.carry, [5])
+        XCTAssertEqual(p.ask, [6])
+    }
+
+    /// The deadline is absolute: time spent waiting for desktop changes before the request counts.
+    func testTheDeadlineIsFromTheStartOfTheAsk() {
+        let c: [WindowID: FullScreenCall] = [1: .inFullScreen("x")]
+        let e = [WindowID(1): ev(.yes, .yes)]
+        XCTAssertEqual(FullScreenLeave.step(asked: [1], elapsed: FullScreenLeave.deadline, sinceAsk: 0.1, transitionWait: 0.9, calls: c, evidence: e, pressed: false), .refused([1]))
+        XCTAssertEqual(FullScreenLeave.step(asked: [1], elapsed: 4, sinceAsk: 0.1, transitionWait: 0, calls: c, evidence: e, pressed: false), .wait,
+                       "the button waits 0.8 s after the request, not after the start")
     }
 
     func testEveryCallSaysWhy() {
@@ -475,6 +506,15 @@ final class FullScreenTests: XCTestCase {
         XCTAssertEqual(looks, 1)
         XCTAssertNil(ClickFilter.request(at: CGPoint(x: 400, y: 118), zones: z) { _ in looks += 1; return true }, "the title bar away from the lights")
         XCTAssertEqual(looks, 1)
+    }
+
+    /// BaneySpaces' own overview, a Spotlight panel or a popover over a window's traffic lights: not a click on the button.
+    func testSomethingCoveringTheLightsIsNotAClickOnThem() {
+        let z = ClickZones([.init(id: 90, pid: 1, frame: CGRect(x: 0, y: 0, width: 1500, height: 900), regular: false),
+                            .init(id: 1, pid: 7, frame: CGRect(x: 100, y: 100, width: 800, height: 600))])
+        var looks = 0
+        XCTAssertNil(ClickFilter.request(at: CGPoint(x: 146, y: 118), zones: z) { _ in looks += 1; return true })
+        XCTAssertEqual(looks, 0, "no look at all under an overlay")
     }
 
     func testOnlyTheTopWindowUnderThePointIsLookedAt() {

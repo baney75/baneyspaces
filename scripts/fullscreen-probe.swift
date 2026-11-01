@@ -198,8 +198,15 @@ func requireListed(_ name: String, _ label: String) {
     let id = UInt32(w.windowNumber)
     if state().ws[id] == nil { fail("\(label): \(name) (\(id)) is in full screen and not in the dock's model (state.json)") }
 }
+/// state.json is written on a switch or a scan, not when a window opens: a switch to the workspace you are on
+/// (the cheapest) makes BaneySpaces look, and it must happen before moving on or a window joins the wrong workspace.
 func waitForWorkspaceList(_ names: [String]) {
-    _ = until(8) { let s = state(); return names.allSatisfy { s.ws[wid($0)] != nil } }
+    var last = Date.distantPast
+    _ = until(10) {
+        if Date().timeIntervalSince(last) > 1.2 { last = Date(); open("baneyspaces://switch/\(state().current)") }
+        let s = state()
+        return names.allSatisfy { s.ws[wid($0)] != nil }
+    }
 }
 
 // MARK: Keys and the pointer
@@ -258,11 +265,27 @@ func enterFullScreen(_ name: String, how: Int, mode: String) {
 func leaveFullScreen(_ name: String, mode: String) {
     guard let w = windows[name] else { return }
     if w.styleMask.contains(.fullScreen) { w.refuseToLeave = false; w.toggleFullScreen(nil); _ = until(4) { !w.styleMask.contains(.fullScreen) }; pump(1.0) }
-    else if mode == "baneyspaces", fills(w) { pressFullScreenKey(); pump(0.6) }
+    else if mode == "baneyspaces", fills(w) {
+        // ⌃⌘F acts on the key window: this one, not whichever was last.
+        w.makeKeyAndOrderFront(nil)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        _ = until(2) { w.isKeyWindow }
+        pressFullScreenKey()
+        _ = until(3) { !fills(w) }
+        pump(0.3)
+        if fills(w) { fail("\(mode): \(name) still fills its workspace after ⌃⌘F put it back") }
+    }
 }
 
 // MARK: Setup
 
+// This probe tests the build with behavior.fullscreen. Against an older one (main before this change) every
+// BaneySpaces-mode check would fail for the wrong reason, so it stops before touching anything.
+let installedMode = run(cli, ["get", "behavior.fullscreen"]).trimmingCharacters(in: .whitespacesAndNewlines)
+if installedMode != "baneyspaces" && installedMode != "native" {
+    say("untested live: the installed BaneySpaces has no behavior.fullscreen setting; this probe is for the build with it (main after the full-screen change merges)")
+    finish(3)
+}
 let ghosttyBefore = state().ws.filter { state().apps[$0.key] == "Ghostty" }
 let originalMode = modeBefore
 say("probe: BaneySpaces full screen is \(originalMode); Mission Control held off: \(run("/usr/bin/defaults", ["read", "com.apple.dock", "mcx-expose-disabled"]).trimmingCharacters(in: .whitespacesAndNewlines))")

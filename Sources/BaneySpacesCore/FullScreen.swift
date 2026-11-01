@@ -151,6 +151,15 @@ public enum FullScreenCall: Equatable, Sendable {
     }
 }
 
+public extension FullScreenEvidence {
+    /// Whether the app's own `AXFullScreen` is read for a window a switch is about to hide. With a readable window
+    /// server list, only where it can add something. With an unreadable one, always: that read is then all there is,
+    /// and a Split View window is half a screen, so size cannot rule anything out.
+    static func shouldReadAttribute(desktopsReadable: Bool, desktop: Answer, screenSized: Answer, seenInFullScreen: Bool) -> Bool {
+        !desktopsReadable || desktop != .no || screenSized == .yes || seenInFullScreen
+    }
+}
+
 public enum FullScreenDecision {
     /// The window server's desktop list is authoritative when it answers; the app's attribute can
     /// only add (a window entering full screen), never remove, and a missing answer is never a "no".
@@ -163,8 +172,9 @@ public enum FullScreenDecision {
         }
         // The window server didn't say.
         if e.attribute == .no { return .notInFullScreen("AXFullScreen is false") }
-        if e.screenSized == .yes { return .cannotTell("no answer from the window server or the app, and the window is screen-sized") }
-        return .notInFullScreen("no answer from the window server or the app, and the window is not screen-sized")
+        // Nobody can say. A window is never hidden on that: Split View windows are half a screen, so size cannot clear it.
+        return .cannotTell(e.screenSized == .yes ? "no answer from the window server or the app, and the window is screen-sized"
+                                                 : "no answer from the window server or the app")
     }
 }
 
@@ -199,11 +209,14 @@ public struct FullScreenSwitch: Equatable {
     /// provably out of full screen is asked, or carried if it has refused before. Carried even
     /// when the switch stays on the same workspace (a move made from the overview): a window that
     /// cannot be hidden must not be sent where it would have to be.
-    public static func plan(hide: [WindowID], calls: [WindowID: FullScreenCall], refused: RefusedFullScreen, now: Date) -> FullScreenSwitch {
+    /// `unaskable` are windows in full screen that have no Accessibility handle (known to the window server alone):
+    /// there is nothing to ask, so they are carried at once and never hidden.
+    public static func plan(hide: [WindowID], calls: [WindowID: FullScreenCall], refused: RefusedFullScreen, now: Date,
+                            unaskable: Set<WindowID> = []) -> FullScreenSwitch {
         var ask: [WindowID] = [], carry: [WindowID] = []
         for id in hide {
             guard let call = calls[id], call.needsLeaving else { continue }
-            if refused.contains(id, now: now) { carry.append(id) } else { ask.append(id) }
+            if unaskable.contains(id) || refused.contains(id, now: now) { carry.append(id) } else { ask.append(id) }
         }
         return FullScreenSwitch(ask: ask, carry: carry)
     }
@@ -519,12 +532,15 @@ public enum FullScreenLeave {
 
     /// `transitionWait` is `SpaceTransition.wait`: nothing is pressed while a desktop change is in flight,
     /// and only a window that positively reports full screen is pressed (never one nobody can read).
-    public static func step(asked: [WindowID], elapsed: TimeInterval, transitionWait: TimeInterval,
+    /// `elapsed` runs from the start of the whole ask, including any wait for a desktop change before the
+    /// request went out, and is never extended: the deadline is absolute. `sinceAsk` is the time since the request
+    /// itself (the button is pressed 0.8 s after it).
+    public static func step(asked: [WindowID], elapsed: TimeInterval, sinceAsk: TimeInterval? = nil, transitionWait: TimeInterval,
                             calls: [WindowID: FullScreenCall], evidence: [WindowID: FullScreenEvidence], pressed: Bool) -> Step {
         let notOut = asked.filter { !(calls[$0]?.isOut ?? false) }
         if notOut.isEmpty { return .done }
         if elapsed >= deadline { return .refused(notOut) }
-        if transitionWait > 0 || pressed || elapsed < pressAfter { return .wait }
+        if transitionWait > 0 || pressed || (sinceAsk ?? elapsed) < pressAfter { return .wait }
         let sure = notOut.filter { id in
             guard let e = evidence[id] else { return false }
             return e.desktop == .yes || e.attribute == .yes
@@ -545,10 +561,10 @@ public enum FullScreenFlow {
     /// `plan` is `model.switchTo(n)`. `calls` reads the windows being hidden. Refusals seen out are forgotten;
     /// windows that refused before are carried to `n` (the model is changed) and the plan made again.
     public static func begin(plan: SwitchPlan, model: inout Workspaces, to n: Int, refused: inout RefusedFullScreen, now: Date,
-                             calls read: ([WindowID]) -> [WindowID: FullScreenCall]) -> Begin {
+                             unaskable: Set<WindowID> = [], calls read: ([WindowID]) -> [WindowID: FullScreenCall]) -> Begin {
         let calls = read(plan.hide)
         for (id, call) in calls where call.isOut { refused.forget(id) }
-        let p = FullScreenSwitch.plan(hide: plan.hide, calls: calls, refused: refused, now: now)
+        let p = FullScreenSwitch.plan(hide: plan.hide, calls: calls, refused: refused, now: now, unaskable: unaskable)
         for id in p.carry { model.assign(id, to: n, focus: false) }
         return Begin(plan: p.carry.isEmpty ? plan : model.switchTo(n), ask: p.ask, carried: p.carry)
     }
@@ -574,13 +590,16 @@ public struct ClickZones {
         public var id: WindowID
         public var pid: Int32
         public var frame: CGRect
-        public init(id: WindowID, pid: Int32, frame: CGRect) { self.id = id; self.pid = pid; self.frame = frame }
+        /// A window of a regular app that a scan lists. Anything else on screen (BaneySpaces' own panels, Spotlight,
+        /// a menu-extra popover) is in the list too, so that what covers a button is never mistaken for the window.
+        public var regular: Bool
+        public init(id: WindowID, pid: Int32, frame: CGRect, regular: Bool = true) { self.id = id; self.pid = pid; self.frame = frame; self.regular = regular }
     }
 
     public static let width: CGFloat = 110
     public static let height: CGFloat = 56
 
-    /// On-screen windows, front to back, as the window server lists them.
+    /// Every on-screen window, front to back, as the window server lists them.
     public var windows: [Entry]
     public init(_ windows: [Entry] = []) { self.windows = windows }
 
@@ -589,7 +608,7 @@ public struct ClickZones {
     /// The topmost window under `p`, if `p` is in its traffic-light zone. Nil for every other point,
     /// without touching anything else.
     public func candidate(at p: CGPoint) -> Entry? {
-        guard let top = windows.first(where: { $0.frame.contains(p) }) else { return nil }
+        guard let top = windows.first(where: { $0.frame.contains(p) }), top.regular else { return nil }
         return Self.zone(of: top).contains(p) ? top : nil
     }
 }

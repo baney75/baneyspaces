@@ -250,7 +250,16 @@ enum Windows {
         for w in info {
             guard let id = (w[kCGWindowNumber as String] as? NSNumber)?.uint32Value else { continue }
             alive.insert(id)
-            guard (w[kCGWindowLayer as String] as? Int) == 0,
+            let layer = w[kCGWindowLayer as String] as? Int ?? -1
+            // Everything drawn on screen, front to back, what the green-button tap tests a click against: the thing
+            // that covers a window's traffic lights (an overview, a Spotlight panel, a popover) must be in the list.
+            if (w[kCGWindowIsOnscreen as String] as? Bool) == true, layer >= 0,
+               ((w[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1) > 0.1,
+               let b = (w[kCGWindowBounds as String] as? NSDictionary).flatMap({ CGRect(dictionaryRepresentation: $0) }), b.width > 1, b.height > 1 {
+                let owner = (w[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value ?? 0
+                front.append(ClickZones.Entry(id: id, pid: owner, frame: b, regular: layer == 0 && apps.contains(owner)))
+            }
+            guard layer == 0,
                   let pid = (w[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value, apps.contains(pid) else { continue }
             appWindows.insert(id)
             owners.insert(pid)
@@ -259,12 +268,7 @@ enum Windows {
                                           title: w[kCGWindowName as String] as? String ?? "",
                                           bounds: (w[kCGWindowBounds as String] as? NSDictionary).flatMap { CGRect(dictionaryRepresentation: $0) } ?? .zero,
                                           onScreen: (w[kCGWindowIsOnscreen as String] as? Bool) == true))
-            if (w[kCGWindowIsOnscreen as String] as? Bool) != true { offscreen[id] = pid } else {
-                onScreen[id] = pid
-                if let b = (w[kCGWindowBounds as String] as? NSDictionary).flatMap({ CGRect(dictionaryRepresentation: $0) }) {
-                    front.append(ClickZones.Entry(id: id, pid: pid, frame: b))
-                }
-            }
+            if (w[kCGWindowIsOnscreen as String] as? Bool) != true { offscreen[id] = pid } else { onScreen[id] = pid }
         }
         return (alive, appWindows, owners, offscreen, onScreen, ClickZones(front), infos)
     }

@@ -22,6 +22,8 @@ final class FullScreenScenarioTests: XCTestCase {
         var parked = false
         var minimized = false
         var closedButKept = false
+        /// Accessibility lists it. False: known to the window server alone (Excel, in full screen on its own desktop).
+        var hasHandle = true
     }
 
     /// Windows, workspaces and what a switch does to them.
@@ -60,6 +62,7 @@ final class FullScreenScenarioTests: XCTestCase {
         }
 
         func call(_ id: WindowID) -> FullScreenCall {
+            if !wins[id]!.hasHandle { return wins[id]!.fullScreen ? .inFullScreen("no handle") : .notInFullScreen("no handle") }
             if useOldCheck { return OldCheck.call(wins[id]!) }
             return FullScreenDecision.call(evidence(id))
         }
@@ -68,7 +71,8 @@ final class FullScreenScenarioTests: XCTestCase {
         /// `apply` does to windows. The glue around it (timers, Accessibility) is the app's and has no unit test.
         func switchTo(_ n: Int) {
             let plan = model.switchTo(n)
-            let begin = FullScreenFlow.begin(plan: plan, model: &model, to: n, refused: &refused, now: now) { hide in
+            let unaskable = Set(wins.filter { !$0.value.hasHandle && $0.value.fullScreen }.keys)
+            let begin = FullScreenFlow.begin(plan: plan, model: &model, to: n, refused: &refused, now: now, unaskable: unaskable) { hide in
                 Dictionary(uniqueKeysWithValues: hide.filter { self.wins[$0] != nil }.map { ($0, self.call($0)) })
             }
             for id in begin.ask {
@@ -462,6 +466,45 @@ final class FullScreenScenarioTests: XCTestCase {
         XCTAssertEqual(closed, [])
     }
 
+    /// Excel's exact shape: a server-only window in native full screen (`fs_wid`), on workspace 1, switch 1→2.
+    func testExcelKnownToTheWindowServerAloneIsCarriedAndItsAppNeverHidden() {
+        d.open(1, Win(app: "Excel", pid: 50, fullScreen: true, hasHandle: false), on: 1)
+        d.open(2, ghostty(), on: 2)
+        d.switchTo(2)
+        XCTAssertEqual(d.asked, [], "no handle: nothing to ask")
+        XCTAssertEqual(d.model.workspace(of: 1), 2, "carried, so it is part of what is shown")
+        XCTAssertFalse(d.hiddenApps.contains(50), "its app is not hidden with a window on a full-screen desktop")
+        XCTAssertEqual(d.findings(), [])
+        d.switchTo(1)
+        XCTAssertEqual(d.model.workspace(of: 1), 1)
+        XCTAssertFalse(d.hiddenApps.contains(50))
+        XCTAssertEqual(d.findings(), [])
+        XCTAssertNotNil(d.model.workspace(of: 1), "and still in the model, so still in the dock")
+    }
+
+    /// If its app has other windows that must hide, they park one by one; the app is not hidden.
+    func testItsOtherWindowsParkInsteadOfTheAppHiding() {
+        d.open(1, Win(app: "Excel", pid: 50, fullScreen: true, hasHandle: false), on: 1)
+        d.open(3, Win(app: "Excel", pid: 50), on: 1)
+        d.open(2, ghostty(), on: 2)
+        d.switchTo(2)
+        XCTAssertEqual(d.model.workspace(of: 1), 2)
+        XCTAssertFalse(d.hiddenApps.contains(50))
+        XCTAssertTrue(d.wins[3]!.parked, "the ordinary window parks")
+        XCTAssertEqual(d.findings(), [])
+    }
+
+    /// A server-only full-screen window that ended up on a hidden workspace is a finding the audit repairs.
+    func testTheAuditSeesAServerOnlyFullScreenWindowOnAHiddenWorkspace() {
+        d.open(1, Win(app: "Excel", pid: 50, fullScreen: true, hasHandle: false), on: 1)
+        d.open(2, ghostty(), on: 2)
+        d.switchTo(2)
+        d.model.assign(1, to: 3, focus: false)
+        XCTAssertEqual(d.findings().map(\.kind), [.hiddenButInFullScreen])
+        d.auditAndRepair()
+        XCTAssertEqual(d.findings(), [])
+    }
+
     // MARK: An unknown window-server shape
 
     /// The window server's list is in a shape nobody recognises (parse gives nil): every window reads
@@ -604,5 +647,16 @@ final class FullScreenScenarioTests: XCTestCase {
         XCTAssertTrue(spaces.contains("guard let desktops = Windows.fullScreenDesktops() else { return }"), "the audit stops")
         XCTAssertTrue(spaces.contains("the window server's Spaces list is unreadable"), "the migration stops")
         XCTAssertTrue(spaces.contains("fullscreenMigrated"), "the migration happens once")
+    }
+
+    func testTheProductionGateAndTheHandlelessPathAreWired() throws {
+        let spaces = try source("Spaces.swift")
+        XCTAssertTrue(spaces.contains("FullScreenEvidence.shouldReadAttribute(desktopsReadable: desktops != nil"), "the fallback reads the app for every window")
+        XCTAssertFalse(spaces.contains("desktops == nil ? false"), "nil must never mean false")
+        XCTAssertTrue(spaces.contains("unaskable: unaskable"))
+        XCTAssertTrue(spaces.contains("since: since"), "the deadline is carried through every retry")
+        let keys = try source("FullScreenKeys.swift")
+        XCTAssertTrue(keys.contains("guard let native = budget.bool(window, \"AXFullScreen\") else { return nil }"), "an unread answer passes the key through")
+        XCTAssertTrue(keys.contains("expecting: w.id"), "the window under the point must be the one whose lights these are")
     }
 }
