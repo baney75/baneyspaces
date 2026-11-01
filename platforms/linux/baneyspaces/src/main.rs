@@ -75,6 +75,21 @@ fn split_globals(mut args: Vec<String>) -> (Globals, Vec<String>) {
     }
 }
 
+/// The fallback, unless the caller is an agent's shell (it carries a launch token): the daemon
+/// refuses an agent's switch and move, and with the daemon down the CLI must not be the way round
+/// that. Accident-proofing, like the daemon's check.
+fn guarded_fallback(req: &Value, agent_shell: bool, run: impl Fn(&Value) -> Option<Envelope>) -> Option<Envelope> {
+    if agent_shell && matches!(req["op"].as_str(), Some("switch" | "move")) {
+        return Some(Envelope::err(
+            "not_in_scope",
+            format!("{} is for you, not for an agent", req["op"].as_str().unwrap_or("this")),
+            Retry::Never,
+            "An agent drives only the agent workspace. Ask the user to do this.",
+        ));
+    }
+    run(req)
+}
+
 /// What a workspace key does when the daemon is not running: Hyprland's own dispatch, so a
 /// reload before the daemon starts (or a crashed daemon) leaves the keys working.
 fn fallback(req: &Value) -> Option<Envelope> {
@@ -378,7 +393,9 @@ fn main() {
         "daemon" => daemon::run(args.iter().any(|a| a == "--trace")),
         "keys" => {
             if args.iter().any(|a| a == "--hypr-lua") {
-                print!("{}", keymap::render_hypr_lua("baneyspaces"));
+                // `--binary PATH` renders the include with an absolute path to the binary (install.sh).
+                let bin = args.iter().position(|a| a == "--binary").and_then(|i| args.get(i + 1)).map(String::as_str).unwrap_or("baneyspaces");
+                print!("{}", keymap::render_hypr_lua(bin));
                 0
             } else {
                 print(&Envelope::ok(keymap::keys()), text)
@@ -404,7 +421,8 @@ fn main() {
                 let mut env = daemon::call(&paths, &req);
                 // With no daemon the workspace keys must still work: fall back to what Hyprland does.
                 if env.error.as_ref().is_some_and(|e| e.code == "daemon_down") {
-                    if let Some(fb) = fallback(&req) {
+                    let agent_shell = std::env::var("BANEYSPACES_AGENT_TOKEN").is_ok();
+                    if let Some(fb) = guarded_fallback(&req, agent_shell, fallback) {
                         env = fb;
                     }
                 }
@@ -444,6 +462,24 @@ mod tests {
         let (g, rest) = split_globals(v(&["agent", "open", "app", "--text", "--agent-id", "y"]));
         assert_eq!(g, Globals::default());
         assert_eq!(rest.len(), 6, "application arguments are kept verbatim");
+    }
+
+    #[test]
+    fn an_agents_shell_never_gets_the_fallback() {
+        let req = json!({"op":"switch","args":{"n":"3"}});
+        let ran = std::cell::Cell::new(false);
+        let probe = |_: &Value| {
+            ran.set(true);
+            Some(Envelope::ok(json!({})))
+        };
+        let e = guarded_fallback(&req, true, &probe).unwrap();
+        assert_eq!(e.error.unwrap().code, "not_in_scope");
+        assert!(!ran.get(), "the Hyprland dispatch must not run for an agent's shell");
+        let e = guarded_fallback(&json!({"op":"move","args":{"n":"5"}}), true, &probe).unwrap();
+        assert_eq!(e.error.unwrap().code, "not_in_scope");
+        // Your own shell still falls back.
+        assert!(guarded_fallback(&req, false, &probe).unwrap().ok);
+        assert!(ran.get());
     }
 
     #[test]

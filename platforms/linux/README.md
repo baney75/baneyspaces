@@ -48,14 +48,20 @@ isolation line, drawn by process:
   whose process the daemon registered (pid and start time, so a reused pid fails);
 - every pid check is start-time aware: the daemon forgets an agent process when it dies or its pid
   is reused (on each window that opens and every 2 s), so a recycled pid is never an agent;
-- an app that would hand the request to a copy you already run is refused **before** it starts
-  (`needs_sandbox`), unless it is on the short list of apps known to start a separate process
-  (terminals, viewers; Chromium and Firefox with a private profile under BaneySpaces' own folder;
-  Ghostty with `--gtk-single-instance=false`). Deny by default, like the Mac's allowlist;
-- if an app slips past that (the same program under another path, service activation) and forwards,
-  its window opens in **your** process on your workspace. Nothing can prevent that after launch.
-  The daemon leaves the window where it is, and the `single_instance` error lists it
-  (`error.data.windows_that_appeared`). This is a known limit, in the ledger in `AGENTS.md`;
+- **deny by default.** An app may be started for an agent only if it is on the short allowlist of
+  apps with a verified way to run as their own process (terminals and viewers; Chromium and Firefox
+  with a private profile under BaneySpaces' own folder; Ghostty with `--gtk-single-instance=false`).
+  Anything else, such as nautilus or a GApplication, is refused **before launch** with
+  `needs_sandbox`, whether or not you happen to be running a copy. That closes both directions: the
+  agent's request cannot land in your process, and the agent's copy cannot become the instance your
+  later launches forward to (where your window would be taken for the agent's);
+- an app that is on the list but forwards anyway, or a launch the allowlist was skipped for (the
+  test-only `test_open`), has its forwarded window left where it is, and the `single_instance` error
+  lists it (`error.data.windows_that_appeared`). A known limit, in the ledger in `AGENTS.md`;
+- an accessible window is matched to the compositor window by its title, and exactly one must carry
+  it (`window_unmatched` otherwise): there is no fallback to "the only window of the process";
+- scope is checked again right before the engine's command: window, pid, start time and workspace
+  must be what they were, or the call is refused `not_in_scope` and nothing is sent;
 - a window of yours that you park there (`agent move`) is guarded but not drivable (`needs_lend`);
 - each ref is tied to the snapshot, window and process it came from (`stale_ref` otherwise).
 
@@ -114,8 +120,8 @@ the Mac build pins (`engine.pin`, 5261b52), built from source with its own `Carg
 acts through AT-SPI. The daemon runs it as a child process, headless (it is never given `--headed`,
 so it posts no global input), after the scope guard, and maps its envelope onto ours. Results carry
 the engine's own evidence: `verified` is true only when the engine read the outcome back from the
-element. `press`, `key` and `pointer` are `not_supported` (phase 3-4). `shot` reports `not_supported`
-because the engine cannot capture one window on Wayland.
+element. `press`, `key` and `pointer` are `not_supported` (phase 3-4). `shot` is refused locally with `not_supported`: a capture can show your whole screen, and no
+per-window capture path exists on Hyprland yet.
 
 ## Install on an Omarchy seat (part 2 does this on Chapel1 and Parish1)
 
@@ -132,7 +138,7 @@ Part 1 does not apply it to any seat.
 ## Tests
 
 ```sh
-cargo test                                  # core, the 85 conformance cases, the daemon's pure parts
+cargo test                                  # core, the 89 conformance cases, the daemon's pure parts
 platforms/linux/tests/omarchy-scripts.sh    # install/uninstall against a throwaway HOME
 platforms/linux/tests/nested.sh             # the integration test; prints PASS or FAIL with counts
 ```
@@ -147,4 +153,4 @@ did not change.
 Known limits: a key press itself is not simulated (the test runs the command each binding is bound
 to, and checks the binding table); the pointer check excludes the step where the test forces
 Hyprland to focus an agent window, because Hyprland warps the pointer to a window it is told to
-focus; `shot` is not available on Wayland.
+focus; `shot` is refused locally.

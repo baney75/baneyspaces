@@ -40,6 +40,22 @@ do_() { if [ "$DRY" = 1 ]; then say "$*"; else eval "$@"; fi; }
 for f in baneyspaces.lua baneyspaces-autostart.lua; do [ -f "$HERE/$f" ] || { echo "missing $HERE/$f" >&2; exit 1; }; done
 if grep -qF -- "$BEGIN" "$MAIN"; then say "already installed in $MAIN (the block is there); refreshing files only"; ALREADY=1; else ALREADY=0; fi
 
+# The include binds Super+1-9 and more to the binary by absolute path (Hyprland's session PATH may not
+# have its directory), and it unbinds Omarchy's own keys. So nothing is changed unless the binary will
+# be there: installed by this run, or already installed.
+case "$BIN_DIR" in /*) ;; *) BIN_DIR="$(readlink -f "$BIN_DIR")";; esac
+BIN_ABS="$BIN_DIR/baneyspaces"
+case "$BIN_ABS" in *[\"\\\&\|\'\ ]*) echo "refusing: the binary path $BIN_ABS has a character that cannot go in the include (quote, backslash, ampersand, pipe or space)" >&2; exit 1;; esac
+BUILT=""
+if [ "$BINARY" = 1 ]; then
+  BUILT="$SRC/target/release/baneyspaces"; [ -x "$BUILT" ] || BUILT="$SRC/target/debug/baneyspaces"; [ -x "$BUILT" ] || BUILT=""
+fi
+if [ -z "$BUILT" ] && [ ! -x "$BIN_ABS" ]; then
+  echo "refusing to change hyprland.lua: there is no baneyspaces binary to bind the keys to." >&2
+  echo "  Build it (cargo build --release -p baneyspaces-linux) and run this again, or install it at $BIN_ABS (--bin DIR)." >&2
+  exit 1
+fi
+
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP="$STATE/backup/$STAMP"
 say "keys replaced: $(grep -c '^hl.unbind' "$HERE/baneyspaces.lua") unbinds, $(grep -c '^hl.bind' "$HERE/baneyspaces.lua") bindings (see $HERE/baneyspaces.lua)"
@@ -54,7 +70,13 @@ if [ "$ALREADY" = 0 ]; then
 fi
 
 say "include files -> $DEST"
-do_ "mkdir -p '$DEST' && cp '$HERE/baneyspaces.lua' '$HERE/baneyspaces-autostart.lua' '$DEST/'"
+do_ "mkdir -p '$DEST'"
+for f in baneyspaces.lua baneyspaces-autostart.lua; do
+  say "  $f (commands run $BIN_ABS)"
+  if [ "$DRY" = 0 ]; then
+    sed "s|exec_cmd(\"baneyspaces |exec_cmd(\"$BIN_ABS |" "$HERE/$f" > "$DEST/$f"
+  fi
+done
 
 if [ "$ALREADY" = 0 ]; then
   say "append the include block to $MAIN"
@@ -69,11 +91,9 @@ if [ "$ALREADY" = 0 ]; then
 fi
 
 if [ "$BINARY" = 1 ]; then
-  BS="$SRC/target/release/baneyspaces"; [ -x "$BS" ] || BS="$SRC/target/debug/baneyspaces"
-  [ -x "$BS" ] || { say "no built binary under $SRC/target (cargo build --release -p baneyspaces-linux); skipping the binary"; BS=""; }
-  if [ -n "$BS" ]; then
-    say "binary -> $BIN_DIR/baneyspaces"
-    do_ "mkdir -p '$BIN_DIR' && install -m 755 '$BS' '$BIN_DIR/baneyspaces'"
+  if [ -n "$BUILT" ]; then
+    say "binary -> $BIN_ABS"
+    do_ "mkdir -p '$BIN_DIR' && install -m 755 '$BUILT' '$BIN_ABS'"
   fi
   if [ -x "$SRC/platforms/linux/engine/agent-desktop" ]; then
     say "hands engine (agent-desktop $(cat "$SRC/platforms/linux/engine/COMMIT" 2>/dev/null | cut -c1-7)) -> $SHARE/engine"

@@ -1,0 +1,85 @@
+[
+ {
+  "name": "an accessible window with the same title is the window",
+  "rules": [
+   "R-W1"
+  ],
+  "steps": [
+   {
+    "match_window": {
+     "title": "Notes",
+     "candidates": [
+      {
+       "id": "a1",
+       "title": "Notes"
+      },
+      {
+       "id": "a2",
+       "title": "Other"
+      }
+     ]
+    },
+    "id": "a1"
+   }
+  ]
+ },
+ {
+  "name": "the only accessible window with another title is not a match",
+  "rules": [
+   "R-W1"
+  ],
+  "steps": [
+   {
+    "match_window": {
+     "title": "Notes",
+     "candidates": [
+      {
+       "id": "a2",
+       "title": "Other"
+      }
+     ]
+    },
+    "error": "window_unmatched"
+   }
+  ]
+ },
+ {
+  "name": "two accessible windows with the title are not a match",
+  "rules": [
+   "R-W1"
+  ],
+  "steps": [
+   {
+    "match_window": {
+     "title": "Notes",
+     "candidates": [
+      {
+       "id": "a1",
+       "title": "Notes"
+      },
+      {
+       "id": "a2",
+       "title": "Notes"
+      }
+     ]
+    },
+    "error": "window_unmatched"
+   }
+  ]
+ },
+ {
+  "name": "no accessible window is not a match",
+  "rules": [
+   "R-W1"
+  ],
+  "steps": [
+   {
+    "match_window": {
+     "title": "Notes",
+     "candidates": []
+    },
+    "error": "window_unmatched"
+   }
+  ]
+ }
+]

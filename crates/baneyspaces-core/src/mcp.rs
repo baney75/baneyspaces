@@ -20,7 +20,7 @@ pub fn tools() -> Value {
           "inputSchema": r("", json!({}), &[]) },
         { "name": "agent_windows", "description": "Windows on the agent workspace you may act on.",
           "inputSchema": r("", json!({}), &[]) },
-        { "name": "agent_open", "description": "Start an app as its own process on the agent workspace. You stay where you are. Apps that forward to a running instance are refused with single_instance.",
+        { "name": "agent_open", "description": "Start an app as its own process on the agent workspace. You stay where you are. Only apps on the allowlist (terminals, viewers, browsers with a private profile) can be started; any other app is refused with needs_sandbox before it starts. An app that still forwards to a running instance is single_instance.",
           "inputSchema": r("", json!({ "app": s("Executable name or path."), "args": { "type": "array", "items": { "type": "string" } } }), &["app"]) },
         { "name": "agent_snapshot", "description": "Accessibility tree of one agent window, with refs to act on.",
           "inputSchema": r("", json!({ "window": window, "interactive": { "type": "boolean" }, "compact": { "type": "boolean" } }), &["window"]) },

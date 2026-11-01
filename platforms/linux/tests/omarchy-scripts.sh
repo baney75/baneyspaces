@@ -3,7 +3,9 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; OM="$HERE/../omarchy"
 T="$(mktemp -d /tmp/bs-omarchy.XXXXXX)"; trap 'rm -rf "$T"' EXIT
-export HOME="$T/home"; unset XDG_STATE_HOME XDG_DATA_HOME; mkdir -p "$HOME/.config/hypr" "$T/src/target/debug" "$T/src/platforms/linux/engine"
+# Nothing here may reach a real daemon: its socket lives under XDG_RUNTIME_DIR and the script finds
+# the binary on PATH, so both point into the temp dir.
+export HOME="$T/home" XDG_RUNTIME_DIR="$T/run" PATH="$T/bin:/usr/bin:/bin"; unset XDG_STATE_HOME XDG_DATA_HOME; mkdir -p "$T/run" "$T/bin"; mkdir -p "$HOME/.config/hypr" "$T/src/target/debug" "$T/src/platforms/linux/engine"
 printf '#!/bin/sh\necho "$@" >> "$HOME/stub.calls"\n' > "$T/src/target/debug/baneyspaces"; chmod +x "$T/src/target/debug/baneyspaces"
 printf '#!/bin/sh\n' > "$T/src/platforms/linux/engine/agent-desktop"; chmod +x "$T/src/platforms/linux/engine/agent-desktop"
 cat > "$HOME/.config/hypr/hyprland.lua" <<'LUA'
@@ -17,6 +19,12 @@ ok() { N=$((N+1)); echo "  ok   $1"; }; no() { N=$((N+1)); F=$((F+1)); echo "  F
 chk() { local d="$1"; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else no "$d"; fi; }
 M="$HOME/.config/hypr/hyprland.lua"
 
+# No binary to bind the keys to: nothing at all is changed.
+"$OM/install.sh" --no-binary --src "$T/src" >"$T/nobin.out" 2>&1; RC=$?
+chk "install without a binary refuses" test "$RC" -ne 0
+chk "and leaves hyprland.lua exactly as it was" test "$(cat "$M")" = "$ORIG"
+chk "and says why" grep -q 'no baneyspaces binary' "$T/nobin.out"
+chk "and copies no include" test ! -e "$HOME/.config/hypr/baneyspaces"
 "$OM/install.sh" --dry-run --src "$T/src" >"$T/dry.out" 2>&1
 chk "dry-run exits 0 and says it is a dry run" grep -q '^\[dry-run\]' "$T/dry.out"
 chk "dry-run changes nothing" test "$(cat "$M")" = "$ORIG"
@@ -28,7 +36,10 @@ chk "uninstall dry-run says it would stop the daemon" grep -q 'dry-run.*stop the
 chk "the block is appended" grep -qF -- '>>> baneyspaces' "$M"
 chk "your own lines are intact" grep -q 'my own line' "$M"
 chk "the include is copied" test -f "$HOME/.config/hypr/baneyspaces/baneyspaces.lua"
-chk "the autostart is copied and runs the daemon" grep -q 'baneyspaces daemon' "$HOME/.config/hypr/baneyspaces/baneyspaces-autostart.lua"
+chk "the autostart is copied and runs the daemon by absolute path" grep -qF "exec_cmd(\"$HOME/.local/bin/baneyspaces daemon\")" "$HOME/.config/hypr/baneyspaces/baneyspaces-autostart.lua"
+chk "every bound key runs the binary by absolute path" test "$(grep -cF "exec_cmd(\"$HOME/.local/bin/baneyspaces " "$HOME/.config/hypr/baneyspaces/baneyspaces.lua")" = 29
+chk "no bare baneyspaces command is left in the include" test "$(grep -c 'exec_cmd("baneyspaces ' "$HOME/.config/hypr/baneyspaces/baneyspaces.lua")" = 0
+chk "--no-binary works once the binary is installed" "$OM/install.sh" --no-binary --src "$T/src"
 chk "the binary is installed" test -x "$HOME/.local/bin/baneyspaces"
 chk "the engine is installed" test -x "$HOME/.local/share/baneyspaces/engine/agent-desktop"
 chk "a backup of hyprland.lua was taken" sh -c "cmp -s '$M' /dev/null || ls '$HOME'/.local/state/baneyspaces/backup/*/hyprland.lua"
@@ -38,7 +49,7 @@ chk "the script never touched bindings.lua" test ! -e "$HOME/.config/hypr/bindin
 chk "a second install adds no second block" test "$(grep -cF -- '>>> baneyspaces' "$M")" = 1
 
 "$OM/uninstall.sh" >/dev/null 2>&1
-chk "uninstall stops the daemon (it ran `baneyspaces stop`)" grep -qx 'stop' "$HOME/stub.calls"
+chk 'uninstall stops the daemon (it ran baneyspaces stop)' grep -qx 'stop' "$HOME/stub.calls"
 chk "uninstall restores hyprland.lua byte for byte" cmp -s "$T/orig.lua" "$M"
 chk "uninstall removes the include" test ! -e "$HOME/.config/hypr/baneyspaces"
 chk "uninstall keeps the state (backups, log) by default" test -d "$HOME/.local/state/baneyspaces"

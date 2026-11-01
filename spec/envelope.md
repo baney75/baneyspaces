@@ -34,7 +34,8 @@ Every `baneyspaces` command and every MCP tool result is one JSON object.
 | `daemon_down` | `baneyspaces daemon` is not running. |
 | `stale_ref` | The ref, window or process changed since the snapshot. |
 | `single_instance` | The app forwarded to a running instance; it can't be driven as an agent process. `error.data.windows_that_appeared` lists windows that opened meanwhile (left where they are). |
-| `needs_sandbox` | The app is already running for the user and would hand the request to that copy; refused before launch. |
+| `needs_sandbox` | The app is not on the list of apps with a verified separate-process launch, so an agent may not start it (it could hand the request to your copy, or take over your launches). Refused before launch. |
+| `window_unmatched` | The compositor window cannot be matched to exactly one accessible window (by title). |
 | `timeout` | Waited and nothing arrived. From a client: the request was sent and no answer came, so it may have been carried out (`retry` never). A failure to connect is `daemon_down` instead. |
 | `engine_missing` | The hands engine is not built or not found. |
 | `engine_error` | The hands engine failed; `message` carries its code. |

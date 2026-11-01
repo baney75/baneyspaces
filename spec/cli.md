@@ -31,7 +31,7 @@ window id, or a pid.
 ## State file
 
 `state.json` is the model's `view` plus `"version": 1`, `"platform"`, `"agent_workspace"`, and, on
-Linux, `"hyprland": {"scheme": ...}`. macOS: `~/Library/Application Support/BaneySpaces/state.json`.
+Linux, a top-level `"scheme"` (a one-line description of the workspace mapping). macOS: `~/Library/Application Support/BaneySpaces/state.json`.
 Linux: `$XDG_STATE_HOME/baneyspaces/state.json` (default `~/.local/state/baneyspaces/`).
 
 ## Agent identity

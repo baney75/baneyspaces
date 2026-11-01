@@ -9,7 +9,7 @@
 use crate::daemon::{append_record, now, record, Core, Shared};
 use crate::proc;
 use crate::scheme::AGENT_SPECIAL;
-use baneyspaces_core::agent::{check_scope, ActionRecord, WindowFacts};
+use baneyspaces_core::agent::{check_scope, match_window, ActionRecord, WindowFacts};
 use baneyspaces_core::envelope::{Envelope, Retry};
 use serde_json::{json, Value};
 use std::io::Read;
@@ -201,60 +201,29 @@ fn run_engine(
     })
 }
 
-/// Which engine window is this Hyprland window: same pid, same title, same process start.
-fn engine_window(
-    engine: &std::path::Path,
-    pid: u32,
-    title: &str,
-    start: u64,
-    timeout: Duration,
-) -> Result<String, Envelope> {
+/// Which engine window is this Hyprland window: the one accessible window of the process whose title
+/// equals the compositor window's, and exactly one. No fallback to another window of the process
+/// (R-W1), and the process start time must agree.
+fn engine_window(engine: &std::path::Path, pid: u32, title: &str, start: u64, timeout: Duration) -> Result<String, Envelope> {
     let r = run_engine(engine, &["list-windows".into()], timeout)?;
     let all = r["data"].as_array().cloned().unwrap_or_default();
-    let mine: Vec<&Value> = all
-        .iter()
-        .filter(|w| w["pid"].as_u64() == Some(pid as u64))
-        .collect();
-    let by_title: Vec<&&Value> = mine
-        .iter()
-        .filter(|w| w["title"].as_str() == Some(title))
-        .collect();
-    let pick: Vec<&Value> = if by_title.len() == 1 {
-        vec![**by_title.first().unwrap()]
-    } else {
-        mine.clone()
-    };
-    match pick.as_slice() {
-        [] => Err(Envelope::err(
-            "not_found",
-            "the app has not exposed this window to accessibility (yet)",
-            Retry::Safe,
-            "Wait a moment and try again. Some apps need GTK_A11Y=atspi.",
-        )),
-        [w] => {
-            // process_instance is "<boot id>:<start ticks>": a second, independent pid-reuse check.
-            let inst = w["process_instance"].as_str().unwrap_or("");
-            if let Some(ticks) = inst.rsplit(':').next().and_then(|t| t.parse::<u64>().ok()) {
-                if start != 0 && ticks != start {
-                    return Err(Envelope::err(
-                        "stale_ref",
-                        "the accessibility tree belongs to a different process than the window",
-                        Retry::AfterSnapshot,
-                        "Take a new snapshot.",
-                    ));
-                }
-            }
-            w["id"].as_str().map(String::from).ok_or_else(|| {
-                Envelope::err("engine_error", "window without an id", Retry::Never, "")
-            })
+    let mine: Vec<&Value> = all.iter().filter(|w| w["pid"].as_u64() == Some(pid as u64)).collect();
+    let cands: Vec<(String, String)> = mine.iter().map(|w| (w["id"].as_str().unwrap_or("").to_string(), w["title"].as_str().unwrap_or("").to_string())).collect();
+    let id = match_window(title, &cands).map_err(|r| {
+        let mut e = r.envelope();
+        if let Some(er) = e.error.as_mut() {
+            er.retry = Retry::Safe; // nothing was sent
         }
-        many => Err(Envelope::err(
-            "ambiguous",
-            format!("{} windows of this process match", many.len()),
-            Retry::Never,
-            "Give the window a distinct title.",
-        )),
+        e
+    })?;
+    // process_instance is "<boot id>:<start ticks>": a second, independent pid-reuse check.
+    let inst = mine.iter().find(|w| w["id"].as_str() == Some(id.as_str())).and_then(|w| w["process_instance"].as_str()).unwrap_or("");
+    if let Some(ticks) = inst.rsplit(':').next().and_then(|t| t.parse::<u64>().ok()) {
+        if start != 0 && ticks != start {
+            return Err(Envelope::err("stale_ref", "the accessibility tree belongs to a different process than the window", Retry::AfterSnapshot, "Take a new snapshot."));
+        }
     }
+    Ok(id)
 }
 
 const DIRECTIONS: &[&str] = &["up", "down", "left", "right"];
@@ -267,9 +236,9 @@ pub fn build_argv(verb: &str, args: &Value, window: Option<&str>, reference: &st
     let text = |k: &str| args[k].as_str().map(String::from);
     let mut a: Vec<String> = vec![];
     match verb {
-        "snapshot" | "find" | "shot" => {
+        "snapshot" | "find" => {
             let w = window.ok_or_else(|| bad("a window is required".into()))?;
-            a.push(if verb == "shot" { "screenshot".into() } else { verb.into() });
+            a.push(verb.into());
             a.push(format!("--window-id={w}"));
             if verb == "snapshot" {
                 if args["interactive"].as_bool().unwrap_or(false) {
@@ -367,6 +336,14 @@ pub fn run(shared: &Shared, agent: &str, args: &Value) -> Envelope {
     let verb = args["verb"].as_str().unwrap_or("").to_string();
     let invalid =
         |m: &str| Envelope::err("invalid_args", m, Retry::Never, "Run `baneyspaces help`.");
+    if verb == "shot" {
+        // Refused here, not left to the engine: a capture can show your whole screen, and no
+        // per-window capture path exists on Hyprland yet.
+        let env = Envelope::err("not_supported", "agent shot is not available on Linux: there is no per-window capture path that keeps to the agent workspace", Retry::Never, "Read the window with snapshot or find, and check results with get.");
+        let c = crate::daemon::lock(shared);
+        record(&c, agent, "shot", None, args["window"].as_str(), None, "local", &env);
+        return env;
+    }
     let Some(engine) = locate() else {
         return Envelope::err(
             "engine_missing",
@@ -375,7 +352,7 @@ pub fn run(shared: &Shared, agent: &str, args: &Value) -> Envelope {
             "Run platforms/linux/scripts/build-engine.sh, or set BANEYSPACES_ENGINE.",
         );
     };
-    let window_verb = matches!(verb.as_str(), "snapshot" | "find" | "shot");
+    let window_verb = matches!(verb.as_str(), "snapshot" | "find");
     let ref_verb = matches!(
         verb.as_str(),
         "get" | "click" | "set-value" | "type" | "toggle" | "select" | "scroll"
@@ -456,6 +433,21 @@ pub fn run(shared: &Shared, agent: &str, args: &Value) -> Envelope {
     } else {
         None
     };
+    // Scope at execution time (the Mac's rule): right before the engine's command, the window, its
+    // process, its start time and its workspace must still be what they were.
+    let stall = crate::daemon::lock(shared).stall_ms;
+    if stall > 0 && std::env::var("BANEYSPACES_TEST_OPS").is_ok_and(|v| v == "1") {
+        std::thread::sleep(Duration::from_millis(stall)); // test only: lets nested.sh move the window mid-call
+    }
+    {
+        let c = crate::daemon::lock(shared);
+        let expect = SnapInfo { window: plan.window.clone(), pid: plan.pid, start: plan.start };
+        if guard(&c, &plan.window, Some(&expect)).is_err() {
+            let env = Envelope::err("not_in_scope", "the window changed while the call was being prepared (it moved, or its process changed), so nothing was sent", Retry::Never, "Take a new snapshot of a window on the agent workspace.");
+            record(&c, agent, &verb, Some(plan.pid), Some(&plan.window), reference.as_deref(), "atspi", &env);
+            return env;
+        }
+    }
     let argv = match build_argv(&verb, args, win_id.as_deref(), reference.as_deref().unwrap_or("")) {
         Ok(a) => a,
         Err(env) => {

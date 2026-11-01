@@ -35,6 +35,24 @@ pub fn run_case(case: &Value) -> Result<(), String> {
     let mut model = Model::new();
     for (i, step) in steps.iter().enumerate() {
         let at = |m: String| format!("{name}, step {} ({}): {m}", i + 1, step["do"].as_str().unwrap_or("expect"));
+        if let Some(m) = step.get("match_window") {
+            let title = m["title"].as_str().unwrap_or("");
+            let cands: Vec<(String, String)> = m["candidates"].as_array().into_iter().flatten().map(|c| (c["id"].as_str().unwrap_or("").into(), c["title"].as_str().unwrap_or("").into())).collect();
+            match (step.get("error"), crate::agent::match_window(title, &cands)) {
+                (Some(code), Err(e)) if code == &json!(e.code) => {}
+                (Some(code), Err(e)) => return Err(at(format!("expected error {code}, got {}", e.code))),
+                (Some(code), Ok(_)) => return Err(at(format!("expected error {code}, but it matched"))),
+                (None, Err(e)) => return Err(at(format!("unexpected error {}", e.code))),
+                (None, Ok(id)) => {
+                    if let Some(want) = step.get("id") {
+                        if want != &json!(id) {
+                            return Err(at(format!("expected window {want}, got {id}")));
+                        }
+                    }
+                }
+            }
+            continue;
+        }
         if step.get("do").is_some() {
             let event: Event = serde_json::from_value(step.clone()).map_err(|e| at(format!("bad step: {e}")))?;
             let result = model.apply(event);

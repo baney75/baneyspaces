@@ -139,6 +139,18 @@ counted in `guard.refused`.
 
 ## Agent scope (the hands)
 
+### R-W1 One compositor window, one accessible window
+The accessible window an action targets is the one whose title equals the compositor window's, and
+exactly one does. There is no fallback to "the only window of the process": it could be another
+window, even one outside the agent workspace. No match, or two, is `window_unmatched`.
+
+Scope is checked again right before the engine's action command: window, pid, start time and
+workspace (`special:agent`) must still be what they were; if anything changed the call is refused
+with `not_in_scope`. An app is started for an agent only if it is on the list of apps with a
+verified way to run as a separate process; any other app is refused before launch with
+`needs_sandbox`, whether or not you are running a copy.
+
+
 Not workspace rules but part of the same contract; `crates/baneyspaces-core/src/agent.rs` implements
 them and its tests are the cases. An agent action proceeds only when all hold:
 
@@ -150,10 +162,10 @@ them and its tests are the cases. An agent action proceeds only when all hold:
 An agent only drives a process BaneySpaces started for it as a new instance, verified by pid and
 start time. Every pid check is start-time aware, and a registered process that dies or whose pid is
 reused is forgotten (a window of a reused pid is never an agent window; conformance cases in
-`agent.json`). An app that would forward to a copy you already run is refused before launch
-(`needs_sandbox`) unless it is known to start a separate process. If one forwards anyway, its window
-opens in your process on your workspace; it is left where it is and the `single_instance` error
-reports it in `error.data`. Every action leaves a record without content (agent id, verb, pid,
+`agent.json`). An app is started for an agent only if it is on the allowlist of apps with a verified
+separate-process launch; any other is refused before launch with `needs_sandbox`, whether or not you
+run a copy. If an allowed app forwards anyway, its window opens in your process on your workspace;
+it is left where it is and the `single_instance` error reports it in `error.data`. Every action leaves a record without content (agent id, verb, pid,
 window id, ref, route, result, refusal, screen_changed), kept 30 days.
 
 Callers: a caller of the control socket that carries a launch token BaneySpaces issued, or is a

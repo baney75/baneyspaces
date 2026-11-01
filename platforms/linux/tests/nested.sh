@@ -124,7 +124,11 @@ special() { H monitors | jq -r '[.[]|.specialWorkspace.name]|map(select(.=="spec
 cursor() { H cursorpos | jq -c .; }
 cfg_errors() { hyprctl configerrors | grep -v '^$' | head -5; }
 M1=HEADLESS-1; M2=HEADLESS-2
-ctl() { echo "$1" | socat - UNIX-CONNECT:"$XDG_RUNTIME_DIR/baneyspaces/ctl.sock"; }
+test_open() { # test_open <app> [args...]: like `agent open`, but allowed for an app that is not on the allowlist (a test op)
+  local argv; argv="$(printf '%s\0' "${@:2}" | jq -Rsc 'split("\u0000")[:-1]')"
+  ctl "$(jq -nc --arg app "$1" --argjson argv "$argv" '{op:"test_open",args:{app:$app,args:$argv}}')"
+}
+ctl() { echo "$1" | socat -t 60 - UNIX-CONNECT:"$XDG_RUNTIME_DIR/baneyspaces/ctl.sock"; }
 
 echo "== nested Hyprland up: $(hyprctl version | head -1)"
 eq "test config has no errors" "$(cfg_errors)" ""
@@ -268,7 +272,8 @@ same_screen "after something focused the agent window" nopointer
 USER_CURSOR="$(cursor)"
 check "the guard counted it" sh -c "[ \"\$(baneyspaces state | jq .data.guard.refused)\" -ge 1 ]"
 # An app that hands the request to a running instance has no window of its own process.
-eq "an app that opens no window of its own is refused as single_instance" "$(baneyspaces agent open /usr/bin/true | jq -r .error.code)" "single_instance"
+eq "an app that is not on the allowlist is refused before it starts" "$(baneyspaces agent open /usr/bin/true | jq -r '.error.code + " " + .error.retry')" "needs_sandbox never"
+eq "an app that opens no window of its own is single_instance (test op skips the allowlist)" "$(test_open /usr/bin/true | jq -r .error.code)" "single_instance"
 same_screen "after the refused open"
 eq "an unknown program is not_found" "$(baneyspaces agent open /nonexistent/x | jq -r .error.code)" "not_found"
 # Showing and hiding is yours.
@@ -315,6 +320,18 @@ NEWWS="$(mon_ws $NEW)"
 check "it shows a workspace of the nine that monitor 1 does not" sh -c "[ '$NEWWS' -ge 1 ] && [ '$NEWWS' -le 9 ] && [ '$NEWWS' != \"\$(hyprctl -j monitors | jq -r '.[]|select(.name==\"$M1\")|.activeWorkspace.id')\" ]"
 eq "the workspace it shows is empty" "$(baneyspaces state | jq -r ".data.workspaces[\"$NEWWS\"]|length // 0")" "0"
 eq "the model agrees with Hyprland about both" "$(baneyspaces state | jq -r "[.data.monitors[\"$M1\"].current,.data.monitors[\"$NEW\"].current]|join(\",\")")" "$(mon_ws $M1),$NEWWS"
+
+echo "-- a display that comes back shows what it showed (same name)"
+hyprctl output create headless HEADLESS-9 >/dev/null; sleep 1
+baneyspaces focus-monitor HEADLESS-9 >/dev/null; sleep 0.2
+RN="$(free_ws)"
+baneyspaces switch $RN >/dev/null; sleep 0.3
+eq "(setup) the display shows $RN" "$(mon_ws HEADLESS-9)" "$RN"
+hyprctl output remove HEADLESS-9 >/dev/null; sleep 1
+hyprctl output create headless HEADLESS-9 >/dev/null; sleep 1
+eq "plugged back in it shows $RN again, as R-M2 says" "$(mon_ws HEADLESS-9)" "$RN"
+eq "and the model agrees" "$(baneyspaces state | jq -r '.data.monitors["HEADLESS-9"].current')" "$RN"
+hyprctl output remove HEADLESS-9 >/dev/null; sleep 1
 
 echo "== state.json"
 check "state.json exists and is the model" sh -c "jq -e '.version==1 and .platform==\"linux\" and (.monitors|length)>=1' '$XDG_STATE_HOME/baneyspaces/state.json'"

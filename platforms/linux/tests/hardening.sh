@@ -51,7 +51,20 @@ RT="$(baneyspaces agent run -- sh -c 'sleep 4; foot -T afterrestart sleep 600; s
 check "agent run opened a terminal" test -n "$RTPID"
 eq "the issued tokens are kept private (0600)" "$(stat -c %a "$XDG_STATE_HOME/baneyspaces/tokens.json")" "600"
 baneyspaces stop >/dev/null; check "the daemon stopped" wait_for 4 daemon_down
-baneyspaces daemon --trace >>"$TMP/daemon.log" 2>&1 & DPID=$!; PIDS+=($DPID)
+# With no daemon, an agent's shell still must not be able to switch your workspaces through the CLI fallback.
+FWS="$(mon_ws $(H monitors | jq -r '.[]|select(.focused)|.name'))"
+for AN in 3 4 5 6 7 8 9; do [ "$AN" != "$FWS" ] && break; done
+AGENT_OUT="$(BANEYSPACES_AGENT_TOKEN=t baneyspaces switch $AN; BANEYSPACES_AGENT_TOKEN=t baneyspaces move $AN)"
+eq "an agent's shell gets not_in_scope instead of the fallback" "$(echo "$AGENT_OUT" | jq -r .error.code | sort -u | tr '\n' ' ')" "not_in_scope "
+eq "and your workspace did not change" "$(mon_ws $(H monitors | jq -r '.[]|select(.focused)|.name'))" "$FWS"
+# Two daemons racing to start (the autostart fires on start and on reload): one wins, and it is reachable.
+baneyspaces daemon --trace >>"$TMP/daemon.log" 2>&1 & RA=$!
+baneyspaces daemon --trace >>"$TMP/daemon.log" 2>&1 & RB=$!
+sleep 1.5
+ALIVE=0; for r in $RA $RB; do kill -0 $r 2>/dev/null && { ALIVE=$((ALIVE+1)); DPID=$r; }; done
+eq "of two daemons started together exactly one runs" "$ALIVE" "1"
+PIDS+=($RA $RB)
+eq "and it is the one answering on the socket" "$(ctl '{"op":"ping"}' | jq -r .data.pid)" "$DPID"
 check "a new daemon is up" wait_for 6 daemon_up
 check "the agent's shell opens a window after the restart" wait_for 12 sh -c "hyprctl -j clients | jq -e '.[]|select(.title==\"afterrestart\")'"
 sleep 1
@@ -83,33 +96,56 @@ eq "a timeout is compositor_error with retry never (delivery is uncertain)" "$(e
 eq "the model agrees with Hyprland again" "$(baneyspaces state | jq -r ".data.monitors[\"$FOC\"].current")" "$(mon_ws $FOC)"
 baneyspaces switch $N1 >/dev/null; sleep 0.2; rebase
 
+echo "== hiding the agent workspace never shows it on the display you are on"
+baneyspaces focus-monitor $M2 >/dev/null; sleep 0.2
+baneyspaces agent-workspace show >/dev/null; sleep 0.4
+eq "(setup) it is showing on monitor 2" "$(H monitors | jq -r ".[]|select(.name==\"$M2\")|.specialWorkspace.name")" "special:agent"
+baneyspaces focus-monitor $M1 >/dev/null; sleep 0.3
+R0="$(baneyspaces state | jq .data.guard.refused)"
+( while :; do hyprctl -j monitors | jq -r ".[]|select(.name==\"$M1\")|.specialWorkspace.name"; sleep 0.02; done > "$TMP/m1special.out" ) & SAMP=$!
+HN="$(free_ws)"
+baneyspaces switch $HN >/dev/null; sleep 0.6
+kill $SAMP 2>/dev/null
+eq "the agent workspace never appeared on monitor 1 while it was being hidden" "$(grep -c 'special:agent' "$TMP/m1special.out")" "0"
+eq "it is hidden on monitor 2" "$(special)" "0"
+eq "the guard counted nothing extra" "$(baneyspaces state | jq .data.guard.refused)" "$R0"
+eq "you are still on monitor 1" "$(H monitors | jq -r '.[]|select(.focused)|.name')" "$M1"
+rebase
+
 echo "== R-F2 on Linux rests on focus_on_activate=false, and the daemon keeps it so"
 eq "it is off" "$(hyprctl getoption misc:focus_on_activate | head -1)" "bool: false"
 hyprctl eval 'hl.config({ misc = { focus_on_activate = true } })' >/dev/null
 eq "(test) someone turns it on" "$(hyprctl getoption misc:focus_on_activate | head -1)" "bool: true"
 check "the daemon turns it off again" wait_for 8 sh -c "[ \"\$(hyprctl getoption misc:focus_on_activate | head -1)\" = 'bool: false' ]"
 
-echo "== an app that forwards to your copy is refused before it starts"
+echo "== deny by default: an app that is not on the allowlist is never started for an agent"
 APP="$HERE/gtk_test_app.py"
 ln -sf "$APP" "$TMP/linked_app.py"
 addrs() { H clients | jq -r '.[].address' | sort; }
-BEFORE="$(addrs)"
+procs_with_token() { grep -l BANEYSPACES_AGENT_TOKEN /proc/[0-9]*/environ 2>/dev/null | wc -l; }
+BEFORE="$(addrs)"; TOK0="$(procs_with_token)"
+N0="$(baneyspaces agent open /usr/bin/python3 "$APP")"
+eq "with no copy of yours running, an unlisted app is needs_sandbox" "$(echo "$N0" | jq -r '.error.code + " " + .error.retry')" "needs_sandbox never"
+eq "the answer lists what is allowed" "$(echo "$N0" | jq -r '.error.data.allowed | index("foot") != null')" "true"
+sleep 1.5
+eq "nothing was started" "$(addrs | wc -l)-$(procs_with_token)" "$(echo "$BEFORE" | wc -l)-$TOK0"
+eq "the refusal is logged as a refusal" "$(baneyspaces agent log | jq '[.data.records[]|select(.refusal=="needs_sandbox" and .route=="preflight")]|length >= 1')" "true"
+same_screen "after the refused open"
+# Your own single-instance copy is running.
 hyprctl dispatch "hl.dsp.exec_cmd(\"/usr/bin/python3 $APP --unique\")" >/dev/null
 wait_for 8 sh -c "[ \"\$(hyprctl -j clients | jq '[.[].address]|length')\" -gt $(echo "$BEFORE" | wc -l) ]"
 sleep 1
 UW="$(comm -13 <(echo "$BEFORE") <(addrs) | head -1)"; UPID="$(H clients | jq -r ".[]|select(.address==\"$UW\")|.pid")"
 check "your own single-instance copy is running" test -n "$UW"
-eq "it is on your workspace" "$(client_ws ${UW:-x} | grep -c special)" "0"
 rebase
 N="$(baneyspaces agent open /usr/bin/python3 "$APP" --unique)"
-eq "agent open of the same app is needs_sandbox" "$(echo "$N" | jq -r '.error.code + " " + .error.retry')" "needs_sandbox never"
-eq "it names your copy, not a window of the agent's" "$(echo "$N" | jq -r '.error.data.user_pid')" "$UPID"
+eq "with a copy of yours running it is needs_sandbox too" "$(echo "$N" | jq -r '.error.code + " " + .error.retry')" "needs_sandbox never"
 eq "nothing new appeared" "$(addrs | wc -l)" "$(echo "$BEFORE" | wc -l | awk '{print $1+1}')"
-same_screen "after the refused open"
-# What cannot be seen before launch: the same app under another path. The launch is allowed, the app
-# forwards to your copy, and its window opens in YOUR process. The window is left where it is and
-# the error says so.
-ST="$(baneyspaces agent open /usr/bin/python3 "$TMP/linked_app.py" --unique)"
+same_screen "after the second refused open"
+# The part the allowlist cannot see after the fact: a test-op launch (it skips the allowlist) of the
+# same app under another path forwards to your copy. Its window opens in YOUR process; it is left where
+# it is and the error says so.
+ST="$(test_open /usr/bin/python3 "$TMP/linked_app.py" --unique)"
 eq "a forwarded launch is single_instance" "$(echo "$ST" | jq -r .error.code)" "single_instance"
 eq "and reports the window that appeared in your process" "$(echo "$ST" | jq -r '.error.data.windows_that_appeared|length >= 1')" "true"
 SW="$(echo "$ST" | jq -r '.error.data.windows_that_appeared[0].window')"

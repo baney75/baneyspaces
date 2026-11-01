@@ -120,6 +120,26 @@ impl ActionLog {
     }
 }
 
+/// R-W1: which accessible window is this compositor window. Exactly one candidate must carry its
+/// title. There is no fallback to "the only window of the process": that could be another window,
+/// even one outside the agent workspace.
+pub fn match_window(title: &str, candidates: &[(String, String)]) -> Result<String, Refusal> {
+    let same: Vec<&(String, String)> = candidates.iter().filter(|(_, t)| t == title).collect();
+    match same.as_slice() {
+        [(id, _)] => Ok(id.clone()),
+        [] => Err(Refusal {
+            code: "window_unmatched",
+            message: "no accessible window carries this window's title, so it cannot be told apart from the process's other windows".into(),
+            suggestion: "Wait a moment and take a new snapshot. If the title keeps changing, give the window a steady one.".into(),
+        }),
+        many => Err(Refusal {
+            code: "window_unmatched",
+            message: format!("{} accessible windows carry this title", many.len()),
+            suggestion: "Give the window a title of its own.".into(),
+        }),
+    }
+}
+
 /// Drops records older than 30 days from the text of an action log. `None` when nothing was old
 /// enough, so the caller rewrites the file only when it must.
 pub fn prune_text(text: &str, now: u64) -> Option<String> {
@@ -140,7 +160,7 @@ impl ActionRecord {
     pub fn from_result(at: u64, agent: &str, verb: &str, pid: Option<u32>, window: Option<&str>, reference: Option<&str>, route: &str, env: &Envelope) -> Self {
         let (result, refusal) = match (&env.ok, &env.error) {
             (true, _) => ("ok".to_string(), None),
-            (false, Some(e)) => (e.code.clone(), if matches!(e.code.as_str(), "not_in_scope" | "needs_lend" | "in_use" | "not_supported" | "stale_ref" | "single_instance") { Some(e.code.clone()) } else { None }),
+            (false, Some(e)) => (e.code.clone(), if matches!(e.code.as_str(), "not_in_scope" | "needs_lend" | "in_use" | "not_supported" | "stale_ref" | "single_instance" | "needs_sandbox" | "agent_window" | "window_unmatched") { Some(e.code.clone()) } else { None }),
             (false, None) => ("internal".into(), None),
         };
         Self { at, agent: agent.into(), verb: verb.into(), pid, window: window.map(String::from), reference: reference.map(String::from), route: route.into(), result, refusal, screen_changed: false }
@@ -203,6 +223,27 @@ mod tests {
     #[test]
     fn window_taken_over_by_another_pid_is_stale() {
         assert_eq!(check_scope(&model(), &facts("agent1", 501, 77)).unwrap_err().code, "stale_ref");
+    }
+
+    #[test]
+    fn refusals_include_the_ones_added_this_round() {
+        for code in ["needs_sandbox", "agent_window", "window_unmatched"] {
+            let env = Envelope::err(code, "m", Retry::Never, "s");
+            let r = ActionRecord::from_result(1, "a", "open", None, None, None, "preflight", &env);
+            assert_eq!(r.refusal.as_deref(), Some(code));
+        }
+        let env = Envelope::err("timeout", "m", Retry::Never, "s");
+        assert_eq!(ActionRecord::from_result(1, "a", "x", None, None, None, "r", &env).refusal, None);
+    }
+
+    #[test]
+    fn a_window_matches_only_by_its_own_unique_title() {
+        let c = |v: &[(&str, &str)]| v.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect::<Vec<_>>();
+        assert_eq!(match_window("A", &c(&[("w1", "A"), ("w2", "B")])).unwrap(), "w1");
+        // The only window of the process has another title: not a match, whatever it is.
+        assert_eq!(match_window("A", &c(&[("w2", "B")])).unwrap_err().code, "window_unmatched");
+        assert_eq!(match_window("A", &c(&[("w1", "A"), ("w2", "A")])).unwrap_err().code, "window_unmatched");
+        assert_eq!(match_window("A", &[]).unwrap_err().code, "window_unmatched");
     }
 
     #[test]

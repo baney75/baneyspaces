@@ -23,7 +23,7 @@
       "name": "agent_windows"
     },
     {
-      "description": "Start an app as its own process on the agent workspace. You stay where you are. Apps that forward to a running instance are refused with single_instance.",
+      "description": "Start an app as its own process on the agent workspace. You stay where you are. Only apps on the allowlist (terminals, viewers, browsers with a private profile) can be started; any other app is refused with needs_sandbox before it starts. An app that still forwards to a running instance is single_instance.",
       "inputSchema": {
         "additionalProperties": false,
         "description": "",

@@ -74,9 +74,35 @@ pub struct Core {
     pub test_ops: bool,
     pub fail_next: Option<bool>,
     pub resyncing: bool,
+    /// Effects the rules asked for while the model was being rebuilt; run when it is done.
+    pub deferred: Vec<Effect>,
+    /// Test only: how long a hands call waits between finding the window and acting on it.
+    pub stall_ms: u64,
 }
 
 pub type Shared = Arc<Mutex<Core>>;
+
+/// The dispatches that make `monitor` show workspace `n`.
+pub fn show_steps(monitor: &str, n: u8, lives_on: Option<&str>, focused: Option<&str>) -> Vec<String> {
+    let mut v = vec![];
+    if focused.is_some_and(|f| f != monitor) {
+        v.push(format!("hl.dsp.focus({{ monitor = {} }})", lua_str(monitor)));
+    }
+    if lives_on.is_some_and(|on| on != monitor) {
+        v.push(format!("hl.dsp.workspace.move({{ workspace = {}, monitor = {} }})", lua_str(&n.to_string()), lua_str(monitor)));
+    }
+    v.push(format!("hl.dsp.focus({{ workspace = {} }})", lua_str(&n.to_string())));
+    v
+}
+
+/// Sends the steps in order. A failure says whether any earlier step went through, so a half-done
+/// switch is never reported as one that changed nothing.
+pub fn run_steps(steps: &[String], send: &mut dyn FnMut(&str) -> Result<(), HyprError>) -> Result<(), (HyprError, bool)> {
+    for (i, step) in steps.iter().enumerate() {
+        send(step).map_err(|e| (e, i > 0))?;
+    }
+    Ok(())
+}
 
 /// Why a command could not be carried out.
 #[derive(Debug)]
@@ -174,31 +200,35 @@ impl Core {
 
     /// Turns workspace animations off, stops apps taking focus by asking, and gives a display that
     /// shows nothing of ours a workspace. Run at start and after every config reload.
-    pub fn configure_hyprland(&self) {
+    pub fn configure_hyprland(&self, new: &[String]) {
         let _ = self.hypr.eval("hl.animation({ leaf = \"workspaces\", enabled = false })");
         let _ = self.hypr.eval("hl.animation({ leaf = \"specialWorkspace\", enabled = false })");
         let _ = self.hypr.eval("hl.config({ misc = { focus_on_activate = false } })");
-        self.adopt_monitors();
+        self.adopt_monitors(new);
     }
 
     /// A display showing an empty, non-persistent workspace that is not one of the nine (the
     /// default Hyprland gives a new monitor) shows the workspace the model picked for it (R-M2).
     /// A display showing anything you keep (workspace 10 with the work dashboard) is left alone.
-    fn adopt_monitors(&self) {
+    fn adopt_monitors(&self, new: &[String]) {
         let Ok(spaces) = self.hypr.json("workspaces") else { return };
         let spaces = spaces.as_array().cloned().unwrap_or_default();
         let before = self.monitors().into_iter().find(|m| m.focused).map(|m| m.name);
         let mut moved = false;
         for m in self.monitors() {
-            if decode(m.ws_id, &m.ws_name).is_some() {
+            let have = decode(m.ws_id, &m.ws_name);
+            let Some(want) = self.model.current(&m.name).filter(|n| *n != 0) else { continue };
+            // A display that was just plugged in gets the workspace R-M2 picked whenever Hyprland's
+            // own default differs; any other display only when it shows nothing of the nine.
+            let wanted = if new.contains(&m.name) { have != Some(want) } else { have.is_none() };
+            if !wanted {
                 continue;
             }
-            let Some(n) = self.model.current(&m.name).filter(|n| *n != 0) else { continue };
             let Some(ws) = spaces.iter().find(|w| w["id"].as_i64() == Some(m.ws_id)) else { continue };
             if ws["windows"].as_u64().unwrap_or(1) != 0 || ws["ispersistent"].as_bool().unwrap_or(true) {
                 continue;
             }
-            let _ = self.show_workspace(&m.name, n);
+            let _ = self.show_workspace(&m.name, want);
             moved = true;
         }
         if let (true, Some(b)) = (moved, before) {
@@ -207,16 +237,13 @@ impl Core {
     }
 
     /// Makes `monitor` show workspace `n`: brings the workspace there if Hyprland keeps it on
-    /// another monitor, then focuses it. Leaves focus on `monitor`; callers put it back.
-    fn show_workspace(&self, monitor: &str, n: u8) -> Result<(), HyprError> {
+    /// another monitor, then focuses it. Leaves focus on `monitor`; callers put it back. On failure
+    /// the flag says whether an earlier step had already gone through.
+    fn show_workspace(&self, monitor: &str, n: u8) -> Result<(), (HyprError, bool)> {
         let lives = self.hypr.json("workspaces").ok().and_then(|v| v.as_array().and_then(|a| a.iter().find(|w| w["id"].as_i64() == Some(n as i64)).and_then(|w| w["monitor"].as_str().map(String::from))));
-        if self.monitors().iter().find(|m| m.focused).is_some_and(|m| m.name != monitor) {
-            self.hypr.dispatch(&format!("hl.dsp.focus({{ monitor = {} }})", lua_str(monitor)))?;
-        }
-        if lives.is_some_and(|on| on != monitor) {
-            self.hypr.dispatch(&format!("hl.dsp.workspace.move({{ workspace = {}, monitor = {} }})", lua_str(&n.to_string()), lua_str(monitor)))?;
-        }
-        self.hypr.dispatch(&format!("hl.dsp.focus({{ workspace = {} }})", lua_str(&n.to_string())))
+        let focused = self.monitors().into_iter().find(|m| m.focused).map(|m| m.name);
+        let steps = show_steps(monitor, n, lives.as_deref(), focused.as_deref());
+        run_steps(&steps, &mut |lua| self.hypr.dispatch(lua))
     }
 
     // ---- model plumbing ------------------------------------------------------------------
@@ -224,14 +251,19 @@ impl Core {
     pub fn apply(&mut self, ev: Event) -> Result<Vec<Effect>, ApplyError> {
         self.events_seen += 1;
         let effects = self.model.apply(ev).map_err(ApplyError::Model)?;
+        if self.resyncing {
+            // Re-reading Hyprland only learns. What the rules want done about it is collected and
+            // run afterwards, once, with its failures recorded.
+            self.deferred.extend(effects.iter().cloned());
+            return Ok(effects);
+        }
         let r = self.exec(&effects);
         self.persist();
-        if let (Err((err, delivered_any)), false) = (r, self.resyncing) {
+        if let Err((err, delivered_any)) = r {
             // The model has committed a state the compositor may not have reached. Re-read it
             // before anything else is accepted.
             self.log(&format!("dispatch failed ({err}); re-reading Hyprland"));
             self.resync();
-            self.dirty = self.monitors().is_empty();
             return Err(ApplyError::Compositor { err, delivered_any });
         }
         Ok(effects)
@@ -241,7 +273,6 @@ impl Core {
     pub fn ensure_fresh(&mut self) {
         if self.dirty {
             self.resync();
-            self.dirty = self.monitors().is_empty();
         }
     }
 
@@ -256,28 +287,42 @@ impl Core {
         }
         for (i, e) in effects.iter().enumerate() {
             self.log(&format!("effect {e:?}"));
+            let d = |lua: &str| self.hypr.dispatch(lua).map_err(|e| (e, false));
             let r = match e {
                 Effect::ShowWorkspace { monitor, workspace } => self.show_workspace(monitor, *workspace),
-                Effect::FocusMonitor { monitor } => self.hypr.dispatch(&format!("hl.dsp.focus({{ monitor = {} }})", lua_str(monitor))),
-                Effect::FocusWindow { window } => self.hypr.dispatch(&format!("hl.dsp.focus({{ window = {} }})", lua_str(&format!("address:{window}")))),
+                Effect::FocusMonitor { monitor } => d(&format!("hl.dsp.focus({{ monitor = {} }})", lua_str(monitor))),
+                Effect::FocusWindow { window } => d(&format!("hl.dsp.focus({{ window = {} }})", lua_str(&format!("address:{window}")))),
                 Effect::MoveWindow { window, to } => {
                     let dest = if to == "agent" { Some(AGENT_SPECIAL.to_string()) } else { to.parse::<u8>().ok().map(|n| n.to_string()) };
                     match dest {
-                        Some(d) => self.hypr.dispatch(&format!("hl.dsp.window.move({{ workspace = {}, follow = false, window = {} }})", lua_str(&d), lua_str(&format!("address:{window}")))),
+                        Some(dest) => d(&format!("hl.dsp.window.move({{ workspace = {}, follow = false, window = {} }})", lua_str(&dest), lua_str(&format!("address:{window}")))),
                         None => Ok(()),
                     }
                 }
                 Effect::ShowAgent => {
-                    if self.special_shown() { Ok(()) } else { self.hypr.dispatch(&format!("hl.dsp.workspace.toggle_special({})", lua_str(AGENT_SPECIAL_NAME))) }
+                    if self.special_shown() { Ok(()) } else { d(&format!("hl.dsp.workspace.toggle_special({})", lua_str(AGENT_SPECIAL_NAME))) }
                 }
                 Effect::HideAgent => {
-                    if self.special_shown() { self.hypr.dispatch(&format!("hl.dsp.workspace.toggle_special({})", lua_str(AGENT_SPECIAL_NAME))) } else { Ok(()) }
+                    // The toggle acts on the focused monitor, so go to the one that shows the agent
+                    // workspace first; the end of this function puts focus back.
+                    match self.monitors().into_iter().find(|m| m.special == AGENT_SPECIAL) {
+                        None => Ok(()),
+                        Some(m) => {
+                            let mut r = Ok(());
+                            let mut went = false;
+                            if !m.focused {
+                                r = d(&format!("hl.dsp.focus({{ monitor = {} }})", lua_str(&m.name)));
+                                went = r.is_ok();
+                            }
+                            r.and_then(|_| d(&format!("hl.dsp.workspace.toggle_special({})", lua_str(AGENT_SPECIAL_NAME))).map_err(|(e, _)| (e, went)))
+                        }
+                    }
                 }
                 Effect::RefuseFollow { .. } => Ok(()),
             };
-            if let Err(err) = r {
+            if let Err((err, partial)) = r {
                 self.log(&format!("effect failed: {err}"));
-                return Err((err, i > 0));
+                return Err((err, i > 0 || partial));
             }
         }
         // A switch on a monitor you are not on must not take you there.
@@ -376,7 +421,9 @@ impl Core {
         }
     }
 
-    /// Rebuilds the model from Hyprland. Effects are not carried out: this only learns.
+    /// Rebuilds the model from Hyprland. While it runs nothing is dispatched for the windows and
+    /// focus it finds: the effects the rules ask for are collected and run once at the end. (Setup,
+    /// turning animations off and giving an empty foreign display a workspace, is its own step.)
     pub fn resync(&mut self) {
         self.resyncing = true;
         self.model = Model::new();
@@ -387,7 +434,7 @@ impl Core {
             let _ = self.model.apply(Event::MonitorAdded { monitor: m.name.clone() });
         }
         self.paths.write_atomic("monitors.json", &json!(mons.iter().map(|m| m.name.clone()).collect::<Vec<_>>()).to_string());
-        self.configure_hyprland();
+        self.configure_hyprland(&[]);
         self.observe_monitors(false);
         for (pid, start) in self
             .paths
@@ -414,6 +461,16 @@ impl Core {
             }
         }
         self.resyncing = false;
+        // What the rules want done about what was found (an agent process's window on your
+        // workspace, say) runs now. A failure here is recorded: the next command re-reads again.
+        let todo = std::mem::take(&mut self.deferred);
+        self.dirty = self.monitors().is_empty();
+        if !todo.is_empty() {
+            if let Err((err, _)) = self.exec(&todo) {
+                self.log(&format!("corrective effects after a re-read failed: {err}"));
+                self.dirty = true;
+            }
+        }
         self.persist();
     }
 
@@ -500,18 +557,26 @@ impl Core {
                 let _ = self.apply(Event::Close { window: addr });
             }
             HyprEvent::ActiveWindow { addr } => {
+                // An event can arrive after the focus has moved on (our own dispatches make some: a
+                // monitor is focused for a moment to hide the agent workspace there). Only what is
+                // true now counts; a newer event follows if focus really changed.
+                let now_active = self.hypr.json("activewindow").ok().and_then(|v| v["address"].as_str().map(String::from));
+                if now_active != addr {
+                    self.log("stale activation ignored");
+                    return;
+                }
                 let _ = self.apply(Event::Activate { window: addr, cause: Cause::User });
             }
             HyprEvent::MonitorAdded { name } => {
                 if !self.model.monitors().any(|m| m == name) {
-                    let _ = self.model.apply(Event::MonitorAdded { monitor: name });
+                    let _ = self.model.apply(Event::MonitorAdded { monitor: name.clone() });
                     let order: Vec<String> = {
                         let mut v: Vec<(u32, String)> = self.model.monitors().filter_map(|m| Some((self.model.slot(m)?, m.to_string()))).collect();
                         v.sort();
                         v.into_iter().map(|x| x.1).collect()
                     };
                     self.paths.write_atomic("monitors.json", &json!(order).to_string());
-                    self.configure_hyprland();
+                    self.configure_hyprland(std::slice::from_ref(&name));
                 }
                 self.observe_monitors(true);
                 self.persist();
@@ -547,7 +612,7 @@ impl Core {
                     let _ = std::fs::remove_file(self.paths.ctl_socket());
                     std::process::exit(0);
                 }
-                self.configure_hyprland();
+                self.configure_hyprland(&[]);
                 self.observe_monitors(true);
             }
             HyprEvent::Other => {}
@@ -733,7 +798,12 @@ pub fn handle(shared: &Shared, req: &Value, peer: Option<u32>) -> Envelope {
             }
         }
         "agent_status" | "agent_windows" => Envelope::ok(agent_status(&lock(shared))),
-        "agent_open" => agent_open(shared, &agent, &args),
+        "agent_open" => agent_open(shared, &agent, &args, false),
+        "test_open" => agent_open(shared, &agent, &args, true),
+        "test_stall" => {
+            lock(shared).stall_ms = args["ms"].as_u64().unwrap_or(0);
+            Envelope::ok(json!({ "stall_ms": args["ms"] }))
+        }
         "agent_run" => agent_run(shared, &agent, &args),
         "agent_log" => agent_log(&lock(shared), &args),
         "hands" => hands::run(shared, &agent, &args),
@@ -822,7 +892,7 @@ fn hypr_failure(e: &HyprError, what: &str) -> Envelope {
 
 /// Starts `argv` as a new process on the agent workspace, then waits for a window of its own.
 /// Before launching it refuses an app that would hand the request to a copy you already run.
-fn launch_on_agent(shared: &Shared, agent: &str, label: &str, mut argv: Vec<String>) -> Envelope {
+fn launch_on_agent(shared: &Shared, agent: &str, label: &str, mut argv: Vec<String>, allow_unlisted: bool) -> Envelope {
     let token = match proc::random_token() {
         Ok(t) => t,
         Err(e) => return Envelope::err("internal", format!("no random bytes: {e}"), Retry::Never, ""),
@@ -830,7 +900,6 @@ fn launch_on_agent(shared: &Shared, agent: &str, label: &str, mut argv: Vec<Stri
     let known: HashSet<String>;
     {
         let mut c = lock(shared);
-        let exe = std::path::PathBuf::from(&argv[0]);
         let profile = apps::profile_dir(&c.paths.state, &token);
         match apps::known(&argv[0], &profile) {
             Some(apps::Launch::Separate) => {}
@@ -840,20 +909,17 @@ fn launch_on_agent(shared: &Shared, agent: &str, label: &str, mut argv: Vec<Stri
                     argv.insert(1 + i, f);
                 }
             }
+            None if allow_unlisted => {} // test_open, behind BANEYSPACES_TEST_OPS
             None => {
-                let tokens: HashSet<String> = c.tokens.keys().cloned().collect();
-                let key = apps::instance_key(&exe, &argv[1..]);
-                if let Some(pid) = apps::user_instance(&key, &tokens) {
-                    let env = Envelope::err(
-                        "needs_sandbox",
-                        format!("{label} is already running for you (pid {pid}) and would hand the request to that copy, so an agent would be working in your own app"),
-                        Retry::Never,
-                        "Agents drive only a process BaneySpaces starts as a new instance. Use the app's files or command line instead; a sandbox for apps like this comes later.",
-                    )
-                    .with_data(json!({ "user_pid": pid }));
-                    record(&c, agent, "open", None, None, None, "preflight", &env);
-                    return env;
-                }
+                let env = Envelope::err(
+                    "needs_sandbox",
+                    format!("{label} is not on the list of apps BaneySpaces can start as a separate process for an agent"),
+                    Retry::Never,
+                    "Deny by default: an app that is not known to run as its own process could hand your launches to the agent's copy, or take the agent's request into yours. Use the app's files or command line instead; a sandbox for apps like this comes later.",
+                )
+                .with_data(json!({ "allowed": apps::allowed() }));
+                record(&c, agent, "open", None, None, None, "preflight", &env);
+                return env;
             }
         }
         known = c.model.window_ids().into_iter().map(String::from).collect();
@@ -913,7 +979,7 @@ fn launch_on_agent(shared: &Shared, agent: &str, label: &str, mut argv: Vec<Stri
     env
 }
 
-fn agent_open(shared: &Shared, agent: &str, args: &Value) -> Envelope {
+fn agent_open(shared: &Shared, agent: &str, args: &Value, allow_unlisted: bool) -> Envelope {
     let Some(app) = arg_str(args, "app") else {
         return Envelope::err("invalid_args", "an app is required", Retry::Never, "Example: baneyspaces agent open zenity --info");
     };
@@ -922,7 +988,7 @@ fn agent_open(shared: &Shared, agent: &str, args: &Value) -> Envelope {
     };
     let mut argv = vec![exe.to_string_lossy().into_owned()];
     argv.extend(args.get("args").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(String::from));
-    launch_on_agent(shared, agent, app, argv)
+    launch_on_agent(shared, agent, app, argv, allow_unlisted)
 }
 
 fn agent_run(shared: &Shared, agent: &str, args: &Value) -> Envelope {
@@ -967,7 +1033,7 @@ fn agent_run(shared: &Shared, agent: &str, args: &Value) -> Envelope {
     }
     argv.extend(pre.iter().map(|s| s.to_string()));
     argv.extend(cmd);
-    launch_on_agent(shared, agent, term, argv)
+    launch_on_agent(shared, agent, term, argv, false)
 }
 
 // ---- serving --------------------------------------------------------------------------------
@@ -1010,6 +1076,14 @@ pub fn run(trace: bool) -> i32 {
         eprintln!("baneyspaces daemon: {e}");
         return 1;
     }
+    // One daemon at a time: the lock is held for the life of the process.
+    let _lock = match take_lock(&paths) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("baneyspaces daemon: {e}");
+            return 1;
+        }
+    };
     let sock = paths.ctl_socket();
     if UnixStream::connect(&sock).is_ok() {
         eprintln!("baneyspaces daemon: already running ({})", sock.display());
@@ -1043,6 +1117,8 @@ pub fn run(trace: bool) -> i32 {
         test_ops: std::env::var("BANEYSPACES_TEST_OPS").is_ok_and(|v| v == "1"),
         fail_next: None,
         resyncing: false,
+        deferred: vec![],
+        stall_ms: 0,
     };
     let shared: Shared = Arc::new(Mutex::new(core));
     {
@@ -1090,6 +1166,18 @@ pub fn run(trace: bool) -> i32 {
         std::thread::spawn(move || serve_conn(shared, conn));
     }
     0
+}
+
+/// An exclusive, non-blocking lock on a file next to the socket. Two daemons starting together
+/// (the autostart fires on start and on reload) cannot both pass the check-then-bind that follows.
+pub fn take_lock(paths: &Paths) -> Result<std::fs::File, String> {
+    use std::os::unix::io::AsRawFd;
+    let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(paths.run.join("daemon.lock")).map_err(|e| format!("cannot open the lock file: {e}"))?;
+    // SAFETY: a valid fd from the file just opened.
+    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err("already running (the lock is held)".into());
+    }
+    Ok(f)
 }
 
 /// How long the CLI and MCP client wait for the daemon. The daemon's own budget for one hands call
@@ -1158,6 +1246,8 @@ mod tests {
             test_ops: false,
             fail_next: None,
             resyncing: false,
+            deferred: vec![],
+            stall_ms: 0,
         }
     }
 
@@ -1192,6 +1282,50 @@ mod tests {
         c.reconcile_agents();
         let pids: Vec<u32> = c.model.agent_pids().into_iter().map(|p| p.0).collect();
         assert_eq!(pids, vec![me], "only the live process with the matching start time stays");
+    }
+
+    #[test]
+    fn rebuilding_the_model_dispatches_nothing_until_it_is_done() {
+        let mut c = test_core("resync");
+        c.resyncing = true;
+        c.apply(Event::MonitorAdded { monitor: "A".into() }).unwrap();
+        // The second display's workspace is a corrective effect: collected, not sent.
+        let fx = c.apply(Event::MonitorAdded { monitor: "B".into() }).unwrap();
+        assert_eq!(fx.len(), 1);
+        assert_eq!(c.deferred.len(), 1);
+        // Sending it now (there is no Hyprland behind this fake) fails, and that is recorded rather than lost.
+        c.resyncing = false;
+        let todo = std::mem::take(&mut c.deferred);
+        assert!(c.exec(&todo).is_err());
+    }
+
+    #[test]
+    fn only_one_daemon_can_hold_the_lock() {
+        let p = temp_paths("lock");
+        let first = take_lock(&p).unwrap();
+        assert!(take_lock(&p).is_err(), "a second daemon must not get past the lock");
+        drop(first);
+        assert!(take_lock(&p).is_ok(), "and it is free again once the first is gone");
+    }
+
+    #[test]
+    fn a_half_done_switch_is_never_reported_as_having_changed_nothing() {
+        let steps = show_steps("B", 4, Some("A"), Some("A")); // focus B, move the workspace, focus it
+        assert_eq!(steps.len(), 3);
+        for fail_at in 0..3usize {
+            let mut seen = 0;
+            let r = run_steps(&steps, &mut |_| {
+                let i = seen;
+                seen += 1;
+                if i == fail_at { Err(HyprError::Refused("no".into())) } else { Ok(()) }
+            });
+            let (_, partial) = r.unwrap_err();
+            assert_eq!(partial, fail_at > 0, "failing step {fail_at}");
+        }
+        // And that flag is what makes the envelope's retry `never`.
+        let e = ApplyError::Compositor { err: HyprError::Refused("no".into()), delivered_any: true }.envelope();
+        assert_eq!(e.error.unwrap().retry, Retry::Never);
+        assert_eq!(show_steps("A", 4, None, Some("A")).len(), 1, "nothing to move and already focused: one dispatch");
     }
 
     #[test]

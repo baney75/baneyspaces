@@ -2,7 +2,7 @@
 # engine, on a GTK4 app that BaneySpaces itself started on the agent workspace.
 echo "== agent hands (AT-SPI), scoped to the agent workspace"
 APP="$HERE/gtk_test_app.py"
-GA="$(baneyspaces agent open /usr/bin/python3 "$APP")"
+GA="$(test_open /usr/bin/python3 "$APP")"
 GW="$(echo "$GA" | jq -r '.data.window // empty')"; GPID="$(echo "$GA" | jq -r '.data.pid // empty')"
 check "the GTK test app opened on the agent workspace" test -n "$GW"
 eq "its window is on special:agent" "$(client_ws ${GW:-x})" "special:agent"
@@ -54,6 +54,18 @@ eq "a capture of one window is not_supported on Wayland, with a suggestion" "$(b
 eq "keys are refused" "$(baneyspaces agent press @sa:e1 Return | jq -r .error.code)" "not_supported"
 eq "lend is refused" "$(baneyspaces agent lend foot | jq -r .error.code)" "not_supported"
 same_screen "after the refusals"
+echo "-- scope is checked again right before the action"
+ctl '{"op":"test_stall","args":{"ms":2500}}' >/dev/null
+( baneyspaces agent snapshot --window "$GW" -i > "$TMP/stalled.out" 2>&1 ) & SP=$!
+sleep 1
+# While the call is between finding the window and acting on it, the window leaves the agent workspace.
+hyprctl dispatch "hl.dsp.window.move({ workspace = \"$(mon_ws $M1)\", follow = false, window = \"address:$GW\" })" >/dev/null
+wait $SP
+ctl '{"op":"test_stall","args":{"ms":0}}' >/dev/null
+eq "a call whose window left the agent workspace mid-call is refused" "$(jq -r '.error.code + " " + .error.retry' "$TMP/stalled.out")" "not_in_scope never"
+hyprctl dispatch "hl.dsp.window.move({ workspace = \"special:agent\", follow = false, window = \"address:$GW\" })" >/dev/null; sleep 0.5
+eq "(the test puts it back)" "$(client_ws $GW)" "special:agent"
+same_screen "after the mid-call move"
 # The window closes: the old ref must not resolve to anything else.
 kill "$GPID" 2>/dev/null; sleep 1
 eq "after the app is gone its refs are stale or not found" "$(baneyspaces agent click "$BTN" | jq -r '.error.code' | grep -cE '^(stale_ref|not_found)$')" "1"
@@ -71,7 +83,7 @@ eq "--agent-id names the caller" "$(baneyspaces --agent-id claude-test agent sna
 eq "the log file is private" "$(stat -c %a "$XDG_STATE_HOME/baneyspaces/actions.jsonl")" "600"
 
 echo "-- MCP over stdio"
-GA2="$(baneyspaces agent open /usr/bin/python3 "$APP")"; GW2="$(echo "$GA2" | jq -r '.data.window')"; sleep 1.5
+GA2="$(test_open /usr/bin/python3 "$APP")"; GW2="$(echo "$GA2" | jq -r '.data.window')"; sleep 1.5
 MCP_OUT="$(printf '%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}' \
   '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
