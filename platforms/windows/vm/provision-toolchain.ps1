@@ -1,6 +1,6 @@
 # Installs the build toolchain inside the disposable Windows 11 test VM: Rust (MSVC target),
 # the Visual Studio Build Tools (C++ workload + Windows SDK) and MinGit. Re-runnable after `reset`.
-# Run from Parish1:  ./exec - < platforms/windows/vm/provision-toolchain.ps1   (about 10-20 minutes)
+# Run from seat-a:  ./exec - < platforms/windows/vm/provision-toolchain.ps1   (about 10-20 minutes)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $tmp = 'C:\bs-tools'

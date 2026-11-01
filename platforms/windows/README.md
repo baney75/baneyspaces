@@ -177,7 +177,7 @@ platforms/windows/scripts/build-engine.ps1 -Install              # the pinned ag
 baneyspaces daemon --background                                  # no console window; --log FILE, --trace
 ```
 
-On Parish1 the test VM is `/home/baney75/Projects/_work/win11-vm`. `vm/provision-toolchain.ps1` installs Rust,
+On seat-a the test VM is `/home/alex/Projects/_work/win11-vm`. `vm/provision-toolchain.ps1` installs Rust,
 the Build Tools and MinGit in it (about 10 minutes, redo after `reset`); the tree is built there. The
 Windows crate also cross-checks on Linux with `cargo xwin check --target x86_64-pc-windows-msvc`.
 `tests/live.sh` is the live test: it opens Notepad, Explorer and Calculator at normal level, moves

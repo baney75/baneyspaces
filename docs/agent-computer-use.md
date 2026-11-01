@@ -198,8 +198,8 @@ workspace model, CLI/MCP and hands routing for Linux and Windows; `platforms/lin
 `platforms/windows` hold each shell; `spec/` is shared.
 
 Testing on every platform: Linux runs in a nested Hyprland session (`Hyprland` inside a headless
-output) in CI and on Parish1, then live on Chapel1 and Parish1; Windows runs in a Windows 11 VM on
-Parish1 (KVM, resettable, never on GIGAPC); macOS on the Mac (and the Mac mini node when it has a
+output) in CI and on seat-a, then live on seat-b and seat-a; Windows runs in a Windows 11 VM on
+seat-a (KVM, resettable, never on desktop-a); macOS on the Mac (and the Mac mini node when it has a
 key). Each platform runs the hands probe and the bench in the same shape.
 
 Nightly: one workflow builds all three every night from `main` into a `nightly` prerelease (signed
