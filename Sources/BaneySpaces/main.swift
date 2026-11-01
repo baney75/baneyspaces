@@ -11,6 +11,12 @@ if let i = CommandLine.arguments.firstIndex(of: "--bangs") {
     exit(Launcher.commandLine(Array(CommandLine.arguments[(i + 1)...])))
 }
 
+// `BaneySpaces --dump-iphone-apps-shape` prints the structure (names and types, never values) of iPhone
+// Mirroring's data that BaneySpaces reads for the launcher's iPhone apps, then exits. macOS may ask first.
+if CommandLine.arguments.contains("--dump-iphone-apps-shape") {
+    exit(IPhoneAppCache.dumpShape())
+}
+
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate

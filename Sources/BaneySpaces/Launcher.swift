@@ -421,6 +421,8 @@ final class LauncherModel: ObservableObject {
         rebuild()
         probeWindowCommands()
         refreshIPhoneState()
+        // The first read of iPhone Mirroring's data is what makes macOS ask once.
+        IPhoneAppCache.shared.refreshIfNeeded()
         // Apps installed since the last look show up without a restart.
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let fresh = AppEntry.scan()
@@ -689,7 +691,7 @@ final class LauncherModel: ObservableObject {
     // MARK: iPhone
 
     /// The phone's apps, from a provider (none until the container reader fills one in).
-    var iphoneProvider: IPhoneAppProvider = NoIPhoneApps()
+    var iphoneProvider: IPhoneAppProvider = IPhoneAppCache.shared
     /// What iPhone Mirroring last said about the connection, read in the background when the launcher opens.
     private var iphoneState: (state: IPhoneState, phrase: String?) = (.unknown, nil)
 
@@ -701,12 +703,14 @@ final class LauncherModel: ObservableObject {
         return rows.map { row in
             let query: String
             let id: String
+            var icon = LauncherItem.Icon.file(IPhoneMirroring.path)
             switch row.kind {
             case .app(let a): query = a.name; id = "iphone:app:\(a.bundleID ?? a.name)"
+                icon = a.icon.flatMap(NSImage.init(data:)).map { LauncherItem.Icon.image($0) } ?? .file(IPhoneMirroring.path)
             case .search(let q): query = q; id = "iphone:search"
             }
             return LauncherItem(id: id, section: "iPhone", title: row.title, subtitle: row.subtitle,
-                                icon: .file(IPhoneMirroring.path), badge: "iPhone", run: { [weak self] in
+                                icon: icon, badge: "iPhone", run: { [weak self] in
                                     guard let self else { return }
                                     self.close()
                                     self.actions.searchIPhone(query, self.target ?? self.actions.current())
