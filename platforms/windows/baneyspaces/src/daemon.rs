@@ -358,6 +358,11 @@ impl Core {
                 continue;
             }
             let Some(mut e) = self.hidden.get(*hwnd).cloned() else { continue };
+            // An agent's window starts minimized (so it never draws) and is ghosted that way; the engine cannot
+            // read a minimized window, so once it is tracked and invisible it is restored.
+            if *w == Want::HideAgent && e.how == How::Ghost && tracked.contains(hwnd) && winapi::is_iconic(h) && cloak::still_hidden(&e) {
+                winapi::restore_minimized_no_activate(h);
+            }
             if cloak::still_hidden(&e) {
                 continue;
             }

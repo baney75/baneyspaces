@@ -16,5 +16,5 @@ while ($sw.Elapsed.TotalSeconds -lt $Seconds) {
   }
 }
 "polls=$polls over $Seconds s"
-foreach ($k in $new.Keys) { "NEW $k first_seen_at=$($new[$k].first)ms visible_polls=$($new[$k].seen_ms.Count) :: $($new[$k].last)" }
+foreach ($k in $new.Keys) { $sm = $new[$k].seen_ms; $span = if ($sm.Count -gt 0) { $sm[-1] - $sm[0] } else { 0 }; "NEW $k first_seen_at=$($new[$k].first)ms visible_polls=$($sm.Count) exposed_ms=$span :: $($new[$k].last)" }
 if ($new.Count -eq 0) { 'NEW none' }

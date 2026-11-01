@@ -38,17 +38,38 @@ must stay drivable, so it is made fully transparent (`WS_EX_LAYERED`, alpha 0), 
 It is still on screen and un-cloaked, and you cannot see or touch it. (`WS_EX_TOOLWINDOW` would also
 hide it from the engine, so it is not used.)
 
-**Never losing a window.** The daemon writes a window into `%LOCALAPPDATA%\BaneySpaces\state.json`
-(`hidden`) *before* it hides it and removes it *after* it shows it again.
+**Never losing a window.** Three rules, all in `daemon.rs`:
 
-- On a clean exit (`baneyspaces stop`, Ctrl+C, closing the console, logoff, a panic) every window is shown.
-- After a crash or `taskkill /F`, the next start reads the list and shows every window on it, before
-  doing anything else. A window whose handle is gone is dropped.
-- Safety net: a window the shell has cloaked that is *not* on the list, is on your current virtual
-  desktop (`IVirtualDesktopManager`, documented) and looks like an app window is shown too.
-- **Agent windows are the exception.** They belong off your screen, so after a restart they stay
-  ghosted while their process (pid and start time) still runs. If it is gone they are shown, never lost.
-  The daemon does not close an agent's app when it exits: use `agent-workspace show` after a restart.
+1. **Record first.** A window is written to `%LOCALAPPDATA%\BaneySpaces\state.json` (`hidden`) and flushed
+   to disk *before* it is hidden. The write retries its rename with a backoff (an antivirus or backup
+   may hold the file). If it still fails, **nothing is hidden**: a `switch`, `move` or agent-workspace
+   request is refused with an error (`retry: safe`, "nothing was hidden") and the model is put back.
+   (An agent's window is the exception to the exception: it is kept off your screen even when the record
+   cannot be saved, because it is the agent's, not yours.)
+2. **Forget last.** An entry is removed only after the window reads back as shown (cloak off, back in place,
+   ghost styles restored). A show that fails (explorer.exe restarting, the shell's COM down) keeps its entry
+   and every poll retries it; `TaskbarCreated` (explorer.exe rebuilt the taskbar) triggers a look at once.
+3. **Tracked while it exists.** A hidden window stays in the set for as long as `IsWindow` is true, whatever its
+   title or styles become (an empty title, a tool-window style, an owner). Only a destroyed window leaves.
+
+And what is hidden is **read back from Windows on every poll**, never taken from memory: a cloak the shell
+dropped (a virtual-desktop switch re-evaluates them), a parked window an app moved back, a ghost an app reset
+is hidden again within a poll, keeping the position it will be restored to.
+
+- On a clean exit (`baneyspaces stop`, Ctrl+C or closing a foreground console) every window is shown.
+  **Sign-out and shutdown:** a background daemon has no console, so it owns a hidden *top-level* window (a
+  message-only one is never sent these) that hears `WM_QUERYENDSESSION` / `WM_ENDSESSION`, and puts every
+  window back before apps are asked to save. A cancelled sign-out resumes. A panic in any thread restores and
+  then ends the process; it never runs on stale state.
+- After a crash or `taskkill /F`, the next start reads the list and shows every window on it, before doing
+  anything else. Only windows in BaneySpaces' own record are ever uncloaked: one that Windows or another tool
+  (komorebi, GlazeWM) cloaked is left alone.
+- **Agent windows are the exception.** They belong off your screen, so after a restart they stay ghosted while
+  their process (pid and start time) still runs. If it is gone they are shown, never lost. The daemon does
+  not close an agent's app when it exits: use `agent-workspace show` after a restart.
+- **One daemon.** A named mutex and the pipe's first instance (`FILE_FLAG_FIRST_PIPE_INSTANCE`) are taken
+  before anything is touched, so a second start exits without putting the first one's windows back. Two
+  listeners keep a free pipe instance at all times, and the client waits out `ERROR_PIPE_BUSY`.
 
 Taskbar: a cloaked window keeps its taskbar button (as with komorebi and GlazeWM), so the taskbar shows
 every workspace's windows. An agent's window has no button.
@@ -59,9 +80,12 @@ Explorer owns Win+1 to Win+9, so `RegisterHotKey` fails for them. The daemon run
 own thread with its own message loop. The callback matches a small table and posts to the worker over a
 channel; it takes no lock and never waits (Windows drops a hook whose callback is slow). It swallows only
 the chords in the Windows column of `spec/keys.json`: **Win+1-9** switch, **Win+Shift+1-9** move,
-**Win+`** show or hide the agent workspace. It keeps its own count of which modifiers are down (the
-async key state can lag when two keys arrive in the same millisecond), swallows the digit's key-up too,
-and presses an unassigned key (0xE8) so releasing Win does not open the Start menu.
+**Win+`** show or hide the agent workspace. It keeps its own count of which modifiers are down, but only as a
+hint: on every candidate chord each modifier it believes down is confirmed against `GetAsyncKeyState` (or a
+key-down within 40 ms, when the system's state has not caught up), so a key-up that was missed (Win+L and the
+secure desktop, Ctrl+Alt+Del, a UAC prompt) cannot leave Win "stuck". The count is also cleared on session lock
+and unlock and when the input desktop changes. The hook swallows the digit's key-up too, and presses an
+unassigned key (0xE8) so releasing Win does not open the Start menu.
 
 Limit (by design): Windows keeps a normal-level hook from seeing keys typed into an **elevated** window
 (UIPI), so **the Win chords do nothing while an elevated window has focus** (Task Manager, an elevated
@@ -76,10 +100,13 @@ opens joins the workspace its display shows (R-P1). Focus never rests on a windo
 
 ## The agent workspace
 
-`baneyspaces agent open <app>` starts the app as its own process, **in its own job object** (Linux
+`baneyspaces agent open <app>` starts the app as its own process, **in the user's agent job object** (named, so a restarted daemon opens the same job and an agent's app that is still running is still recognized; a process that cannot join the job is not started) (Linux
 uses a launch token in the environment; a job answers "is this process one we started, or a child of
 one?" directly), minimized and without focus, so a window that honors the show command is never drawn
-on your screen. The model registers the pid and its start time before the first window can be seen.
+on your screen. The model registers the pid and its start time before the first window can be seen. Every window of an
+agent's process is ghosted, owned or not: a dialog or popup its app opens is caught from the WinEvent when it is
+created (if it has a frame) or shown, and is an agent window like the first, so the agent can still drive it. This
+is measured, not claimed away: one dialog was visible in 1 of ~110,000 polls (under a frame) before the ghost took.
 Every action runs the scope guard first (`check_scope`: on the agent workspace, a registered process,
 the same pid and start time), and the engine is run as a child process with no `--headed`: it sends
 no `SendInput`, never moves the cursor and never draws the cursor overlay. The engine's own `type` is
@@ -103,8 +130,9 @@ through to the engine. `press`, `key` and `pointer` are `not_supported` (phase 3
   would start, so it cannot be tied to the agent.
 - An agent's own process (a pid in a job, or registered) is refused every user operation
   (`switch`, `move`, `stop`, the agent workspace toggles, parking a window...) with `not_in_scope`. The pipe's
-  client pid decides, never the request. The control pipe is `\\.\pipe\baneyspaces-<user>`, with an
-  ACL for this user and SYSTEM only, and remote clients rejected.
+  client pid decides, never the request. The control pipe is `\\.\pipe\baneyspaces-<your SID>` (not the user name, which can collide), with an ACL for you and
+  SYSTEM only and remote clients rejected; the client checks that the server process runs as you and opens the pipe for
+  identification only.
 - The engine keeps its snapshots in `%LOCALAPPDATA%\BaneySpaces\engine-state` (`AGENT_DESKTOP_HOME`),
   because it refuses a directory an elevated process created.
 

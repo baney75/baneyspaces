@@ -3,7 +3,7 @@
 #   uncloak <hwnd>       the shell cloak off, as another tool or a virtual desktop switch would
 #   cloaked <hwnd>       the DWM cloaked state (2 = shell)
 #   settitle <hwnd> <t>  SetWindowText (an empty one makes the window fail a "has a title" check)
-#   endsession <query|cancel>  send WM_QUERYENDSESSION / WM_ENDSESSION(false) to the daemon's hidden window
+#   endsession 0 <query|cancel>  send WM_QUERYENDSESSION / WM_ENDSESSION(false) to the daemon's hidden window
 param([string]$Cmd, [long]$Hwnd = 0, [string]$Arg = '')
 Add-Type -TypeDefinition @'
 using System; using System.Runtime.InteropServices;
