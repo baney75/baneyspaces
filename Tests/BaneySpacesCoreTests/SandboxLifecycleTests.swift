@@ -114,7 +114,7 @@ final class SandboxLifecycleTests: XCTestCase {
     func testOnlyOneManagerOwnsTheSandbox() throws {
         let r = rig()
         _ = try r.manager.up(task: "t1")
-        let other = SandboxManager(tart: r.st, facts: r.facts, clock: r.clock, paths: SandboxPaths(root: r.dir), settings: { SandboxSettings(enabled: true) })
+        let other = SandboxManager(tart: r.st, facts: r.facts, clock: r.clock, paths: SandboxPaths(root: r.dir), settings: { SandboxSettings(enabled: true) }, memory: r.memory, hostMemoryGB: 32)
         XCTAssertThrowsError(try other.up(task: "t2")) { XCTAssertEqual(($0 as? SandboxError)?.code, "not_owner") }
     }
 
