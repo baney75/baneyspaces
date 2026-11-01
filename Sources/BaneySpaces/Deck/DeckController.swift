@@ -341,8 +341,8 @@ final class DeckController {
         case .ping:
             var info = engine.statusInfo
             info["accessibility"] = AXIsProcessTrusted() ? "allowed" : "not allowed"
-            info["hands"] = HandsEngine.shared.permissionProblem() == nil ? "ready" : "needs Accessibility"
-            info["lent"] = HandsLends.shared.current().entries.map(\.app).joined(separator: ", ")
+            info["hands"] = AXIsProcessTrusted() ? "ready" : "needs Accessibility"
+            info["lent"] = HandsLends.shared.current().active(now: Date()).map(\.app).joined(separator: ", ")
             info["version"] = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
             return .init(ok: true, info: info)
         case .list:
@@ -464,21 +464,43 @@ final class DeckController {
                 return .init(ok: true, info: ["workspace": "\(n)", "app": appName])
             }
             // Not running: the agent starts it, so everything it opens at launch (its first untitled
-            // window) is the agent's and goes to the agent workspace, not onto your screen. An app
-            // that opens no window of its own gets one from its New Window command.
-            NSWorkspace.shared.openApplication(at: url, configuration: cfg) { app, _ in
-                guard let app else { return }
-                DispatchQueue.main.async {
-                    // The launch is the agent's: its windows go to the agent workspace, and the app coming
-                    // forward while it starts never takes you there (a launch activates ~100 ms in).
-                    AgentActivity.shared.mark(pid: app.processIdentifier, for: 4)
-                    h.claim(app.processIdentifier, n, true, nil)
-                }
+            // window) is the agent's and goes to the agent workspace, not onto your screen. The claim
+            // is made when the launch is first seen (the notification can come before the completion
+            // handler, and a launch may activate the app before either), and the bundle is marked now,
+            // before there is a pid. An app that opens no window of its own gets one from its New Window command.
+            if let bundle { AgentActivity.shared.markLaunch(bundle: bundle, for: 10) }
+            var claimed = false
+            func claimLaunch(_ app: NSRunningApplication) {
+                guard !claimed else { return }
+                claimed = true
+                AgentActivity.shared.markLaunch(pid: app.processIdentifier, for: 6)
+                h.claim(app.processIdentifier, n, true, nil)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                     if Windows.standardIDs(of: app.processIdentifier).isEmpty { _ = newWindow(app) }
                 }
             }
+            var observer: NSObjectProtocol?
+            observer = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main) { note in
+                guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication, app.bundleIdentifier == bundle, bundle != nil else { return }
+                claimLaunch(app)
+                if let o = observer { NSWorkspace.shared.notificationCenter.removeObserver(o); observer = nil }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
+                if let o = observer { NSWorkspace.shared.notificationCenter.removeObserver(o); observer = nil }
+            }
+            NSWorkspace.shared.openApplication(at: url, configuration: cfg) { app, _ in
+                guard let app else { return }
+                DispatchQueue.main.async { claimLaunch(app) }
+            }
             return .init(ok: true, info: ["workspace": "\(n)", "app": appName, "note": "starting; its window opens there in a moment"])
+        case "lend":
+            // Donovan's: the CLI asks him to confirm in a terminal; the menu is his click. args: app or pid, time, session.
+            let target = args.first ?? ""
+            let env = Int32(target).map { hands.userLend(pid: $0, duration: args.dropFirst().first, session: args.dropFirst(2).first ?? "") }
+                ?? hands.userLend(app: target, duration: args.dropFirst().first, session: args.dropFirst(2).first ?? "")
+            return .init(ok: true, info: ["envelope": env.line])
+        case "return":
+            return .init(ok: true, info: ["envelope": hands.userReturn(app: args.first).line])
         case "run":
             guard let n = h.workspace() else { return .init(ok: false, error: "the agent workspace is off: baneyspaces agent on") }
             let cmd = args.drop { $0 != "--" }.dropFirst().joined(separator: " ")
@@ -501,7 +523,7 @@ final class DeckController {
             h.move(item.windowNumber, n)
             return .init(ok: true, info: ["workspace": "\(n)", "moved": item.label])
         default:
-            return .init(ok: false, error: "usage: baneyspaces agent status|on [N]|off|open <app> [file…]|run [--dir D] -- <cmd>|move <row>")
+            return .init(ok: false, error: "usage: baneyspaces agent status|on [N]|off|open <app> [file…]|lend <app>|return [app]|run [--dir D] -- <cmd>|move <row>")
         }
     }
 

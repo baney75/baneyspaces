@@ -1,29 +1,63 @@
 import Foundation
 
-/// A short list of apps an agent action is touching right now. While an app is marked, an
-/// activation or focus change from it is the agent's doing, not the user's, so BaneySpaces'
-/// follow-the-focus logic leaves it alone instead of switching the user's workspace.
+/// Which agent actions are running, or just finished, so BaneySpaces' follow-the-focus logic can tell an
+/// activation an action caused from the user picking an app. An action holds its mark from before it
+/// is queued until a short tail after it ends; the mark is for one window of one process, so the user's
+/// own windows of the same app are never ignored. An app the agent launched itself is marked for the
+/// whole process (every window it makes at launch is the agent's).
 public struct FocusGuard: Equatable, Sendable {
-    /// How long a mark lasts after the action that set it.
-    public static let window: TimeInterval = 1.0
+    /// How long a mark outlasts the action that set it.
+    public static let tail: TimeInterval = 1.5
 
-    private var until: [Int32: Date] = [:]
+    struct Key: Hashable, Sendable { var pid: Int32; var window: UInt32 }
+    private var running: [Int: Key] = [:]
+    private var tailUntil: [Key: Date] = [:]
+    private var launchPid: [Int32: Date] = [:]
+    private var launchBundle: [String: Date] = [:]
+    private var nextToken = 1
+
     public init() {}
 
-    /// Marks `pid` until `now + window`. Marking again only ever extends.
-    public mutating func mark(pid: Int32, now: Date, for window: TimeInterval = FocusGuard.window) {
-        let end = now.addingTimeInterval(window)
-        if let old = until[pid], old > end { return }
-        until[pid] = end
+    /// An action on `window` of `pid` is starting (before it waits for the engine).
+    public mutating func begin(pid: Int32, window: UInt32) -> Int {
+        let t = nextToken; nextToken += 1
+        running[t] = Key(pid: pid, window: window)
+        return t
     }
 
-    public func isMarked(pid: Int32, now: Date) -> Bool { (until[pid] ?? .distantPast) > now }
+    /// The action ended: its mark lasts `tail` longer.
+    public mutating func end(_ token: Int, now: Date, tail: TimeInterval = FocusGuard.tail) {
+        guard let k = running.removeValue(forKey: token) else { return }
+        let until = now.addingTimeInterval(tail)
+        if (tailUntil[k] ?? .distantPast) < until { tailUntil[k] = until }
+    }
 
-    public mutating func prune(now: Date) { until = until.filter { $0.value > now } }
-    public var count: Int { until.count }
+    /// The agent started this process (or is about to start this bundle): all its windows are the agent's for a while.
+    public mutating func markLaunch(pid: Int32, now: Date, for window: TimeInterval) {
+        launchPid[pid] = max(launchPid[pid] ?? .distantPast, now.addingTimeInterval(window))
+    }
+    public mutating func markLaunch(bundle: String, now: Date, for window: TimeInterval) {
+        launchBundle[bundle] = max(launchBundle[bundle] ?? .distantPast, now.addingTimeInterval(window))
+    }
+
+    /// Whether an activation of `pid` that put `window` in focus is the agent's doing.
+    public func caused(pid: Int32, window: UInt32?, bundle: String?, now: Date) -> Bool {
+        if (launchPid[pid] ?? .distantPast) > now { return true }
+        if let b = bundle, (launchBundle[b] ?? .distantPast) > now { return true }
+        guard let window else { return false }
+        let k = Key(pid: pid, window: window)
+        return running.values.contains(k) || (tailUntil[k] ?? .distantPast) > now
+    }
+
+    public mutating func prune(now: Date) {
+        tailUntil = tailUntil.filter { $0.value > now }
+        launchPid = launchPid.filter { $0.value > now }
+        launchBundle = launchBundle.filter { $0.value > now }
+    }
+    public var activeCount: Int { running.count }
 }
 
-/// The shared guard: the hands mark it on both sides of every action, the focus logic asks it.
+/// The shared guard: the hands begin and end every action here, the focus logic asks.
 public final class AgentActivity: @unchecked Sendable {
     public static let shared = AgentActivity()
     private let lock = NSLock()
@@ -32,15 +66,31 @@ public final class AgentActivity: @unchecked Sendable {
 
     public init(clock: @escaping () -> Date = Date.init) { self.clock = clock }
 
-    public func mark(pid: Int32, for window: TimeInterval = FocusGuard.window) {
+    /// Holds the mark for the whole action. Always pair with `end`.
+    public func begin(pid: Int32, window: UInt32) -> Int {
         lock.lock(); defer { lock.unlock() }
         guardrail.prune(now: clock())
-        guardrail.mark(pid: pid, now: clock(), for: window)
+        return guardrail.begin(pid: pid, window: window)
     }
 
-    /// Whether an agent action touched this app within the last second.
-    public func caused(pid: Int32) -> Bool {
+    public func end(_ token: Int) {
         lock.lock(); defer { lock.unlock() }
-        return guardrail.isMarked(pid: pid, now: clock())
+        guardrail.end(token, now: clock())
+    }
+
+    /// The agent is launching this process or bundle.
+    public func markLaunch(pid: Int32, for window: TimeInterval) {
+        lock.lock(); defer { lock.unlock() }
+        guardrail.markLaunch(pid: pid, now: clock(), for: window)
+    }
+    public func markLaunch(bundle: String, for window: TimeInterval) {
+        lock.lock(); defer { lock.unlock() }
+        guardrail.markLaunch(bundle: bundle, now: clock(), for: window)
+    }
+
+    /// Whether this activation is an agent's: false for any window the agent isn't working on.
+    public func caused(pid: Int32, window: UInt32?, bundle: String? = nil) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return guardrail.caused(pid: pid, window: window, bundle: bundle, now: clock())
     }
 }

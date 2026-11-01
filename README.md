@@ -391,28 +391,35 @@ pinned commit by `make install` and linked into the app; the scope and focus gua
 MCP server are BaneySpaces'.
 
 ```sh
-baneyspaces agent open TextEdit                 # on the agent workspace; prints the window id
+baneyspaces agent open TextEdit notes.txt       # on the agent workspace; files only from the handoff folder; prints the window id
 baneyspaces agent snapshot --app TextEdit -i    # refs for what an agent can act on
 baneyspaces agent type @s8f3k2p9:e2 "Hello"     # act on a ref; the result carries what it read back
 baneyspaces agent click|set-value|toggle|scroll|select|press <ref> …
 baneyspaces agent find --window 4211 --role button --name Save
 baneyspaces agent get @s8f3k2p9:e2 value        # check from the live element
-baneyspaces agent shot --window 4211            # one window as a PNG, even while parked (needs Screen Recording)
+baneyspaces agent shot --window 4211            # one window as a PNG in BaneySpaces' shots folder, even while parked (needs Screen Recording)
 baneyspaces agent windows                       # the windows an agent may use right now
-baneyspaces agent lend Excel --for 20m          # borrow an app from your workspaces ...
-baneyspaces agent return Excel                  # ... and give it back
 claude mcp add baneyspaces -- baneyspaces mcp   # the same tools over MCP, for Claude Code and Codex
 ```
+
+You, not an agent, lend an app from your workspaces: pick it under **Lend to Agents** in the menu bar menu, or type
+`baneyspaces agent lend Excel --for 20m` in a terminal (it asks you to type the app's name; `agent return Excel` takes it back).
+A lend names that process and its windows as they are then, is refused while you use the app (`in_use`: in front, or used in the
+last 30 seconds), ends when you return it, when the agent's session ends, or after 30 minutes (up to 8 hours), and is listed in
+`state.json`. Agents can't lend: the MCP server has no such tool and an agent's `lend` answers `needs_lend`. Apps that hold your
+own data (Safari, Notes, Mail, Messages, Calendar, Photos) answer `needs_sandbox` to `agent open`; the sandbox arrives in a later phase.
 
 Every command prints one JSON envelope: `{"ok":true,"data":{…}}`, or `{"ok":false,"error":{"code","message",
 "retry","suggestion"}}` with `retry` one of `safe`, `after_snapshot`, `never`. Four rules, all enforced by the app:
 an agent acts only on windows on the agent workspace or on an app you lent (anything else answers
-`outside_agent_workspace`, and reads are refused the same way); an action never activates an app, raises a window,
-moves the pointer or posts a global keystroke; BaneySpaces ignores any app activation an agent action caused, so
-your workspace doesn't follow it; and every action returns what it verified from the exact window it targeted. A
-lend ends when the agent returns it, when its session ends, or after 30 minutes (`--for` up to 8 hours), and
-`state.json` lists what is lent. `scripts/agent-hands-probe.swift` proves the rest on your Mac: 200 actions across
-TextEdit, Finder and Notes while it samples your front app, workspace, pointer and front window every 50 ms.
+`outside_agent_workspace`, and reads are refused the same way; scope is checked again right before every engine call);
+an action never activates an app, raises a window, moves the pointer or posts a global keystroke (`press` answers
+`not_supported` until keys can reach one background app); BaneySpaces ignores an app activation an agent action
+caused, for the window the action worked on and only while it ran, so your workspace doesn't follow it and your own
+windows of the same app still do; and every action returns what it verified from the exact window it targeted.
+`scripts/agent-hands-probe.swift` proves the rest on your Mac: 200 actions in TextEdit (a temporary document) and
+Finder (a temporary folder) while it samples your front app, workspace, pointer, front window and any window
+appearing on another workspace every 50 ms.
 
 `make build` and `make test` build the engine first (Rust is needed once; `scripts/build-engine.sh`). The plan,
 the rules and the phases are in [docs/agent-computer-use.md](docs/agent-computer-use.md).

@@ -4,22 +4,30 @@ import BaneySpacesCore
 /// What the hands need from the rest of the app. Everything here runs on the main thread.
 struct HandsHost {
     var agentWorkspace: () -> Int? = { nil }
-    /// Every window BaneySpaces tracks, with its workspace.
+    /// Every window BaneySpaces places, with its workspace, from its model (cheap: no scan).
     var windows: () -> [HandsWindow] = { [] }
-    /// The deck's `agent open <app> [targets…]`.
+    /// The same after a scan (at most twice a second): a window that opened a moment ago is in it.
+    var freshWindows: () -> [HandsWindow] = { [] }
+    /// One window, straight from the model, for the check right before an engine call.
+    var live: (UInt32) -> HandsWindow? = { _ in nil }
+    var titles: ([UInt32]) -> [UInt32: String] = { _ in [:] }
+    /// The deck's `agent open <app> [files…]`.
     var open: ([String]) -> Wire.Reply = { _ in .init(ok: false, error: "not ready") }
 }
 
-/// Runs one agent command: parses nothing, checks scope, calls the engine, returns evidence.
-/// Lives in the app process, which holds Accessibility; the CLI and the MCP server only send here.
+/// Runs one agent command: checks scope, calls the engine, returns evidence. Lives in the app process,
+/// which holds Accessibility; the CLI and the MCP server only send here.
 final class HandsRouter {
     var host = HandsHost()
     private let lends = HandsLends.shared
 
-    /// What a snapshot's refs belong to, so an action on a ref knows its window without trusting the caller.
+    /// What a snapshot's refs belong to. A ref is good only for this snapshot's window and process.
     private struct Snap { var window: UInt32; var pid: Int32; var app: String; var at: Date }
     private var snaps: [String: Snap] = [:]
     private let lock = NSLock()
+
+    /// Files an agent may hand to an app live here.
+    static var handoffFolder: URL { HandsEngine.home.appendingPathComponent("handoff", isDirectory: true) }
 
     // MARK: wire
 
@@ -36,9 +44,8 @@ final class HandsRouter {
 
     func handle(_ req: HandsRequest) -> HandsEnvelope {
         lends.expire()
-        if let problem = HandsEngine.shared.permissionProblem(), req.verb != "windows", req.verb != "lend", req.verb != "return", req.verb != "open" {
-            return .failure(problem)
-        }
+        if HandsTools.userOnly.contains(req.verb) { return .failure(HandsParse.askedForLend(req.string("app"))) }
+        if req.verb != "windows", req.verb != "open", let problem = HandsEngine.shared.permissionProblem() { return .failure(problem) }
         switch req.verb {
         case "windows": return windows()
         case "snapshot": return snapshot(req)
@@ -53,8 +60,6 @@ final class HandsRouter {
         case "toggle": return act(req, .toggle, "toggle")
         case "shot": return shot(req)
         case "open": return open(req)
-        case "lend": return lend(req)
-        case "return": return giveBack(req)
         default: return .failure(HandsError(.badArguments, "unknown agent command \(req.verb)", suggestion: "Commands: " + HandsTools.all.map(\.verb).joined(separator: ", ")))
         }
     }
@@ -63,12 +68,22 @@ final class HandsRouter {
 
     private func onMain<T>(_ f: () -> T) -> T { Thread.isMainThread ? f() : DispatchQueue.main.sync(execute: f) }
 
-    private func allWindows() -> (windows: [HandsWindow], agent: Int?) {
-        onMain { (host.windows(), host.agentWorkspace()) }
+    private func listWindows(fresh: Bool = false) -> (windows: [HandsWindow], agent: Int?) {
+        onMain { (fresh ? host.freshWindows() : host.windows(), host.agentWorkspace()) }
     }
 
     private func decide(_ w: HandsWindow, _ agent: Int?) -> ScopeDecision {
-        ScopeGuard.check(w, agentWorkspace: agent, lends: lends.current(), now: Date())
+        ScopeGuard.check(w, agentWorkspace: agent, lends: lends.current(), now: Date(), inUse: UserActivity.shared.inUse(w.pid))
+    }
+
+    /// The check right before an engine call: the window is still the same process's, and still in scope.
+    /// A move to one of Donovan's workspaces or a revoked lend between resolving and dispatching stops the call.
+    private func gate(_ w: HandsWindow) -> HandsError? {
+        let (now, agent) = onMain { (host.live(w.id), host.agentWorkspace()) }
+        guard let now else { return HandsError(.windowNotFound, "window \(w.id) is gone", suggestion: "Run `baneyspaces agent windows` and take a new snapshot.", retry: .afterSnapshot) }
+        guard now.pid == w.pid else { return HandsError(.staleRef, "window \(w.id) belongs to a different process now", suggestion: "Take a new snapshot.", retry: .afterSnapshot) }
+        if case .denied(let e) = decide(now, agent) { return e }
+        return nil
     }
 
     private func windowJSON(_ w: HandsWindow, _ scope: ScopeDecision) -> JSONValue {
@@ -76,12 +91,22 @@ final class HandsRouter {
                  "workspace": w.workspace.map(JSONValue.int) ?? .null, "scope": .string(scope.reason)])
     }
 
+    private func targetJSON(_ w: HandsWindow, _ scope: ScopeDecision) -> JSONValue {
+        .object(["pid": .int(Int(w.pid)), "window": .int(Int(w.id)), "app": .string(w.app), "scope": .string(scope.reason)])
+    }
+
     private func windows() -> HandsEnvelope {
-        let (all, agent) = allWindows()
-        let usable = ScopeGuard.visible(all, agentWorkspace: agent, lends: lends.current(), now: Date())
+        let (all, agent) = listWindows(fresh: true)
+        let usable = ScopeGuard.visible(all, agentWorkspace: agent, lends: lends.current(), now: Date(), inUse: { UserActivity.shared.inUse($0) })
+            .sorted { $0.window.id < $1.window.id }
+        let titles = onMain { host.titles(usable.map(\.window.id)) }
         return .success(.object([
             "agent_workspace": agent.map(JSONValue.int) ?? .null,
-            "windows": .array(usable.sorted { $0.window.id < $1.window.id }.map { windowJSON($0.window, $0.scope) }),
+            "windows": .array(usable.map { u in
+                var w = u.window
+                w.title = titles[w.id] ?? ""
+                return windowJSON(w, u.scope)
+            }),
         ]))
     }
 
@@ -91,8 +116,9 @@ final class HandsRouter {
 
     /// The window a snapshot or find names, and that the scope guard allows.
     private func target(_ req: HandsRequest) -> Result<(HandsWindow, ScopeDecision, String?), HandsError> {
-        let (all, agent) = allWindows()
+        var (all, agent) = listWindows()
         if let id = req.int("window") {
+            if !all.contains(where: { Int($0.id) == id }) { (all, agent) = listWindows(fresh: true) }
             guard let w = all.first(where: { Int($0.id) == id }) else {
                 return .failure(HandsError(.windowNotFound, "no window \(id) that BaneySpaces tracks", suggestion: "Run `baneyspaces agent windows` for the ids you can use.", retry: .safe))
             }
@@ -101,17 +127,24 @@ final class HandsRouter {
             return .success((w, d, nil))
         }
         let name = req.string("app") ?? ""
-        let ofApp = all.filter { matches($0, name) }
+        var ofApp = all.filter { matches($0, name) }
+        if ofApp.isEmpty { (all, agent) = listWindows(fresh: true); ofApp = all.filter { matches($0, name) } }
         guard !ofApp.isEmpty else {
             let running = NSWorkspace.shared.runningApplications.contains { $0.localizedName?.caseInsensitiveCompare(name) == .orderedSame || $0.bundleIdentifier == name }
             return .failure(HandsError(running ? .windowNotFound : .appNotFound,
                                        running ? "\(name) has no window BaneySpaces tracks" : "\(name) isn't running",
                                        suggestion: running ? "Open one with `baneyspaces agent open \(name)`." : "Start it on the agent workspace with `baneyspaces agent open \(name)`.", retry: .safe))
         }
-        let allowed = ofApp.map { ($0, decide($0, agent)) }.filter { $0.1.allowed }
+        let decided = ofApp.map { ($0, decide($0, agent)) }
+        let allowed = decided.filter { $0.1.allowed }
         guard !allowed.isEmpty else {
-            if case .denied(let e) = decide(ofApp[0], agent) { return .failure(e) }
+            if case .denied(let e) = decided[0].1 { return .failure(e) }
             return .failure(HandsError(.outsideAgentWorkspace, "\(name) isn't on the agent workspace", suggestion: "Open it with `baneyspaces agent open \(name)`.", retry: .never))
+        }
+        let pids = Set(allowed.map(\.0.pid))
+        guard pids.count == 1 else {
+            return .failure(HandsError(.ambiguous, "\(name) has windows in \(pids.count) processes: " + allowed.map { "\($0.0.id) (pid \($0.0.pid))" }.joined(separator: ", "),
+                                       suggestion: "Pass --window with one of those ids.", retry: .afterSnapshot))
         }
         let pick = allowed.max { $0.0.id < $1.0.id }!
         let note = allowed.count > 1 ? "newest of \(allowed.count) windows; pass window to choose" : nil
@@ -129,7 +162,8 @@ final class HandsRouter {
 
     /// `register: false` for the snapshots taken as evidence: the agent never sees their refs, so they must not push its refs out.
     private func read(_ w: HandsWindow, interactive: Bool, compact: Bool, depth: UInt8 = 10, register: Bool = true) -> Result<JSONValue, HandsError> {
-        switch HandsEngine.shared.snapshot(app: w.app, windowID: w.id, interactive: interactive, compact: compact, depth: depth, evidence: !register) {
+        if let e = gate(w) { return .failure(e) }
+        switch HandsEngine.shared.snapshot(pid: w.pid, app: w.app, windowID: w.id, interactive: interactive, compact: compact, depth: depth, evidence: !register) {
         case .failed(let e): return .failure(e)
         case .ok(let data):
             // The engine must have read the window we asked for, never its neighbor.
@@ -147,12 +181,11 @@ final class HandsRouter {
         case .success(let (w, scope, note)):
             switch read(w, interactive: req.bool("interactive"), compact: req.bool("compact"), depth: UInt8(clamping: req.int("depth") ?? 10)) {
             case .failure(let e): return .failure(e)
-            case .success(var data):
+            case .success(let data):
                 var o = data.object ?? [:]
-                o["target"] = .object(["pid": .int(Int(w.pid)), "window": .int(Int(w.id)), "app": .string(w.app), "scope": .string(scope.reason)])
+                o["target"] = targetJSON(w, scope)
                 if let note { o["note"] = .string(note) }
-                data = .object(o)
-                return .success(data)
+                return .success(.object(o))
             }
         }
     }
@@ -174,9 +207,7 @@ final class HandsRouter {
                     let v = (o["value"]?.string ?? "").lowercased(), d = (o["description"]?.string ?? "").lowercased()
                     let hit = (role.map { r == $0 } ?? true) && (name.map { nm.contains($0) } ?? true)
                         && (value.map { v.contains($0) } ?? true) && (text.map { nm.contains($0) || v.contains($0) || d.contains($0) } ?? true)
-                    if hit, o["ref"] != nil || o["ref_id"] != nil {
-                        found.append(.object(o.filter { $0.key != "children" }))
-                    }
+                    if hit, o["ref_id"] != nil || o["ref"] != nil { found.append(.object(o.filter { $0.key != "children" })) }
                     for c in o["children"]?.array ?? [] { walk(c) }
                 }
                 if let tree = data["tree"] { walk(tree) }
@@ -187,7 +218,9 @@ final class HandsRouter {
 
     // MARK: refs
 
-    private func resolve(_ ref: String?) -> Result<(HandsWindow, ScopeDecision, Snap), HandsError> {
+    /// A ref is good for the snapshot that printed it: that snapshot's window, in that process. Any other
+    /// window, a window that changed process, or one that left the agent's scope fails here.
+    private func resolve(_ ref: String?) -> Result<(HandsWindow, ScopeDecision), HandsError> {
         guard let ref, ref.hasPrefix("@s"), let colon = ref.firstIndex(of: ":") else {
             return .failure(HandsError(.badArguments, "\(ref ?? "") isn't a ref", suggestion: "Refs look like @s8f3k2p9:e5 and come from `baneyspaces agent snapshot`.", retry: .safe))
         }
@@ -196,48 +229,44 @@ final class HandsRouter {
         guard let snap else {
             return .failure(HandsError(.unknownRef, "BaneySpaces didn't print \(ref)", suggestion: "Take a snapshot of the window and use the refs it prints.", retry: .afterSnapshot))
         }
-        let (all, agent) = allWindows()
-        // Checked again now: the window may have moved to a workspace of the user's since the snapshot.
-        guard let w = all.first(where: { $0.id == snap.window && $0.pid == snap.pid }) else {
-            return .failure(HandsError(.windowNotFound, "window \(snap.window) is gone", suggestion: "Run `baneyspaces agent windows` and take a new snapshot.", retry: .afterSnapshot))
+        let (all, agent) = listWindows()
+        guard let w = all.first(where: { $0.id == snap.window }) else {
+            return .failure(HandsError(.staleRef, "window \(snap.window) is gone", suggestion: "Run `baneyspaces agent windows` and take a new snapshot.", retry: .afterSnapshot))
+        }
+        guard w.pid == snap.pid else {
+            return .failure(HandsError(.staleRef, "window \(snap.window) now belongs to a different process than the snapshot's", suggestion: "Take a new snapshot.", retry: .afterSnapshot))
         }
         let d = decide(w, agent)
         if case .denied(let e) = d { return .failure(e) }
-        return .success((w, d, snap))
+        return .success((w, d))
     }
 
     private func get(_ req: HandsRequest) -> HandsEnvelope {
         switch resolve(req.string("ref")) {
         case .failure(let e): return .failure(e)
-        case .success(let (w, scope, _)):
-            let prop = req.string("property") ?? "value"
-            switch HandsEngine.shared.get(ref: req.string("ref")!, property: prop) {
+        case .success(let (w, scope)):
+            if let e = gate(w) { return .failure(e) }
+            switch HandsEngine.shared.get(pid: w.pid, ref: req.string("ref")!, property: req.string("property") ?? "value") {
             case .failed(let e): return .failure(e)
-            case .ok(var d):
+            case .ok(let d):
                 var o = d.object ?? [:]
-                o["target"] = .object(["pid": .int(Int(w.pid)), "window": .int(Int(w.id)), "app": .string(w.app), "scope": .string(scope.reason)])
-                d = .object(o)
-                return .success(d)
+                o["target"] = targetJSON(w, scope)
+                return .success(.object(o))
             }
         }
     }
 
     // MARK: acting
 
+    /// Keys need the app in front, and BaneySpaces never raises one for an agent. Until keys can be sent to
+    /// one background process (a later phase) this answers without an engine call.
     private func press(_ req: HandsRequest) -> HandsEnvelope {
-        let parts = (req.string("key") ?? "").split(separator: "+").map(String.init)
-        guard let key = parts.last, !key.isEmpty else { return .failure(HandsError(.badArguments, "key is empty", suggestion: "Name a key, like Return or cmd+a.", retry: .safe)) }
-        var mods: [Int32] = []
-        for m in parts.dropLast() {
-            switch m.lowercased() {
-            case "cmd", "command", "meta", "super": mods.append(0)
-            case "ctrl", "control": mods.append(1)
-            case "alt", "opt", "option": mods.append(2)
-            case "shift": mods.append(3)
-            default: return .failure(HandsError(.badArguments, "unknown modifier \(m)", suggestion: "Modifiers: cmd, ctrl, alt, shift.", retry: .safe))
-            }
+        switch resolve(req.string("ref")) {
+        case .failure(let e): return .failure(e)
+        case .success(let (w, _)):
+            return .failure(HandsError(.notSupported, "keys reach only the app in front, and \(w.app) is not",
+                                       suggestion: "BaneySpaces never raises an app for an agent. Use `type` or `set-value` on a text element, or `click` the control. Keys to a background app arrive in a later phase (docs/agent-computer-use.md).", retry: .never))
         }
-        return act(req, .pressKey, "press", key: key, modifiers: mods)
     }
 
     private func scroll(_ req: HandsRequest) -> HandsEnvelope {
@@ -248,48 +277,52 @@ final class HandsRouter {
         return act(req, .scroll, "scroll", direction: Int32(d), amount: UInt32(clamping: req.int("amount") ?? 3))
     }
 
-    private func act(_ req: HandsRequest, _ kind: HandsEngine.Kind, _ name: String, text: String? = nil, direction: Int32 = 1,
-                     amount: UInt32 = 3, key: String? = nil, modifiers: [Int32] = []) -> HandsEnvelope {
-        let ref = req.string("ref")
+    private func valueOf(_ w: HandsWindow, _ ref: String) -> String? {
+        if case .ok(let v) = HandsEngine.shared.get(pid: w.pid, ref: ref, property: "value") { return v["value"]?.string ?? "" }
+        return nil
+    }
+
+    private func act(_ req: HandsRequest, _ kind: HandsEngine.Kind, _ name: String, text: String? = nil, direction: Int32 = 1, amount: UInt32 = 3) -> HandsEnvelope {
+        guard let ref = req.string("ref") else { return .failure(HandsError(.badArguments, "ref is missing", suggestion: "usage: baneyspaces agent \(name) <ref>", retry: .safe)) }
         switch resolve(ref) {
         case .failure(let e): return .failure(e)
-        case .success(let (w, scope, _)):
-            let reads = kind == .typeText || kind == .setValue
+        case .success(let (w, scope)):
+            // The mark covers the whole action, queue wait and engine call included, and a short tail after it.
+            let token = AgentActivity.shared.begin(pid: w.pid, window: w.id)
+            defer { AgentActivity.shared.end(token) }
+            let writes = kind == .typeText || kind == .setValue
+            let beforeValue: String? = writes ? valueOf(w, ref) : nil
             // Tree before the action, to show what it changed.
-            let before: JSONValue? = (reads || kind == .toggle) ? nil : { if case .success(let d) = read(w, interactive: false, compact: true, register: false) { return d["tree"] }; return nil }()
+            var before: JSONValue?
+            if !writes, kind != .toggle, case .success(let d) = read(w, interactive: false, compact: true, register: false) { before = d["tree"] }
+            // Scope again, at the moment of dispatch: the window may have moved since resolving.
+            if let e = gate(w) { return .failure(e) }
             // Every action reports its target before dispatch; the point is measured only for a listener.
             var point: CGPoint?
-            if HandsEvents.hasListener, case .ok(let b) = HandsEngine.shared.get(ref: ref!, property: "bounds") { point = HandsEvents.center(ofBounds: b["value"]) }
-            HandsEvents.willAct(HandsActionEvent(kind: name, ref: ref!, window: w.id, pid: w.pid, app: w.app, point: point))
-            // The follow-focus logic must never treat an activation this action causes as the user's.
-            AgentActivity.shared.mark(pid: w.pid)
-            let reply = HandsEngine.shared.act(ref: ref!, kind: kind, text: text, direction: direction, amount: amount, key: key, modifiers: modifiers)
-            AgentActivity.shared.mark(pid: w.pid)
+            if HandsEvents.hasListener, case .ok(let b) = HandsEngine.shared.get(pid: w.pid, ref: ref, property: "bounds") { point = HandsEvents.center(ofBounds: b["value"]) }
+            HandsEvents.willAct(HandsActionEvent(kind: name, ref: ref, window: w.id, pid: w.pid, app: w.app, point: point))
+            let reply = HandsEngine.shared.act(pid: w.pid, ref: ref, kind: kind, text: text, direction: direction, amount: amount)
             switch reply {
-            case .failed(var e):
-                // The engine delivers keys only to the app in front and checks that it is, without raising it.
-                // We never raise an app for an agent, so say what that means instead of echoing its advice.
-                if kind == .pressKey, e.message.contains("lost focus") || e.code == .notSupported {
-                    e = HandsError(.notSupported, "\(w.app) is in the background, and keys reach only the app in front",
-                                   suggestion: "BaneySpaces never raises an app for an agent. Use `type` or `set-value` on a text element, or `click` the control. Keys to a background app arrive in phase 3 (docs/agent-computer-use.md).", retry: .never)
-                }
-                return .failure(e)
+            case .failed(let e): return .failure(e)
             case .ok(let engine):
                 var evidence: JSONValue
                 var verified = engine["disposition"]?["delivery"]?.string == "delivered_verified"
-                if reads {
-                    if case .ok(let v) = HandsEngine.shared.get(ref: ref!, property: "value") {
-                        let got = v["value"]?.string ?? ""
-                        let matches = got.contains(text ?? "") && (kind == .typeText || got == text)
-                        verified = verified || matches
-                        evidence = .object(["kind": "value_readback", "value": .string(String(got.prefix(500))), "matches": .bool(matches)])
-                    } else { evidence = .object(["kind": "value_readback", "error": "the value couldn't be read back"]) }
+                if writes {
+                    if let after = valueOf(w, ref) {
+                        let before = beforeValue ?? ""
+                        let expected = text ?? ""
+                        let result: (ok: Bool, changed: Bool) = kind == .typeText
+                            ? (ValueCheck.typed(before: before, after: after, text: expected), after != before)
+                            : { let s = ValueCheck.set(before: before, after: after, expected: expected); return (s.verified, s.changed) }()
+                        let (ok, changed) = (result.ok, result.changed)
+                        verified = ok
+                        evidence = .object(["kind": "value_readback", "value": .string(String(after.prefix(500))), "matches": .bool(ok), "changed": .bool(changed),
+                                            "before_length": .int(before.count), "after_length": .int(after.count)])
+                    } else { verified = false; evidence = .object(["kind": "value_readback", "error": "the value couldn't be read back"]) }
                 } else if kind == .toggle {
-                    let value = HandsEngine.shared.get(ref: ref!, property: "value")
-                    let states = HandsEngine.shared.get(ref: ref!, property: "states")
-                    if case .ok(let v) = value {
+                    if case .ok(let v) = HandsEngine.shared.get(pid: w.pid, ref: ref, property: "value") {
                         var o: [String: JSONValue] = ["kind": "state_readback", "value": v["value"] ?? .null]
-                        if case .ok(let s) = states { o["states"] = s["value"] ?? .null }
+                        if case .ok(let s) = HandsEngine.shared.get(pid: w.pid, ref: ref, property: "states") { o["states"] = s["value"] ?? .null }
                         evidence = .object(o)
                     } else { evidence = .object(["kind": "state_readback", "error": "the state couldn't be read back"]) }
                 } else if let before, case .success(let d) = read(w, interactive: false, compact: true, register: false), let after = d["tree"] {
@@ -297,11 +330,9 @@ final class HandsRouter {
                     verified = verified || diff.changed
                     evidence = diff.json()
                 } else { evidence = .object(["kind": "ax_diff", "error": "the window couldn't be read after the action"]) }
-                AgentActivity.shared.mark(pid: w.pid)
                 return .success(.object([
-                    "action": .string(name), "ref": .string(ref!), "verified": .bool(verified), "evidence": evidence,
-                    "engine": engine,
-                    "target": .object(["pid": .int(Int(w.pid)), "window": .int(Int(w.id)), "app": .string(w.app), "scope": .string(scope.reason)]),
+                    "action": .string(name), "ref": .string(ref), "verified": .bool(verified), "evidence": evidence,
+                    "engine": engine, "target": targetJSON(w, scope),
                 ]))
             }
         }
@@ -311,13 +342,16 @@ final class HandsRouter {
         switch target(req) {
         case .failure(let e): return .failure(e)
         case .success(let (w, scope, _)):
-            switch WindowShot.capture(window: w.id, to: req.string("out")) {
+            if let e = gate(w) { return .failure(e) }
+            let token = AgentActivity.shared.begin(pid: w.pid, window: w.id)
+            defer { AgentActivity.shared.end(token) }
+            switch WindowShot.capture(window: w.id, named: req.string("out")) {
             case .failure(let e): return .failure(e)
             case .success(let r):
                 return .success(.object([
                     "path": .string(r.path), "width": .int(r.width), "height": .int(r.height),
                     "evidence": .object(["kind": "capture_hash", "sha256": .string(r.sha256)]),
-                    "target": .object(["pid": .int(Int(w.pid)), "window": .int(Int(w.id)), "app": .string(w.app), "scope": .string(scope.reason)]),
+                    "target": targetJSON(w, scope),
                 ]))
             }
         }
@@ -327,20 +361,37 @@ final class HandsRouter {
 
     private func open(_ req: HandsRequest) -> HandsEnvelope {
         guard let app = req.string("app") else { return .failure(HandsError(.badArguments, "app is missing", suggestion: "usage: baneyspaces agent open <app>", retry: .safe)) }
-        let targets = (req.string("targets") ?? "").split(separator: " ").map(String.init)
-        let known = Set(allWindows().windows.map(\.id))
-        let reply = onMain { host.open([app] + targets) }
+        guard let url = DeckController.appURL(app) else {
+            return .failure(HandsError(.appNotFound, "no app called \(app)", suggestion: "Use the app's name as in /Applications, or its bundle id.", retry: .safe))
+        }
+        let bundle = Bundle(url: url)?.bundleIdentifier ?? ""
+        let running = NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == bundle && !bundle.isEmpty }
+        let display = url.deletingPathExtension().lastPathComponent
+        if OncePerUserApps.refuses(bundle: bundle, running: running) { return .failure(OncePerUserApps.error(app: display)) }
+        // Files only from the handoff folder; a URL needs an agent browser profile, which arrives later.
+        try? FileManager.default.createDirectory(at: Self.handoffFolder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        var files: [String] = []
+        for t in req.args["targets"]?.array?.compactMap(\.string) ?? [] {
+            if t.lowercased().hasPrefix("http://") || t.lowercased().hasPrefix("https://") {
+                return .failure(HandsError(.notSupported, "opening a URL needs an agent browser profile, which arrives in a later phase",
+                                           suggestion: "Safari and other once-per-user browsers go to the sandbox; for now open a file from the handoff folder.", retry: .never))
+            }
+            guard let resolved = HandoffPath.resolve(t, in: Self.handoffFolder) else { return .failure(HandoffPath.error(t, folder: Self.handoffFolder)) }
+            files.append(resolved.path)
+        }
+        let known = Set(listWindows(fresh: true).windows.map(\.id))
+        let reply = onMain { host.open([app] + files) }
         guard reply.ok else {
             let msg = reply.error ?? "couldn't open it"
-            if msg.contains("agent workspace is off") { return .failure(HandsError(.agentWorkspaceOff, msg, suggestion: "Run `baneyspaces agent on` first.", retry: .never)) }
+            if msg.contains("agent workspace is off") { return .failure(HandsError(.agentWorkspaceOff, msg, suggestion: "Ask Donovan to run `baneyspaces agent on`.", retry: .never)) }
             if msg.hasPrefix("no app called") { return .failure(HandsError(.appNotFound, msg, suggestion: "Use the app's name as in /Applications, or its bundle id.", retry: .safe)) }
-            return .failure(HandsError(.actionFailed, msg, suggestion: "Open it by hand once, or try a different app.", retry: .never))
+            return .failure(HandsError(.actionFailed, msg, suggestion: "Try a different app.", retry: .never))
         }
         // Its window arrives a moment later; wait for it so the caller gets the id.
         var window: HandsWindow?
         let deadline = Date().addingTimeInterval(5)
         while window == nil, Date() < deadline {
-            let (all, agent) = allWindows()
+            let (all, agent) = listWindows(fresh: true)
             window = all.filter { matches($0, reply.info?["app"] ?? app) && !known.contains($0.id) && $0.workspace == agent }.max { $0.id < $1.id }
             if window == nil { Thread.sleep(forTimeInterval: 0.15) }
         }
@@ -350,33 +401,53 @@ final class HandsRouter {
         return .success(.object(data))
     }
 
-    private func runningApp(_ name: String) -> NSRunningApplication? {
-        NSWorkspace.shared.runningApplications.first {
+    // MARK: lending (Donovan's, never an agent's: see HandsTools.userOnly)
+
+    /// Lends one running process and the windows it has now. Called from the menu or from `baneyspaces agent lend`.
+    func userLend(app name: String?, duration: String?, session: String) -> HandsEnvelope {
+        guard let name, !name.isEmpty else { return .failure(HandsError(.badArguments, "say which app", suggestion: "usage: baneyspaces agent lend <app> [30m]", retry: .safe)) }
+        let running = NSWorkspace.shared.runningApplications.filter {
             $0.activationPolicy == .regular && ($0.localizedName?.caseInsensitiveCompare(name) == .orderedSame || $0.bundleIdentifier?.caseInsensitiveCompare(name) == .orderedSame)
         }
+        guard !running.isEmpty else { return .failure(HandsError(.appNotFound, "\(name) isn't running", suggestion: "Open it first.", retry: .safe)) }
+        guard running.count == 1, let app = running.first else {
+            return .failure(HandsError(.ambiguous, "\(name) is running \(running.count) times: pids " + running.map { String($0.processIdentifier) }.joined(separator: ", "),
+                                       suggestion: "Lend by pid: `baneyspaces agent lend <pid>`.", retry: .safe))
+        }
+        return lend(app, duration: duration, session: session)
     }
 
-    private func lend(_ req: HandsRequest) -> HandsEnvelope {
-        guard let name = req.string("app"), let app = runningApp(name) else {
-            return .failure(HandsError(.appNotFound, "\(req.string("app") ?? "") isn't running", suggestion: "Open it first; lending is for an app the user already has open.", retry: .safe))
+    func userLend(pid: pid_t, duration: String?, session: String) -> HandsEnvelope {
+        guard let app = NSRunningApplication(processIdentifier: pid), app.activationPolicy == .regular else {
+            return .failure(HandsError(.appNotFound, "no app with pid \(pid)", suggestion: "Check the pid in Activity Monitor.", retry: .safe))
         }
-        guard let seconds = LendBook.duration(req.string("for")) else {
-            return .failure(HandsError(.badArguments, "couldn't read the time \(req.string("for") ?? "")", suggestion: "Use 10m, 2h or 90s.", retry: .safe))
-        }
-        let entry = lends.lend(app: app.localizedName ?? name, bundle: app.bundleIdentifier ?? "", session: req.string("session") ?? req.session ?? "", for: seconds)
-        return .success(.object(["lent": .string(app.localizedName ?? name), "until": .int(Int((entry?.until ?? Date()).timeIntervalSince1970)),
-                                 "note": "the user's windows of this app are now usable; give it back with `baneyspaces agent return`"]))
+        return lend(app, duration: duration, session: session)
     }
 
-    private func giveBack(_ req: HandsRequest) -> HandsEnvelope {
-        if req.bool("all") {
-            let gone = lends.giveBackAll(session: req.session)
+    private func lend(_ app: NSRunningApplication, duration: String?, session: String) -> HandsEnvelope {
+        let name = app.localizedName ?? "app"
+        guard let seconds = LendBook.duration(duration) else {
+            return .failure(HandsError(.badArguments, "couldn't read the time \(duration ?? "")", suggestion: "Use 10m, 2h or 90s.", retry: .safe))
+        }
+        if UserActivity.shared.inUse(app.processIdentifier) {
+            return .failure(HandsError(.inUse, "\(name) is in front or was used in the last 30 s", suggestion: "Switch away from it, wait 30 seconds, and lend again.", retry: .safe))
+        }
+        let ids = listWindows(fresh: true).windows.filter { $0.pid == app.processIdentifier }.map(\.id)
+        guard !ids.isEmpty else {
+            return .failure(HandsError(.windowNotFound, "\(name) has no window BaneySpaces tracks", suggestion: "Open a window in it first.", retry: .safe))
+        }
+        let entry = lends.lend(app: name, bundle: app.bundleIdentifier ?? "", pid: app.processIdentifier, windows: ids, session: session, for: seconds)
+        return .success(.object(["lent": .string(name), "pid": .int(Int(app.processIdentifier)), "windows": .array(ids.map { .int(Int($0)) }),
+                                 "until": .int(Int((entry?.until ?? Date()).timeIntervalSince1970)),
+                                 "note": "agents may use these windows until you return the app, the session ends, or the time runs out; they are refused while you use the app"]))
+    }
+
+    func userReturn(app name: String?) -> HandsEnvelope {
+        guard let name, !name.isEmpty else {
+            let gone = lends.giveBackAll()
             return .success(.object(["returned": .array(gone.map { .string($0.app) })]))
         }
-        guard let name = req.string("app") else { return .failure(HandsError(.badArguments, "say which app, or --all", suggestion: "usage: baneyspaces agent return <app>", retry: .safe)) }
-        guard lends.giveBack(name) else {
-            return .failure(HandsError(.appNotFound, "\(name) wasn't lent", suggestion: "Nothing to give back.", retry: .never))
-        }
+        guard lends.giveBack(name) else { return .failure(HandsError(.appNotFound, "\(name) wasn't lent", suggestion: "Nothing to give back.", retry: .never)) }
         return .success(.object(["returned": .array([.string(name)])]))
     }
 }

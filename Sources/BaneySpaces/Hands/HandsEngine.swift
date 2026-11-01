@@ -1,3 +1,4 @@
+import ApplicationServices
 import BaneySpacesCore
 import CAgentDesktop
 import Foundation
@@ -6,30 +7,37 @@ import Foundation
 /// accessibility tree into snapshot-qualified refs and acts on a ref with strict re-identification.
 ///
 /// Rules this file keeps (HandsSourceTests reads this source and fails if one breaks):
-///  - Every action goes through `ad_execute_by_ref_timeout` with the Headless policy. The Headed and
-///    FocusFallback policies, which let the engine move the pointer or raise the app, are never named.
+///  - Every action goes through `ad_execute_by_ref_timeout` with the strict Headless policy, a constant
+///    no caller can change: `act` takes no policy. The engine gives one action, PressKey, a focus
+///    permission of its own under Headless (its base policy), so `Kind` has no key case and the
+///    router answers `press` with not_supported before any engine call.
 ///  - Nothing here calls an engine function that focuses, raises, launches, closes or moves a
 ///    window, posts a mouse event, or sends a key to no particular app.
 ///  - No activate, SetFrontProcess or global CGEventPost, in this file or its neighbors.
-/// Calls run one at a time on `queue`: the engine's element handles belong to the thread that made them.
+/// Calls for one process run one at a time on that process's queue and have a time budget: a hung app
+/// answers `timeout` and blocks nobody else.
 final class HandsEngine {
     static let shared = HandsEngine()
-    private let queue = DispatchQueue(label: "baneyspaces.hands.engine")
+    private let initLock = NSLock()
     private var adapter: OpaquePointer?
     /// A second adapter, with a session of its own, for the snapshots taken as evidence: the engine
     /// keeps only so many saved snapshots per store, and evidence must never push out the refs an
-    /// agent is holding.
+    /// agent is holding. If it can't be made the engine isn't ready; there is no fallback to the shared one.
     private var evidenceAdapter: OpaquePointer?
     private var failure: HandsError?
+    private var queues: [Int32: DispatchQueue] = [:]
 
-    /// AD_POLICY_KIND_HEADLESS: keep each action's built-in behavior, no cursor, no focus.
+    /// AD_POLICY_KIND_HEADLESS: no cursor, no focus. Never a parameter.
     static let headlessPolicy: Int32 = 0
     // AdResult values from agent_desktop.h (the type itself is ambiguous in Swift).
     static let surfaceWindow: Int32 = 0 // AD_SNAPSHOT_SURFACE_WINDOW
     static let resultOK: Int32 = 0
     static let resultPermDenied: Int32 = -1
-    // AdActionKind values from agent_desktop.h.
-    enum Kind: Int32 { case click = 0, setValue = 4, select = 8, toggle = 9, scroll = 12, pressKey = 14, typeText = 17 }
+    // AdActionKind values from agent_desktop.h. No key action: see the rules above.
+    enum Kind: Int32 { case click = 0, setValue = 4, select = 8, toggle = 9, scroll = 12, typeText = 17 }
+
+    /// Seconds each kind of call may take before the caller gets `timeout`.
+    enum Budget { static let snapshot: TimeInterval = 25, get: TimeInterval = 10, act: TimeInterval = 20 }
 
     /// Where the engine keeps its refs: BaneySpaces' own folder, readable by this user only.
     static var home: URL { Wire.supportDir.appendingPathComponent("hands", isDirectory: true) }
@@ -40,8 +48,39 @@ final class HandsEngine {
         case failed(HandsError)
     }
 
+    private final class Box: @unchecked Sendable {
+        private let lock = NSLock()
+        private var reply: Reply?
+        func set(_ r: Reply) { lock.lock(); reply = r; lock.unlock() }
+        func get() -> Reply? { lock.lock(); defer { lock.unlock() }; return reply }
+    }
+
+    private func queue(for pid: Int32) -> DispatchQueue {
+        initLock.lock(); defer { initLock.unlock() }
+        if let q = queues[pid] { return q }
+        let q = DispatchQueue(label: "baneyspaces.hands.engine.\(pid)")
+        queues[pid] = q
+        return q
+    }
+
+    /// Runs `work` on the process's own queue, waiting at most `budget`. A call that outlives its budget
+    /// finishes in the background; the caller has already been told `timeout`.
+    private func run(pid: Int32, budget: TimeInterval, mutating: Bool, _ work: @escaping () -> Reply) -> Reply {
+        let box = Box()
+        let done = DispatchSemaphore(value: 0)
+        queue(for: pid).async { box.set(work()); done.signal() }
+        if done.wait(timeout: .now() + budget) == .timedOut {
+            return .failed(HandsError(.timeout, "the app didn't answer within \(Int(budget)) s",
+                                      suggestion: mutating ? "It may still land: read the element back with `baneyspaces agent get` before trying again."
+                                                           : "The app is busy or showing a dialog. Try again in a moment.",
+                                      retry: mutating ? .never : .safe))
+        }
+        return box.get() ?? .failed(HandsError(.engineError, "the engine gave no answer", suggestion: "Try again.", retry: .never))
+    }
+
     private func ready() -> HandsError? {
-        if adapter != nil { return nil }
+        initLock.lock(); defer { initLock.unlock() }
+        if adapter != nil, evidenceAdapter != nil { return nil }
         if let failure { return failure }
         try? FileManager.default.createDirectory(at: Self.home, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         setenv("AGENT_DESKTOP_HOME", Self.home.path, 1)
@@ -53,8 +92,13 @@ final class HandsEngine {
             failure = HandsError(.engineError, "the hands engine didn't start: \(lastError().message)", suggestion: "Check `baneyspaces doctor`.", retry: .never)
             return failure
         }
+        guard let e = "evidence".withCString({ ad_adapter_create_with_session($0) }) else {
+            ad_adapter_destroy(a)
+            failure = HandsError(.engineError, "the engine's evidence store didn't start: \(lastError().message)", suggestion: "Check `baneyspaces doctor`.", retry: .never)
+            return failure
+        }
         adapter = a
-        evidenceAdapter = "evidence".withCString { ad_adapter_create_with_session($0) } ?? a
+        evidenceAdapter = e
         return nil
     }
 
@@ -107,11 +151,12 @@ final class HandsEngine {
         return HandsError(mapped, message, suggestion: suggestion, retry: retry)
     }
 
-    /// One window's tree with refs. `windowID` is the engine's id for it ("w-4211").
-    func snapshot(app: String?, windowID: UInt32, interactive: Bool, compact: Bool, depth: UInt8, evidence: Bool = false) -> Reply {
-        queue.sync {
+    /// One window's tree with refs. `windowID` is the engine's id for it ("w-4211"). `evidence` reads use
+    /// their own store, so they never push the agent's refs out.
+    func snapshot(pid: Int32, app: String?, windowID: UInt32, interactive: Bool, compact: Bool, depth: UInt8, evidence: Bool = false) -> Reply {
+        run(pid: pid, budget: Budget.snapshot, mutating: false) { [self] in
             if let e = ready() { return .failed(e) }
-            let adapter = evidence ? evidenceAdapter : adapter
+            guard let adapter = evidence ? evidenceAdapter : adapter else { return .failed(HandsError(.engineError, "the engine isn't ready", suggestion: "Check `baneyspaces doctor`.", retry: .never)) }
             var out: UnsafeMutablePointer<CChar>?
             let id = "w-\(windowID)"
             let code: Int32
@@ -129,52 +174,41 @@ final class HandsEngine {
     }
 
     /// One property of a ref, read from the live element.
-    func get(ref: String, property: String) -> Reply {
-        queue.sync {
+    func get(pid: Int32, ref: String, property: String) -> Reply {
+        run(pid: pid, budget: Budget.get, mutating: false) { [self] in
             if let e = ready() { return .failed(e) }
+            guard let adapter else { return .failed(HandsError(.engineError, "the engine isn't ready", suggestion: "Check `baneyspaces doctor`.", retry: .never)) }
             var out: UnsafeMutablePointer<CChar>?
             let code = ref.withCString { r in property.withCString { p in ad_get_ref(adapter, r, p, &out) } }
             return finish(code, out)
         }
     }
 
-    /// An action on a ref. Always Headless; the auto-wait is the engine's default.
-    func act(ref: String, kind: Kind, text: String? = nil, direction: Int32 = 1, amount: UInt32 = 3, key: String? = nil, modifiers: [Int32] = []) -> Reply {
-        queue.sync {
+    /// An action on a ref. Always the strict Headless policy; the auto-wait is the engine's default.
+    func act(pid: Int32, ref: String, kind: Kind, text: String? = nil, direction: Int32 = 1, amount: UInt32 = 3) -> Reply {
+        run(pid: pid, budget: Budget.act, mutating: true) { [self] in
             if let e = ready() { return .failed(e) }
+            guard let adapter else { return .failed(HandsError(.engineError, "the engine isn't ready", suggestion: "Check `baneyspaces doctor`.", retry: .never)) }
             var out: UnsafeMutablePointer<CChar>?
             var action = AdAction()
             action.kind = kind.rawValue
             action.scroll.direction = direction
             action.scroll.amount = amount
-            func run(_ text: UnsafePointer<CChar>?, _ key: UnsafePointer<CChar>?) -> Int32 {
+            func dispatch(_ text: UnsafePointer<CChar>?) -> Int32 {
                 action.text = text
-                action.key.key = key
-                return modifiers.withUnsafeBufferPointer { mods in
-                    action.key.modifiers = mods.baseAddress
-                    action.key.modifier_count = UInt32(mods.count)
-                    return ref.withCString { r in
-                        ad_execute_by_ref_timeout(adapter, r, &action, Self.headlessPolicy, 5000, &out)
-                    }
+                return ref.withCString { r in
+                    ad_execute_by_ref_timeout(adapter, r, &action, Self.headlessPolicy, 5000, &out)
                 }
             }
-            let code: Int32
-            switch (text, key) {
-            case (let t?, _): code = t.withCString { run($0, nil) }
-            case (_, let k?): code = k.withCString { run(nil, $0) }
-            default: code = run(nil, nil)
-            }
+            let code = text.map { $0.withCString { dispatch($0) } } ?? dispatch(nil)
             return finish(code, out)
         }
     }
 
     /// Whether the engine can read windows at all (Accessibility granted).
     func permissionProblem() -> HandsError? {
-        queue.sync {
-            if let e = ready() { return e }
-            return ad_check_permissions(adapter) == Self.resultOK ? nil
-                : HandsError(.permissionDenied, "Accessibility isn't allowed for BaneySpaces",
-                             suggestion: "Allow BaneySpaces in System Settings > Privacy & Security > Accessibility.", retry: .safe)
-        }
+        AXIsProcessTrusted() ? nil
+            : HandsError(.permissionDenied, "Accessibility isn't allowed for BaneySpaces",
+                         suggestion: "Allow BaneySpaces in System Settings > Privacy & Security > Accessibility.", retry: .safe)
     }
 }

@@ -1,25 +1,29 @@
 import AppKit
 import BaneySpacesCore
 
-/// The apps lent to agents right now, shared between the hands (which lend and check) and
-/// Spaces (which parks a lent app's windows instead of hiding them, and writes state.json).
+/// The apps lent to agents right now, shared between the hands (which check scope against it) and
+/// Spaces (which parks a lent app's windows instead of hiding them, and writes state.json). Only
+/// Donovan lends: the menu, the Deck, or `baneyspaces agent lend` from a terminal he types in.
 final class HandsLends {
     static let shared = HandsLends()
     private let lock = NSLock()
     private var book = LendBook()
-    /// Called after the list changes, on any thread: persist state.json, re-apply the workspace.
+    /// Called after the list changes, on any thread, with the lock released: persist state.json,
+    /// re-apply the workspace. Each change is announced once.
     var onChange: (() -> Void)?
 
-    func current(now: Date = Date()) -> LendBook {
+    /// A copy of the book. Reading never changes it; timed-out entries are removed only by `expire()`
+    /// (and every check ignores an entry past its time anyway).
+    func current() -> LendBook {
         lock.lock(); defer { lock.unlock() }
-        book.expire(now: now)
         return book
     }
 
-    func lend(app: String, bundle: String, session: String, for duration: TimeInterval) -> Lend? {
+    @discardableResult
+    func lend(app: String, bundle: String, pid: Int32, windows: [UInt32], session: String, for duration: TimeInterval) -> Lend? {
         lock.lock()
-        book.lend(app: app, bundle: bundle, session: session, now: Date(), for: duration)
-        let entry = book.entries.first { $0.app == app }
+        book.lend(app: app, bundle: bundle, pid: pid, windows: windows, session: session, now: Date(), for: duration)
+        let entry = book.entries.first { $0.pid == pid }
         lock.unlock()
         onChange?()
         return entry
@@ -32,7 +36,7 @@ final class HandsLends {
         return was
     }
 
-    /// Returns the apps lent to `session`, or every app when it is nil.
+    /// Returns what was lent to `session`, or everything when it is nil.
     @discardableResult
     func giveBackAll(session: String? = nil) -> [Lend] {
         lock.lock()
@@ -42,7 +46,7 @@ final class HandsLends {
         return gone
     }
 
-    /// Timed-out lends go back; returns whether any did.
+    /// Removes what has timed out. Whichever caller removes an entry announces it; the other finds nothing.
     @discardableResult
     func expire() -> Bool {
         lock.lock(); let gone = book.expire(now: Date()); lock.unlock()
@@ -52,14 +56,30 @@ final class HandsLends {
 
     /// For state.json.
     func stateEntries() -> [[String: Any]] {
-        current().entries.map {
-            ["app": $0.app, "bundle": $0.bundle, "since": Int($0.since.timeIntervalSince1970),
-             "until": Int($0.until.timeIntervalSince1970), "session": $0.session]
+        current().active(now: Date()).map {
+            ["app": $0.app, "bundle": $0.bundle, "pid": Int($0.pid), "windows": $0.windows.map(Int.init),
+             "since": Int($0.since.timeIntervalSince1970), "until": Int($0.until.timeIntervalSince1970), "session": $0.session]
         }
     }
 
-    func isLent(pid: pid_t) -> Bool {
-        guard let app = NSRunningApplication(processIdentifier: pid) else { return false }
-        return current().isLent(app: app.localizedName ?? "", bundle: app.bundleIdentifier ?? "", now: Date())
+    func isLent(pid: pid_t) -> Bool { current().active(now: Date()).contains { $0.pid == pid } }
+    var hasAny: Bool { !current().active(now: Date()).isEmpty }
+}
+
+/// When Donovan last used each app, for `in_use`.
+final class UserActivity {
+    static let shared = UserActivity()
+    private let lock = NSLock()
+    private var use = UserUse()
+
+    func activated(_ pid: pid_t) {
+        lock.lock(); use.activated(pid, now: Date()); lock.unlock()
+    }
+
+    /// In front now, or in front within the last 30 s.
+    func inUse(_ pid: pid_t) -> Bool {
+        let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        lock.lock(); defer { lock.unlock() }
+        return use.inUse(pid, frontNow: front, now: Date())
     }
 }

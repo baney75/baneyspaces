@@ -11,6 +11,9 @@ final class Spaces {
     private(set) var model = Workspaces()
     private var saved: SavedFrames
     private var windows: [WindowID: Window] = [:]
+    /// For the agent hands: when the model was last scanned on their behalf, and each process's bundle id.
+    private var lastHandsScan = Date.distantPast
+    private var handsBundles: [pid_t: String] = [:]
     private(set) var switching = false
     /// False after `suspend()`: nothing moves until `start()` runs again.
     private var active = false
@@ -395,15 +398,28 @@ final class Spaces {
         return away
     }
 
-    /// Every window BaneySpaces places, with its workspace, for the agent hands' scope guard.
-    func handsWindows() -> [HandsWindow] {
-        // Up to date first: a window that opened a moment ago is claimed (and parked) by this scan.
-        if active { refresh() }
-        return model.home.compactMap { id, ws in
-            guard let w = windows[id] else { return nil }
-            let app = NSRunningApplication(processIdentifier: w.pid)
-            return HandsWindow(id: id, pid: w.pid, app: w.appName, bundle: app?.bundleIdentifier ?? "", title: ws == Self.agentWorkspace ? w.title : "", workspace: ws)
-        }
+    /// Every window BaneySpaces places, with its workspace, for the agent hands' scope guard. Read from the
+    /// model BaneySpaces keeps current from its own notifications: no scan, no Accessibility call. `fresh`
+    /// scans first, at most twice a second, for a window that opened a moment ago.
+    func handsWindows(fresh: Bool) -> [HandsWindow] {
+        if fresh, active, Date().timeIntervalSince(lastHandsScan) > 0.5 { lastHandsScan = Date(); refresh() }
+        return model.home.compactMap { id, ws in handsWindow(id, ws) }
+    }
+
+    /// One window straight from the model, for the check right before an engine call.
+    func handsLive(_ id: UInt32) -> HandsWindow? {
+        guard let ws = model.home[id] else { return nil }
+        return handsWindow(id, ws)
+    }
+
+    private func handsWindow(_ id: WindowID, _ ws: Int) -> HandsWindow? {
+        guard let w = windows[id] else { return nil }
+        if handsBundles[w.pid] == nil { handsBundles[w.pid] = NSRunningApplication(processIdentifier: w.pid)?.bundleIdentifier ?? "" }
+        return HandsWindow(id: id, pid: w.pid, app: w.appName, bundle: handsBundles[w.pid] ?? "", title: "", workspace: ws)
+    }
+
+    func handsTitles(_ ids: [UInt32]) -> [UInt32: String] {
+        Dictionary(uniqueKeysWithValues: ids.compactMap { id in windows[id].map { (id, $0.title) } })
     }
 
     /// Saves state.json now (a lend changed).
@@ -654,9 +670,6 @@ final class Spaces {
         guard active, pid != getpid() else { return }
         defer { frontPid = pid }
         Windows.markResponsive(pid)
-        // An agent action on this app caused it (marked for a second around each action): it is
-        // not you picking the app, so it never takes you to another workspace.
-        if AgentActivity.shared.caused(pid: pid) { return Trace.log("followFocus stayed: an agent action activated pid \(pid)") }
         // Asked for by `openWindowHere`: its window is on the way, here.
         if let o = opening, o.pid == pid, Date() < o.until { return }
         activatedAt = Date()
@@ -712,6 +725,12 @@ final class Spaces {
         let pid = app.processIdentifier
         guard let w = Windows.focused(of: pid, in: Array(windows.values)),
               let n = model.workspace(of: w.id) else { return }
+        // An agent action on this very window (for its whole run and a moment after), or an app the agent
+        // launched, caused this: it is not you picking the app. Your own windows of the same app are never
+        // ignored: only the window the action works on.
+        if AgentActivity.shared.caused(pid: pid, window: w.id, bundle: app.bundleIdentifier) {
+            return Trace.log("followFocus stayed: an agent action activated \(w.appName)")
+        }
         if model.isShown(n) && saved.frames[w.id] == nil {
             // The app in front just closed its last window here, quit or hid, and macOS handed
             // focus to an app on the other display: you're still on this one.
@@ -853,11 +872,13 @@ final class Spaces {
     /// chose a window yourself (the Window menu, ⌘`). A closed window keeps you on this workspace,
     /// so typing never lands in a hidden window. A window you chose takes you to its workspace.
     private func focusMovedWithin(_ pid: pid_t) {
-        guard !AgentActivity.shared.caused(pid: pid) else { return Trace.log("focus stayed: an agent action moved focus in pid \(pid)") }
         guard active, !switching, Date() > settleUntil,
               NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
         refresh()
         guard let w = Windows.focused(of: pid, in: Array(windows.values)), let n = model.workspace(of: w.id) else { return }
+        if AgentActivity.shared.caused(pid: pid, window: w.id, bundle: NSRunningApplication(processIdentifier: pid)?.bundleIdentifier) {
+            return Trace.log("focus stayed: an agent action moved focus in \(w.appName)")
+        }
         if let i = intended[pid], Date() < i.until, i.id != w.id, model.workspace(of: i.id).map(model.isShown) == true,
            !model.isShown(n) || saved.frames[w.id] != nil, let target = windows[i.id] {
             return stay(on: target)
@@ -887,7 +908,7 @@ final class Spaces {
         let ids = ParkedApps.bundleIDs
         // Apps with a window on the agent workspace, and apps lent to an agent, stay drivable from behind, like the list's.
         let agents = AgentWorkspace.parkedApps(owners: windows.mapValues(\.pid), home: model.home, agent: Self.agentWorkspace)
-        guard !ids.isEmpty || !agents.isEmpty || !HandsLends.shared.current().entries.isEmpty else { return [] }
+        guard !ids.isEmpty || !agents.isEmpty || HandsLends.shared.hasAny else { return [] }
         let unsure = lastScan?.unsure ?? []
         return Set(windows.values.map(\.pid)).filter { pid in
             Windows.isResponsive(pid) && !unsure.contains(pid) && !SlowMovers.contains(pid)

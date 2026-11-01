@@ -25,6 +25,8 @@
   update controls are also in Settings > Updates.
 - **Agent hands, phase 1.** `baneyspaces agent snapshot|find|get|click|type|set-value|press|scroll|select|toggle|shot|open|lend|return|windows`
   read and act on apps on the agent workspace (or an app you lend) without touching your screen, and print one
+- **Agent hands, phase 1.** `baneyspaces agent snapshot|find|get|click|type|set-value|press|scroll|select|toggle|shot|open|windows`
+  read and act on apps on the agent workspace (or an app you lend from the menu, **Lend to Agents**) without touching your screen, and print one
   JSON envelope each; `baneyspaces mcp` serves the same tools to Claude Code and Codex. Built on agent-desktop
   (Apache-2.0, pinned). Cua Spaces no longer starts on the Keep Usable by Automation list.
 - **`agent open` puts an app's launch window on the agent workspace,** not on yours.

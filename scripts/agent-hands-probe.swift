@@ -1,16 +1,19 @@
 #!/usr/bin/env swift
-// Proves the agent hands never change what you see: opens TextEdit, Finder and Notes on the agent
+// Proves the agent hands never change what you see: opens TextEdit and Finder on the agent
 // workspace with `baneyspaces agent open`, does 200 mixed actions through the CLI, and samples every
 // 50 ms the frontmost app, BaneySpaces' current workspace (state.json), the pointer location and the
-// frontmost window. PASS only with zero changes to all four; it also prints how many actions succeeded.
+// frontmost window. PASS needs zero changes to all four, zero stray windows, every open and snapshot to
+// work, and at least 90 successful mutating actions: a skipped or failed edit is a failure, never swapped
+// for a read.
 //
 //   swift scripts/agent-hands-probe.swift           (needs BaneySpaces installed and the agent workspace on)
 //   swift scripts/agent-hands-probe.swift --force   (skip the idle check: for a Mac nobody is using)
 //
 // It refuses to run unless you have been idle for 10 minutes: any key or mouse move of yours is a
 // "change" it can't tell from the hands'. A new window of those apps on any workspace but the agent's
-// counts as a failure too (a "stray window"). Actions write only into a new TextEdit document; Finder and
-// Notes get reads and scrolls, never edits.
+// counts as a failure too (a "stray window"). Actions write only into a temporary TextEdit document in the
+// agent handoff folder; Finder shows a temporary folder there and gets reads and scrolls. Never Notes or
+// any once-per-user app.
 import AppKit
 import Foundation
 
@@ -42,6 +45,7 @@ func agent(_ args: [String]) -> [String: Any] {
 func isOK(_ r: [String: Any]) -> Bool { (r["ok"] as? Bool) == true }
 func data(_ r: [String: Any]) -> [String: Any] { r["data"] as? [String: Any] ?? [:] }
 
+let probedApps: Set<String> = ["TextEdit", "Finder"]
 struct Sample: Equatable {
     var front: pid_t
     var workspace: Int
@@ -50,7 +54,6 @@ struct Sample: Equatable {
     /// Windows of the probed apps that are on a workspace other than the agent's.
     var strays: Set<Int>
 }
-let probedApps: Set<String> = ["TextEdit", "Finder", "Notes"]
 func sample() -> Sample {
     let front = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1
     var current = -1
@@ -69,6 +72,7 @@ func sample() -> Sample {
 
 let baseline = sample()
 var changes: [String] = []
+var failures: [String] = []
 var samples = 0
 let lock = NSLock()
 var running = true
@@ -94,11 +98,18 @@ let sampler = Thread {
 }
 sampler.start()
 
-// Open the three apps on the agent workspace.
+// A temporary folder in the agent handoff folder: a text file for TextEdit, and the folder itself for Finder.
+let handoff = home.appendingPathComponent("Library/Application Support/BaneySpaces/hands/handoff")
+let dir = handoff.appendingPathComponent("probe-\(Int(Date().timeIntervalSince1970))")
+try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+let doc = dir.appendingPathComponent("notes.txt")
+FileManager.default.createFile(atPath: doc.path, contents: Data("probe\n".utf8))
+defer { try? FileManager.default.removeItem(at: dir) }
+
 var windows: [String: Int] = [:]
-for app in ["TextEdit", "Finder", "Notes"] {
-    let r = agent(["open", app])
-    if let w = data(r)["window"] as? Int { windows[app] = w } else { print("note: no window id for \(app): \(r)") }
+for (app, target) in [("TextEdit", doc.path), ("Finder", dir.path)] {
+    let r = agent(["open", app, target])
+    if let w = data(r)["window"] as? Int { windows[app] = w } else { failures.append("open \(app) gave no window: \(r)") }
     Thread.sleep(forTimeInterval: 0.5)
 }
 
@@ -111,43 +122,57 @@ func snapshot(_ app: String) -> [[String: Any]] {
     guard let w = windows[app] else { return [] }
     var out: [[String: Any]] = []
     refs(data(agent(["snapshot", "--window", String(w), "-i"]))["tree"], into: &out)
+    if out.isEmpty { failures.append("snapshot of \(app) returned no refs") }
     return out
 }
 func first(_ nodes: [[String: Any]], role: String, name: String? = nil) -> String? {
     nodes.first { ($0["role"] as? String) == role && (name == nil || ($0["name"] as? String) == name) }?["ref_id"] as? String
 }
 
-var ok = 0, total = 0
-func run(_ args: [String]) {
+var ok = 0, total = 0, mutatingOK = 0, mutatingTotal = 0
+func run(_ args: [String], mutating: Bool) {
     total += 1
-    if isOK(agent(args)) { ok += 1 }
+    if mutating { mutatingTotal += 1 }
+    if isOK(agent(args)) { ok += 1; if mutating { mutatingOK += 1 } }
 }
+/// An action whose ref is missing counts as a failed action: it is never replaced by a read.
+func missing(mutating: Bool) { total += 1; if mutating { mutatingTotal += 1 } }
 
-var te = snapshot("TextEdit"), fi = snapshot("Finder"), no = snapshot("Notes")
-while total < 200 {
-    let i = total
-    if i % 25 == 0 { te = snapshot("TextEdit"); fi = snapshot("Finder"); no = snapshot("Notes"); total += 3; ok += (te.isEmpty ? 0 : 1) + (fi.isEmpty ? 0 : 1) + (no.isEmpty ? 0 : 1) }
-    let text = first(te, role: "textfield"), bold = first(te, role: "checkbox", name: "bold")
-    switch i % 8 {
-    case 0: if let t = text { run(["type", t, "ab"]) } else { run(["windows"]) }
-    case 1: if let t = text { run(["set-value", t, "line \(i)"]) } else { run(["windows"]) }
-    case 2: if let t = text { run(["get", t, "value"]) } else { run(["windows"]) }
-    case 3: if let b = bold { run(["toggle", b]) } else { run(["windows"]) }
-    case 4: if let w = windows["Finder"] { run(["find", "--window", String(w), "--role", "button"]) } else { run(["windows"]) }
-    case 5: if let s = first(fi, role: "scrollarea") ?? first(no, role: "scrollarea") { run(["scroll", s, "down"]) } else { run(["windows"]) }
-    case 6: if let w = windows["Notes"] { run(["find", "--window", String(w), "--role", "button"]) } else { run(["windows"]) }
-    default: if let b = bold { run(["click", b]) } else { run(["windows"]) }
+var te = snapshot("TextEdit"), fi = snapshot("Finder")
+var text = first(te, role: "textfield"), bold = first(te, role: "checkbox", name: "bold"), area = first(fi, role: "scrollarea")
+if text == nil { failures.append("TextEdit has no text field ref") }
+if bold == nil { failures.append("TextEdit has no bold checkbox ref") }
+var i = 0
+while total < 200 && failures.isEmpty {
+    if i % 40 == 39 {
+        te = snapshot("TextEdit"); fi = snapshot("Finder")
+        text = first(te, role: "textfield"); bold = first(te, role: "checkbox", name: "bold"); area = first(fi, role: "scrollarea")
     }
+    switch i % 10 {
+    case 0, 9: if let t = text { run(["type", t, "ab"], mutating: true) } else { missing(mutating: true) }
+    case 1: if let t = text { run(["set-value", t, "line \(i)"], mutating: true) } else { missing(mutating: true) }
+    case 2: if let b = bold { run(["toggle", b], mutating: true) } else { missing(mutating: true) }
+    case 3: if let b = bold { run(["click", b], mutating: true) } else { missing(mutating: true) }
+    case 4: if let t = text { run(["get", t, "value"], mutating: false) } else { missing(mutating: false) }
+    case 5: if let w = windows["TextEdit"] { run(["find", "--window", String(w), "--role", "checkbox"], mutating: false) } else { missing(mutating: false) }
+    case 6: if let w = windows["Finder"] { run(["find", "--window", String(w), "--role", "button"], mutating: false) } else { missing(mutating: false) }
+    case 7: if let w = windows["Finder"] { run(["snapshot", "--window", String(w), "-i"], mutating: false) } else { missing(mutating: false) }
+    default: if let a = area { run(["scroll", a, "down"], mutating: false) } else { missing(mutating: false) }
+    }
+    i += 1
 }
-Thread.sleep(forTimeInterval: 1.2)   // late activations arrive after the last action
+Thread.sleep(forTimeInterval: 1.8)   // late activations arrive after the last action
 lock.lock(); running = false; lock.unlock()
 Thread.sleep(forTimeInterval: 0.2)
 
-print("samples: \(samples) (every 50 ms), actions: \(total), succeeded: \(ok)")
-if changes.isEmpty {
-    print("PASS: zero changes to the front app, the workspace, the pointer and the front window; \(ok)/\(total) actions succeeded")
+let needed = 90
+if mutatingOK < needed { failures.append("only \(mutatingOK) mutating actions succeeded (\(needed) needed, \(mutatingTotal) tried)") }
+print("samples: \(samples) (every 50 ms), actions: \(total), succeeded: \(ok), mutating: \(mutatingOK)/\(mutatingTotal)")
+failures.forEach { print("fail: \($0)") }
+changes.prefix(20).forEach { print("change: \($0)") }
+if changes.isEmpty && failures.isEmpty {
+    print("PASS: zero changes to the front app, the workspace, the pointer and the front window, no stray window; \(mutatingOK) mutating actions succeeded (\(ok)/\(total) in all)")
 } else {
-    changes.prefix(20).forEach { print("change: \($0)") }
-    print("FAIL: \(changes.count) change(s)")
+    print("FAIL: \(changes.count) change(s), \(failures.count) failed requirement(s)")
     exit(1)
 }

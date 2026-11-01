@@ -13,6 +13,16 @@ public enum HandsErrorCode: String, Codable, CaseIterable, Sendable {
     case windowNotFound = "window_not_found"
     /// An app-wide request matched more than one window and the caller must say which.
     case ambiguousWindow = "ambiguous_window"
+    /// An app name matched more than one running process; name a window or a pid.
+    case ambiguous = "ambiguous"
+    /// The app belongs to the user, not the agent workspace, and nobody has lent it. Lending is Donovan's
+    /// to do (the menu, the Deck, or a terminal he types in); an agent can only ask.
+    case needsLend = "needs_lend"
+    /// The app exists once per user and holds his data (Safari, Notes, Mail…): agent work on it belongs in
+    /// the sandbox (phase 2), never on his Mac.
+    case needsSandbox = "needs_sandbox"
+    /// A lent app the user is using right now (in front, or used in the last 30 s).
+    case inUse = "in_use"
     /// The ref isn't known: from another session, or never printed by a snapshot.
     case unknownRef = "unknown_ref"
     /// The ref no longer points at the element it did, or its snapshot expired.
@@ -38,8 +48,8 @@ public enum HandsErrorCode: String, Codable, CaseIterable, Sendable {
     public var defaultRetry: HandsRetry {
         switch self {
         case .staleRef, .unknownRef, .ambiguousTarget, .ambiguousWindow: return .afterSnapshot
-        case .timeout, .notRunning, .appNotFound, .windowNotFound, .badArguments, .permissionDenied: return .safe
-        case .outsideAgentWorkspace, .agentWorkspaceOff, .notSupported, .actionFailed, .engineError: return .never
+        case .timeout, .notRunning, .appNotFound, .windowNotFound, .badArguments, .permissionDenied, .ambiguous, .inUse: return .safe
+        case .outsideAgentWorkspace, .agentWorkspaceOff, .notSupported, .actionFailed, .engineError, .needsLend, .needsSandbox: return .never
         }
     }
 }

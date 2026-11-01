@@ -52,7 +52,7 @@ workspace. Every command prints one JSON envelope: `{"ok":true,"data":{…}}` or
 (`safe`: send it again; `after_snapshot`: take a new snapshot first; `never`: don't repeat it).
 
 ```sh
-baneyspaces agent open TextEdit                      # lands on the agent workspace; data.window is its id
+baneyspaces agent open TextEdit notes.txt            # lands on the agent workspace; data.window is its id (files only from the handoff folder)
 baneyspaces agent snapshot --window 4211 -i          # refs (@s8f3k2p9:e5) for what you can act on
 baneyspaces agent type @s8f3k2p9:e2 "Hello"          # act on a ref; data.evidence says what it read back
 baneyspaces agent get @s8f3k2p9:e2 value             # check, from the live element
@@ -71,12 +71,17 @@ Scope rules, enforced by the app, not by your good behavior:
 
 - You may act on a window only if it is on the agent workspace or its app is lent. Anything else returns
   `outside_agent_workspace`; reads (snapshot, get, find, shot) are refused the same way.
-- To use an app Donovan already has open: `baneyspaces agent lend Excel --for 20m`, then `agent return Excel`
-  when you are done. It also goes back when your session ends or the time runs out. Say so in your
-  final message; never keep a lend you don't need.
+- You cannot lend. To use an app Donovan already has open, tell him (a `needs_lend` or
+  `outside_agent_workspace` error says so): he lends it from the BaneySpaces menu or with
+  `baneyspaces agent lend <app>` in his own terminal. A lend names that process and its windows as they were then,
+  answers `in_use` while he is using the app, and ends after 30 minutes or when your session ends. Prefer
+  `agent open`, which needs nobody's permission.
 - `agent open` is how you start work: the app and its windows land on the agent workspace and he stays
-  where he is. Never ask him to switch workspaces or look at the screen.
-- `press` reaches only the app in front, and BaneySpaces never raises one for you, so it returns
-  `not_supported` for a background app. Use `type`, `set-value` or `click`.
+  where he is. Put files you want it to open in `~/Library/Application Support/BaneySpaces/hands/handoff/`; no other path is accepted,
+  and URLs wait for the agent browser profiles. Safari, Notes, Mail, Messages, Calendar and Photos answer `needs_sandbox`.
+  Never ask him to switch workspaces or look at the screen.
+- `press` always answers `not_supported` for now: keys reach only the app in front, and BaneySpaces never raises one for you.
+  Use `type`, `set-value` or `click`.
+- `shot --out name.png` writes only into BaneySpaces' own shots folder; pass a file name, not a path.
 - Snapshots and shots can hold private content. They stay on this Mac; don't paste them into logs, issues
   or other agents' prompts unless asked.

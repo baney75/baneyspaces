@@ -12,7 +12,7 @@ public struct HandsMCP {
     `snapshot` that window (interactive) to get refs, act on a ref (`click`, `type`, `set_value`, `press`, \
     `scroll`, `select`, `toggle`), then read the evidence in the result and `get` or snapshot again to check. \
     Refs go stale when the UI changes: on a stale_ref error take a new snapshot. Only windows on the agent \
-    workspace or of apps you `lend` are allowed; anything else returns outside_agent_workspace. \
+    workspace or of apps Donovan has lent are allowed; anything else returns outside_agent_workspace (you cannot lend). \
     Never ask the user to switch away from what they are doing.
     """
 
@@ -31,7 +31,11 @@ public struct HandsMCP {
         .array(HandsTools.all.map { t in
             var props: [String: JSONValue] = [:]
             for p in t.params {
-                props[p.name] = .object(["type": .string(p.kind.rawValue), "description": .string(p.help)])
+                if p.kind == .stringList {
+                    props[p.name] = .object(["type": "array", "items": .object(["type": "string"]), "description": .string(p.help)])
+                } else {
+                    props[p.name] = .object(["type": .string(p.kind.rawValue), "description": .string(p.help)])
+                }
             }
             var schema: [String: JSONValue] = ["type": "object", "properties": .object(props), "additionalProperties": false]
             let req = t.params.filter(\.required).map { JSONValue.string($0.name) }

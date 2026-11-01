@@ -3,7 +3,7 @@ import Foundation
 /// One argument of a hands command. The CLI reads it as a positional word or a `--flag`, MCP as a
 /// property of the tool's arguments object; the name is the same in both.
 public struct HandsParam: Equatable, Sendable {
-    public enum Kind: String, Sendable { case string, integer, boolean }
+    public enum Kind: String, Sendable { case string, integer, boolean, stringList }
     public var name: String
     public var kind: Kind
     public var help: String
@@ -35,6 +35,9 @@ public struct HandsTool: Equatable, Sendable {
 /// The commands, once, for the CLI parser, the MCP `tools/list` and the app's dispatcher.
 public enum HandsTools {
     static let refParam = HandsParam("ref", .string, "A ref printed by snapshot or find, like @s8f3k2p9:e5.", required: true, positional: true)
+
+    /// Not agent tools: lending an app is Donovan's decision (see `HandsParse.askedForLend`).
+    public static let userOnly: Set<String> = ["lend", "return"]
 
     public static let all: [HandsTool] = [
         HandsTool(verb: "windows", summary: "List the windows an agent may use now: those on the agent workspace and those of lent apps, with their ids.", params: [], acts: false),
@@ -83,21 +86,12 @@ public enum HandsTools {
         HandsTool(verb: "toggle", summary: "Flip a checkbox, switch or disclosure by ref. Prints the state it read back.", params: [refParam], acts: true),
         HandsTool(verb: "shot", summary: "Capture one window as a PNG, even while it is parked out of view. Needs Screen Recording for BaneySpaces. The file stays on this Mac.", params: [
             HandsParam("window", .integer, "Window id.", required: true),
-            HandsParam("out", .string, "Where to write it (default: BaneySpaces' own folder)."),
-        ], acts: false),
-        HandsTool(verb: "open", summary: "Open an app, files or a URL on the agent workspace, without switching the user to it.", params: [
-            HandsParam("app", .string, "App name or bundle id.", required: true, positional: true),
-            HandsParam("targets", .string, "Files or an http(s) URL to open in it.", positional: true, rest: true),
+            HandsParam("out", .string, "A file name (no folder) for the PNG; it is written in BaneySpaces' own shots folder."),
         ], acts: true),
-        HandsTool(verb: "lend", summary: "Ask to use an app that is on the user's workspaces. It stays usable until you return it, the session ends, or the time runs out.", params: [
+        HandsTool(verb: "open", summary: "Open an app, or files from the agent handoff folder in it, on the agent workspace, without switching the user to it. Apps that hold the user's own data (Safari, Notes, Mail, Messages, Calendar, Photos) answer needs_sandbox.", params: [
             HandsParam("app", .string, "App name or bundle id.", required: true, positional: true),
-            HandsParam("for", .string, "How long: 10m, 2h (default 30m, at most 8h)."),
-            HandsParam("session", .string, "The agent session this belongs to; ending it returns the app."),
-        ], acts: false),
-        HandsTool(verb: "return", summary: "Give a lent app back.", params: [
-            HandsParam("app", .string, "App name or bundle id; omit with all=true to return everything.", positional: true),
-            HandsParam("all", .boolean, "Return every lent app."),
-        ], acts: false),
+            HandsParam("targets", .stringList, "Files in the agent handoff folder to open in it. URLs need an agent browser profile (a later phase).", positional: true, rest: true),
+        ], acts: true),
     ]
 
     public static func tool(verb: String) -> HandsTool? {
@@ -125,7 +119,16 @@ public struct HandsRequest: Codable, Equatable, Sendable {
 public enum HandsParse {
     /// Reads `snapshot --app TextEdit -i` into a request. Unknown flags, missing values and
     /// missing required arguments come back as `bad_arguments` with the usage.
+    /// What an agent gets for `lend` or `return`: they are Donovan's, not tools.
+    public static func askedForLend(_ app: String?) -> HandsError {
+        let name = app ?? "the app"
+        return HandsError(.needsLend, "agents can't lend apps; \(name) is not on the agent workspace",
+                          suggestion: "Ask Donovan to lend it: he runs `baneyspaces agent lend \(name)` in a terminal he types in, or picks it in the BaneySpaces menu under Lend to Agents. Or do the work on the agent workspace with `baneyspaces agent open \(name)` (apps that hold his data go to the sandbox).",
+                          retry: .never)
+    }
+
     public static func command(_ words: [String], session: String? = nil) -> Result<HandsRequest, HandsError> {
+        if let verb = words.first, HandsTools.userOnly.contains(verb) { return .failure(askedForLend(words.dropFirst().first)) }
         guard let verb = words.first, let tool = HandsTools.tool(verb: verb) else {
             return .failure(HandsError(.badArguments, "unknown agent command \(words.first ?? "")",
                                        suggestion: "Commands: " + HandsTools.all.map(\.verb).joined(separator: ", ")))
@@ -148,6 +151,8 @@ public enum HandsParse {
                 switch p.kind {
                 case .boolean:
                     args[p.name] = .bool(inline.map { $0 != "false" && $0 != "0" } ?? true)
+                case .stringList:
+                    return .failure(usage(tool, "\(name) is not an option"))
                 case .integer, .string:
                     guard let v = inline ?? (i + 1 < words.count ? words[i + 1] : nil) else { return .failure(usage(tool, "\(name) needs a value")) }
                     if inline == nil { i += 1 }
@@ -166,7 +171,9 @@ public enum HandsParse {
         var rest = positionals[...]
         for p in tool.params where p.positional {
             if p.rest {
-                if !rest.isEmpty { args[p.name] = .string(rest.joined(separator: " ")) }
+                if !rest.isEmpty {
+                    args[p.name] = p.kind == .stringList ? .array(rest.map(JSONValue.string)) : .string(rest.joined(separator: " "))
+                }
                 rest = []
             } else if let w = rest.first {
                 args[p.name] = .string(w)
@@ -179,6 +186,7 @@ public enum HandsParse {
 
     /// An MCP tool call: `arguments` by name.
     public static func call(name: String, arguments: [String: JSONValue], session: String? = nil) -> Result<HandsRequest, HandsError> {
+        if HandsTools.userOnly.contains(name) { return .failure(askedForLend(arguments["app"]?.string)) }
         guard let tool = HandsTools.tool(verb: name) else {
             return .failure(HandsError(.badArguments, "unknown tool \(name)", suggestion: "Call tools/list for the tools."))
         }
@@ -187,6 +195,9 @@ public enum HandsParse {
             guard let p = tool.params.first(where: { $0.name == k }) else { return .failure(usage(tool, "unknown argument \(k)")) }
             switch p.kind {
             case .string: args[k] = v.string.map(JSONValue.string) ?? .string(v.text)
+            case .stringList:
+                guard let a = v.array, a.allSatisfy({ $0.string != nil }) else { return .failure(usage(tool, "\(k) takes a list of strings")) }
+                args[k] = v
             case .integer:
                 guard let n = v.int else { return .failure(usage(tool, "\(k) takes a number")) }
                 args[k] = .int(n)
@@ -211,7 +222,7 @@ public enum HandsParse {
     public static func usageLine(_ tool: HandsTool) -> String {
         var parts = ["baneyspaces agent", tool.verb]
         for p in tool.params {
-            if p.positional { parts.append(p.required ? "<\(p.name)>" : "[\(p.name)]") }
+            if p.positional { parts.append(p.required ? "<\(p.name)>" : "[\(p.name)\(p.rest ? "…" : "")]") }
             else {
                 let flag = "--" + p.name + (p.kind == .boolean ? "" : " <\(p.name)>")
                 parts.append(p.required ? flag : "[\(flag)]")
