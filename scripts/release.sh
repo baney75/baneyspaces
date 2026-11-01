@@ -1,3 +1,4 @@
+# Soak gate: run scripts/soak-check.sh on rectory1 and keep the receipt before marking Latest/stable.
 #!/bin/bash
 # Builds, signs and uploads the prebuilt app for a stable release. Run it on the owner's Mac
 # (the signing key never leaves it) after pushing the tag:
