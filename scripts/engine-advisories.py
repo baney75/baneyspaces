@@ -17,11 +17,11 @@ tree = subprocess.run(
     ["cargo", "tree", "--locked", "--target", target, "-p", "agent-desktop-ffi", "-e", "normal,build",
      "--prefix", "none", "--format", "{p}"],
     check=True, capture_output=True, text=True).stdout.split("\n")
-linked = {}
+linked = set()  # (name, version) pairs: a crate can be linked in two versions
 for line in tree:
     parts = line.replace(" (*)", "").split(" ")
     if len(parts) >= 2 and parts[1].startswith("v") and "(" not in parts[0]:
-        linked[parts[0]] = parts[1][1:]
+        linked.add((parts[0], parts[1][1:]))
 
 lock = {}
 name = None
@@ -47,10 +47,10 @@ try:
 except OSError as e:
     sys.exit(f"engine: couldn't reach osv.dev for the advisory check ({e}). Build again with a network.")
 
-bad = {n: h for n, h in hits.items() if n in linked and any(v == linked[n] for v, _ in h)}
+bad = {n: h for n, h in hits.items() if any((n, v) in linked for v, _ in h)}
 for n, h in sorted(hits.items()):
     where = "LINKED on macOS" if n in bad else "not linked on macOS, ignored"
     print(f"engine: advisory on {n}: {', '.join(sorted({i for _, i in h}))} ({where})")
 if bad:
     sys.exit("engine: an advisory touches a crate the macOS build links; not building.")
-print(f"engine: advisory check ok ({len(linked)} crates linked on {target}, {len(lock)} in the lockfile)")
+print(f"engine: advisory check ok ({len({n for n, _ in linked})} crates linked on {target}, {len(lock)} in the lockfile)")

@@ -52,6 +52,11 @@ else
   codesign --force --sign - --identifier com.baney.baneyspaces "$APP"
 fi
 codesign --verify --deep --strict "$APP"
+# The app must find its library next to itself, not where it was built.
+otool -L "$APP/Contents/MacOS/BaneySpaces" | grep -q '@rpath/libagent_desktop_ffi.dylib' || { echo "bundle: BaneySpaces doesn't link the engine through @rpath" >&2; exit 1; }
+otool -l "$APP/Contents/MacOS/BaneySpaces" | grep -A2 LC_RPATH | grep -q '@executable_path/../Frameworks' || { echo "bundle: no @executable_path/../Frameworks rpath" >&2; exit 1; }
+[ "$(otool -D "$APP/Contents/Frameworks/libagent_desktop_ffi.dylib" | grep -c '^@rpath/libagent_desktop_ffi.dylib$')" -ge 1 ] || { echo "bundle: the engine's install name isn't @rpath" >&2; exit 1; }
+if otool -l "$APP/Contents/MacOS/BaneySpaces" | grep -A2 LC_RPATH | grep -q "$PWD/engine/lib"; then echo "bundle: the app still points at the build folder" >&2; exit 1; fi
 echo "built $APP ($VERSION, $(lipo -archs "$APP/Contents/MacOS/BaneySpaces"))"
 
 if [ "${1:-}" = "--install" ]; then

@@ -16,7 +16,7 @@ ROOT=$PWD
 # shellcheck source=../engine/PIN
 . engine/PIN
 OUT=engine/lib
-STAMP="$ENGINE_COMMIT $ENGINE_SHA256 $(cat engine/patches/*.patch | shasum -a 256 | cut -c1-64) ${BANEYSPACES_ARM64_ONLY:-0}"
+STAMP="$ENGINE_COMMIT $ENGINE_SHA256 $(cat engine/patches/*.patch | shasum -a 256 | cut -c1-64) $(shasum -a 256 scripts/build-engine.sh | cut -c1-16) ${BANEYSPACES_ARM64_ONLY:-0}"
 
 if [ "${1:-}" != "--force" ] && [ -f "$OUT/libagent_desktop_ffi.dylib" ] && [ "$(cat "$OUT/STAMP" 2>/dev/null)" = "$STAMP" ]; then
   echo "engine: up to date ($ENGINE_COMMIT)"
@@ -77,7 +77,14 @@ cd "$ROOT"
 
 mkdir -p "$OUT"
 lipo -create "${LIBS[@]/#/engine/.src/}" -output "$OUT/libagent_desktop_ffi.dylib"
+# The app finds its library through @rpath (Contents/Frameworks in the bundle, engine/lib for a dev build):
+# set the install name here and check every slice, so a library that only loads from where it was built can't ship.
+install_name_tool -id @rpath/libagent_desktop_ffi.dylib "$OUT/libagent_desktop_ffi.dylib" 2>/dev/null
 strip -x "$OUT/libagent_desktop_ffi.dylib"
+[ "$(otool -D "$OUT/libagent_desktop_ffi.dylib" | grep -c '^@rpath/libagent_desktop_ffi.dylib$')" = "${#TARGETS[@]}" ] \
+  || { echo "engine: the library's install name isn't @rpath/libagent_desktop_ffi.dylib in every slice" >&2; exit 1; }
+# install_name_tool and strip invalidate the signature; arm64 refuses to load an unsigned library (bundle.sh signs the real one).
+codesign --force --sign - "$OUT/libagent_desktop_ffi.dylib" 2>/dev/null
 # A symbol BaneySpaces calls but the library lacks would fail at launch, not at build.
 for sym in ad_init ad_adapter_create ad_snapshot_window ad_execute_by_ref_timeout ad_free_string; do
   nm -gU "$OUT/libagent_desktop_ffi.dylib" | grep -q " _$sym\$" || { echo "engine: the library has no $sym" >&2; exit 1; }
