@@ -87,25 +87,29 @@ struct ViewerView: View {
     /// Rendered images can't capture a live blur, so they draw a still backdrop instead.
     var stillBackdrop = false
     private var accent: Color { Chrome.accent }
+    /// Panel style and opacity are the BaneySpaces theme's; a theme with one fill ignores them.
+    private var adjustable: Bool { Chrome.spec.fill.adjustable }
 
     // The body is split into small pieces so every Swift compiler type-checks it quickly.
     var body: some View {
         ZStack {
             backdrop
             // Clicking the backdrop closes the viewer, like clicking the desktop in Mission Control.
-            Chrome.shade(appearance.settings.overviewDim).ignoresSafeArea().onTapGesture { model.onClose() }
-            if appearance.settings.panelStyle == .tinted {
+            Chrome.black(adjustable ? appearance.settings.overviewDim : AppearanceSettings().overviewDim)
+                .ignoresSafeArea().onTapGesture { model.onClose() }
+            if adjustable && appearance.settings.panelStyle == .tinted {
                 Chrome.accent.opacity(AppearanceSettings.tintWash).ignoresSafeArea().allowsHitTesting(false)
             }
             GeometryReader { g in grid(in: g.size) }
             liftedCard
         }
         .coordinateSpace(name: "viewer")
+        .environment(\.colorScheme, Chrome.scheme)
         .onPreferenceChange(TileFrames.self) { model.tileFrames = $0 }
     }
 
     @ViewBuilder private var backdrop: some View {
-        if appearance.settings.panelStyle == .solid || (!Chrome.spec.fill.blur && !stillBackdrop) {
+        if (adjustable && appearance.settings.panelStyle == .solid) || (!Chrome.spec.fill.blur && !stillBackdrop) {
             Chrome.panel().ignoresSafeArea()
         } else if stillBackdrop {
             Chrome.stillBackdrop
@@ -277,7 +281,7 @@ struct ViewerView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Chrome.shape(.overviewChip, continuous: false).fill(lifted ? Chrome.liftedFill : Chrome.cell(0.06)))
         .overlay(Chrome.shape(.overviewChip, continuous: false).strokeBorder(Chrome.edge(lifted ? 0.25 : 0), lineWidth: Chrome.width(.overviewChip)))
-        .shadow(color: Chrome.shade(lifted && Chrome.spec.shadow != nil ? 0.5 : 0), radius: 14, y: 6)
+        .shadow(color: Chrome.shadow(lifted ? 0.5 : 0), radius: 14, y: 6)
         .scaleEffect(lifted ? Chrome.grow(1.04) : 1)
     }
 }

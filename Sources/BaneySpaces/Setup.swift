@@ -822,7 +822,10 @@ struct SetupView: View {
                 Text("\(Int((appearance.settings.effectivePanelOpacity * 100).rounded()))%")
                     .font(Chrome.font(12).monospacedDigit()).foregroundStyle(.secondary).frame(width: 40, alignment: .trailing)
             }
-            Text("Dock, ⌘Tab, launcher, overview and switch overlay. Solid is always opaque.")
+            // Omarchy and Minimal draw one fill of their own, so the style and opacity don't reach them.
+            .disabled(!Chrome.spec.fill.adjustable)
+            Text(Chrome.spec.fill.adjustable ? "Dock, ⌘Tab, launcher, overview and switch overlay. Solid is always opaque."
+                 : "The \(Chrome.spec.label) theme draws its own fill. Style and opacity apply to the BaneySpaces theme.")
                 .font(Chrome.font(12)).foregroundStyle(.secondary)
         }
 

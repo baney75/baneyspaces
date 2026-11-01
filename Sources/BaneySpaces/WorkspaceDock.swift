@@ -70,8 +70,9 @@ enum SystemDock {
 /// It waits out of sight and slides up when the pointer rests on the bottom edge of a screen,
 /// the way the macOS Dock does when it hides itself. Click a tile to go there.
 final class WorkspaceDock {
+    /// `dock.enabled`. Where nobody has chosen it is the spec's default for macOS (`default_by_platform`): off.
     static var enabled: Bool {
-        get { UserDefaults.standard.bool(forKey: "workspaceDock") }
+        get { UserDefaults.standard.object(forKey: "workspaceDock") as? Bool ?? ThemeCatalog.shared.dockEnabled() }
         set { UserDefaults.standard.set(newValue, forKey: "workspaceDock") }
     }
 
@@ -217,6 +218,11 @@ final class WorkspaceDock {
         timer = nil
         isRunning = false
         pinned = false
+        // A window being carried when the dock goes off is nobody's carry any more.
+        windowCarry = nil
+        carryEntry = nil
+        carryRefused = nil
+        shownForCarry = false
         hide(animated: false)
     }
 
@@ -512,13 +518,13 @@ final class WorkspaceDock {
     /// The drag ended. Let go at `p` (window-server space) over another workspace's tile: that
     /// workspace, for the window to go to. The dock goes down either way.
     func endCarry(_ grab: TopDrag.Grab, at p: CGPoint?) -> Int? {
-        // The dock is off: a window let go at the bottom edge is nobody's but its own.
-        guard dockSwitch.carryActs else { return nil }
         windowCarry = nil
         carryEntry = nil
         carryRefused = nil
         let wasShown = shownForCarry
         shownForCarry = false
+        // The dock is off: a window let go at the bottom edge is nobody's but its own.
+        guard dockSwitch.carryActs else { return nil }
         var target: Int?
         if let d = model.drag, d.carried, d.ids == [grab.window] {
             if let p, let panel, !slidingIn, let mainHeight = NSScreen.screens.first?.frame.maxY {
@@ -1463,7 +1469,7 @@ private struct SettleIcon: View {
         let reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         Image(nsImage: icon).resizable().interpolation(.high).frame(width: size, height: size)
             .scaleEffect(gone ? 0.92 : DockMotion.lift)
-            .shadow(color: Chrome.shade(gone ? 0 : 0.45), radius: 8, y: 3)
+            .shadow(color: Chrome.shadow(gone ? 0 : 0.45), radius: 8, y: 3)
             .opacity(gone ? 0 : 1)
             .onAppear { gone = true }
             .animation(reduce ? nil : .easeOut(duration: DockMotion.duration(DockMotion.settle, reduceMotion: reduce)), value: gone)
@@ -1493,10 +1499,10 @@ private struct DragLift: ViewModifier {
         let spring: Animation? = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? nil : .spring(response: 0.2, dampingFraction: 0.7)
         if #available(macOS 14, *) {
             content.animation(spring) {
-                $0.scaleEffect(lifted ? DockMotion.lift : 1).shadow(color: Chrome.shade(lifted ? 0.35 : 0), radius: 6, y: 2)
+                $0.scaleEffect(lifted ? DockMotion.lift : 1).shadow(color: Chrome.shadow(lifted ? 0.35 : 0), radius: 6, y: 2)
             }
         } else {
-            content.scaleEffect(lifted ? DockMotion.lift : 1).shadow(color: Chrome.shade(lifted ? 0.35 : 0), radius: 6, y: 2)
+            content.scaleEffect(lifted ? DockMotion.lift : 1).shadow(color: Chrome.shadow(lifted ? 0.35 : 0), radius: 6, y: 2)
         }
     }
 }
@@ -1534,9 +1540,9 @@ struct DockView: View {
 
     @ViewBuilder var body: some View {
         switch mode {
-        case .bar: barBody
+        case .bar: barBody.environment(\.colorScheme, Chrome.scheme)
         // The rows' drags name a space "dock"; here it is the panel's own, and the pointer is read from the screen.
-        case .side: sideBody.coordinateSpace(name: "dock")
+        case .side: sideBody.coordinateSpace(name: "dock").environment(\.colorScheme, Chrome.scheme)
         }
     }
 
@@ -1569,7 +1575,7 @@ struct DockView: View {
                 // Picked up: a touch larger with a soft shadow; let go: it settles away (`DockModel.endDrag`).
                 Image(nsImage: drag.icon).resizable().interpolation(.high).frame(width: 36 * k, height: 36 * k)
                     .scaleEffect(DockMotion.lift)
-                    .shadow(color: Chrome.shade(0.45), radius: 8, y: 3)
+                    .shadow(color: Chrome.shadow(0.45), radius: 8, y: 3)
                     .position(drag.location)
                     .allowsHitTesting(false)
             } else if let s = model.settling {
@@ -1993,6 +1999,8 @@ struct DockView: View {
                         .font(Chrome.font(10, .bold, rounded: true)).foregroundStyle(Chrome.wash(open ? 1 : 0.85))
                         .frame(width: 24 * k, height: 24 * k)
                         .background(Chrome.shape(.dockChip).fill(Chrome.cell(open ? 0.24 : 0.12)))
+                        // In a theme that has one lit fill, the open chip is told by its accent border.
+                        .overlay { if open && Chrome.theme != .baneyspaces { Chrome.shape(.dockChip).strokeBorder(Chrome.focusEdge(Chrome.accent), lineWidth: Chrome.width(.dockChip, focused: true)) } }
                         .modifier(CenterReport(key: "more:\(tile.id)"))
                         .contentShape(Rectangle())
                         .onHover { model.setHover(.more(tile.id), $0) }
@@ -2019,7 +2027,7 @@ struct DockView: View {
         let twin = !hovered && hoveredPid == app.pid
         let ring: CGFloat = hovered ? 2 : twin ? 1 : 0
         return Image(nsImage: app.icon).resizable().interpolation(.high).frame(width: size, height: size)
-            .shadow(color: Chrome.shade(hovered ? 0.4 : 0.2), radius: hovered ? 4 : 2, y: 1)
+            .shadow(color: Chrome.shadow(hovered ? 0.4 : 0.2), radius: hovered ? 4 : 2, y: 1)
             // The icon under the pointer is ringed in its workspace's color. The same app on
             // another workspace gets only a faint outline, so the ring never lands on the copy
             // you aren't pointing at. A macOS icon's art fills the middle 824 of its 1024 points

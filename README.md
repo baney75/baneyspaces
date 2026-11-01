@@ -179,6 +179,10 @@ baneyspaces set dock.enabled false            # or true
 baneyspaces get                               # all three
 ```
 
+Agents may change these too, from this Mac or, with the remote token, from another one
+(`BANEYSPACES_AGENT=<name>` names the caller). Each change is logged in `trace.log` with who made it.
+Workspace and window commands stay yours.
+
 **Turning the dock off** (**Settings › Dock**, the menu bar item, or `dock.enabled`) leaves no dock window
 at all: nothing comes up at the edge, the "+N" list never opens, and a window dragged to the bottom
 edge is left alone. Dragging to the top, the workspace keys, ⌘Tab, the launcher, the overview, the

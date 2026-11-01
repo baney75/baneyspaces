@@ -124,7 +124,7 @@ struct PanelBackground: View {
         let p = PanelLook.make(surface, look: l, settings: appearance.settings, accent: appearance.accentRGB)
         let shape = RoundedRectangle(cornerRadius: CGFloat(p.radius) * scale, style: .continuous)
         let border = Appearance.color(p.border.color)
-        let shadow = Appearance.color(l.color("sunken")).opacity(p.shadow?.opacity ?? 0)
+        let shadow = Appearance.color(l.color("dark")).opacity(p.shadow?.opacity ?? 0)
         shape.fill(p.blur ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(Color.clear))
             // Dark enough that text in the windows behind never reads through (Omarchy: fully opaque).
             .overlay(shape.fill(Appearance.color(p.fill).opacity(p.fillOpacity)))

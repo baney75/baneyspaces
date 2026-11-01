@@ -64,6 +64,9 @@ public struct ThemeSpec: Decodable, Equatable, Sendable {
 }
 
 public struct ThemeCatalog: Sendable {
+    /// `settings.dock.enabled.default`, a plain bool, and the platforms that differ (`default_by_platform`).
+    public let dockEnabledDefault: Bool
+    public let dockEnabledByPlatform: [String: Bool]
     public let themes: [String: ThemeSpec]
     /// font key -> platform -> families, in order of preference.
     public let fonts: [String: [String: [String]]]
@@ -80,8 +83,16 @@ public struct ThemeCatalog: Sendable {
         d.keyDecodingStrategy = .convertFromSnakeCase
         guard let f = try? d.decode(File.self, from: Data(text.utf8)), f.version == 1,
               ThemeID.allCases.allSatisfy({ f.themes[$0.rawValue] != nil }) else { return nil }
-        return ThemeCatalog(themes: f.themes, fonts: f.fonts)
+        // The dock switch's default is a bool; a platform that differs is listed beside it.
+        let root = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any]
+        let dock = (root?["settings"] as? [String: Any])?["dock.enabled"] as? [String: Any]
+        guard let base = dock?["default"] as? Bool else { return nil }
+        let byPlatform = (dock?["default_by_platform"] as? [String: Bool]) ?? [:]
+        return ThemeCatalog(dockEnabledDefault: base, dockEnabledByPlatform: byPlatform, themes: f.themes, fonts: f.fonts)
     }
+
+    /// Whether the dock starts on, where nobody has chosen: macOS's is off (the Workspace Dock replaces the macOS Dock).
+    public func dockEnabled(platform: String = "macos") -> Bool { dockEnabledByPlatform[platform] ?? dockEnabledDefault }
 
     public static let shared: ThemeCatalog = {
         guard let c = parse(ThemeData.themesJSON) else { fatalError("the embedded themes.json is unreadable") }
@@ -173,14 +184,80 @@ public struct Look: Equatable, Sendable {
         }
     }
 
-    /// A role's color. `light` is plain white and `workspace` the workspace's own tint (the accent
-    /// where there is none); every other role is the palette's.
+    /// A role's color. `light` is plain white, `dark` plain black and `workspace` the workspace's own
+    /// tint (the accent where there is none); every other role is the palette's.
     public func color(_ role: String, workspace: RGB? = nil) -> RGB {
         switch role {
         case "light": return RGB(r: 1, g: 1, b: 1)
+        case "dark": return RGB(r: 0, g: 0, b: 0)
         case "workspace": return workspace ?? palette.color("accent") ?? RGB(r: 1, g: 1, b: 1)
         default: return palette.color(role) ?? palette.color("foreground") ?? RGB(r: 1, g: 1, b: 1)
         }
+    }
+}
+
+// MARK: Fills and text on them
+
+extension Look {
+    /// The look that shipped: the BaneySpaces theme in the Auto palette. It keeps the grays it always drew;
+    /// any other look takes its fills from the palette.
+    public var isShipped: Bool { theme == .baneyspaces && isAuto }
+
+    private func gray(_ v: Double) -> RGB { RGB(r: v, g: v, b: v) }
+
+    /// A resting or lit tile or row. The shipped look washes its text color over the panel at the
+    /// opacity each surface always used; any other look uses the palette's `surface`, and `selection`
+    /// for a lit one, opaque, so the palette's own text always reads on it.
+    public func cell(_ shipped: Double) -> (color: RGB, opacity: Double) {
+        if isShipped { return (color("foreground"), shipped) }
+        return (color(shipped >= 0.1 ? "selection" : "surface"), 1)
+    }
+
+    /// The fill of a tile of the current workspace or a selected row (the workspace's tint in the
+    /// BaneySpaces theme, the palette's `selection` elsewhere).
+    public func lit(tint: RGB, shipped: Double) -> (color: RGB, opacity: Double) {
+        theme == .baneyspaces ? (tint, shipped) : (color("selection"), 1)
+    }
+
+    /// The overview's tile, and the one a window is dropping on.
+    public func tileFill(target: Bool) -> RGB {
+        isShipped ? gray(target ? 0.19 : 0.13) : color(target ? "selection" : "surface")
+    }
+
+    /// The overview's card while it is carried.
+    public var liftedFill: RGB { isShipped ? gray(0.26) : color("selection") }
+
+    /// What sits behind a label or badge that draws palette text.
+    public var labelBacking: (color: RGB, opacity: Double) { (color("sunken"), 0.78) }
+
+    /// Text on the accent (a badge, a chip). The shipped look keeps white; any other picks black or
+    /// white, whichever reads.
+    public func text(onAccent accent: RGB) -> RGB { isShipped ? color("light") : accent.bestText }
+
+    /// Text on a workspace's tint. The BaneySpaces theme keeps the white its tints were made for;
+    /// the other themes pick black or white, whichever reads.
+    public func text(onTint tint: RGB) -> RGB { theme == .baneyspaces ? color("light") : tint.bestText }
+
+    /// Every text this look draws over a fill the palette decides, with what it is drawn on (translucent
+    /// fills laid over the panel). `ThemeConformanceTests` holds each to WCAG's 4.5:1.
+    public func textPairs(accent: RGB) -> [(name: String, text: RGB, fill: RGB)] {
+        let fg = color("foreground")
+        let panel = color(spec.fill.tintRole)
+        var out: [(String, RGB, RGB)] = [
+            ("panel", fg, panel),
+            ("tooltip", fg, labelBacking.color.over(panel, alpha: labelBacking.opacity)),
+            ("overview tile", fg, tileFill(target: false)),
+            ("overview drop target", fg, tileFill(target: true)),
+            ("overview carried card", fg, liftedFill),
+        ]
+        for shipped in [0.05, 0.06, 0.07, 0.13, 0.16, 0.2, 0.24] {
+            let c = cell(shipped)
+            out.append(("tile \(shipped)", fg, c.color.over(panel, alpha: c.opacity)))
+        }
+        let sel = lit(tint: accent, shipped: 0.28)
+        if theme != .baneyspaces { out.append(("lit tile", fg, sel.color)) }
+        if !isShipped { out.append(("accent badge", text(onAccent: accent), accent)) }
+        return out
     }
 }
 

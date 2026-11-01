@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Remote machines: another Mac (or a server) on your tailnet sends work to this one's agent
@@ -7,13 +8,14 @@ import Foundation
 public enum Remote {
     public static let port: UInt16 = 47913
 
-    /// What a remote caller may do: look (ping, list, agent status) and give the agent workspace
-    /// work (agent open, agent run). Never focus, type into your terminals, open URLs, move your
-    /// windows, change a setting (`.setting`: the theme and the dock switch change what you see),
-    /// or turn the agent workspace on or off: all of those change what you see.
+    /// What a remote caller may do: look (ping, list, agent status), give the agent workspace work
+    /// (agent open, agent run), and read or change the three settings (`.setting`: the theme, the
+    /// palette and the dock switch; agents may customize how this Mac looks, and each change is
+    /// logged with its caller). Never focus, type into your terminals, open URLs, move your windows,
+    /// or turn the agent workspace on or off: those change what you do, not how it looks.
     public static func allows(_ r: Wire.Request) -> Bool {
         switch r.op {
-        case .ping, .list: return true
+        case .ping, .list, .setting: return true
         case .agent: return ["status", "open", "run"].contains(r.text ?? "status")
         default: return false
         }
@@ -51,6 +53,11 @@ public enum Remote {
         var diff: UInt8 = 0
         for i in x.indices { diff |= x[i] ^ y[i] }
         return diff == 0
+    }
+
+    /// A short name for a token that can go in a log: the first 8 hex digits of its SHA-256.
+    public static func fingerprint(_ token: String) -> String {
+        SHA256.hash(data: Data(token.utf8)).prefix(4).map { String(format: "%02x", $0) }.joined()
     }
 
     /// A fresh token: 32 random bytes as hex.

@@ -32,6 +32,10 @@ enum Render {
         if let t = ProcessInfo.processInfo.environment["BANEYSPACES_RENDER_THEME"], let id = ThemeID(rawValue: t) {
             Appearance.shared.settings.theme = id
         }
+        // BANEYSPACES_RENDER_PALETTE=<name> likewise picks a palette.
+        if let p = ProcessInfo.processInfo.environment["BANEYSPACES_RENDER_PALETTE"], PaletteCatalog.shared.named(p) != nil {
+            Appearance.shared.settings.colorPalette = p
+        }
         let model = ViewerModel()
         model.current = 1
         var id: WindowID = 100

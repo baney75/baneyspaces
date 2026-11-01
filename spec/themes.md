@@ -10,7 +10,7 @@ contract; this file says how to read them.
 | --- | --- | --- |
 | `appearance.theme` | `baneyspaces`, `omarchy`, `minimal` | `omarchy` on Omarchy, `baneyspaces` elsewhere |
 | `appearance.palette` | `auto`, or any name in `palettes.json` | `auto` |
-| `dock.enabled` | `true`, `false` | `false` on macOS, `true` elsewhere |
+| `dock.enabled` | `true`, `false` | `true`; `false` on macOS (`default_by_platform`) |
 
 All three are in Settings on every platform and apply live: no restart, and the next frame after
 the change already shows them (budget: 200 ms). The CLI sets them too:
@@ -41,8 +41,9 @@ Token meanings (`themes.json`):
   Settings may change the opacity, as macOS does today. A `null` material means an opaque fill
   in `tint_role`.
 - `shadow`: blur radius, y offset and opacity of black, or `null` for none.
-- Two roles aren't palette entries: `light` is plain white, and `workspace` is the workspace's
-  own tint color (each workspace has one).
+- Three roles aren't palette entries: `light` is plain white, `dark` is plain black (shadows and
+  dimming, in every palette), and `workspace` is the workspace's own tint color (each workspace
+  has one).
 
 - `font.family`: a key into `fonts`. Use the first family that is installed.
 - `space`: gap between tiles, panel padding, and tile size.
@@ -91,7 +92,8 @@ in all three themes and compares the tokens it used with `themes.json`.
 
 ## The dock switch
 
-On macOS the Workspace Dock replaces the macOS Dock, so it stays opt-in: a new install leaves
+`themes.json` keeps `default` a plain bool (`true`) and lists the exceptions under
+`default_by_platform`. On macOS the Workspace Dock replaces the macOS Dock, so it stays opt-in: a new install leaves
 the macOS Dock alone until you turn the Workspace Dock on. Elsewhere the dock starts on.
 
 With `dock.enabled` false:

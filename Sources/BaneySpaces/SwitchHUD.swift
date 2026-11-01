@@ -96,7 +96,7 @@ struct HUDView: View {
         .padding(.horizontal, 18).padding(.vertical, 16)
         .background(Chrome.panelBackground(.hudPanel))
         .padding(28)
-        .environment(\.colorScheme, Chrome.look.palette.isDark ? .dark : .light)
+        .environment(\.colorScheme, Chrome.scheme)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Workspace \(model.current)")
     }
@@ -109,8 +109,8 @@ struct HUDView: View {
             .overlay(Chrome.shape(.hudCell)
                 .strokeBorder(on ? Chrome.focusEdge(Chrome.wash(0.35)) : Chrome.edge(used ? 0.12 : 0.05), lineWidth: Chrome.width(.hudCell)))
             .overlay(Text("\(n)").font(Chrome.font(on ? 17 : 11, .bold, rounded: true))
-                .foregroundStyle(Chrome.wash(on ? 1 : used ? 0.6 : 0.25)))
+                .foregroundStyle(on ? Chrome.onTint(n) : Chrome.wash(used ? 0.6 : 0.25)))
             .frame(width: 40, height: 30)
-            .shadow(color: on ? Chrome.workspace(n).opacity(0.6) : .clear, radius: 8)
+            .shadow(color: Chrome.shadow(on ? 0.6 : 0, color: Chrome.workspace(n)), radius: 8)
     }
 }

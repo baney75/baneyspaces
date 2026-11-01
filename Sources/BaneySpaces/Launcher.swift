@@ -1417,7 +1417,7 @@ enum Toast {
         .padding(.horizontal, 16).padding(.vertical, 11)
         .background(Chrome.panelBackground(.launcherMini))
         .padding(24)
-        .environment(\.colorScheme, Chrome.look.palette.isDark ? .dark : .light)
+        .environment(\.colorScheme, Chrome.scheme)
         let host = NSHostingView(rootView: view)
         let size = host.fittingSize
         let p = panel ?? {
@@ -1463,6 +1463,7 @@ struct LauncherView: View {
         }
         .background(Chrome.panelBackground(.launcherPanel))
         .clipShape(Chrome.shape(.launcherPanel))
+        .environment(\.colorScheme, Chrome.scheme)
         .padding(1)
     }
 
@@ -1476,7 +1477,7 @@ struct LauncherView: View {
                     Image(systemName: "xmark").font(Chrome.font(9, .bold)).opacity(0.7)
                 }
                 .font(Chrome.font(13, .semibold))
-                .foregroundStyle(Chrome.wash())
+                .foregroundStyle(Chrome.onAccent)
                 .padding(.horizontal, 9).padding(.vertical, 4)
                 .background(Capsule().fill(Chrome.accent.opacity(0.85)))
                 .onTapGesture { model.back() }
@@ -1550,7 +1551,7 @@ struct LauncherView: View {
     private func badge(_ text: String, strong: Bool) -> some View {
         Text(text)
             .font(Chrome.font(11, .semibold, rounded: text.count <= 5))
-            .foregroundStyle(Chrome.wash(strong ? 0.95 : 0.6))
+            .foregroundStyle(text == "Install" && strong ? Chrome.onAccent : Chrome.wash(strong ? 0.95 : 0.6))
             .padding(.horizontal, 8).padding(.vertical, 3)
             .background(Chrome.pill().fill(text == "Install" && strong ? Chrome.accent : Chrome.wash(0.1)))
     }

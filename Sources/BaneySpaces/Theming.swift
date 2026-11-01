@@ -33,6 +33,8 @@ enum Chrome {
 
     static var look: Look { Appearance.shared.look }
     static var theme: ThemeID { look.theme }
+    /// Dark or light system colors (`.primary`, `.secondary`) for the palette: a light palette's panels need dark text.
+    static var scheme: ColorScheme { look.palette.isDark ? .dark : .light }
     static var spec: ThemeSpec { look.spec }
     static func style(_ s: Surface) -> SurfaceStyle { SurfaceStyle.make(s, theme: look.theme, spec: look.spec) }
 
@@ -63,18 +65,38 @@ enum Chrome {
     /// The palette's text color at `opacity`: white, in the default palette.
     static func wash(_ opacity: Double = 1) -> Color { Appearance.color(look.color("foreground")).opacity(opacity) }
 
-    /// Plain white at `opacity`: text on a workspace's own tint, which is dark enough for it in every palette.
+    /// Plain white at `opacity`: text on a workspace's own tint in the BaneySpaces theme, which dims the tints for it.
     static func light(_ opacity: Double = 1) -> Color { Appearance.color(look.color("light")).opacity(opacity) }
 
-    /// The palette's darkest color at `opacity`: shadows and the tooltip's backing. Black, in the default palette.
+    /// Plain black at `opacity`, in every palette: the overview's dim and the strokes that outline a mark.
+    static func black(_ opacity: Double) -> Color { Appearance.color(look.color("dark")).opacity(opacity) }
+
+    /// A shadow or glow: black (or `color`) at `opacity`, and nothing at all in a theme with no shadow
+    /// (Omarchy, Minimal), so no icon, drag or HUD cell draws one either.
+    static func shadow(_ opacity: Double, color: Color? = nil) -> Color {
+        spec.shadow == nil ? .clear : (color ?? black(1)).opacity(opacity)
+    }
+
+    /// The palette's `sunken` role at `opacity`: what sits behind a tooltip or badge that draws palette
+    /// text. Black in the default palette, and light in a light palette, so the text still reads.
     static func shade(_ opacity: Double) -> Color { Appearance.color(look.color("sunken")).opacity(opacity) }
 
-    /// The panel's own color, for text drawn on the accent or a workspace tint.
+    /// The panel's own color.
     static func panel(_ opacity: Double = 1) -> Color { Appearance.color(look.color("background")).opacity(opacity) }
 
+    /// Text on the accent (a badge, a chip).
+    static var onAccent: Color { Appearance.color(look.text(onAccent: Appearance.shared.accentRGB)) }
+
+    /// Text on workspace `n`'s tint.
+    static func onTint(_ n: Int) -> Color {
+        Appearance.color(look.text(onTint: Appearance.shared.settings.workspaceColor(n, accent: Appearance.shared.accentRGB).rgb))
+    }
+
     /// A resting border. BaneySpaces: white at the opacity this surface has always used; the other
-    /// themes: the palette's `border` role at the theme's one opacity.
+    /// themes: the palette's `border` role at the theme's one opacity. A surface that never had a
+    /// border (0) has none in any theme.
     static func edge(_ shipped: Double) -> Color {
+        guard shipped > 0 else { return .clear }
         let b = spec.border
         if look.theme == .baneyspaces { return Appearance.color(look.color(b.role)).opacity(shipped) }
         return Appearance.color(look.color(b.role)).opacity(b.opacity ?? 1)
@@ -86,28 +108,20 @@ enum Chrome {
         look.spec.border.focusedRole == "workspace" ? tint : Appearance.color(look.color(look.spec.border.focusedRole))
     }
 
-    /// A resting tile or row fill. BaneySpaces: white at the opacity it has always used; the other
-    /// themes: the palette's `surface` (and `selection` for a lit one), opaque.
+    /// A resting tile or row fill (`Look.cell`).
     static func cell(_ shipped: Double) -> Color {
-        if look.theme == .baneyspaces { return wash(shipped) }
-        return Appearance.color(look.color(shipped >= 0.1 ? "selection" : "surface"))
+        let c = look.cell(shipped)
+        return Appearance.color(c.color).opacity(c.opacity)
     }
 
-    /// The fill of the current workspace's tile or the selected row. BaneySpaces: its tint at
-    /// the opacity it has always used; the others: the palette's `selection`.
+    /// The fill of the current workspace's tile or the selected row (`Look.lit`).
     static func lit(_ tint: Color, _ shipped: Double) -> Color {
         look.theme == .baneyspaces ? tint.opacity(shipped) : Appearance.color(look.color("selection"))
     }
 
-    /// The overview's tile fill: the BaneySpaces theme's two grays, the palette's `surface` and `selection` elsewhere.
-    static func tileFill(target: Bool) -> Color {
-        look.theme == .baneyspaces ? Color(white: target ? 0.19 : 0.13) : Appearance.color(look.color(target ? "selection" : "surface"))
-    }
-
-    /// The overview's card while it is carried.
-    static var liftedFill: Color {
-        look.theme == .baneyspaces ? Color(white: 0.26) : Appearance.color(look.color("selection"))
-    }
+    /// The overview's tile fill, and the card while it is carried (`Look.tileFill`, `Look.liftedFill`).
+    static func tileFill(target: Bool) -> Color { Appearance.color(look.tileFill(target: target)) }
+    static var liftedFill: Color { Appearance.color(look.liftedFill) }
 
     /// The overview's backdrop when it can't blur the screen (a rendered still, or a theme with no blur).
     static var stillBackdrop: LinearGradient {
@@ -132,9 +146,7 @@ enum Chrome {
         case .bold: .bold
         case .heavy: .heavy
         }
-        if let name = family, let base = NSFont(name: name, size: pt) {
-            return NSFontManager.shared.convertWeight(w.rawValue >= NSFont.Weight.semibold.rawValue, of: base)
-        }
+        if let face = face(size, weight) { return face as NSFont }
         return f.family == "system-sans" ? .systemFont(ofSize: pt, weight: w) : .monospacedSystemFont(ofSize: pt, weight: w)
     }
 
@@ -151,21 +163,28 @@ enum Chrome {
 
     // MARK: Type
 
-    private static let installed: Set<String> = Set(NSFontManager.shared.availableFontFamilies)
-
-    /// The first family of the theme's font that is installed; nil for the system font.
-    static var family: String? {
-        guard look.spec.font.family != "system-sans" else { return nil }
-        return ThemeCatalog.shared.fontFamilies(look.spec.font.family).first { installed.contains($0) }
+    /// The theme's font as one face of the weight asked for, or nil for the system font. Resolved once per
+    /// family, weight and size.
+    private static var faces: [String: CTFont?] = [:]
+    static func face(_ size: Double, _ weight: TextWeight) -> CTFont? {
+        let f = look.spec.font
+        guard f.family != "system-sans" else { return nil }
+        let pt = f.size(size), w = f.weight(weight)
+        let key = "\(f.family)|\(w)|\(pt)"
+        if let cached = faces[key] { return cached }
+        let face = FontFace.resolve(families: ThemeCatalog.shared.fontFamilies(f.family), weight: w, size: pt)
+        faces[key] = .some(face)
+        return face
     }
 
     /// Text at a size written for the 12 pt base, in the theme's family and weight.
     static func font(_ size: Double, _ weight: TextWeight = .regular, rounded: Bool = false) -> Font {
         let f = look.spec.font
-        let pt = CGFloat(f.size(size)), w = f.weight(weight).swiftUI
-        if f.family == "system-sans" { return .system(size: pt, weight: w, design: rounded ? .rounded : .default) }
-        if let name = family { return .custom(name, size: pt).weight(w) }
-        return .system(size: pt, weight: w, design: .monospaced)
+        if f.family == "system-sans" {
+            return .system(size: CGFloat(f.size(size)), weight: f.weight(weight).swiftUI, design: rounded ? .rounded : .default)
+        }
+        if let face = face(size, weight) { return Font(face) }
+        return .system(size: CGFloat(f.size(size)), weight: f.weight(weight).swiftUI, design: .monospaced)
     }
 
     // MARK: Motion
@@ -210,7 +229,7 @@ struct WorkspaceMark: View {
             Text("\(n)").font(Chrome.font(size * 0.55, .bold, rounded: true)).foregroundStyle(Chrome.light())
                 .frame(minWidth: size, minHeight: size)
                 .background(Circle().fill(tint))
-                .overlay(Circle().strokeBorder(Chrome.shade(0.25), lineWidth: Chrome.width(.dockTile)))
+                .overlay(Circle().strokeBorder(Chrome.black(0.25), lineWidth: Chrome.width(.dockTile)))
         case .numberBlock:
             Text("\(n)").font(Chrome.font(size * 0.55, .bold))
                 .foregroundStyle(current ? Chrome.panel() : tint)

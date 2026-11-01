@@ -199,11 +199,9 @@ public enum ThemeData {
   },
   "dock.enabled": {
    "type": "bool",
-   "default": {
-    "macos": false,
-    "windows": true,
-    "linux": true,
-    "omarchy": true
+   "default": true,
+   "default_by_platform": {
+    "macos": false
    }
   }
  }

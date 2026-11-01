@@ -43,6 +43,23 @@ public struct RGB: Codable, Equatable, Hashable, Sendable {
     /// WCAG contrast of white text on this color, from 1 (none) to 21.
     public var contrastWithWhite: Double { 1.05 / (luminance + 0.05) }
 
+    /// WCAG contrast ratio between two colors, from 1 (none) to 21.
+    public func contrast(with other: RGB) -> Double {
+        let hi = max(luminance, other.luminance), lo = min(luminance, other.luminance)
+        return (hi + 0.05) / (lo + 0.05)
+    }
+
+    /// This color laid over `base` at `alpha`.
+    public func over(_ base: RGB, alpha: Double) -> RGB {
+        RGB(r: r * alpha + base.r * (1 - alpha), g: g * alpha + base.g * (1 - alpha), b: b * alpha + base.b * (1 - alpha))
+    }
+
+    /// Black or white, whichever reads better on this color: never below 4.5:1.
+    public var bestText: RGB {
+        let white = RGB(r: 1, g: 1, b: 1), black = RGB(r: 0, g: 0, b: 0)
+        return contrast(with: white) >= contrast(with: black) ? white : black
+    }
+
     public var hsb: HSB {
         let mx = max(r, g, b), mn = min(r, g, b), d = mx - mn
         var h = 0.0

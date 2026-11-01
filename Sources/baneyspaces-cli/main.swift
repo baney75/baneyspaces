@@ -162,13 +162,14 @@ case "state":
     out(String(data: d, encoding: .utf8) ?? "")
 
 case "set", "get":
-    // Looks and the dock switch are yours to change: the app refuses them from another machine's token.
-    if remoteHost != nil { fail("set and get change this Mac's own looks; run them there", code: 2) }
     if cmd == "set" && rest.count != 2 {
         fail("usage: \(me) set <setting> <value>\n  " + SettingKey.allCases.map(\.usage).joined(separator: "\n  "), code: 2)
     }
     if cmd == "get" && rest.count > 1 { fail("usage: \(me) get [setting]", code: 2) }
-    let reply = call(Wire.Request(op: .setting, target: rest.first, text: cmd == "set" ? rest[1] : nil))
+    // Who is asking, for trace.log: an agent says its name in $BANEYSPACES_AGENT, otherwise the app that ran this.
+    let caller = ProcessInfo.processInfo.environment["BANEYSPACES_AGENT"].flatMap { $0.isEmpty ? nil : $0 }
+        ?? (launchingApp.isEmpty ? "cli" : launchingApp)
+    let reply = call(Wire.Request(op: .setting, target: rest.first, text: cmd == "set" ? rest[1] : nil, caller: caller))
     let info = reply.info ?? [:]
     if rest.count == 1 && cmd == "get" { out(info[SettingKey(name: rest[0])?.rawValue ?? ""] ?? "") }
     else { for k in info.keys.sorted() { out("\(k) \(info[k] ?? "")") } }

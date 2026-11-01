@@ -25,17 +25,51 @@ final class SettingKeyTests: XCTestCase {
         }
     }
 
+    func testAnEmptyNameIsRefusedWhenAValueCameWithIt() {
+        guard case .refused = SettingKey.ask(target: "", text: "omarchy") else { return XCTFail("an unset variable is not 'list everything'") }
+        guard case .refused = SettingKey.ask(target: nil, text: "omarchy") else { return XCTFail("a value with no name") }
+        XCTAssertEqual(SettingKey.ask(target: "", text: nil), .list)
+    }
+
     func testEveryPaletteTheCatalogHasIsASettableValue() {
         for name in PaletteCatalog.shared.names { XCTAssertEqual(SettingKey.palette.normalized(name), name) }
     }
 
-    func testAnotherMachineCannotChangeHowThisMacLooks() {
-        let set = Wire.Request(op: .setting, target: "dock.enabled", text: "false")
-        let get = Wire.Request(op: .setting, target: "appearance.theme")
-        XCTAssertFalse(Remote.allows(set))
-        XCTAssertFalse(Remote.allows(get))
-        // The request survives the wire.
+    /// Donovan, 2026-11-01: "agents should be able to customize in any way they choose."
+    func testAnAgentTokenMayChangeHowThisMacLooks() {
+        for key in SettingKey.allCases {
+            XCTAssertTrue(Remote.allows(Wire.Request(op: .setting, target: key.rawValue, text: "x", caller: "claude")), key.rawValue)
+            XCTAssertTrue(Remote.allows(Wire.Request(op: .setting, target: key.rawValue)), key.rawValue)
+        }
+        // The request, caller included, survives the wire.
+        let set = Wire.Request(op: .setting, target: "dock.enabled", text: "false", caller: "claude-code")
         let back = try? JSONDecoder().decode(Wire.Request.self, from: JSONEncoder().encode(set))
         XCTAssertEqual(back, set)
+        XCTAssertEqual(back?.caller, "claude-code")
+        XCTAssertNil(SocketPolicy.refusal(for: set), "the local socket doesn't refuse it either")
+    }
+
+    func testWorkspaceAndWindowOpsStayUserOnly() {
+        for op in [Wire.Request.Op.focus, .open, .send, .notify, .remote, .hands, .event] {
+            XCTAssertFalse(Remote.allows(Wire.Request(op: op, target: "x", text: "x")), "\(op)")
+        }
+        XCTAssertFalse(Remote.allows(Wire.Request(op: .agent, text: "on")))
+        XCTAssertFalse(Remote.allows(Wire.Request(op: .agent, text: "move")))
+        XCTAssertFalse(Remote.allows(Wire.Request(op: .agent, text: "lend")))
+    }
+
+    func testEachChangeIsLoggedWithItsCallerAndTheLogNeverHoldsTheToken() throws {
+        let token = Remote.newToken()
+        let fp = Remote.fingerprint(token)
+        XCTAssertEqual(fp.count, 8)
+        XCTAssertNotEqual(fp, String(token.prefix(8)), "a fingerprint is a hash, not a piece of the token")
+        XCTAssertEqual(fp, Remote.fingerprint(token))
+        let controller = try Repo.code("Sources/BaneySpaces/Deck/DeckController.swift")
+        XCTAssertTrue(controller.contains(#"Trace.log("setting \(key.rawValue)=\(v) by \(r.caller ?? "unnamed caller")")"#))
+        let server = try Repo.code("Sources/BaneySpaces/Deck/Server.swift")
+        XCTAssertTrue(server.contains("Remote.fingerprint(req.token"))
+        XCTAssertLessThan(try XCTUnwrap(server.range(of: "req.caller =")).lowerBound, try XCTUnwrap(server.range(of: "req.token = nil")).lowerBound)
+        let cli = try Repo.code("Sources/baneyspaces-cli/main.swift")
+        XCTAssertTrue(cli.contains("BANEYSPACES_AGENT"))
     }
 }

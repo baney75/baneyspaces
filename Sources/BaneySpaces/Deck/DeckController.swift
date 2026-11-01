@@ -93,8 +93,9 @@ final class DeckController {
     /// Set by the app delegate: the menu bar badge shows how many agents finished unseen.
     var onUnseenChange: (Int) -> Void = { _ in }
     /// `baneyspaces get` and `set` (the theme, the palette, the dock switch): the app reads and applies them.
-    var readSetting: (SettingKey) -> String = { _ in "" }
-    var writeSetting: (SettingKey, String) -> Void = { _, _ in }
+    /// Until the app wires them (it does at launch, before the socket listens) a write is refused, never dropped.
+    var readSetting: (SettingKey) -> String? = { _ in nil }
+    var writeSetting: (SettingKey, String) -> Bool = { _, _ in false }
     /// Which rows are working, asking or stopped changed, so the Workspace Dock's badges can follow.
     var onWorkingChange: () -> Void = {}
     private var lastWorking: [String: String] = [:]
@@ -443,14 +444,22 @@ final class DeckController {
         }
     }
 
+    private var notReady: Wire.Reply { .init(ok: false, error: "BaneySpaces isn't ready for settings yet; try again in a moment") }
+
     private func setting(_ r: Wire.Request) -> Wire.Reply {
         switch SettingKey.ask(target: r.target, text: r.text) {
         case .refused(let why): return .init(ok: false, error: why)
-        case .list: return .init(ok: true, info: Dictionary(uniqueKeysWithValues: SettingKey.allCases.map { ($0.rawValue, readSetting($0)) }))
-        case .get(let key): return .init(ok: true, info: [key.rawValue: readSetting(key)])
+        case .list:
+            let all = SettingKey.allCases.compactMap { k in readSetting(k).map { (k.rawValue, $0) } }
+            return all.count == SettingKey.allCases.count ? .init(ok: true, info: Dictionary(uniqueKeysWithValues: all)) : notReady
+        case .get(let key):
+            guard let v = readSetting(key) else { return notReady }
+            return .init(ok: true, info: [key.rawValue: v])
         case .set(let key, let value):
-            writeSetting(key, value)
-            return .init(ok: true, info: [key.rawValue: readSetting(key)])
+            guard writeSetting(key, value), let v = readSetting(key) else { return notReady }
+            // Agents may change how this Mac looks, so each change says who made it.
+            Trace.log("setting \(key.rawValue)=\(v) by \(r.caller ?? "unnamed caller")")
+            return .init(ok: true, info: [key.rawValue: v])
         }
     }
 

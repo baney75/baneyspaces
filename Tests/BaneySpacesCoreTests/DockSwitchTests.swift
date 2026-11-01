@@ -109,7 +109,15 @@ final class DockSwitchTests: XCTestCase {
         let carry = try XCTUnwrap(code.range(of: "func carryMoved("))
         XCTAssertTrue(code[carry.lowerBound...].prefix(300).contains("dockSwitch.carryActs"))
         let end = try XCTUnwrap(code.range(of: "func endCarry("))
-        XCTAssertTrue(code[end.lowerBound...].prefix(300).contains("guard dockSwitch.carryActs else { return nil }"))
+        XCTAssertTrue(code[end.lowerBound...].prefix(420).contains("guard dockSwitch.carryActs else { return nil }"))
+        // Carry state is cleared before the guard, and when the dock goes off mid-drag.
+        let body = String(code[end.lowerBound...].prefix(420))
+        XCTAssertLessThan(try XCTUnwrap(body.range(of: "windowCarry = nil")).lowerBound, try XCTUnwrap(body.range(of: "guard dockSwitch.carryActs")).lowerBound)
+        let off = try XCTUnwrap(code.range(of: "private func endWatching()"))
+        let offBody = String(code[off.lowerBound...].prefix(500))
+        for field in ["windowCarry = nil", "carryEntry = nil", "carryRefused = nil", "shownForCarry = false"] {
+            XCTAssertTrue(offBody.contains(field), field)
+        }
     }
 
     func testTheTopDragWatcherIsKeptForTheTopWhenTheDockIsOff() throws {

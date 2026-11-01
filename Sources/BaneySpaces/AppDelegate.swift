@@ -398,6 +398,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSAppleEventManager.shared().setEventHandler(self, andSelector: #selector(handleURL(_:reply:)),
                                                      forEventClass: AEEventClass(kInternetEventClass),
                                                      andEventID: AEEventID(kAEGetURL))
+        // `baneyspaces set` and `get` answer from launch on, before Accessibility: looks and the dock switch
+        // only store a choice then; the dock starts with the rest once BaneySpaces does.
+        deck.readSetting = { [weak self] in self?.settingValue($0) }
+        deck.writeSetting = { [weak self] k, v in self?.applySetting(k, v) ?? false }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         let menu = NSMenu()
         menu.delegate = self
@@ -720,8 +724,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in HandsLends.shared.expire() }
         deck.onWorkingChange = { [weak self] in self?.dock.reload() }
-        deck.readSetting = { [weak self] in self?.settingValue($0) ?? "" }
-        deck.writeSetting = { [weak self] k, v in self?.applySetting(k, v) }
         // A moment after launch: setting up an observer per app costs the main thread a few
         // hundred milliseconds, which would otherwise land on your first workspace switch.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
@@ -872,7 +874,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// `dock.enabled`, `appearance.theme` and `appearance.palette` by name: what `baneyspaces get` reads.
-    func settingValue(_ key: SettingKey) -> String {
+    func settingValue(_ key: SettingKey) -> String? {
         switch key {
         case .theme: Appearance.shared.settings.theme.rawValue
         case .palette: Appearance.shared.settings.colorPalette
@@ -880,13 +882,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// What `baneyspaces set` and Settings do: applied at once, no restart.
-    func applySetting(_ key: SettingKey, _ value: String) {
+    /// What `baneyspaces set` and Settings do: applied at once, no restart. False when the app can't (it is going away).
+    @discardableResult
+    func applySetting(_ key: SettingKey, _ value: String) -> Bool {
         switch key {
         case .theme: Appearance.shared.settings.theme = ThemeID(rawValue: value) ?? .macDefault
         case .palette: Appearance.shared.settings.colorPalette = value
         case .dockEnabled: setWorkspaceDock(value == "true")
         }
+        return true
     }
 
     /// Turns the Workspace Dock on or off (`dock.enabled`). Off, there is no dock window at all and

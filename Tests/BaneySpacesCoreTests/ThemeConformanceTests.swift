@@ -66,14 +66,76 @@ final class ThemeConformanceTests: XCTestCase {
         for id in ThemeID.allCases {
             let t = themes[id.rawValue]!
             let fill = t["fill"] as! [String: Any]
-            let look = Look(theme: id, palette: "dracula", accent: AccentPreset.red.rgb)
-            let p = PanelLook.make(.dockBar, look: look, settings: AppearanceSettings(), accent: AccentPreset.red.rgb)
-            XCTAssertEqual(p.blur, fill["material"] is String, "\(id)")
-            XCTAssertEqual(p.shadow == nil, t["shadow"] is NSNull, "\(id)")
-            XCTAssertEqual(p.fill, look.color(fill["tint_role"] as! String))
-            if (fill["adjustable"] as? Bool) == false {
-                XCTAssertEqual(p.fillOpacity, num(fill, "tint_opacity") * num(fill, "opacity"), "\(id)")
+            // Every palette of the catalog, so a named palette that is ignored (or misspelled) fails.
+            for name in PaletteCatalog.shared.names {
+                let look = Look(theme: id, palette: name, accent: AccentPreset.red.rgb)
+                XCTAssertFalse(look.isAuto, "\(name) is a palette")
+                let p = PanelLook.make(.dockBar, look: look, settings: AppearanceSettings(), accent: AccentPreset.red.rgb)
+                XCTAssertEqual(p.blur, fill["material"] is String, "\(id) \(name)")
+                XCTAssertEqual(p.shadow == nil, t["shadow"] is NSNull, "\(id) \(name)")
+                XCTAssertEqual(p.fill, PaletteCatalog.shared.named(name)?.color(fill["tint_role"] as! String), "\(id) \(name)")
+                let border = t["border"] as! [String: Any]
+                if (border["role"] as? String) != "light" {
+                    XCTAssertEqual(p.border.color, PaletteCatalog.shared.named(name)?.color(border["role"] as! String), "\(id) \(name)")
+                }
+                if (fill["adjustable"] as? Bool) == false {
+                    XCTAssertEqual(p.fillOpacity, num(fill, "tint_opacity") * num(fill, "opacity"), "\(id) \(name)")
+                }
             }
+        }
+    }
+
+    // MARK: Light palettes
+
+    func testTextReadsOnItsFillInEveryThemeAndPalette() {
+        let accent = AccentPreset.red.rgb
+        for id in ThemeID.allCases {
+            for name in PaletteCatalog.shared.names + [AppearanceSettings.autoPalette] {
+                let look = Look(theme: id, palette: name, accent: accent)
+                XCTAssertFalse(look.textPairs(accent: accent).isEmpty)
+                for pair in look.textPairs(accent: accent) {
+                    XCTAssertGreaterThanOrEqual(pair.text.contrast(with: pair.fill), 4.5, "\(id) / \(name): \(pair.name)")
+                }
+            }
+        }
+    }
+
+    func testTheShippedGraysWouldFailOnALightPalette() {
+        // Why the overview's fills come from the palette: the white palette's text on the shipped dark gray.
+        let white = PaletteCatalog.shared.named("white")!
+        XCTAssertLessThan(white.color("foreground")!.contrast(with: RGB(r: 0.13, g: 0.13, b: 0.13)), 4.5)
+        let look = Look(theme: .baneyspaces, palette: "white", accent: AccentPreset.red.rgb)
+        XCTAssertFalse(look.isShipped)
+        XCTAssertEqual(look.tileFill(target: false), white.color("surface"))
+        XCTAssertEqual(look.tileFill(target: true), white.color("selection"))
+        XCTAssertEqual(look.liftedFill, white.color("selection"))
+        // Auto keeps the grays it always drew.
+        let shipped = Look(theme: .baneyspaces, palette: "auto", accent: AccentPreset.red.rgb)
+        XCTAssertTrue(shipped.isShipped)
+        XCTAssertEqual(shipped.tileFill(target: false), RGB(r: 0.13, g: 0.13, b: 0.13))
+        XCTAssertEqual(shipped.tileFill(target: true), RGB(r: 0.19, g: 0.19, b: 0.19))
+        XCTAssertEqual(shipped.liftedFill, RGB(r: 0.26, g: 0.26, b: 0.26))
+    }
+
+    func testTextOnAWorkspaceTintReadsInThemesThatPickIt() {
+        let s = AppearanceSettings()
+        for id in [ThemeID.omarchy, .minimal] {
+            for name in PaletteCatalog.shared.names + ["auto"] {
+                let look = Look(theme: id, palette: name, accent: AccentPreset.red.rgb)
+                for n in 1...9 {
+                    let tint = s.workspaceColor(n, accent: AccentPreset.red.rgb).rgb
+                    XCTAssertGreaterThanOrEqual(look.text(onTint: tint).contrast(with: tint), 4.5, "\(id) \(name) \(n)")
+                }
+            }
+        }
+        // The BaneySpaces theme keeps the white its tints were made for.
+        let look = Look(theme: .baneyspaces, palette: "white", accent: AccentPreset.red.rgb)
+        XCTAssertEqual(look.text(onTint: AccentPreset.green.rgb), RGB(r: 1, g: 1, b: 1))
+    }
+
+    func testShadowsAndTheDimAreBlackWhateverThePalette() {
+        for name in PaletteCatalog.shared.names {
+            XCTAssertEqual(Look(theme: .baneyspaces, palette: name, accent: AccentPreset.red.rgb).color("dark"), RGB(r: 0, g: 0, b: 0))
         }
     }
 
@@ -95,6 +157,8 @@ final class ThemeConformanceTests: XCTestCase {
         (#"Color\.(white|black)\b"#, "a color"),
         (#"NSColor\.(white|black)"#, "a color"),
         (#"(?<![A-Za-z0-9_.])\.(white|black)\b"#, "a color"),
+        // A shadow is the theme's: `Chrome.shadow` is clear where the theme has none; a panel's comes from its `PanelLook`.
+        (#"\.shadow\(color:\s*+(?!Chrome\.shadow\(|shadow,)"#, "a shadow the theme doesn't gate"),
         (#"\.systemFont\("#, "a font"),
         (#"\.system\(size:"#, "a font"),
     ]
@@ -138,6 +202,15 @@ final class ThemeConformanceTests: XCTestCase {
         XCTAssertTrue(dock.contains("Chrome.tileScale"))
         XCTAssertTrue(dock.contains("Chrome.style(.dockBar).gap"))
         XCTAssertTrue(dock.contains("Chrome.style(.dockBar).padding"))
+    }
+
+    /// `.primary` and `.secondary` text follows the color scheme: a light palette's panels need the light scheme,
+    /// or the overview's text is white on a pale tile.
+    func testEverySurfaceSetsTheColorSchemeFromThePalette() throws {
+        for file in ["WorkspaceDock", "WorkspaceSwitcher", "Launcher", "Viewer", "SwitchHUD"] {
+            let code = try Repo.code("Sources/BaneySpaces/\(file).swift")
+            XCTAssertTrue(code.contains("\\.colorScheme, Chrome.scheme"), "\(file) pins the scheme instead of following the palette")
+        }
     }
 
     func testTheSwitcherLauncherOverviewHudAndIndicatorTakeTheirPanelsFromTheTheme() throws {

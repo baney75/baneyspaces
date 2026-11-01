@@ -338,7 +338,7 @@ struct SwitcherView: View {
         }
         .padding(14)
         .background(Chrome.panelBackground(.switcherPanel))
-        .environment(\.colorScheme, Chrome.look.palette.isDark ? .dark : .light)
+        .environment(\.colorScheme, Chrome.scheme)
     }
 
     /// Long lists wrap onto more rows instead of running off the screen. An app on two

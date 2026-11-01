@@ -127,6 +127,22 @@ final class ThemeTests: XCTestCase {
         XCTAssertEqual(DockMotion.dockIn, 0.18, "the theme is put back")
     }
 
+    func testDockEnabledIsABoolWithAMacOSException() throws {
+        // `default` stays a plain bool, so another platform's reader still parses it.
+        let data = try Repo.text("spec/themes.json").data(using: .utf8)!
+        let root = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        let dock = (root["settings"] as! [String: Any])["dock.enabled"] as! [String: Any]
+        XCTAssertEqual(dock["default"] as? Bool, true)
+        XCTAssertEqual(dock["default_by_platform"] as? [String: Bool], ["macos": false])
+        XCTAssertFalse(ThemeCatalog.shared.dockEnabled(platform: "macos"))
+        XCTAssertTrue(ThemeCatalog.shared.dockEnabled(platform: "windows"))
+        XCTAssertTrue(ThemeCatalog.shared.dockEnabled(platform: "linux"))
+        XCTAssertTrue(ThemeCatalog.shared.dockEnabled(platform: "omarchy"))
+        // The app reads it for an unset switch.
+        let dockSource = try Repo.code("Sources/BaneySpaces/WorkspaceDock.swift")
+        XCTAssertTrue(dockSource.contains("ThemeCatalog.shared.dockEnabled()"))
+    }
+
     func testOmarchyIsBlocky() {
         let o = ThemeCatalog.shared.spec(.omarchy)
         XCTAssertEqual([o.radius.bar, o.radius.tile, o.radius.row, o.radius.list], [0, 0, 0, 0])

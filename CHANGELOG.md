@@ -8,7 +8,7 @@
   `spec/themes.json` and `spec/palettes.json`. The dock, the "+N" list and strip, ⌘Tab, the launcher, the
   overview, the HUD, the menu bar number and Settings all draw from the theme and apply at once. The
   BaneySpaces theme renders pixel for pixel what it did (every product shot compares equal).
-  `baneyspaces set|get appearance.theme|appearance.palette|dock.enabled` from a terminal. The dock
+  `baneyspaces set|get appearance.theme|appearance.palette|dock.enabled` from a terminal. Agents may use them too (each change is logged with its caller in `trace.log`); workspace and window commands stay user-only. The dock
   switch (Settings › Dock, now also in the menu bar item's menu) takes the dock down completely: no
   panel, no edge watcher, no "+N" list and no bottom drag, while the top drag and everything else
   stay. Settings › Appearance loses the small dock strip; each theme's card is its preview.

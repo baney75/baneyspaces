@@ -39,6 +39,9 @@ public enum SettingKey: String, CaseIterable, Sendable {
     }
 
     public static func ask(target: String?, text: String?) -> Ask {
+        // A name that is empty (an unset variable in a script) is a mistake, never "list everything"
+        // when a value came with it.
+        if text != nil, target?.isEmpty ?? true { return .refused("no setting name; the settings are \(allCases.map(\.rawValue).joined(separator: ", "))") }
         guard let target, !target.isEmpty else { return .list }
         guard let key = SettingKey(name: target) else {
             return .refused("no setting \(target); the settings are \(allCases.map(\.rawValue).joined(separator: ", "))")
