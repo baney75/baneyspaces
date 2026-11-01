@@ -165,12 +165,33 @@ final class DockOverflowDragTests: XCTestCase {
         XCTAssertTrue(text.contains("DockDrop.freshReadDue(now:"))
     }
 
+    func testAnotherTilesListIsNotTheRowTheDragBeganOn() {
+        // #103: the drag began on tile 2's list; tile 4's list took its place. That is not the row
+        // the gesture is on, even when it lists the same app.
+        XCTAssertTrue(DockDrop.rowStillShown(app: "x", from: 2, list: (tile: 2, apps: ["x", "y"])))
+        XCTAssertFalse(DockDrop.rowStillShown(app: "x", from: 2, list: (tile: 4, apps: ["x"])), "same app, another tile's list")
+        XCTAssertFalse(DockDrop.rowStillShown(app: "x", from: 2, list: (tile: 4, apps: ["y"])))
+        XCTAssertFalse(DockDrop.rowStillShown(app: "x", from: 2, list: nil))
+        XCTAssertFalse(DockDrop.rowStillShown(app: "x", from: 2, list: (tile: 2, apps: ["y"])), "the app left the list")
+    }
+
+    func testTheOrphanCheckComesBeforeSpringLoadAndClearsTheHold() throws {
+        let text = try dockSource()
+        let orphan = try XCTUnwrap(text.range(of: "if model.dragOrphaned(refresh: fresh) {"))
+        let spring = try XCTUnwrap(text.range(of: "springLoad(carrying)\n        checkSide("))
+        XCTAssertLessThan(orphan.lowerBound, spring.lowerBound)
+        let cancel = try XCTUnwrap(text.range(of: "func cancelDrag()"))
+        let body = String(text[cancel.upperBound...].prefix(300))
+        XCTAssertTrue(body.contains("heldTarget = nil") && body.contains("dwell?.cancel()"), "a cancelled drag leaves no hold behind")
+        XCTAssertTrue(text.contains("DockDrop.rowStillShown(app: $0, from: d.from, list: shown)"))
+    }
+
     func testARowKeepsItsDragWhenOneOfItsWindowsCloses() throws {
         // F3: the row is the app's; it outlives a window, and the survivors move.
         XCTAssertFalse(DockDrop.isOrphaned(ids: [11, 12], alive: [12], rowShown: true))
         XCTAssertEqual(DockDrop.survivors(of: [11, 12], alive: [12]), [12])
         let text = try dockSource()
-        XCTAssertTrue(text.contains("moreApps?.apps.contains { $0.id == id } ?? false"), "row identity, not exact window ids")
+        XCTAssertTrue(text.contains("let row: Bool? = d.listApp.map"), "row identity (app and tile), not exact window ids")
         XCTAssertFalse(text.contains("list.map(\\.id) == d.ids"))
     }
 }

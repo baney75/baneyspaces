@@ -33,6 +33,12 @@ final class AutomationGateTests: XCTestCase {
         }
     }
 
+    func testAeroSpaceRelaunchedAfterStartDisablesAgain() throws {
+        // #103: both would move the same windows, so BaneySpaces waits until it quits.
+        let why = try XCTUnwrap(AutomationGate.reason(trusted: true, aeroSpaceRunning: true, started: true))
+        XCTAssertTrue(why.contains("AeroSpace"))
+    }
+
     func testAccessibilityRevokedAfterStartDisablesAgain() throws {
         // F7: started, then the person turns Accessibility off in System Settings.
         let why = try XCTUnwrap(AutomationGate.reason(trusted: false, aeroSpaceRunning: false, started: true))
