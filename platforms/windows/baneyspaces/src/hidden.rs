@@ -66,6 +66,9 @@ impl HiddenSet {
     pub fn contains(&self, hwnd: i64) -> bool {
         self.map.contains_key(&hwnd)
     }
+    pub fn entries(&self) -> impl Iterator<Item = &Hidden> {
+        self.map.values()
+    }
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(self.map.values().collect::<Vec<_>>()).unwrap_or_default()
     }

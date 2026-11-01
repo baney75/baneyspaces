@@ -4,8 +4,17 @@
 //!
 //! The model decides; this file only carries it out. Where a window should be is derived, not
 //! replayed: after every event each tracked window is compared with what the model says (shown on
-//! some display, or not) and hidden or shown to match. That makes every step idempotent, so a
-//! missed event costs one poll interval, not a lost window.
+//! some display, or not) and hidden or shown to match, and what is hidden is read back from Windows
+//! on every poll, never taken from memory. That makes every step idempotent, so a missed event costs
+//! one poll interval, not a lost window.
+//!
+//! Three rules keep a window from being lost:
+//! 1. **Record first.** A window is written to `state.json` (and flushed) before it is hidden. If that
+//!    write fails, nothing is hidden and the request that wanted it is refused.
+//! 2. **Forget last.** An entry is removed only after the window reads back as shown. A show that fails
+//!    keeps its entry and is retried on every poll.
+//! 3. **Tracked while it exists.** A hidden window stays in the set as long as `IsWindow` is true,
+//!    whatever its title or styles become. Only a destroyed window leaves.
 
 use crate::agent;
 use crate::apps;
@@ -13,8 +22,7 @@ use crate::cloak::{self, Cloaker};
 use crate::cmdline;
 use crate::engine::{self, snapshot_of};
 use crate::hidden::{self, Hidden, HiddenSet, How, Recovery};
-use crate::hook::{self, Msg};
-use crate::ipc;
+use crate::hook::{self, EndSession, Msg};
 use crate::keys;
 use crate::paths::Paths;
 use crate::settings;
@@ -31,7 +39,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-pub const AGENT_WORKSPACE: &str = "cloaked-off-your-screen (ghost: transparent, click-through, unfocusable)";
+pub const AGENT_WORKSPACE: &str = "off-your-screen (ghost: transparent, click-through, unfocusable)";
 
 pub fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
@@ -58,7 +66,8 @@ pub struct Core {
     pub paths: Paths,
     pub hidden: HiddenSet,
     pub info: HashMap<String, WinInfo>,
-    pub jobs: Vec<(String, agent::Job)>,
+    /// The user's agent job (named, so a restarted daemon opens the same one).
+    pub job: Option<agent::Job>,
     pub snaps: HashMap<String, SnapInfo>,
     pub overview_shown: bool,
     pub events_seen: u64,
@@ -90,14 +99,38 @@ pub fn say(msg: &str) {
     }
 }
 
+/// Sign-out or shutdown is under way: windows are shown and nothing is hidden until it is cancelled.
 static STOPPING: AtomicBool = AtomicBool::new(false);
 static FINISHED: AtomicBool = AtomicBool::new(false);
 static CTRL_TX: OnceLock<Sender<Msg>> = OnceLock::new();
+static SHARED: OnceLock<Shared> = OnceLock::new();
+static PATHS: OnceLock<Paths> = OnceLock::new();
+
+/// What a request that wanted to hide windows says when it could not save where they were.
+fn save_error(why: &str) -> Envelope {
+    Envelope::err(
+        "internal",
+        format!("nothing was hidden: BaneySpaces could not save where your windows are, so it will not hide one ({why})"),
+        Retry::Safe,
+        "Nothing changed; the same call can be sent again. Check that %LOCALAPPDATA%\\BaneySpaces is writable and the disk is not full.",
+    )
+}
 
 impl Core {
     fn log(&self, msg: &str) {
         if self.trace {
             say(&format!("[baneyspaces] {msg}"));
+        }
+    }
+
+    fn problem(&mut self, msg: String) {
+        if self.problems.last() == Some(&msg) {
+            return;
+        }
+        say(&format!("[baneyspaces] {msg}"));
+        self.problems.push(msg);
+        if self.problems.len() > 20 {
+            self.problems.remove(0);
         }
     }
 
@@ -128,20 +161,40 @@ impl Core {
 
     // ---- the model's effects -------------------------------------------------------------
 
+    /// An event that mirrors what Windows did (a window opened, closed, took the front). Hiding
+    /// that cannot be recorded is skipped and reported, never forced.
     pub fn apply(&mut self, ev: Event) -> Result<Vec<Effect>, ModelError> {
         self.events_seen += 1;
         let effects = self.model.apply(ev)?;
-        self.exec(&effects);
+        if let Err(e) = self.exec(&effects) {
+            self.problem(format!("could not save the hidden-window record, so no window was hidden: {e}"));
+        }
         Ok(effects)
+    }
+
+    /// A request that changes what is hidden (switch, move, agent workspace). If the record cannot be
+    /// saved, the model is put back and the caller gets an error; no window was touched.
+    pub fn apply_checked(&mut self, ev: Event) -> Result<Vec<Effect>, Envelope> {
+        self.events_seen += 1;
+        let backup = self.model.clone();
+        let effects = self.model.apply(ev).map_err(model_err)?;
+        match self.exec(&effects) {
+            Ok(()) => Ok(effects),
+            Err(e) => {
+                self.model = backup;
+                self.problem(format!("refused: could not save the hidden-window record: {e}"));
+                Err(save_error(&e))
+            }
+        }
     }
 
     /// Carries out effects. Where windows are is derived by `sync_visibility`; only focus is
     /// an action. Every effect is idempotent.
-    fn exec(&mut self, effects: &[Effect]) {
+    fn exec(&mut self, effects: &[Effect]) -> Result<(), String> {
         for e in effects {
             self.log(&format!("effect {e:?}"));
         }
-        self.sync_visibility();
+        self.sync_visibility()?;
         // The last focus effect wins: it is where the model says the front should be.
         let focus = effects.iter().rev().find_map(|e| match e {
             Effect::FocusWindow { window } => Some(window.clone()),
@@ -155,7 +208,8 @@ impl Core {
             }
         }
         self.keep_focus_off_hidden_windows();
-        self.persist();
+        let _ = self.persist();
+        Ok(())
     }
 
     /// Focus never rests on a window that is out of sight (R-E1): typing would go to it.
@@ -173,18 +227,30 @@ impl Core {
         self.model.monitors().filter_map(|m| self.model.current(m)).filter(|n| *n != 0).collect()
     }
 
+    /// Is `pid` a process BaneySpaces started for an agent, or one of its children?
+    fn is_agent_pid(&self, pid: u32) -> bool {
+        pid != 0 && (self.model.agent_proc(pid).is_some() || self.job.as_ref().is_some_and(|j| agent::in_job(j, pid)))
+    }
+
     /// Hides and shows windows so what you see is what the model says. Shows first, so a switch
-    /// never flashes the desktop between two workspaces.
-    pub fn sync_visibility(&mut self) {
+    /// never flashes the desktop between two workspaces. What is hidden is checked against Windows
+    /// every time: an entry in the set is a promise, not a fact.
+    ///
+    /// Returns an error, with no window touched, when the record of what is about to be hidden cannot
+    /// be saved.
+    pub fn sync_visibility(&mut self) -> Result<(), String> {
+        let stopping = STOPPING.load(Ordering::SeqCst);
         let shown = self.visible_workspaces();
         let agent_shown = self.model.agent_shown();
-        #[derive(PartialEq)]
+        #[derive(Clone, Copy, PartialEq)]
         enum Want {
             Visible,
             HideUser,
             HideAgent,
         }
-        let mut wants: Vec<(String, WinInfo, Want)> = vec![];
+        // (hwnd, pid, start, what is wanted)
+        let mut wants: Vec<(i64, u32, u64, Want)> = vec![];
+        let mut tracked: BTreeSet<i64> = BTreeSet::new();
         for (id, i) in &self.info {
             let w = match self.model.home(id) {
                 Some(Home::Workspace { n }) => {
@@ -203,8 +269,19 @@ impl Core {
                 }
                 None => continue,
             };
-            wants.push((id.clone(), i.clone(), w));
+            tracked.insert(i.hwnd);
+            wants.push((i.hwnd, i.pid, i.start, w));
         }
+        // An agent's other windows (a dialog its app opened, one not shown yet) follow the agent workspace too.
+        for e in self.hidden.entries().filter(|e| e.agent && !tracked.contains(&e.hwnd)) {
+            wants.push((e.hwnd, e.pid, e.start, if agent_shown { Want::Visible } else { Want::HideAgent }));
+        }
+        if stopping {
+            // Sign-out in progress: everything is shown by the restore; hide nothing.
+            wants.retain(|w| w.3 == Want::Visible);
+        }
+        // 0. A window recorded the wrong way for what it is wanted as (an agent's ghost that is now
+        //    a user's) is put right first.
         let mut cloaker: Option<Option<Cloaker>> = None;
         let get = |c: &mut Option<Option<Cloaker>>| -> Option<*const Cloaker> {
             if c.is_none() {
@@ -212,76 +289,114 @@ impl Core {
             }
             c.as_ref().and_then(|o| o.as_ref()).map(|x| x as *const Cloaker)
         };
-        // 1. Show.
-        for (_, i, w) in &wants {
-            if *w != Want::Visible {
-                continue;
-            }
-            if let Some(e) = self.hidden.get(i.hwnd).cloned() {
-                let c = get(&mut cloaker);
-                cloak::show(&e, c.map(|p| unsafe { &*p }));
-                self.hidden.remove(i.hwnd);
-                self.persist();
+        for (hwnd, _, _, w) in &wants {
+            if let Some(e) = self.hidden.get(*hwnd).cloned() {
+                let wrong = (*w == Want::HideUser && e.how == How::Ghost) || (*w == Want::HideAgent && e.how != How::Ghost);
+                if wrong {
+                    let c = get(&mut cloaker);
+                    if cloak::show(&e, c.map(|p| unsafe { &*p })) {
+                        self.hidden.remove(*hwnd);
+                    }
+                }
             }
         }
-        // 2. Hide.
-        for (_, i, w) in &wants {
-            let h = to_hwnd(i.hwnd);
-            if !winapi::exists(h) {
+        // 1. Record first: every window about to be hidden is on disk before any is touched.
+        let mut add: Vec<Hidden> = vec![];
+        for (hwnd, pid, start, w) in &wants {
+            let h = to_hwnd(*hwnd);
+            if self.hidden.contains(*hwnd) || !winapi::exists(h) {
                 continue;
             }
             match w {
+                Want::HideUser => add.push(Hidden { hwnd: *hwnd, pid: *pid, start: *start, how: How::Cloak, rect: winapi::rect(h), agent: false, ex_style: None }),
+                Want::HideAgent => add.push(Hidden { hwnd: *hwnd, pid: *pid, start: *start, how: How::Ghost, rect: winapi::rect(h), agent: true, ex_style: Some(winapi::ex_style(h)) }),
                 Want::Visible => {}
-                Want::HideUser => {
-                    match self.hidden.get(i.hwnd).map(|e| e.how) {
-                        Some(How::Cloak) | Some(How::Park) => continue,
-                        Some(How::Ghost) => {
-                            let e = self.hidden.get(i.hwnd).cloned().unwrap();
-                            cloak::show(&e, None);
-                            self.hidden.remove(i.hwnd);
-                        }
-                        None => {}
+            }
+        }
+        if !add.is_empty() {
+            let before = self.hidden.clone();
+            for e in &add {
+                self.hidden.insert(e.clone());
+            }
+            if let Err(e) = self.persist() {
+                self.hidden = before;
+                // An agent's window is the agent's, not yours: it is kept off your screen even with the record
+                // unsaved. Yours are never hidden unrecorded: the request is refused, with nothing touched.
+                let agents: Vec<Hidden> = add.iter().filter(|x| x.agent).cloned().collect();
+                for a in &agents {
+                    self.hidden.insert(a.clone());
+                    if cloak::ghost(to_hwnd(a.hwnd)).is_none() {
+                        winapi::set_pos(to_hwnd(a.hwnd), cloak::PARK, cloak::PARK);
                     }
-                    // Write ahead: the entry is on disk before the window moves.
-                    self.hidden.insert(Hidden { hwnd: i.hwnd, pid: i.pid, start: i.start, how: How::Cloak, rect: winapi::rect(h), agent: false, ex_style: None });
-                    self.persist();
+                }
+                if add.iter().any(|x| !x.agent) {
+                    return Err(e);
+                }
+                self.problem(format!("could not save the record of an agent window ({e}); it is hidden anyway"));
+            }
+        }
+        // 2. Show. An entry goes only after the window reads back as shown; a failure keeps it and the
+        //    next poll tries again (explorer.exe restarting is the usual reason).
+        for (hwnd, _, _, w) in &wants {
+            if *w != Want::Visible {
+                continue;
+            }
+            if let Some(e) = self.hidden.get(*hwnd).cloned() {
+                let c = get(&mut cloaker);
+                if cloak::show(&e, c.map(|p| unsafe { &*p })) {
+                    self.hidden.remove(*hwnd);
+                    let _ = self.persist();
+                } else {
+                    self.log(&format!("{} did not read back as shown; will retry", window_name(*hwnd)));
+                }
+            }
+        }
+        // 3. Hide, and read it back: re-apply whatever Windows no longer agrees with.
+        for (hwnd, _, _, w) in &wants {
+            let h = to_hwnd(*hwnd);
+            if *w == Want::Visible || !winapi::exists(h) {
+                continue;
+            }
+            let Some(mut e) = self.hidden.get(*hwnd).cloned() else { continue };
+            if cloak::still_hidden(&e) {
+                continue;
+            }
+            self.log(&format!("{} is not hidden any more ({:?}); hiding it again", window_name(*hwnd), e.how));
+            match *w {
+                Want::HideUser => {
+                    if e.how == How::Park && !winapi::is_iconic(h) {
+                        // The app moved itself out of the parking spot: where it went is where it goes back to.
+                        e.rect = winapi::rect(h);
+                    }
                     let c = get(&mut cloaker);
-                    let how = cloak::hide_user(h, c.map(|p| unsafe { &*p }));
-                    if how != How::Cloak {
-                        self.problems.push(format!("cloak refused for {}: parked it instead", window_name(i.hwnd)));
-                        if let Some(mut e) = self.hidden.remove(i.hwnd) {
-                            e.how = how;
-                            self.hidden.insert(e);
-                        }
-                        self.persist();
+                    e.how = cloak::hide_user(h, c.map(|p| unsafe { &*p }));
+                    if e.how != How::Cloak {
+                        self.problem(format!("cloak refused for {}: parked it instead", window_name(*hwnd)));
                     }
                 }
                 Want::HideAgent => {
-                    match self.hidden.get(i.hwnd).map(|e| e.how) {
-                        Some(How::Ghost) => continue,
-                        Some(_) => {
-                            let e = self.hidden.get(i.hwnd).cloned().unwrap();
-                            let c = get(&mut cloaker);
-                            cloak::show(&e, c.map(|p| unsafe { &*p }));
-                            self.hidden.remove(i.hwnd);
-                        }
-                        None => {}
+                    if cloak::ghost(h).is_none() {
+                        // It would not take a constant alpha: park it rather than leave it drawn on your screen.
+                        self.problem(format!("{} would not ghost: parked it instead", window_name(*hwnd)));
+                        e.how = How::Park;
+                        winapi::set_pos(h, cloak::PARK, cloak::PARK);
                     }
-                    let ex = winapi::ex_style(h);
-                    self.hidden.insert(Hidden { hwnd: i.hwnd, pid: i.pid, start: i.start, how: How::Ghost, rect: winapi::rect(h), agent: true, ex_style: Some(ex) });
-                    self.persist();
-                    cloak::ghost(h);
-                    // It started minimized so it never drew on your screen; the engine cannot read
-                    // a minimized window, so it is restored now that it is invisible.
                     if winapi::is_iconic(h) {
                         winapi::restore_minimized_no_activate(h);
                     }
                 }
+                Want::Visible => {}
             }
+            self.hidden.insert(e);
         }
+        if !add.is_empty() || !wants.is_empty() {
+            let _ = self.persist();
+        }
+        Ok(())
     }
 
-    pub fn persist(&self) {
+    /// The record of what is hidden and everything else `state.json` holds. Returns why it could not be saved.
+    pub fn persist(&self) -> Result<(), String> {
         let mut v = self.model.view();
         v["version"] = json!(1);
         v["platform"] = json!("windows");
@@ -293,7 +408,7 @@ impl Core {
         v["settings"] = Value::Object(self.settings.clone());
         v["overview"] = json!({ "shown": self.overview_shown });
         v["daemon"] = json!({ "pid": self.our_pid, "started": self.started, "events": self.events_seen, "problems": self.problems });
-        self.paths.write_atomic("state.json", &serde_json::to_string_pretty(&v).unwrap_or_default());
+        self.paths.write_atomic("state.json", &serde_json::to_string_pretty(&v).unwrap_or_default())
     }
 
     // ---- windows -------------------------------------------------------------------------
@@ -309,10 +424,10 @@ impl Core {
         if self.model.agent_proc(pid).is_some() {
             return true;
         }
-        let Some(agent) = self.jobs.iter().find(|(_, j)| agent::in_job(j, pid)).map(|(a, _)| a.clone()) else {
+        if !self.job.as_ref().is_some_and(|j| agent::in_job(j, pid)) {
             return false;
-        };
-        self.log(&format!("pid {pid} is in {agent}'s job"));
+        }
+        self.log(&format!("pid {pid} is in the agent job"));
         let start = winapi::process_start(pid);
         let _ = self.apply(Event::AgentRegister { pid, start });
         true
@@ -345,31 +460,58 @@ impl Core {
         }
     }
 
+    /// A tracked window is gone from the model. If it is still a window and we hid it, it is shown
+    /// first and its entry kept until that reads back: dropping the entry of a window that still exists
+    /// would leave it cloaked with no record.
     fn close_window(&mut self, id: &str) {
         if let Some(i) = self.info.remove(id) {
-            self.hidden.remove(i.hwnd);
+            if let Some(e) = self.hidden.get(i.hwnd).cloned() {
+                if winapi::exists(to_hwnd(i.hwnd)) {
+                    let cl = Cloaker::new().ok();
+                    if cloak::show(&e, cl.as_ref()) {
+                        self.hidden.remove(i.hwnd);
+                    }
+                } else {
+                    self.hidden.remove(i.hwnd);
+                }
+            }
         }
         let _ = self.apply(Event::Close { window: id.to_string() });
     }
 
     /// Compares the windows that exist with the ones tracked; the source of truth for open and close.
     pub fn resync_windows(&mut self, existing: bool) {
+        let mut agent_pids: HashMap<u32, bool> = HashMap::new();
         let mut live: Vec<i64> = vec![];
         for h in winapi::list_top_level() {
             let id = id_of(h);
-            if winapi::is_manageable(h, self.hidden.contains(id), self.our_pid) {
+            let pid = winapi::pid_of(h);
+            let agent = *agent_pids.entry(pid).or_insert_with(|| self.is_agent_pid(pid));
+            if agent {
+                // An agent's window, whatever it looks like: ghost it before anything else.
+                self.keep_agent_window_hidden(h, false);
+            }
+            if winapi::is_manageable(h, self.hidden.contains(id), self.our_pid, agent) {
                 live.push(id);
             }
         }
         let live_set: BTreeSet<i64> = live.iter().copied().collect();
-        let gone: Vec<String> = self.info.iter().filter(|(_, i)| !live_set.contains(&i.hwnd)).map(|(id, _)| id.clone()).collect();
+        // Gone: destroyed, or no longer a window we would manage and not one we hid. A window we hid stays
+        // tracked for as long as it exists, whatever its title or styles turn into.
+        let gone: Vec<String> = self.info.iter().filter(|(_, i)| !winapi::exists(to_hwnd(i.hwnd)) || (!live_set.contains(&i.hwnd) && !self.hidden.contains(i.hwnd))).map(|(id, _)| id.clone()).collect();
         for id in gone {
-            // A window we hid is still "visible" to Windows; if it is not in the list it is really gone
-            // (or turned into something we would not manage, like a tool window).
             self.close_window(&id);
         }
         for hwnd in live {
             self.open_window(hwnd, existing);
+        }
+        // Entries for windows that were destroyed are done with.
+        let dead: Vec<i64> = self.hidden.entries().filter(|e| !winapi::exists(to_hwnd(e.hwnd))).map(|e| e.hwnd).collect();
+        if !dead.is_empty() {
+            for d in dead {
+                self.hidden.remove(d);
+            }
+            let _ = self.persist();
         }
         // Titles change; keep `ls` honest.
         let ids: Vec<(String, i64)> = self.info.iter().map(|(k, v)| (k.clone(), v.hwnd)).collect();
@@ -379,6 +521,41 @@ impl Core {
                 i.title = t;
             }
         }
+    }
+
+    /// A window of an agent's process that is not recorded yet (a dialog, a popup, a second window) is
+    /// ghosted now, before the model hears of it. Recorded first, like any hidden window.
+    fn keep_agent_window_hidden(&mut self, h: windows_sys::Win32::Foundation::HWND, created: bool) {
+        if self.model.agent_shown() || STOPPING.load(Ordering::SeqCst) {
+            return;
+        }
+        let id = id_of(h);
+        if self.hidden.contains(id) || !winapi::exists(h) || !winapi::is_top_level(h) {
+            return;
+        }
+        // Created: only a window that will draw as a frame or a dialog (a caption) is worth ghosting before it is
+        // shown; the process's invisible helper windows (IME, GDI+) are not. Otherwise it has to be visible.
+        if created && !winapi::has_caption(h) {
+            return;
+        }
+        if !created && !winapi::is_visible(h) {
+            return;
+        }
+        let pid = winapi::real_pid(h);
+        let e = Hidden { hwnd: id, pid, start: winapi::process_start(pid), how: How::Ghost, rect: winapi::rect(h), agent: true, ex_style: Some(winapi::ex_style(h)) };
+        self.hidden.insert(e.clone());
+        if let Err(why) = self.persist() {
+            self.problem(format!("could not save the record of an agent window ({why}); it is hidden anyway"));
+        }
+        if cloak::ghost(h).is_none() {
+            self.problem(format!("{} would not ghost: parked it instead", window_name(id)));
+            winapi::set_pos(h, cloak::PARK, cloak::PARK);
+            if let Some(mut e) = self.hidden.remove(id) {
+                e.how = How::Park;
+                self.hidden.insert(e);
+            }
+        }
+        let _ = self.persist();
     }
 
     /// The foreground changed. Only an activation you caused may take you to another workspace (R-F1,
@@ -394,22 +571,31 @@ impl Core {
     }
 
     fn on_win_event(&mut self, event: u32, hwnd: i64) {
+        let h = to_hwnd(hwnd);
+        // A window of an agent's process is ghosted the moment it is created or shown, before it paints
+        // if the event arrives in time: this is what catches a dialog its app opens.
+        if matches!(event, hook::EVENT_OBJECT_CREATE | hook::EVENT_OBJECT_SHOW) && winapi::exists(h) && winapi::is_top_level(h) {
+            let pid = winapi::pid_of(h);
+            if self.is_agent_pid(pid) {
+                self.keep_agent_window_hidden(h, true);
+            }
+        }
         match event {
             hook::EVENT_SYSTEM_FOREGROUND => {
-                // A new window may take the foreground before we saw it open.
-                if !self.model.is_tracked(&window_name(hwnd)) && winapi::is_manageable(to_hwnd(hwnd), false, self.our_pid) {
+                if !self.model.is_tracked(&window_name(hwnd)) && winapi::is_manageable(h, false, self.our_pid, self.is_agent_pid(winapi::pid_of(h))) {
                     self.open_window(hwnd, false);
                 }
                 self.on_foreground(hwnd)
             }
             hook::EVENT_OBJECT_CREATE | hook::EVENT_OBJECT_SHOW | hook::EVENT_SYSTEM_MINIMIZEEND => {
-                if !self.model.is_tracked(&window_name(hwnd)) && winapi::is_manageable(to_hwnd(hwnd), false, self.our_pid) {
+                let agent = self.is_agent_pid(winapi::pid_of(h));
+                if !self.model.is_tracked(&window_name(hwnd)) && winapi::is_manageable(h, self.hidden.contains(hwnd), self.our_pid, agent) {
                     self.open_window(hwnd, false);
                 }
             }
             hook::EVENT_OBJECT_DESTROY | hook::EVENT_OBJECT_HIDE => {
                 let id = window_name(hwnd);
-                if self.model.is_tracked(&id) && !winapi::exists(to_hwnd(hwnd)) {
+                if self.model.is_tracked(&id) && !winapi::exists(h) {
                     self.close_window(&id);
                 }
             }
@@ -453,7 +639,7 @@ const USER_OPS: &[&str] = &["switch", "move", "focus_monitor", "overview", "agen
 
 /// Is the process on the other end of the pipe an agent's? By pid, against the model and the jobs.
 fn peer_is_agent(c: &Core, pid: u32) -> bool {
-    pid != 0 && (c.model.agent_proc(pid).is_some() || c.jobs.iter().any(|(_, j)| agent::in_job(j, pid)))
+    c.is_agent_pid(pid)
 }
 
 pub fn handle(shared: &Shared, req: &Value) -> Envelope {
@@ -480,9 +666,9 @@ pub fn handle(shared: &Shared, req: &Value) -> Envelope {
             };
             let mut c = lock(shared);
             c.sync_monitors();
-            match c.apply(Event::Switch { n }) {
+            match c.apply_checked(Event::Switch { n }) {
                 Ok(fx) => Envelope::ok(json!({ "workspace": n, "effects": effects_json(&fx) })),
-                Err(e) => model_err(e),
+                Err(e) => e,
             }
         }
         "move" => {
@@ -496,16 +682,16 @@ pub fn handle(shared: &Shared, req: &Value) -> Envelope {
                 Ok(w) => w,
                 Err(e) => return e,
             };
-            match c.apply(Event::Move { n, window, follow }) {
+            match c.apply_checked(Event::Move { n, window, follow }) {
                 Ok(fx) => Envelope::ok(json!({ "workspace": n, "follow": follow, "effects": effects_json(&fx) })),
-                Err(e) => model_err(e),
+                Err(e) => e,
             }
         }
         "focus_monitor" => {
             let mut c = lock(shared);
-            match c.apply(Event::FocusMonitor { monitor: arg_str(&args, "monitor").unwrap_or("").into() }) {
+            match c.apply_checked(Event::FocusMonitor { monitor: arg_str(&args, "monitor").unwrap_or("").into() }) {
                 Ok(fx) => Envelope::ok(json!({ "effects": effects_json(&fx) })),
-                Err(e) => model_err(e),
+                Err(e) => e,
             }
         }
         "get" => {
@@ -526,10 +712,14 @@ pub fn handle(shared: &Shared, req: &Value) -> Envelope {
                 Err(m) => Envelope::err("invalid_args", m, Retry::Never, format!("The settings are {}.", settings::KEYS.join(", "))),
                 Ok(val) => {
                     let mut c = lock(shared);
-                    c.settings.insert(k.to_string(), val.clone());
-                    let text = serde_json::to_string_pretty(&Value::Object(c.settings.clone())).unwrap_or_default();
-                    c.paths.write_atomic("settings.json", &text);
-                    c.persist();
+                    let mut next = c.settings.clone();
+                    next.insert(k.to_string(), val.clone());
+                    let text = serde_json::to_string_pretty(&Value::Object(next.clone())).unwrap_or_default();
+                    if let Err(e) = c.paths.write_atomic("settings.json", &text) {
+                        return Envelope::err("internal", format!("the setting was not saved: {e}"), Retry::Safe, "Nothing changed; try again.");
+                    }
+                    c.settings = next;
+                    let _ = c.persist();
                     // Who asked: the agent id and the pipe peer's pid, never the value.
                     let peer = req["_peer_pid"].as_u64().map(|p| p as u32).filter(|p| *p != 0);
                     let env = Envelope::ok(json!({}));
@@ -550,7 +740,7 @@ pub fn handle(shared: &Shared, req: &Value) -> Envelope {
         "overview" => {
             let mut c = lock(shared);
             c.overview_shown = !c.overview_shown;
-            c.persist();
+            let _ = c.persist();
             Envelope::ok(json!({ "shown": c.overview_shown, "note": "recorded in state.json; the overview itself arrives in part 2" }))
         }
         "agent_show" | "agent_hide" | "agent_toggle" => {
@@ -560,9 +750,9 @@ pub fn handle(shared: &Shared, req: &Value) -> Envelope {
                 _ => Event::AgentToggle,
             };
             let mut c = lock(shared);
-            match c.apply(ev) {
+            match c.apply_checked(ev) {
                 Ok(fx) => Envelope::ok(json!({ "shown": c.model.agent_shown(), "effects": effects_json(&fx) })),
-                Err(e) => model_err(e),
+                Err(e) => e,
             }
         }
         "agent_move" | "agent_bring" => {
@@ -571,9 +761,9 @@ pub fn handle(shared: &Shared, req: &Value) -> Envelope {
             };
             let mut c = lock(shared);
             let ev = if op == "agent_move" { Event::AgentSend { window: w } } else { Event::AgentBring { window: w } };
-            match c.apply(ev) {
+            match c.apply_checked(ev) {
                 Ok(fx) => Envelope::ok(json!({ "effects": effects_json(&fx), "drivable": false })),
-                Err(e) => model_err(e),
+                Err(e) => e,
             }
         }
         "agent_status" | "agent_windows" => Envelope::ok(agent_status(&lock(shared))),
@@ -669,12 +859,11 @@ fn launch_on_agent(shared: &Shared, agent: &str, label: &str, exe: PathBuf, args
         // The lock is held across the spawn: the process is registered before its first window can be seen.
         let mut c = lock(shared);
         let known: BTreeSet<String> = c.model.window_ids().into_iter().map(String::from).collect();
-        let Some(job) = agent::new_job() else {
-            return Envelope::err("internal", "cannot create a job object", Retry::Safe, "");
+        let Some(job) = c.job.as_ref() else {
+            return Envelope::err("internal", "the agent job object is not available", Retry::Safe, "Restart the daemon.");
         };
-        match agent::spawn(&exe, &args, cwd.as_deref(), &job, console) {
+        match agent::spawn(&exe, &args, cwd.as_deref(), job, console) {
             Ok(s) => {
-                c.jobs.push((agent.to_string(), job));
                 let _ = c.apply(Event::AgentRegister { pid: s.pid, start: s.start });
                 (s, known)
             }
@@ -690,7 +879,7 @@ fn launch_on_agent(shared: &Shared, agent: &str, label: &str, exe: PathBuf, args
         std::thread::sleep(Duration::from_millis(40));
         let mut c = lock(shared);
         c.resync_windows(false);
-        let found = c.model.agent_windows().into_iter().find(|w| !known.contains(*w) && c.model.pid_of(w).is_some_and(|p| p == spawned.pid || c.jobs.last().is_some_and(|(_, j)| agent::in_job(j, p)))).map(String::from);
+        let found = c.model.agent_windows().into_iter().find(|w| !known.contains(*w) && c.model.pid_of(w).is_some_and(|p| p == spawned.pid || c.job.as_ref().is_some_and(|j| agent::in_job(j, p)))).map(String::from);
         if let Some(w) = found {
             let i = c.info.get(&w).cloned();
             let env = Envelope::ok(json!({ "window": w, "pid": c.model.pid_of(&w), "app": label, "title": i.as_ref().map(|i| i.title.clone()), "workspace": "agent", "start": spawned.start }));
@@ -753,11 +942,20 @@ fn agent_run(shared: &Shared, agent: &str, _args: &Value) -> Envelope {
 /// What you can see, so an action can prove it changed none of it: the front window, the pointer,
 /// and which of your windows are showing.
 fn screen_state(c: &Core) -> Value {
-    let mut pt = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
-    unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt) };
-    let mut showing: Vec<i64> = c.info.values().filter(|i| !c.hidden.contains(i.hwnd) && winapi::exists(to_hwnd(i.hwnd)) && winapi::is_visible(to_hwnd(i.hwnd))).map(|i| i.hwnd).collect();
+    // What an agent's action could change on your screen: which of your windows are showing, whether an
+    // agent window is showing, and whether the front window is an agent's. Not the pointer and not which
+    // of your windows has focus: those move when you do, and would drown the real violations.
+    let mut showing: Vec<i64> = c
+        .info
+        .iter()
+        .filter(|(id, i)| !c.model.is_agent_window(id) && !c.hidden.contains(i.hwnd) && winapi::exists(to_hwnd(i.hwnd)) && winapi::is_visible(to_hwnd(i.hwnd)))
+        .map(|(_, i)| i.hwnd)
+        .collect();
     showing.sort();
-    json!({ "front": id_of(winapi::foreground()), "cursor": [pt.x, pt.y], "showing": showing, "agent_shown": c.model.agent_shown() })
+    let mut agent_visible: Vec<i64> = c.info.iter().filter(|(id, i)| c.model.is_agent_window(id) && !c.hidden.contains(i.hwnd) && winapi::exists(to_hwnd(i.hwnd))).map(|(_, i)| i.hwnd).collect();
+    agent_visible.sort();
+    let front_is_agent = c.is_agent_pid(winapi::pid_of(winapi::foreground()));
+    json!({ "showing": showing, "agent_visible": agent_visible, "front_is_agent": front_is_agent, "agent_shown": c.model.agent_shown() })
 }
 
 struct Plan {
@@ -844,7 +1042,18 @@ fn hands(shared: &Shared, agent: &str, args: &Value) -> Envelope {
             Err(e) => Err(e),
             Ok(cur) if cur["ok"] != json!(true) => Ok(cur),
             Ok(cur) => match engine::type_value(&cur, args["text"].as_str().unwrap_or("")) {
-                Some(v) => engine::run_engine(&eng, &engine::ref_argv("set-value", &json!({"ref": reference, "value": v})), t),
+                Some(v) => {
+                    // Scope again, right before the write: the window must still be the agent's, on the agent workspace.
+                    let still = {
+                        let c = lock(shared);
+                        let info = c.snaps.get(snapshot_of(reference.as_deref().unwrap_or("")).unwrap_or("")).cloned();
+                        guard(&c, &plan.window, info.as_ref())
+                    };
+                    match still {
+                        Ok(_) => engine::run_engine(&eng, &engine::ref_argv("set-value", &json!({"ref": reference, "value": v})), t),
+                        Err(env) => Err(env),
+                    }
+                }
                 None => Err(Envelope::err("not_supported", "this element does not expose a text value to insert into", Retry::Never, "Take a snapshot and pick a text field; or use set-value on a ref that has a value.")),
             },
         }
@@ -888,8 +1097,9 @@ fn hands(shared: &Shared, agent: &str, args: &Value) -> Envelope {
 
 /// Reads `state.json` and shows every window a run left hidden, except agent windows whose process
 /// still runs (they belong on the agent workspace). Works from the file alone, so it serves a
-/// start after a crash, a clean exit and a panic alike. Returns what it did.
-pub fn restore_from_file(paths: &Paths, keep_agents: bool) -> (usize, usize) {
+/// start after a crash, a clean exit and a panic alike. A window that does not read back as shown
+/// keeps its entry, for the next try. Returns (shown and verified, kept on the agent workspace, still hidden).
+pub fn restore_from_file(paths: &Paths, keep_agents: bool) -> (usize, usize, usize) {
     let left = hidden::parse_state(&paths.read("state.json").unwrap_or_default());
     // A cloaked or parked window is put back whenever the handle is still a window: undoing a cloak
     // on a window that is not cloaked does nothing, so a reused handle costs nothing, and a Store
@@ -902,13 +1112,17 @@ pub fn restore_from_file(paths: &Paths, keep_agents: bool) -> (usize, usize) {
     let alive = |pid, start| keep_agents && winapi::alive(pid, start);
     let plan = hidden::recovery_plan(&left, exists, alive);
     let cloaker = Cloaker::new().ok();
-    let (mut shown, mut kept) = (0, 0);
+    let (mut shown, mut kept, mut failed) = (0, 0, 0);
     let mut still: Vec<Hidden> = vec![];
     for p in plan {
         match p {
             Recovery::Show(h) => {
-                cloak::show(&h, cloaker.as_ref());
-                shown += 1;
+                if cloak::show(&h, cloaker.as_ref()) {
+                    shown += 1;
+                } else {
+                    failed += 1;
+                    still.push(h);
+                }
             }
             Recovery::KeepOnAgent(h) => {
                 kept += 1;
@@ -921,28 +1135,8 @@ pub fn restore_from_file(paths: &Paths, keep_agents: bool) -> (usize, usize) {
     let text = paths.read("state.json").unwrap_or_default();
     let mut v: Value = serde_json::from_str(&text).unwrap_or_else(|_| json!({}));
     v["hidden"] = serde_json::to_value(&still).unwrap_or_default();
-    paths.write_atomic("state.json", &serde_json::to_string_pretty(&v).unwrap_or_default());
-    (shown, kept)
-}
-
-/// Safety net for a window a lost run left cloaked with no record of it: shell-cloaked, titled, an
-/// app window, and on the current virtual desktop (so not just another desktop's). Shown again.
-pub fn rescue_stray_cloaks(our_pid: u32) -> usize {
-    let cloaker = Cloaker::new().ok();
-    let mut n = 0;
-    for h in winapi::list_top_level() {
-        if winapi::cloaked(h) == 2 && winapi::is_visible(h) {
-            say(&format!("[baneyspaces] stray? {} manageable={} on_current_desktop={:?}", window_name(id_of(h)), winapi::is_manageable(h, true, our_pid), cloak::on_current_desktop(h)));
-        }
-        if winapi::cloaked(h) == 2 && winapi::is_visible(h) && winapi::is_manageable(h, true, our_pid) && cloak::on_current_desktop(h) == Some(true) {
-            if let Some(c) = cloaker.as_ref() {
-                if c.set(h, false).is_ok() {
-                    n += 1;
-                }
-            }
-        }
-    }
-    n
+    let _ = paths.write_atomic("state.json", &serde_json::to_string_pretty(&v).unwrap_or_default());
+    (shown, kept, failed)
 }
 
 // ---- the control pipe -----------------------------------------------------------------------
@@ -950,60 +1144,31 @@ pub fn rescue_stray_cloaks(our_pid: u32) -> usize {
 mod pipe {
     use std::os::windows::io::FromRawHandle;
     use windows_sys::Win32::Foundation::{GetLastError, LocalFree, HANDLE, INVALID_HANDLE_VALUE};
-    use windows_sys::Win32::Security::Authorization::{ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW};
-    use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER};
+    use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
+    use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
     use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
     use windows_sys::Win32::System::Pipes::*;
-    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     fn wide(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(std::iter::once(0)).collect()
     }
 
-    /// The current user's SID as text, for a security descriptor that admits only this user and SYSTEM.
-    fn user_sid() -> Option<String> {
-        unsafe {
-            let mut tok: HANDLE = std::ptr::null_mut();
-            if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut tok) == 0 {
-                return None;
-            }
-            let mut need = 0u32;
-            GetTokenInformation(tok, TokenUser, std::ptr::null_mut(), 0, &mut need);
-            let mut buf = vec![0u8; need as usize];
-            let ok = GetTokenInformation(tok, TokenUser, buf.as_mut_ptr() as *mut _, need, &mut need) != 0;
-            windows_sys::Win32::Foundation::CloseHandle(tok);
-            if !ok {
-                return None;
-            }
-            let tu = &*(buf.as_ptr() as *const TOKEN_USER);
-            let mut s: *mut u16 = std::ptr::null_mut();
-            if ConvertSidToStringSidW(tu.User.Sid, &mut s) == 0 {
-                return None;
-            }
-            let mut n = 0;
-            while *s.add(n) != 0 {
-                n += 1;
-            }
-            let out = String::from_utf16_lossy(std::slice::from_raw_parts(s, n));
-            LocalFree(s as *mut _);
-            Some(out)
-        }
-    }
-
+    /// Makes instances of the control pipe: this user and SYSTEM only, no remote clients.
+    #[derive(Clone)]
     pub struct Server {
         name: Vec<u16>,
         sddl: Vec<u16>,
-        first: bool,
     }
 
     impl Server {
         pub fn new(name: &str) -> Option<Self> {
-            let sid = user_sid()?;
-            Some(Self { name: wide(name), sddl: wide(&format!("D:P(A;;GA;;;{sid})(A;;GA;;;SY)")), first: true })
+            let sid = crate::winapi::user_sid_string()?;
+            Some(Self { name: wide(name), sddl: wide(&format!("D:P(A;;GA;;;{sid})(A;;GA;;;SY)")) })
         }
 
-        /// Waits for one client and returns the connected pipe as a `File`.
-        pub fn accept(&mut self) -> Result<std::fs::File, String> {
+        /// One more instance of the pipe, waiting for a client. The very first one (`first`) fails if the
+        /// name is already in use, which is how a second daemon (or a squatter) is told apart.
+        pub fn create(&self, first: bool) -> Result<HANDLE, String> {
             unsafe {
                 let mut sd = std::ptr::null_mut();
                 if ConvertStringSecurityDescriptorToSecurityDescriptorW(self.sddl.as_ptr(), 1, &mut sd, std::ptr::null_mut()) == 0 {
@@ -1011,7 +1176,7 @@ mod pipe {
                 }
                 let sa = SECURITY_ATTRIBUTES { nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32, lpSecurityDescriptor: sd, bInheritHandle: 0 };
                 let mut open = PIPE_ACCESS_DUPLEX;
-                if self.first {
+                if first {
                     open |= FILE_FLAG_FIRST_PIPE_INSTANCE;
                 }
                 let h = CreateNamedPipeW(self.name.as_ptr(), open, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, PIPE_UNLIMITED_INSTANCES, 1 << 16, 1 << 16, 0, &sa);
@@ -1019,18 +1184,25 @@ mod pipe {
                 if h == INVALID_HANDLE_VALUE {
                     return Err(format!("cannot create the pipe (error {})", GetLastError()));
                 }
-                self.first = false;
-                if ConnectNamedPipe(h, std::ptr::null_mut()) == 0 && GetLastError() != 535 {
-                    // 535 = ERROR_PIPE_CONNECTED: the client got in first, which is fine.
-                    windows_sys::Win32::Foundation::CloseHandle(h);
-                    return Err("connect failed".into());
-                }
-                Ok(std::fs::File::from_raw_handle(h as *mut _))
+                Ok(h)
             }
+        }
+    }
+
+    /// Waits for a client on `h` and returns the connected pipe as a `File`.
+    pub fn connect(h: HANDLE) -> Result<std::fs::File, String> {
+        unsafe {
+            if ConnectNamedPipe(h, std::ptr::null_mut()) == 0 && GetLastError() != 535 {
+                // 535 = ERROR_PIPE_CONNECTED: the client got in first, which is fine.
+                windows_sys::Win32::Foundation::CloseHandle(h);
+                return Err("connect failed".into());
+            }
+            Ok(std::fs::File::from_raw_handle(h as *mut _))
         }
     }
 }
 
+/// One request, one answer. Anything that is not a JSON object is refused; the peer is what the pipe says.
 fn serve_conn(shared: Shared, f: std::fs::File) {
     let mut line = String::new();
     {
@@ -1045,11 +1217,11 @@ fn serve_conn(shared: Shared, f: std::fs::File) {
         pid
     };
     let env = match serde_json::from_str::<Value>(&line) {
-        Ok(mut req) => {
-            // The peer is what the pipe says, never what the request claims.
-            req["_peer_pid"] = json!(peer);
-            handle(&shared, &req)
+        Ok(Value::Object(mut req)) => {
+            req.insert("_peer_pid".into(), json!(peer));
+            handle(&shared, &Value::Object(req))
         }
+        Ok(_) => Envelope::err("invalid_args", "a request is one JSON object", Retry::Never, "Example: {\"op\":\"ping\"}"),
         Err(e) => Envelope::err("invalid_args", format!("bad request: {e}"), Retry::Never, ""),
     };
     let mut f = f;
@@ -1059,8 +1231,37 @@ fn serve_conn(shared: Shared, f: std::fs::File) {
     unsafe { windows_sys::Win32::Storage::FileSystem::FlushFileBuffers(std::os::windows::io::AsRawHandle::as_raw_handle(&f) as _) };
 }
 
+/// Always listening: each listener makes the next instance of the pipe the moment a client connects,
+/// and there are two of them, so there is no moment with no free instance.
+fn listen(shared: Shared, server: pipe::Server, first: Option<usize>) {
+    let mut ready = first;
+    loop {
+        let h = match ready.take() {
+            Some(h) => h as windows_sys::Win32::Foundation::HANDLE,
+            None => match server.create(false) {
+                Ok(h) => h,
+                Err(e) => {
+                    say(&format!("baneyspaces daemon: {e}"));
+                    std::thread::sleep(Duration::from_millis(500));
+                    continue;
+                }
+            },
+        };
+        match pipe::connect(h) {
+            Ok(conn) => {
+                let shared = shared.clone();
+                std::thread::spawn(move || serve_conn(shared, conn));
+            }
+            Err(e) => {
+                say(&format!("baneyspaces daemon: {e}"));
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+}
+
 unsafe extern "system" fn ctrl_handler(kind: u32) -> i32 {
-    // Ctrl+C, Ctrl+Break, console close, logoff, shutdown: put the windows back, then exit.
+    // Ctrl+C, Ctrl+Break, console close (a foreground daemon): put the windows back, then exit.
     let _ = kind;
     if let Some(tx) = CTRL_TX.get() {
         STOPPING.store(true, Ordering::SeqCst);
@@ -1071,6 +1272,67 @@ unsafe extern "system" fn ctrl_handler(kind: u32) -> i32 {
         }
     }
     1
+}
+
+/// Sign-out and shutdown, heard by the daemon's hidden window (a background daemon has no console, so no
+/// console event ever reaches it). Windows are put back before apps are asked to save, so a "save changes?"
+/// prompt is not raised on a window nobody can see.
+fn on_end_session(e: EndSession) {
+    let (Some(paths), Some(shared)) = (PATHS.get(), SHARED.get()) else { return };
+    match e {
+        EndSession::Query | EndSession::Ending => {
+            STOPPING.store(true, Ordering::SeqCst);
+            let r = restore_from_file(paths, true);
+            {
+                let mut c = lock(shared);
+                c.reload_hidden_from_file();
+            }
+            say(&format!("baneyspaces daemon: {e:?}: {} window(s) put back, {} agent window(s) stay, {} not restored", r.0, r.1, r.2));
+            if e == EndSession::Ending {
+                std::process::exit(0);
+            }
+        }
+        EndSession::Cancelled => {
+            // Cancelled: carry on. The next poll hides again what belongs on a hidden workspace.
+            STOPPING.store(false, Ordering::SeqCst);
+        }
+    }
+}
+
+/// One daemon per user: a named mutex, taken before anything is touched. None means another is running.
+fn single_instance(paths: &Paths) -> Option<windows_sys::Win32::Foundation::HANDLE> {
+    use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+    use windows_sys::Win32::System::Threading::CreateMutexW;
+    let name: Vec<u16> = paths.mutex_name().encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        let h = CreateMutexW(std::ptr::null(), 0, name.as_ptr());
+        if h.is_null() || GetLastError() == ERROR_ALREADY_EXISTS {
+            return None;
+        }
+        Some(h)
+    }
+}
+
+impl Core {
+    /// Replaces the in-memory hidden set with what `state.json` says is still hidden (after a restore).
+    pub fn reload_hidden_from_file(&mut self) {
+        let left = hidden::parse_state(&self.paths.read("state.json").unwrap_or_default());
+        self.hidden = HiddenSet::default();
+        for h in left.hidden {
+            self.hidden.insert(h);
+        }
+    }
+
+    /// One poll: monitors, windows, what is hidden checked against Windows, focus.
+    fn poll(&mut self) {
+        self.sync_monitors();
+        self.resync_windows(false);
+        if let Err(e) = self.sync_visibility() {
+            self.problem(format!("could not save the hidden-window record; nothing new was hidden: {e}"));
+        }
+        self.keep_focus_off_hidden_windows();
+        let _ = self.persist();
+    }
 }
 
 pub fn run(trace: bool, log: Option<PathBuf>) -> i32 {
@@ -1084,30 +1346,37 @@ pub fn run(trace: bool, log: Option<PathBuf>) -> i32 {
         say(&format!("baneyspaces daemon: {e}"));
         return 1;
     }
-    if ipc::call(&paths, &json!({ "op": "ping" })).ok {
-        say(&format!("baneyspaces daemon: already running"));
-        return 1;
-    }
-    // 1. Whatever a previous run left hidden comes back first, before anything else is done.
-    let (shown, kept) = restore_from_file(&paths, true);
-    if shown + kept > 0 {
-        say(&format!("baneyspaces daemon: put back {shown} window(s) a previous run left hidden; {kept} agent window(s) stay on the agent workspace"));
-    }
-    let strays = rescue_stray_cloaks(std::process::id());
-    if strays > 0 {
-        say(&format!("baneyspaces daemon: showed {strays} window(s) that were cloaked with no record of it"));
-    }
-    let Some(mut server) = pipe::Server::new(&paths.pipe_name()) else {
-        say(&format!("baneyspaces daemon: cannot read your account to protect the control pipe"));
+    let _ = PATHS.set(paths.clone());
+    // 1. One daemon only, decided before anything is touched: a named mutex, then the first instance of
+    //    the pipe (which fails if anything else already made it). A second daemon must never get as far as
+    //    putting the first one's windows back.
+    let Some(_mutex) = single_instance(&paths) else {
+        say("baneyspaces daemon: already running");
         return 1;
     };
+    let Some(server) = pipe::Server::new(&paths.pipe_name()) else {
+        say("baneyspaces daemon: cannot read your account to protect the control pipe");
+        return 1;
+    };
+    let first = match server.create(true) {
+        Ok(h) => h as usize,
+        Err(e) => {
+            say(&format!("baneyspaces daemon: {e}: is another daemon, or something else, using the pipe?"));
+            return 1;
+        }
+    };
+    // 2. Whatever a previous run left hidden comes back first, before anything else is done.
+    let (shown, kept, failed) = restore_from_file(&paths, true);
+    if shown + kept + failed > 0 {
+        say(&format!("baneyspaces daemon: put back {shown} window(s) a previous run left hidden; {kept} agent window(s) stay on the agent workspace; {failed} could not be shown yet (will retry)"));
+    }
     let (tx, rx): (Sender<Msg>, Receiver<Msg>) = channel();
     let core = Core {
         model: Model::new(),
         paths: paths.clone(),
         hidden: HiddenSet::default(),
         info: HashMap::new(),
-        jobs: vec![],
+        job: agent::open_job(&format!("Local\\BaneySpaces-Agents-{}", crate::paths::user_key())),
         snaps: HashMap::new(),
         overview_shown: false,
         events_seen: 0,
@@ -1119,13 +1388,16 @@ pub fn run(trace: bool, log: Option<PathBuf>) -> i32 {
         tx: tx.clone(),
     };
     let shared: Shared = Arc::new(Mutex::new(core));
-    // Put windows back even if the daemon panics.
+    let _ = SHARED.set(shared.clone());
+    // A panic anywhere puts the windows back and ends the process: running on after that would be running on a
+    // set of hidden windows that no longer matches the screen.
     {
         let paths = paths.clone();
         let prev = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            let _ = restore_from_file(&paths, true);
             prev(info);
+            let _ = restore_from_file(&paths, true);
+            std::process::exit(101);
         }));
     }
     let _ = CTRL_TX.set(tx.clone());
@@ -1134,7 +1406,7 @@ pub fn run(trace: bool, log: Option<PathBuf>) -> i32 {
         let mut c = lock(&shared);
         let mut log = baneyspaces_core::ActionLog::parse(&c.paths.read("actions.jsonl").unwrap_or_default());
         if log.prune(now()) > 0 {
-            c.paths.write_atomic("actions.jsonl", &log.render());
+            let _ = c.paths.write_atomic("actions.jsonl", &log.render());
         }
         // Agent processes from a previous run that are still the same process.
         let left = hidden::parse_state(&c.paths.read("state.json").unwrap_or_default());
@@ -1143,35 +1415,27 @@ pub fn run(trace: bool, log: Option<PathBuf>) -> i32 {
                 let _ = c.model.apply(Event::AgentRegister { pid: a.pid, start: a.start });
             }
         }
-        // Agent windows that stayed ghosted are still hidden: read them back into the set.
-        for h in left.hidden.iter().filter(|h| h.agent) {
-            c.hidden.insert(h.clone());
+        // What is still hidden: agent windows that stayed on the agent workspace, and any window that did not
+        // read back as shown (its entry stays until it does).
+        for h in left.hidden {
+            c.hidden.insert(h);
         }
         c.sync_monitors();
         c.resync_windows(true);
-        c.persist();
-        let problems = hook::start(tx.clone(), keys::bindings());
+        let _ = c.persist();
+        let problems = hook::start(tx.clone(), keys::bindings(), on_end_session);
         for p in &problems {
             say(&format!("baneyspaces daemon: {p}"));
         }
         c.problems.extend(problems);
-        c.persist();
+        let _ = c.persist();
     }
-    // The control pipe.
+    // The control pipe: two listeners, so there is always a free instance.
     {
-        let shared = shared.clone();
-        std::thread::spawn(move || loop {
-            match server.accept() {
-                Ok(conn) => {
-                    let shared = shared.clone();
-                    std::thread::spawn(move || serve_conn(shared, conn));
-                }
-                Err(e) => {
-                    say(&format!("baneyspaces daemon: {e}"));
-                    std::thread::sleep(Duration::from_millis(500));
-                }
-            }
-        });
+        let (s1, sv1) = (shared.clone(), server.clone());
+        std::thread::spawn(move || listen(s1, sv1, Some(first)));
+        let (s2, sv2) = (shared.clone(), server);
+        std::thread::spawn(move || listen(s2, sv2, None));
     }
     say(&format!("baneyspaces daemon: ready ({})", paths.pipe_name()));
     // The worker: hook messages as they come, a poll when quiet.
@@ -1179,6 +1443,11 @@ pub fn run(trace: bool, log: Option<PathBuf>) -> i32 {
     loop {
         match rx.recv_timeout(Duration::from_millis(400)) {
             Ok(Msg::Quit) => break,
+            Ok(Msg::Resync) => {
+                // explorer.exe restarted, the session unlocked, or the input desktop changed: look at everything now.
+                last_poll = Instant::now();
+                lock(&shared).poll();
+            }
             Ok(Msg::Chord(args)) => {
                 if trace {
                     say(&format!("[baneyspaces] chord {args:?}"));
@@ -1187,9 +1456,7 @@ pub fn run(trace: bool, log: Option<PathBuf>) -> i32 {
                 hook::mask_start_menu();
                 let mut req = json!({ "op": "", "args": {} });
                 match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
-                    ["switch", n] => {
-                        req = json!({ "op": "switch", "args": { "n": n } });
-                    }
+                    ["switch", n] => req = json!({ "op": "switch", "args": { "n": n } }),
                     ["move", n] => req = json!({ "op": "move", "args": { "n": n, "stay": false } }),
                     ["move", n, "--stay"] => req = json!({ "op": "move", "args": { "n": n, "stay": true } }),
                     ["agent-workspace", "toggle"] => req = json!({ "op": "agent_toggle", "args": {} }),
@@ -1208,22 +1475,17 @@ pub fn run(trace: bool, log: Option<PathBuf>) -> i32 {
         }
         if last_poll.elapsed() >= Duration::from_millis(400) {
             last_poll = Instant::now();
-            let mut c = lock(&shared);
-            c.sync_monitors();
-            c.resync_windows(false);
-            c.sync_visibility();
-            c.keep_focus_off_hidden_windows();
-            c.persist();
+            lock(&shared).poll();
         }
     }
     // Shutting down: stop the hooks, write the file, put your windows back.
     hook::stop();
     {
         let c = lock(&shared);
-        c.persist();
+        let _ = c.persist();
     }
-    let (shown, kept) = restore_from_file(&paths, true);
-    say(&format!("baneyspaces daemon: stopped; {shown} window(s) put back, {kept} agent window(s) still on the agent workspace"));
+    let (shown, kept, failed) = restore_from_file(&paths, true);
+    say(&format!("baneyspaces daemon: stopped; {shown} window(s) put back, {kept} agent window(s) still on the agent workspace, {failed} not restored (kept in state.json)"));
     FINISHED.store(true, Ordering::SeqCst);
     0
 }

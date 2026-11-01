@@ -24,3 +24,7 @@ for ($i=0; $i -lt 120; $i++) { Start-Sleep -Milliseconds 500; if ((Get-Scheduled
 Unregister-ScheduledTask -TaskName bs-user -Confirm:$false
 if (Test-Path C:\bs\u.out) { Get-Content C:\bs\u.out }'
 }
+# readbackall: every visible top-level window, owned and untitled ones too.
+readbackall() { scp "${SSH_OPTS[@]}" -q "$(dirname "${BASH_SOURCE[0]}")/readback.ps1" baney@192.168.122.50:C:/readback.ps1 2>/dev/null; vmi 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\readback.ps1 -All'; }
+# helper: run helpers.ps1 in the desktop session at normal level
+helper() { scp "${SSH_OPTS[@]}" -q "$(dirname "${BASH_SOURCE[0]}")/helpers.ps1" baney@192.168.122.50:C:/bs/helpers.ps1 2>/dev/null; vmu "& 'C:\\bs\\helpers.ps1' $*"; }

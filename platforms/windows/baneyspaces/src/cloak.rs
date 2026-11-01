@@ -25,8 +25,6 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{WS_EX_LAYERED, WS_EX_NOACTIVAT
 const CLSID_IMMERSIVE_SHELL: GUID = GUID::from_u128(0xC2F03A33_21F5_47FA_B4BB_156362A2F239);
 const IID_ISERVICE_PROVIDER: GUID = GUID::from_u128(0x6D5140C1_7436_11CE_8034_00AA006009FA);
 const IID_IAPPLICATION_VIEW_COLLECTION: GUID = GUID::from_u128(0x1841c6d7_4f9d_42c0_af41_8747538f10e5);
-const CLSID_VIRTUAL_DESKTOP_MANAGER: GUID = GUID::from_u128(0xAA509086_5CA9_4C25_8F95_589D3C07B48A);
-const IID_IVIRTUAL_DESKTOP_MANAGER: GUID = GUID::from_u128(0xa5cd92ff_29be_454c_8d04_d82879fb3f1b);
 const CLSID_TASKBAR_LIST: GUID = GUID::from_u128(0x56FDF344_FD6D_11d0_958A_006097C9A090);
 const IID_ITASKBAR_LIST: GUID = GUID::from_u128(0x56FDF342_FD6D_11d0_958A_006097C9A090);
 
@@ -127,7 +125,7 @@ pub fn taskbar_button(h: HWND, visible: bool) {
 /// refused or did not take. The caller has already recorded the window.
 pub fn hide_user(h: HWND, cloaker: Option<&Cloaker>) -> How {
     if let Some(c) = cloaker {
-        if c.set(h, true).is_ok() && winapi::cloaked(h) != 0 {
+        if c.set(h, true).is_ok() && winapi::cloaked(h) & 2 != 0 {
             return How::Cloak;
         }
     }
@@ -135,22 +133,40 @@ pub fn hide_user(h: HWND, cloaker: Option<&Cloaker>) -> How {
     How::Park
 }
 
-/// Hides an agent's window: a ghost. Returns the extended style to put back.
-pub fn ghost(h: HWND) -> i64 {
+/// Hides an agent's window as a ghost. Returns the extended style to put back, or None when the
+/// window refused (one that already draws with per-pixel alpha cannot take a constant alpha): the
+/// style is put back and the caller parks the window instead.
+pub fn ghost(h: HWND) -> Option<i64> {
     let ex = winapi::ex_style(h);
     winapi::set_ex_style(h, ex | (WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE) as i64);
-    winapi::set_layered_alpha(h, 0);
+    if !winapi::set_layered_alpha(h, 0) || winapi::layered_alpha(h) != Some(0) {
+        winapi::set_ex_style(h, ex);
+        return None;
+    }
     taskbar_button(h, false);
-    ex
+    Some(ex)
 }
 
-/// Puts a window back as it was, whichever way it was hidden. Safe to call on a window that is
-/// not hidden. Cloak and park are both undone, so an entry written just before a crash is fine
-/// whichever of them had happened.
-pub fn show(entry: &Hidden, cloaker: Option<&Cloaker>) {
+/// Does the window still look hidden the way the entry says? Reality, not the daemon's memory:
+/// the shell can drop a cloak (a virtual desktop switch re-evaluates them), an app can move itself
+/// back from the parking spot or reset its alpha.
+pub fn still_hidden(entry: &Hidden) -> bool {
+    let h = winapi::hwnd(entry.hwnd);
+    match entry.how {
+        How::Cloak => winapi::cloaked(h) & 2 != 0,
+        How::Park => winapi::is_parked(h) || winapi::is_iconic(h),
+        How::Ghost => winapi::ex_style(h) & (WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE) as i64 == (WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE) as i64 && winapi::layered_alpha(h) == Some(0),
+    }
+}
+
+/// Puts a window back as it was, whichever way it was hidden, and says whether it read back as
+/// shown: not cloaked, not parked, the ghost's styles back. The entry is only forgotten after a
+/// true: cloak and park are both undone whichever of them had happened, so an entry written just
+/// before a crash is fine. Safe to call on a window that is not hidden.
+pub fn show(entry: &Hidden, cloaker: Option<&Cloaker>) -> bool {
     let h = winapi::hwnd(entry.hwnd);
     if !winapi::exists(h) {
-        return;
+        return true;
     }
     match entry.how {
         How::Ghost => {
@@ -159,6 +175,11 @@ pub fn show(entry: &Hidden, cloaker: Option<&Cloaker>) {
                 winapi::set_ex_style(h, ex);
             }
             taskbar_button(h, true);
+            // Verified when the styles read back as they were. (A window that was layered before
+            // keeps its layered bit; only our two other bits and the alpha are ours.)
+            let ours = (WS_EX_TRANSPARENT | WS_EX_NOACTIVATE) as i64;
+            let want = entry.ex_style.unwrap_or(0) & ours;
+            winapi::ex_style(h) & ours == want
         }
         How::Cloak | How::Park => {
             if let Some(c) = cloaker {
@@ -169,24 +190,7 @@ pub fn show(entry: &Hidden, cloaker: Option<&Cloaker>) {
                     winapi::set_pos(h, r[0], r[1]);
                 }
             }
+            winapi::cloaked(h) & 2 == 0 && !winapi::is_parked(h)
         }
-    }
-}
-
-/// Is this window on the virtual desktop you are looking at? (The documented IVirtualDesktopManager.)
-/// A window the shell cloaked that *is* on your desktop was cloaked by something other than Windows'
-/// own desktops: most likely a BaneySpaces run that never got to put it back.
-pub fn on_current_desktop(h: HWND) -> Option<bool> {
-    COM.with(|_| ());
-    unsafe {
-        let mut m: *mut c_void = std::ptr::null_mut();
-        if CoCreateInstance(&CLSID_VIRTUAL_DESKTOP_MANAGER, std::ptr::null_mut(), CLSCTX_ALL, &IID_IVIRTUAL_DESKTOP_MANAGER, &mut m) < 0 || m.is_null() {
-            return None;
-        }
-        let f: unsafe extern "system" fn(*mut c_void, HWND, *mut i32) -> i32 = std::mem::transmute(slot(m, 3));
-        let mut on = 0;
-        let hr = f(m, h, &mut on);
-        release(m);
-        (hr >= 0).then_some(on != 0)
     }
 }

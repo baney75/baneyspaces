@@ -76,6 +76,54 @@ has "$S" "Notepad" "restart: Notepad is back"; has "$S" "Calculator" "restart: C
 RB=$(readback); grep -q 'cloaked=2' <<<"$RB" && bad "something is still cloaked after restart" || ok "nothing is left cloaked after restart"
 cli switch 1 >/dev/null
 
+say "== 5b. robustness: things that go wrong while windows are hidden"
+BSP='C:\bs\baneyspaces\target\release\baneyspaces.exe'
+vmu 'Start-Process C:\bs\baneyspaces\target\release\bs-testapp.exe; Start-Sleep 3' >/dev/null
+UT=$(readbackall | grep 'class=BaneySpacesTestApp' | head -1 | sed 's/^w-\([0-9]*\) .*/\1/')
+say "a window of yours, not started by the daemon: w-$UT"
+cli switch 1 >/dev/null
+cli move 2 --stay --window "w-$UT" >/dev/null; sleep 1
+[[ "$(helper cloaked "$UT" | tr -d '\r\n ')" == 2 ]] && ok "it is cloaked on workspace 2" || bad "not cloaked"
+# A hidden window that stops looking like an app window is still yours (title emptied, as terminals and browsers do).
+helper settitle "$UT" "" >/dev/null; sleep 2
+cli switch 2 >/dev/null; sleep 1
+[[ "$(helper cloaked "$UT" | tr -d '\r\n ')" == 0 ]] && ok "its title became empty while it was hidden: switching to 2 still shows it" || bad "a hidden window with no title stayed cloaked"
+cli switch 1 >/dev/null; sleep 1
+# Something else drops the cloak (another tool, a virtual-desktop switch): the next poll hides it again.
+helper uncloak "$UT" >/dev/null; sleep 2
+[[ "$(helper cloaked "$UT" | tr -d '\r\n ')" == 2 ]] && ok "an outside uncloak was undone within two polls" || bad "an outside uncloak stuck"
+# One daemon only: a second one must not put the first one's windows back.
+O=$(vmx "& '$BSP' daemon --log C:\bs\second.log; \"exit=\$LASTEXITCODE\"")
+grep -q 'exit=1' <<<"$O" && ok "a second daemon exits (1) without starting" || bad "second daemon: $O"
+[[ "$(helper cloaked "$UT" | tr -d '\r\n ')" == 2 ]] && ok "and the first daemon's hidden window is still hidden" || bad "the second daemon uncloaked a window"
+# A request that is JSON but not an object must not hurt the daemon.
+scp "${SSH_OPTS[@]}" -q "$HERE/rawpipe.ps1" baney@192.168.122.50:C:/bs/rawpipe.ps1
+PIPE=$(vmx 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\bs\rawpipe.ps1')
+echo "$PIPE" >> "$LOG"
+[[ "$(grep -c invalid_args <<<"$PIPE")" == 3 ]] && grep -q pong <<<"$PIPE" && ok "\"x\", [1] and 5 are refused (invalid_args) and a ping after them is answered" || bad "pipe: $PIPE"
+[[ "$(helper cloaked "$UT" | tr -d '\r\n ')" == 2 ]] && ok "the daemon kept the window hidden through it" || bad "window state changed"
+# The hidden-window record cannot be saved: nothing is hidden, the switch is refused, and it works again once it can.
+vmx 'icacls "$env:LOCALAPPDATA\BaneySpaces" /deny "baney:(OI)(CI)(WD,AD)" | Out-Null' >/dev/null
+O=$(cli switch 2); grep -q 'nothing was hidden' <<<"$O" && grep -q '"retry":"safe"' <<<"$O" && ok "with state.json unwritable, switch 2 is refused (nothing was hidden, retry safe)" || bad "expected a save error: ${O:0:300}"
+S=$(seen_now); has "$S" "File Explorer" "and your windows are still showing"
+vmx 'icacls "$env:LOCALAPPDATA\BaneySpaces" /remove:d "baney" | Out-Null' >/dev/null
+cli switch 2 | grep -q '"ok":true' && ok "once the record can be saved, the same switch works" || bad "switch 2 after the fix"
+# Sign-out: the daemon's hidden window hears WM_QUERYENDSESSION and puts everything back before apps are asked to save.
+S=$(seen_now); lacks "$S" "File Explorer" "before: workspace 1 is hidden"
+helper endsession query >/dev/null; sleep 2
+S=$(seen_now); has "$S" "File Explorer" "WM_QUERYENDSESSION put the windows back"
+helper endsession cancel >/dev/null; sleep 3
+S=$(seen_now); lacks "$S" "File Explorer" "a cancelled sign-out: the next poll hides workspace 1 again"
+cli switch 1 >/dev/null; sleep 1
+# explorer.exe restarts while windows are hidden.
+cli move 2 --stay --window "w-$UT" >/dev/null; sleep 1
+vmx 'Stop-Process -Name explorer -Force; Start-Sleep 9' >/dev/null
+[[ "$(helper cloaked "$UT" | tr -d '\r\n ')" == 2 ]] && ok "explorer.exe restarted: the hidden window is still hidden" || bad "lost the cloak across the restart"
+cli switch 2 >/dev/null; sleep 2
+[[ "$(helper cloaked "$UT" | tr -d '\r\n ')" == 0 ]] && ok "and it shows again when its workspace is shown" || bad "could not show it after the restart"
+cli switch 1 >/dev/null
+vmx 'Get-Process bs-testapp -ErrorAction SilentlyContinue | Stop-Process -Force' >/dev/null
+
 say "== 6. production refuses every agent launch (no Windows sandbox yet)"
 for app in notepad explorer "$TESTAPP"; do
   O=$(cli agent open "$app"); grep -q '"code":"needs_sandbox"' <<<"$O" && ok "agent open $(basename "$app") is refused (needs_sandbox) before anything starts" || bad "expected needs_sandbox for $app: ${O:0:200}"
@@ -110,6 +158,41 @@ S=$(seen_now); shot 08-agent-snapshot >/dev/null
 T=$(cli agent type "'$REF'" "hello from the agent")
 echo "$T" | grep -q '"verified":true' && ok "agent type landed and the engine read it back (verified)" || bad "agent type: ${T:0:300}"
 echo "$T" | grep -q '"screen_changed":false' && ok "typing changed nothing you can see" || bad "typing changed the screen"
+# A dialog the agent's app opens belongs on the agent workspace too, ghosted the moment it appears.
+BTN=$(python3 -c "
+import sys,json
+d=json.loads(sys.stdin.read())
+def w(n):
+    if n.get('role')=='button' and n.get('name')=='Open dialog': return n['ref_id']
+    for c in n.get('children',[]):
+        r=w(c)
+        if r: return r
+print(w(d['data']['result']['tree']) or '')" <<<"$SN")
+[[ -n "$BTN" ]] && ok "the snapshot has the test app's Open dialog button ($BTN)" || bad "no Open dialog button in the snapshot"
+(vmi 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\watch.ps1 -Seconds 9 -All' > "$OUT/watch-dialog.txt" 2>&1) &
+WATCH2=$!
+sleep 5
+C=$(cli agent click "'$BTN'"); echo "$C" | grep -q '"ok":true' && ok "agent click on Open dialog" || bad "click: ${C:0:300}"
+wait $WATCH2
+grep -q "Test dialog" "$OUT/watch-dialog.txt" && grep "Test dialog" "$OUT/watch-dialog.txt" | grep -q 'visible_polls=0' && ok "the dialog the app opened was never visible ($(sed -n 's/polls=\([0-9]*\).*/\1/p' "$OUT/watch-dialog.txt") polls)" || bad "the dialog was visible, or never seen: $(cat "$OUT/watch-dialog.txt")"
+AS=$(cli agent status); [[ "$(grep -o '"window":"w-' <<<"$AS" | wc -l)" == 2 ]] && ok "the dialog is an agent window (agent status lists both)" || bad "agent status: ${AS:0:300}"
+DW=$(python3 -c "
+import sys,json
+d=json.loads(sys.stdin.read())
+for w in d['data']['windows']:
+    if w['window']!='$AW': print(w['window'])" <<<"$AS")
+DS=$(cli agent snapshot --window "$DW" -i)
+OK=$(python3 -c "
+import sys,json
+d=json.loads(sys.stdin.read())
+def w(n):
+    if n.get('role')=='button' and n.get('name')=='OK': return n['ref_id']
+    for c in n.get('children',[]):
+        r=w(c)
+        if r: return r
+print(w(d['data']['result']['tree']) or '')" <<<"$DS")
+[[ -n "$OK" ]] && cli agent click "'$OK'" | grep -q '"ok":true' && ok "the agent dismissed the dialog through its own window (OK)" || bad "could not click OK: ${DS:0:200}"
+sleep 2; AS=$(cli agent status); [[ "$(grep -o '"window":"w-' <<<"$AS" | wc -l)" == 1 ]] && ok "the dialog is gone from the agent workspace" || bad "dialog still listed"
 RB=$(readback); echo "$RB" >> "$LOG"; shot 09-agent-typed >/dev/null
 grep "^$AW " <<<"$RB" | grep -q 'SEEN=False' && ok "the agent's window is still invisible after typing" || bad "agent window is visible"
 [[ "$(grep 'class=Notepad ' <<<"$RB" | grep -c "title='\*")" == 0 ]] && ok "your Notepad windows still say 'Untitled' (not modified)" || bad "a Notepad title shows unsaved changes"

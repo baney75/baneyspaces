@@ -44,6 +44,18 @@ pub fn class(h: HWND) -> String {
     wide_to_string(&buf[..n.max(0) as usize])
 }
 
+/// Is this a top-level window (not a child control)?
+pub fn is_top_level(h: HWND) -> bool {
+    let style = unsafe { GetWindowLongPtrW(h, GWL_STYLE) as u32 };
+    style & WS_CHILD == 0
+}
+
+/// Does it have a title bar or a dialog frame (WS_CAPTION)?
+pub fn has_caption(h: HWND) -> bool {
+    let style = unsafe { GetWindowLongPtrW(h, GWL_STYLE) as u32 };
+    style & WS_CAPTION == WS_CAPTION
+}
+
 pub fn exists(h: HWND) -> bool {
     unsafe { IsWindow(h) != 0 }
 }
@@ -154,6 +166,19 @@ pub fn process_name(pid: u32) -> String {
     }
 }
 
+/// Does `pid` run as the same account as this process?
+pub fn same_user(pid: u32) -> bool {
+    unsafe {
+        let p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if p.is_null() {
+            return false;
+        }
+        let theirs = sid_of_process(p);
+        CloseHandle(p);
+        theirs.is_some() && theirs == user_sid_string()
+    }
+}
+
 pub fn alive(pid: u32, start: u64) -> bool {
     let s = process_start(pid);
     s != 0 && (start == 0 || s == start)
@@ -177,37 +202,44 @@ const SHELL_CLASSES: &[&str] = &[
 
 /// Is this a window a person would call an app window? Visible (or hidden by us), titled, not a
 /// tool window or a popup the shell draws, not owned by another window, not cloaked by someone else.
-pub fn is_manageable(h: HWND, hidden_by_us: bool, our_pid: u32) -> bool {
+///
+/// `agent` is true when the window's process is one started for an agent. Then every top-level window
+/// counts, owned or not, titled or not, tool window or not: a dialog or a popup the agent's app opens
+/// belongs on the agent workspace as much as its main window does.
+pub fn is_manageable(h: HWND, hidden_by_us: bool, our_pid: u32, agent: bool) -> bool {
     if h.is_null() || !exists(h) {
         return false;
     }
     if !hidden_by_us && (!is_visible(h) || cloaked(h) != 0) {
         return false;
     }
+    let pid = pid_of(h);
+    if pid == 0 || pid == our_pid {
+        return false;
+    }
     let ex = ex_style(h);
     let style = unsafe { GetWindowLongPtrW(h, GWL_STYLE) as u32 };
-    // A ghosted agent window carries WS_EX_NOACTIVATE and a layered alpha of 0 on purpose.
-    let ghosted = hidden_by_us;
-    if ex & WS_EX_TOOLWINDOW as i64 != 0 && ex & WS_EX_APPWINDOW as i64 == 0 {
-        return false;
-    }
-    if !ghosted && ex & WS_EX_NOACTIVATE as i64 != 0 && ex & WS_EX_APPWINDOW as i64 == 0 {
-        return false;
-    }
     if style & WS_CHILD != 0 {
-        return false;
-    }
-    if unsafe { !GetWindow(h, GW_OWNER).is_null() } && ex & WS_EX_APPWINDOW as i64 == 0 {
-        return false;
-    }
-    if title(h).is_empty() {
         return false;
     }
     if SHELL_CLASSES.contains(&class(h).as_str()) {
         return false;
     }
-    let pid = pid_of(h);
-    pid != 0 && pid != our_pid
+    if agent {
+        // Anything with a frame or a title: not the process's tooltips, shadows and menus.
+        return style & WS_CAPTION == WS_CAPTION || !title(h).is_empty();
+    }
+    if ex & WS_EX_TOOLWINDOW as i64 != 0 && ex & WS_EX_APPWINDOW as i64 == 0 {
+        return false;
+    }
+    // A ghosted agent window carries WS_EX_NOACTIVATE on purpose.
+    if !hidden_by_us && ex & WS_EX_NOACTIVATE as i64 != 0 && ex & WS_EX_APPWINDOW as i64 == 0 {
+        return false;
+    }
+    if unsafe { !GetWindow(h, GW_OWNER).is_null() } && ex & WS_EX_APPWINDOW as i64 == 0 {
+        return false;
+    }
+    !title(h).is_empty()
 }
 
 #[derive(Clone, Debug)]
@@ -289,8 +321,59 @@ pub fn set_pos(h: HWND, x: i32, y: i32) {
     unsafe { SetWindowPos(h, std::ptr::null_mut(), x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE) };
 }
 
-pub fn set_layered_alpha(h: HWND, alpha: u8) {
-    unsafe { SetLayeredWindowAttributes(h, 0, alpha, LWA_ALPHA) };
+/// Sets the window's alpha. False when Windows refused (a window that already uses per-pixel alpha).
+pub fn set_layered_alpha(h: HWND, alpha: u8) -> bool {
+    unsafe { SetLayeredWindowAttributes(h, 0, alpha, LWA_ALPHA) != 0 }
+}
+
+/// The window's constant alpha if it has one (a layered window with LWA_ALPHA).
+pub fn layered_alpha(h: HWND) -> Option<u8> {
+    let (mut key, mut alpha, mut flags) = (0u32, 0u8, 0u32);
+    let ok = unsafe { GetLayeredWindowAttributes(h, &mut key, &mut alpha, &mut flags) != 0 };
+    (ok && flags & LWA_ALPHA != 0).then_some(alpha)
+}
+
+/// Is the window parked where `cloak::hide_user` puts a window the shell would not cloak?
+pub fn is_parked(h: HWND) -> bool {
+    // A minimized window also sits at (-32000, -32000); that is not us parking it.
+    !is_iconic(h) && rect(h).is_some_and(|r| r[0] <= -30000)
+}
+
+/// The current user's SID as text: the key the pipe and the mutex are named by.
+pub fn user_sid_string() -> Option<String> {
+    sid_of_process(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() })
+}
+
+/// The account SID (as text) a process runs as. `process` needs at least PROCESS_QUERY_LIMITED_INFORMATION.
+pub fn sid_of_process(process: windows_sys::Win32::Foundation::HANDLE) -> Option<String> {
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
+    unsafe {
+        let mut tok: windows_sys::Win32::Foundation::HANDLE = std::ptr::null_mut();
+        if windows_sys::Win32::System::Threading::OpenProcessToken(process, TOKEN_QUERY, &mut tok) == 0 {
+            return None;
+        }
+        let mut need = 0u32;
+        GetTokenInformation(tok, TokenUser, std::ptr::null_mut(), 0, &mut need);
+        let mut buf = vec![0u8; need as usize];
+        let ok = GetTokenInformation(tok, TokenUser, buf.as_mut_ptr() as *mut _, need, &mut need) != 0;
+        CloseHandle(tok);
+        if !ok {
+            return None;
+        }
+        let tu = &*(buf.as_ptr() as *const TOKEN_USER);
+        let mut s: *mut u16 = std::ptr::null_mut();
+        if ConvertSidToStringSidW(tu.User.Sid, &mut s) == 0 {
+            return None;
+        }
+        let mut n = 0;
+        while *s.add(n) != 0 {
+            n += 1;
+        }
+        let out = String::from_utf16_lossy(std::slice::from_raw_parts(s, n));
+        windows_sys::Win32::Foundation::LocalFree(s as *mut _);
+        Some(out)
+    }
 }
 
 pub fn restore_minimized_no_activate(h: HWND) {

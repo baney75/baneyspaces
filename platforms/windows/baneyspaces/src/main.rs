@@ -280,9 +280,10 @@ fn mcp_tool_to_request(name: &str, args: &Value, agent: &str) -> Value {
         .replace('_', "-");
     match verb.as_str() {
         "status" | "windows" => json!({ "op": format!("agent_{verb}"), "agent": agent }),
-        "open" => json!({ "op": "agent_open", "agent": agent, "args": args }),
+        "open" => json!({ "op": "agent_open", "agent": agent, "args": if args.is_object() { args.clone() } else { json!({}) } }),
         v => {
-            let mut a = args.clone();
+            // Tool arguments that are not an object (a client's mistake) are no arguments, not a panic.
+            let mut a = if args.is_object() { args.clone() } else { json!({}) };
             a["verb"] = json!(v);
             json!({ "op": "hands", "agent": agent, "args": a })
         }

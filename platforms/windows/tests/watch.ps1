@@ -1,8 +1,8 @@
 # Watches for a window that was not there at the start and becomes SEEN (visible, uncloaked, opaque,
 # on screen). Polls fast for $Seconds. Prints every new window once with how long it took to hide.
-param([int]$Seconds = 14)
-. { $src = Get-Content C:\readback.ps1 -Raw; Invoke-Expression ($src.Substring(0, $src.IndexOf('[RB]::Run()'))) }
-[RB]::Run(); $base = @{}; [RB]::Rows | % { $base[($_ -split ' ')[0]] = 1 }
+param([int]$Seconds = 14, [switch]$All)
+. { $src = Get-Content C:\readback.ps1 -Raw; Invoke-Expression ($src.Substring(0, $src.IndexOf('[RB]::Run()')).Replace('param([switch]$All)', '').Replace('# This script runs elevated', '#')) }
+[RB]::All = [bool]$All; [RB]::Run(); $base = @{}; [RB]::Rows | % { $base[($_ -split ' ')[0]] = 1 }
 $new = @{}; $sw = [Diagnostics.Stopwatch]::StartNew(); $polls = 0
 while ($sw.Elapsed.TotalSeconds -lt $Seconds) {
   [RB]::Run(); $polls++
