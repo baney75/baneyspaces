@@ -77,6 +77,10 @@ final class Spaces {
         let workspace: Int
         let until: Date
         let title: String?
+        /// Holds even when the app is in front. A window of the app you're in is yours (⌘N), but a
+        /// launch you made from a workspace is claimed for that workspace because the app was the
+        /// one you just opened: its slow first window, or one it restores, goes there too.
+        var honorsFront = false
     }
 
     /// The agent workspace (see `AgentWorkspace`), or nil when it's off.
@@ -314,9 +318,10 @@ final class Spaces {
     /// already using: that would take your windows.
     /// `title`: only a window whose title contains it (the file an agent opened), so a window
     /// you open in the same app meanwhile stays yours.
-    func claimNextWindow(of pid: pid_t, for n: Int, within: TimeInterval = 8, newProcess: Bool = false, title: String? = nil) {
+    func claimNextWindow(of pid: pid_t, for n: Int, within: TimeInterval = 8, newProcess: Bool = false, title: String? = nil,
+                         honorsFront: Bool = false) {
         // Added now, so `cancelClaim` right after always finds it.
-        let claim = Claim(workspace: n, until: Date().addingTimeInterval(within), title: title)
+        let claim = Claim(workspace: n, until: Date().addingTimeInterval(within), title: title, honorsFront: honorsFront)
         claims[pid, default: []].append(claim)
         look(for: claim, of: pid, within: within, newProcess: newProcess)
     }
@@ -387,10 +392,11 @@ final class Spaces {
         let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
         var away = false
         for id in added {
-            guard let w = windows[id], w.pid != front,
+            guard let w = windows[id],
                   // A brand-new window may not have its title yet.
                   let c = claims[w.pid]?.first(where: { c in
-                      c.title.map { w.title.isEmpty || w.title.localizedCaseInsensitiveContains($0) } ?? true
+                      (w.pid != front || c.honorsFront)
+                          && (c.title.map { w.title.isEmpty || w.title.localizedCaseInsensitiveContains($0) } ?? true)
                   }) else { continue }
             drop(c, of: w.pid)
             model.assign(id, to: c.workspace, focus: false)
@@ -1134,8 +1140,10 @@ final class Spaces {
     /// focuses it once it exists. The app stays hidden until then, and its windows on other
     /// workspaces stay where they are. False when the app has no New Window command; an app
     /// that makes no window in time is gone to instead.
-    func openWindowHere(_ pid: pid_t) -> Bool {
+    func openWindowHere(_ pid: pid_t, on target: Int? = nil) -> Bool {
         guard active, let item = Windows.newWindowItem(pid) else { return false }
+        // "Open here": the workspace asked from is the one you're on when the window appears.
+        if let target, target != model.current { switchTo(target, announce: false) }
         let known = Windows.standardIDs(of: pid)
         guard AXUIElementPerformAction(item, kAXPressAction as CFString) == .success else { return false }
         // An app that comes forward for it isn't asking to be followed to its workspace.
@@ -1146,6 +1154,42 @@ final class Spaces {
             self.finishOpening(pid, besides: known)
         }
         return true
+    }
+
+    /// "Open here" for an app that can't make a window (Photos, Music, App Store, System Settings,
+    /// Calculator, Messages): its existing window moves to workspace `n`, takes focus there, and you
+    /// stay on `n`. The window chosen is the one `focusApp` would go to, so a second window of an
+    /// app that has several stays where it is. The app comes forward before its window has moved,
+    /// and that activation isn't followed (`opening`). False when it has no window to move.
+    func moveWindowHere(_ pid: pid_t, to n: Int) -> Bool {
+        guard active, Workspaces.range.contains(n) else { return false }
+        if switching { enqueue { [weak self] in _ = self?.moveWindowHere(pid, to: n) }; return true }
+        refresh()
+        let mine = windows.values.filter { $0.pid == pid && model.workspace(of: $0.id) != nil }
+        let order = [n] + recent.filter { $0 != n } + Array(Workspaces.range)
+        var pick: Window?
+        for ws in order where pick == nil {
+            let here = mine.filter { model.workspace(of: $0.id) == ws }
+            pick = model.lastFocused[ws].flatMap { id in here.first { $0.id == id } } ?? here.first { !$0.isMinimized } ?? here.first
+        }
+        guard let w = pick else { return false }
+        // The app activates as its window moves; without this `followFocus` would take you after it.
+        opening = (pid, Date().addingTimeInterval(1.5))
+        Trace.log("open here: \(w.appName) window \(w.id) moves to workspace \(n)")
+        if model.workspace(of: w.id) != n { model.assign(w.id, to: n) }
+        lastKey[pid] = w.id
+        model.noteFocus(w.id)
+        switchTo(n, announce: false)
+        return true
+    }
+
+    /// "Open here" for an app that isn't running (or has no window): the activation it causes isn't
+    /// followed, and its first window, restored or slow, goes to workspace `n` (`claimNextWindow`
+    /// holds even while the app is in front).
+    func openingHere(_ pid: pid_t, on n: Int, newProcess: Bool) {
+        guard active else { return }
+        opening = (pid, Date().addingTimeInterval(8))
+        claimNextWindow(of: pid, for: n, within: 8, newProcess: newProcess, honorsFront: true)
     }
 
     private func finishOpening(_ pid: pid_t, besides known: Set<WindowID>) {

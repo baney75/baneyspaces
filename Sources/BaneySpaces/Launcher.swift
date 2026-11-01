@@ -144,6 +144,12 @@ struct LauncherActions {
     var focusApp: (pid_t, Int?) -> Void = { _, _ in }
     /// A new window of a running app on the workspace you're on; false when it can't make one.
     var openWindowHere: (pid_t) -> Bool = { _ in false }
+    /// The workspace the screen the launcher appears on is showing: where an open from it lands.
+    var shownOn: (NSScreen) -> Int = { _ in 1 }
+    /// `behavior.launcher.open`: open here, or go to where the app already is.
+    var openMode: () -> OpenHere.Mode = { .standard }
+    /// Opens an app as `OpenHere.plan` decided, for the workspace the launcher was opened for.
+    var openApp: (URL, pid_t?, OpenHere.Action, Int) -> Void = { _, _, _, _ in }
     /// Whether a running app has a New Window command.
     var canOpenWindow: (pid_t) -> Bool = { _ in false }
     var current: () -> Int = { 1 }
@@ -187,11 +193,14 @@ final class LauncherController: NSObject, NSWindowDelegate {
 
     /// `takeKeys: false` (opened by a link) shows it without taking the keyboard, so typing meant
     /// for another app never lands in it; a click on it takes the keyboard.
-    func show(scope: LauncherModel.Scope = .root, takeKeys: Bool = true) {
+    /// `entry`: where it was opened from (a dock tile's menu, the overview). Without one, it is open
+    /// for the workspace the screen it appears on is showing. Whatever is opened from it lands there.
+    func show(scope: LauncherModel.Scope = .root, takeKeys: Bool = true, entry: OpenHere.Entry? = nil) {
         let p = panel ?? makePanel()
         panel = p
-        model.prepare(scope: scope)
         let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main ?? NSScreen.screens[0]
+        let target = entry.flatMap(OpenHere.target) ?? OpenHere.target(.launcher(shownOn: model.shown(on: screen)))
+        model.prepare(scope: scope, target: target)
         let size = NSSize(width: 700, height: 500)
         // A little above center, where Spotlight sits.
         let origin = NSPoint(x: screen.visibleFrame.midX - size.width / 2,
@@ -339,6 +348,8 @@ final class LauncherModel: ObservableObject {
     weak var field: NSTextField?
     var close: () -> Void = {}
     var alertOpen = false
+    /// The workspace this launcher was opened for: whatever it opens lands there (`OpenHere`).
+    var target: Int?
 
     private let actions: LauncherActions
     private var apps: [AppEntry] = []
@@ -363,8 +374,11 @@ final class LauncherModel: ObservableObject {
         apps = AppEntry.scan()
     }
 
-    func prepare(scope: Scope) {
+    func shown(on screen: NSScreen) -> Int { actions.shownOn(screen) }
+
+    func prepare(scope: Scope, target: Int? = nil) {
         actions.willShow()
+        self.target = target
         self.scope = scope
         query = ""
         field?.stringValue = ""
@@ -374,6 +388,7 @@ final class LauncherModel: ObservableObject {
         fileResults = []
         bangs = Launcher.loadBangs()
         rebuild()
+        probeWindowCommands()
         // Apps installed since the last look show up without a restart.
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let fresh = AppEntry.scan()
@@ -626,12 +641,11 @@ final class LauncherModel: ObservableObject {
             .map(\.0)
         }
         // An app open on more than one workspace also gets a row for each, to pick which, and so
-        // does one that opens a new window here instead of going to its workspace.
+        // does one that opens here instead of going to its workspace (⌥↩ goes there too).
         return matches.prefix(limit).flatMap { a -> [LauncherItem] in
             let on = running[a.path] ?? []
-            let look = !q.isEmpty && limit <= 8
-            let main = appItem(a, section: "Apps", look: look)
-            guard on.count > 1 || opensHere(a, look: look), !q.isEmpty else { return [main] }
+            let main = appItem(a, section: "Apps")
+            guard on.count > 1 || hereNote(a) != nil, !q.isEmpty else { return [main] }
             return [main] + on.map { n in
                 LauncherItem(id: "app:\(a.path):\(n)", section: "Apps", title: "\(a.name) on Workspace \(n)",
                              subtitle: "The \(a.name) windows there", icon: .file(a.path), workspaces: [n],
@@ -660,51 +674,82 @@ final class LauncherModel: ObservableObject {
         actions.focusApp(app.processIdentifier, n)
     }
 
-    private func appItem(_ a: AppEntry, section: String, look: Bool = false) -> LauncherItem {
+    private func appItem(_ a: AppEntry, section: String) -> LauncherItem {
         let on = running[a.path] ?? []
         var where_ = on.isEmpty ? a.folder : on.count == 1 ? "Open on workspace \(on[0])" : "Open on workspaces \(on.map(String.init).joined(separator: ", "))"
-        if opensHere(a, look: look) { where_ += " · Return opens a new window here" }
+        if let note = hereNote(a) { where_ += " · " + note }
         return LauncherItem(id: "app:\(a.path)", section: section, title: a.name, subtitle: where_, icon: .file(a.path),
                             workspaces: on,
                             run: { [weak self] in self?.open(a) }, reveal: URL(fileURLWithPath: a.path))
     }
 
-    /// Apps found to have a New Window command, by path. Only a yes is kept: a no can be an app
-    /// that was busy, still building its menus, or showing a sheet.
-    private var newWindowCommand: Set<String> = []
+    /// Whether each running app has a New Window command, by path. Asked in the background when the
+    /// launcher opens (`probeWindowCommands`): reading an app's menus takes 15–130 ms, which must
+    /// never sit between a keystroke and the list. An app not asked yet isn't in it.
+    private var windowCommand: [String: Bool] = [:]
+    private static let probeQueue = DispatchQueue(label: "BaneySpaces launcher menus", qos: .userInitiated)
 
-    /// An app open only on other workspaces that can open a window here: opening it does that,
-    /// as opening an app on a Mac desktop where it has no window would. `look` reads the app's
-    /// menus, 15–130 ms an app, so rows only look for the few best matches of a search.
-    private func opensHere(_ a: AppEntry, look: Bool = true) -> Bool {
-        guard let on = running[a.path], !on.contains(actions.current()), let app = runningApp(a) else { return false }
-        if newWindowCommand.contains(a.path) { return true }
-        guard look, actions.canOpenWindow(app.processIdentifier) else { return false }
-        newWindowCommand.insert(a.path)
-        return true
+    /// What Return does to an app open somewhere other than the workspace this launcher is for, in
+    /// words for its subtitle; nil when it just opens or the answer isn't known yet.
+    private func hereNote(_ a: AppEntry) -> String? {
+        guard actions.openMode() == .here, let target, let on = running[a.path], !on.isEmpty, !on.contains(target),
+              let can = windowCommand[a.path] else { return nil }
+        switch OpenHere.plan(.init(target: target, running: true, windowsOn: on, canMakeWindow: can), mode: .here, modifier: false) {
+        case .newWindow: return "Return opens a new window on workspace \(target) · ⌥↩ goes there"
+        case .moveWindowHere: return "Return brings it to workspace \(target) · ⌥↩ goes there"
+        default: return nil
+        }
+    }
+
+    /// Asks the running apps that are open only elsewhere whether they can make a window, off the
+    /// main thread, then redraws the rows that mention it.
+    private func probeWindowCommands() {
+        guard let target else { return }
+        let todo: [(path: String, pid: pid_t)] = running.compactMap { path, on in
+            guard !on.contains(target), windowCommand[path] == nil,
+                  let pid = NSWorkspace.shared.runningApplications.first(where: { $0.bundleURL?.path == path })?.processIdentifier
+            else { return nil }
+            return (path, pid)
+        }
+        guard !todo.isEmpty else { return }
+        let actions = actions
+        Self.probeQueue.async { [weak self] in
+            var found: [String: Bool] = [:]
+            for item in todo { found[item.path] = actions.canOpenWindow(item.pid) }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                // A no can be an app that was busy or showing a sheet; it is asked again next time.
+                self.windowCommand.merge(found) { _, new in new }
+                self.rebuildKeepingSelection()
+            }
+        }
     }
 
     private func runningApp(_ a: AppEntry) -> NSRunningApplication? {
         NSWorkspace.shared.runningApplications.first { $0.bundleURL?.path == a.path }
     }
 
-    /// A running app opens a new window here when it's open only elsewhere and can; otherwise
-    /// it's gone to, wherever its windows are. Anything else opens here.
+    /// Opens an app on the workspace this launcher was opened for (`OpenHere`): started if it isn't
+    /// running, a new window if it can make one, its window brought over if it can't. ⌥ (⌥↩, or ⌥-click) and
+    /// `behavior.launcher.open = go` go to where the app already is.
     private func open(_ a: AppEntry) {
         close()
         recents.used(a.path)
         UserDefaults.standard.set(recents.paths, forKey: "launcherRecents")
-        let url = URL(fileURLWithPath: a.path)
-        if let app = runningApp(a), running[a.path] != nil {
-            if opensHere(a), actions.openWindowHere(app.processIdentifier) { return }
-            actions.focusApp(app.processIdentifier, nil)
-            return
+        let modifier = NSEvent.modifierFlags.contains(.option)
+        let mode = actions.openMode()
+        let target = self.target ?? actions.current()
+        let app = runningApp(a)
+        // Read now, not when the list was drawn: windows move while the launcher is up.
+        let on = app == nil ? [] : actions.workspacesByApp()[a.path] ?? []
+        var can = windowCommand[a.path] ?? false
+        if let app, mode == .here, !modifier, !on.isEmpty, !on.contains(target), windowCommand[a.path] == nil {
+            can = actions.canOpenWindow(app.processIdentifier)
         }
-        let config = NSWorkspace.OpenConfiguration()
-        config.activates = true
-        NSWorkspace.shared.openApplication(at: url, configuration: config) { _, error in
-            if let error { NSLog("BaneySpaces: couldn't open %@: %@", a.path, error.localizedDescription) }
-        }
+        let action = OpenHere.plan(.init(target: target, running: app != nil, windowsOn: on, canMakeWindow: can),
+                                   mode: mode, modifier: modifier)
+        Trace.log("launcher open: \(a.name) for workspace \(target) on=\(on) newWindow=\(can) mode=\(mode.rawValue) option=\(modifier) -> \(action)")
+        actions.openApp(URL(fileURLWithPath: a.path), app?.processIdentifier, action, target)
     }
 
     private func workspaceItems(_ q: String, all: Bool = false) -> [LauncherItem] {
@@ -1571,7 +1616,8 @@ struct LauncherView: View {
 
     private var footer: some View {
         HStack(spacing: 16) {
-            hint("↩", "Open")
+            hint("↩", model.target.map { "Open on workspace \($0)" } ?? "Open")
+            hint("⌥↩", "Go to app")
             hint("⌘↩", "Show in Finder")
             hint("⇥", "Open menu")
             if model.scope != .root { hint("⌫", "Back") }
@@ -1635,7 +1681,8 @@ private struct SearchField: NSViewRepresentable {
             switch sel {
             case #selector(NSResponder.moveDown(_:)): model.move(1)
             case #selector(NSResponder.moveUp(_:)): model.move(-1)
-            case #selector(NSResponder.insertNewline(_:)):
+            case #selector(NSResponder.insertNewline(_:)), #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)):
+                // ⌥↩ arrives as the second selector; `open` reads the ⌥ itself.
                 model.runSelected(reveal: NSEvent.modifierFlags.contains(.command))
             case #selector(NSResponder.insertTab(_:)): model.tab()
             case #selector(NSResponder.cancelOperation(_:)):

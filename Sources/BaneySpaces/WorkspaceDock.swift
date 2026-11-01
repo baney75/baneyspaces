@@ -114,7 +114,8 @@ final class WorkspaceDock {
     private var appearanceObserver: NSObjectProtocol?
     deinit { appearanceObserver.map(NotificationCenter.default.removeObserver) }
     var onShowOverview: () -> Void = {}
-    var onShowLauncher: () -> Void = {}
+    /// `entry`: a tile's menu or the "+" tile asked, for that workspace; nil is the search button.
+    var onShowLauncher: (OpenHere.Entry?) -> Void = { _ in }
     var onTurnOff: () -> Void = {}
     /// Picking a side from a tile's menu; the app delegate keeps setup and the menu in step.
     var onSetEdge: (DockEdge) -> Void = { _ in }
@@ -183,7 +184,16 @@ final class WorkspaceDock {
             if note.userInfo?[Appearance.dockSizeChangedKey] as? Bool == true { self?.scheduleResize() }
         }
         model.onShowOverview = { [weak self] in self?.hide(); self?.onShowOverview() }
-        model.onShowLauncher = { [weak self] in self?.hide(); self?.onShowLauncher() }
+        model.onShowLauncher = { [weak self] entry in
+            guard let self else { return }
+            self.hide()
+            // "Open an App Here" on another workspace's tile goes there first, so the launcher is
+            // opened on the workspace it opens things on.
+            if let n = entry.flatMap(OpenHere.target), n != self.spaces.workspace(onScreen: self.shownOn) {
+                self.onOwnDisplay { $0.switchTo(n, announce: false) }
+            }
+            self.onShowLauncher(entry)
+        }
         model.onTurnOff = { [weak self] in self?.onTurnOff() }
         model.onSetEdge = { [weak self] e in self?.onSetEdge(e) }
         model.onSetAgentStatus = { [weak self] on in self?.onSetAgentStatus(on) }
@@ -1220,7 +1230,7 @@ final class DockModel: ObservableObject {
     /// if the tiles moved after the button came up.
     var heldTarget: DockSpringTarget?
     var onShowOverview: () -> Void = {}
-    var onShowLauncher: () -> Void = {}
+    var onShowLauncher: (OpenHere.Entry?) -> Void = { _ in }
     var onTurnOff: () -> Void = {}
 
     /// The first workspace with nothing on it, for the "new workspace" button.
@@ -1930,9 +1940,12 @@ struct DockView: View {
     /// nothing a click doesn't do, so it shows the dock's own settings.
     @ViewBuilder private func tileMenu(_ tile: DockModel.Tile) -> some View {
         if tile.isCurrent {
+            Button("Open an App Here…") { model.onShowLauncher(.dockTileMenu(tile.id)) }
+            Divider()
             dockOptions
         } else {
             Button("Go to Workspace \(tile.id)") { model.onPick(tile.id) }
+            Button("Open an App Here…") { model.onShowLauncher(.dockTileMenu(tile.id)) }
             Button("Move Front Window Here") { model.onSendHere(tile.id) }
             Divider()
             Menu("Dock") { dockOptions }
@@ -2098,6 +2111,7 @@ struct DockView: View {
         .contentShape(Rectangle())
         .onHover { model.setHover(.newWorkspace, $0) }
         .onTapGesture { model.onPick(n) }
+        .contextMenu { Button("Open an App Here…") { model.onShowLauncher(.dockPlus(n)) } }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Go to empty workspace \(n)")
         .accessibilityAddTraits(.isButton)
@@ -2112,7 +2126,7 @@ struct DockView: View {
         let size = vertical ? CGSize(width: (tileSize - 4) / 2, height: 44 * k) : CGSize(width: 44 * k, height: (tileSize - 4) / 2)
         return VStack(spacing: 5) {
             pair {
-                smallButton(.launcher, "magnifyingglass", "Find or Install an App", size: size) { model.onShowLauncher() }
+                smallButton(.launcher, "magnifyingglass", "Find or Install an App", size: size) { model.onShowLauncher(nil) }
                 smallButton(.overview, "square.grid.3x3", "Show All Workspaces", size: size) { model.onShowOverview() }
             }
             .frame(height: tileSize)

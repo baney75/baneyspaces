@@ -33,6 +33,8 @@ final class ViewerModel: ObservableObject {
     var onPick: (Int) -> Void = { _ in }
     var onPickWindow: (WindowID, Int) -> Void = { _, _ in }
     var onMove: (WindowID, Int) -> Void = { _, _ in }
+    /// "Open an App Here" from a tile's menu: the overview closes and the launcher opens for it.
+    var onOpenHere: (OpenHere.Entry) -> Void = { _ in }
     var onClose: () -> Void = {}
 
     func load(from spaces: Spaces) {
@@ -180,6 +182,9 @@ struct ViewerView: View {
             .contentShape(Chrome.shape(.overviewTile, continuous: false))
             .onTapGesture { model.onPick(n) }
             .onHover { inside in model.hover(n, inside) }
+            .contextMenu {
+                Button("Open an App Here…") { model.onOpenHere(entries.isEmpty ? .overviewSlot(n) : .overviewTile(n)) }
+            }
             .accessibilityElement(children: .combine)
             .accessibilityLabel(tileLabel(n, entries: entries, isCurrent: isCurrent))
             .accessibilityAddTraits(.isButton)
@@ -315,6 +320,8 @@ final class ViewerController {
     private(set) var isOpen = false { didSet { MissionControlKeys.viewerOpen = isOpen } }
     /// Bumped on every open, so a fade-out that finishes late can't hide a viewer reopened since.
     private var openCount = 0
+    /// Set by the app: shows the launcher for the entry's workspace.
+    var onOpenHere: (OpenHere.Entry) -> Void = { _ in }
 
     init(spaces: Spaces) {
         self.spaces = spaces
@@ -325,6 +332,12 @@ final class ViewerController {
         model.onPickWindow = { [weak self] id, n in
             self?.close()
             self?.spaces.focus(id, on: n)
+        }
+        model.onOpenHere = { [weak self] entry in
+            guard let self else { return }
+            self.close()
+            if let n = OpenHere.target(entry) { self.spaces.switchTo(n, announce: false) }
+            self.onOpenHere(entry)
         }
         model.onMove = { [weak self] id, n in
             guard let self else { return }

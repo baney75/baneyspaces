@@ -176,7 +176,8 @@ number and Settings all follow the theme, live. From a terminal:
 baneyspaces set appearance.theme omarchy      # or baneyspaces, minimal
 baneyspaces set appearance.palette gruvbox    # or auto
 baneyspaces set dock.enabled false            # or true
-baneyspaces get                               # all three
+baneyspaces set behavior.launcher.open go     # or here (the default): see spec/config.md
+baneyspaces get                               # every setting
 ```
 
 Agents may change these too, from this Mac or, with the remote token, from another one

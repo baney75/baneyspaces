@@ -16,11 +16,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// While running, checks every 2 s that macOS still trusts BaneySpaces.
     private var watchdog: Timer?
     private var signalSources: [DispatchSourceSignal] = []
-    private lazy var viewer = ViewerController(spaces: spaces)
+    private lazy var viewer: ViewerController = {
+        let v = ViewerController(spaces: spaces)
+        v.onOpenHere = { [weak self] entry in self?.launcher.show(entry: entry) }
+        return v
+    }()
     private lazy var dock: WorkspaceDock = {
         let d = WorkspaceDock(spaces: spaces)
         d.onShowOverview = { [weak self] in self?.viewer.open() }
-        d.onShowLauncher = { [weak self] in self?.launcher.show() }
+        d.onShowLauncher = { [weak self] entry in self?.launcher.show(entry: entry) }
         d.onSetEdge = { [weak self] e in self?.setDockEdge(e) }
         d.onTurnOff = { [weak self] in self?.setWorkspaceDock(false) }
         d.onSetAgentStatus = { [weak self] on in self?.setDockAgentStatus(on) }
@@ -129,6 +133,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         a.openWindowHere = { [weak self] pid in self?.started == true && self?.spaces.openWindowHere(pid) == true }
         a.canOpenWindow = { pid in Windows.newWindowItem(pid) != nil }
         a.current = { [weak self] in self?.spaces.model.current ?? 1 }
+        a.shownOn = { [weak self] screen in self?.spaces.workspace(onScreen: screen) ?? 1 }
+        a.openMode = { OpenHere.Mode(setting: UserDefaults.standard.string(forKey: Self.launcherOpenKey)) }
+        a.openApp = { [weak self] url, pid, action, target in self?.openApp(url, pid: pid, action, on: target) }
         a.switchTo = { [weak self] n in self?.run { $0.switchTo(n) } }
         a.appsOn = { [weak self] n in self?.spaces.apps(on: n) ?? [] }
         a.workspacesByApp = { [weak self] in
@@ -879,6 +886,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .theme: Appearance.shared.settings.theme.rawValue
         case .palette: Appearance.shared.settings.colorPalette
         case .dockEnabled: WorkspaceDock.enabled ? "true" : "false"
+        case .launcherOpen: OpenHere.Mode(setting: UserDefaults.standard.string(forKey: Self.launcherOpenKey)).rawValue
         }
     }
 
@@ -889,8 +897,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .theme: Appearance.shared.settings.theme = ThemeID(rawValue: value) ?? .macDefault
         case .palette: Appearance.shared.settings.colorPalette = value
         case .dockEnabled: setWorkspaceDock(value == "true")
+        case .launcherOpen: UserDefaults.standard.set(value, forKey: Self.launcherOpenKey)
         }
         return true
+    }
+
+    /// `behavior.launcher.open` (spec/config.md), kept like the other settings until the config file lands.
+    static let launcherOpenKey = "launcherOpen"
+
+    /// Opens an app the way `OpenHere.plan` decided, for workspace `target`. You end on `target` for
+    /// everything but `goThere`; the activation an open causes is never followed to the app's other
+    /// workspace (`Spaces.opening`).
+    private func openApp(_ url: URL, pid: pid_t?, _ action: OpenHere.Action, on target: Int) {
+        let running = pid.flatMap { NSRunningApplication(processIdentifier: $0) }
+        func launch(claim: Bool) {
+            let config = NSWorkspace.OpenConfiguration()
+            config.activates = true
+            NSWorkspace.shared.openApplication(at: url, configuration: config) { [weak self] app, error in
+                if let error { NSLog("BaneySpaces: couldn't open %@: %@", url.path, error.localizedDescription) }
+                guard claim, let app else { return }
+                // Claimed on the process this request returned: its first window, a slow one or one it
+                // restores, goes to the target. An app that was already running isn't a new process.
+                DispatchQueue.main.async { self?.spaces.openingHere(app.processIdentifier, on: target, newProcess: running == nil) }
+            }
+        }
+        guard started else {
+            // No Accessibility yet: no workspaces to place it on.
+            if let running { running.activate(options: []) } else { launch(claim: false) }
+            return
+        }
+        switch action {
+        case .launch:
+            // The old go-to behavior (`go`) starts it plainly; `here` claims its first window.
+            launch(claim: OpenHere.Mode(setting: UserDefaults.standard.string(forKey: Self.launcherOpenKey)) == .here)
+        case .reopen:
+            if let id = pid { spaces.openingHere(id, on: target, newProcess: false) }
+            launch(claim: false)
+        case .focusHere:
+            if let id = pid { spaces.focusApp(id, on: target) }
+        case .newWindow:
+            guard let id = pid else { return }
+            // The New Window item can vanish between the list and the press: its window moves over instead.
+            if !spaces.openWindowHere(id, on: target), !spaces.moveWindowHere(id, to: target) { spaces.focusApp(id) }
+        case .moveWindowHere:
+            guard let id = pid else { return }
+            if !spaces.moveWindowHere(id, to: target) { spaces.focusApp(id) }
+        case .goThere:
+            if let id = pid { spaces.focusApp(id) } else { launch(claim: false) }
+        }
+        Trace.log("open here: \(url.deletingPathExtension().lastPathComponent) \(action) on workspace \(target)")
     }
 
     /// Turns the Workspace Dock on or off (`dock.enabled`). Off, there is no dock window at all and
