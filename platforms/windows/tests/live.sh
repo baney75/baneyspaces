@@ -28,7 +28,7 @@ daemon_start
 cli doctor | grep -q '"healthy":true' && ok "doctor is healthy with the daemon up" || bad "doctor"
 
 say "== 1. open Notepad, Explorer, Calculator"
-vmi 'Start-Process notepad; Start-Sleep 3; Start-Process explorer.exe -ArgumentList "C:\Windows"; Start-Sleep 3; Start-Process calc; Start-Sleep 4' >/dev/null
+vmu 'Start-Process notepad; Start-Sleep 3; Start-Process explorer.exe -ArgumentList "C:\Windows"; Start-Sleep 3; Start-Process calc; Start-Sleep 4' >/dev/null
 S=$(seen_now); shot 01-opened >/dev/null
 has "$S" "Notepad" "Notepad shows"; has "$S" "File Explorer" "Explorer shows"; has "$S" "Calculator" "Calculator shows"
 RB=$(readback)
@@ -57,8 +57,10 @@ virsh -c qemu:///system send-key win11-bs KEY_LEFTMETA KEY_3 >/dev/null; sleep 2
 has "$S" "Calculator" "Win+3 shows workspace 3 (Calculator)"
 virsh -c qemu:///system send-key win11-bs KEY_LEFTMETA KEY_1 >/dev/null; sleep 2; S=$(seen_now); shot 04-win-1 >/dev/null
 has "$S" "File Explorer" "Win+1 is back on workspace 1"; lacks "$S" "Calculator" "Win+1 hid Calculator"
+H2=$(cli state | grep -o '"home":"2"' | wc -l); vmu 'Add-Type -Name F -Namespace W -MemberDefinition "[System.Runtime.InteropServices.DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(System.IntPtr h);"; $e=(Get-Process explorer | ? { $_.MainWindowHandle -ne 0 } | select -First 1); if ($e) { [W.F]::SetForegroundWindow($e.MainWindowHandle) | Out-Null }' >/dev/null; sleep 1
 virsh -c qemu:///system send-key win11-bs KEY_LEFTMETA KEY_LEFTSHIFT KEY_2 >/dev/null; sleep 2
-cli state | grep -q '"home":"2"' && ok "Win+Shift+2 sent the front window to workspace 2" || bad "Win+Shift+2 did not move a window"
+H2b=$(cli state | grep -o '"home":"2"' | wc -l)
+[[ "$H2b" -gt "$H2" ]] && ok "Win+Shift+2 sent the front window to workspace 2 ($H2 -> $H2b windows there)" || bad "Win+Shift+2 did not move a window ($H2 -> $H2b)"
 cli switch 1 >/dev/null; sleep 1
 
 say "== 5. taskkill /F the daemon while windows are hidden, start it again"
@@ -95,7 +97,7 @@ print(w(d['data']['result']['tree']) or '')" <<<"$SN")
 [[ -n "$REF" ]] && ok "agent snapshot found a text field ($REF)" || bad "agent snapshot: ${SN:0:300}"
 echo "$SN" | grep -q '"screen_changed":false' && ok "snapshot changed nothing you can see" || bad "snapshot changed the screen"
 S=$(seen_now); shot 08-agent-snapshot >/dev/null
-T=$(cli agent type "$REF" "hello from the agent")
+T=$(cli agent type "'$REF'" "hello from the agent")
 echo "$T" | grep -q '"verified":true' && ok "agent type landed and the engine read it back (verified)" || bad "agent type: ${T:0:300}"
 echo "$T" | grep -q '"screen_changed":false' && ok "typing changed nothing you can see" || bad "typing changed the screen"
 RB=$(readback); echo "$RB" >> "$LOG"; shot 09-agent-typed >/dev/null

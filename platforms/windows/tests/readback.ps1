@@ -6,6 +6,8 @@ public static class RB {
   delegate bool EnumProc(IntPtr h, IntPtr l);
   [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc p, IntPtr l);
   [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
@@ -36,6 +38,11 @@ public static class RB {
   }
 }
 '@
+# This script runs elevated, and Windows hides a medium-integrity keyboard hook's input while an elevated
+# window is in front (UIPI). Hand the foreground back to whatever had it so the next key press is seen.
+$fg = [RB]::GetForegroundWindow()
 [RB]::Run()
 [RB]::Rows
 "SEEN: " + (([RB]::Seen | Sort-Object) -join ' | ')
+
+if ($fg -ne [IntPtr]::Zero) { [void][RB]::SetForegroundWindow($fg) }

@@ -1171,6 +1171,9 @@ pub fn run(trace: bool, log: Option<PathBuf>) -> i32 {
         match rx.recv_timeout(Duration::from_millis(400)) {
             Ok(Msg::Quit) => break,
             Ok(Msg::Chord(args)) => {
+                if trace {
+                    say(&format!("[baneyspaces] chord {args:?}"));
+                }
                 // First, tell Windows the Win key was used so releasing it does not open Start.
                 hook::mask_start_menu();
                 let mut req = json!({ "op": "", "args": {} });
