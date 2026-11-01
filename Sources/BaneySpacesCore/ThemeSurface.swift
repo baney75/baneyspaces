@@ -19,11 +19,11 @@ public enum Surface: String, CaseIterable, Sendable {
     // The overview (the Mission Control replacement) and the workspace HUD.
     case overviewTile, overviewChip, hudPanel, hudCell
     // Settings.
-    case settingsPanel, settingsTile, settingsCallout, settingsCell
+    case settingsTile, settingsCallout, settingsCell
 
     public var kind: RadiusKind {
         switch self {
-        case .dockBar, .switcherPanel, .launcherPanel, .launcherMini, .hudPanel, .settingsPanel: .bar
+        case .dockBar, .switcherPanel, .launcherPanel, .launcherMini, .hudPanel: .bar
         case .dockList: .list
         case .dockTile, .dockButton, .switcherTile, .switcherWindow, .overviewTile, .settingsTile, .settingsCallout: .tile
         case .dockChip, .dockRow, .launcherRow, .launcherThumb, .launcherImage, .launcherKey, .overviewChip, .hudCell, .settingsCell: .row
@@ -53,7 +53,6 @@ public enum Surface: String, CaseIterable, Sendable {
         case .overviewChip: 9
         case .hudPanel: 22
         case .hudCell: 7
-        case .settingsPanel: 18
         case .settingsTile: 11
         case .settingsCallout: 10
         case .settingsCell: 8
