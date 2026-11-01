@@ -206,7 +206,7 @@ on_window_open = ""
 someone presses on a space and tries to open it it should open there"). With `here`, anything opened
 from a workspace lands on that workspace and you stay on it. The workspace is the one the open was
 asked from: the launcher's (the one its screen is showing when it opens), a dock "+" tile or tile
-menu, the overview's empty slot or a tile, or a dock app icon in the workspace you're on.
+menu, or the overview's empty slot or a tile.
 
 | The app is | `here` does |
 | --- | --- |
@@ -222,7 +222,7 @@ gone to. "Open an App Here…" in the dock's and the overview's menus does the s
 
 The app coming forward is never followed to its old workspace: it activates before its window
 exists. `go` is the old behavior: go to where the app already is. Holding ⌥ does that for one open
-(⌥↩ in the launcher, ⌥-click in the dock and the overview), whatever the setting says. The setting is
+(⌥↩, or ⌥-click on a row, in the launcher; the dock's and the overview's clicks never open an app, so ⌥ has nothing to change there), whatever the setting says. The setting is
 also `baneyspaces set behavior.launcher.open here|go`.
 
 Hooks run with your user's rights. An agent that sets a hook is shown in Settings › Hooks, and

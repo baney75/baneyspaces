@@ -5,8 +5,8 @@ import XCTest
 /// the launcher, picked Photos (already open on workspace 2), and BaneySpaces took him to workspace 2.
 /// "If someone presses on a space and tries to open it it should open there."
 final class OpenHereTests: XCTestCase {
-    private func situation(running: Bool = true, on: [Int] = [], canMakeWindow: Bool = false, target: Int = 3) -> OpenHere.Situation {
-        .init(target: target, running: running, windowsOn: on, canMakeWindow: canMakeWindow)
+    private func situation(running: Bool = true, on: [Int] = [], command: OpenHere.WindowCommand = .no, target: Int = 3) -> OpenHere.Situation {
+        .init(target: target, running: running, windowsOn: on, windowCommand: command)
     }
 
     // MARK: Target capture from each entry point
@@ -19,11 +19,6 @@ final class OpenHereTests: XCTestCase {
         XCTAssertEqual(OpenHere.target(.launcher(shownOn: 3)), 3)
     }
 
-    func testADockAppIconOpensHereOnlyInTheWorkspaceYouAreOn() {
-        XCTAssertEqual(OpenHere.target(.dockApp(tile: 3, current: 3)), 3)
-        XCTAssertNil(OpenHere.target(.dockApp(tile: 2, current: 3)), "another workspace's icon goes to that workspace's window")
-    }
-
     func testAWorkspaceThatDoesNotExistIsNoTarget() {
         XCTAssertNil(OpenHere.target(.launcher(shownOn: 0)))
         XCTAssertNil(OpenHere.target(.dockPlus(Workspaces.range.upperBound + 1)))
@@ -33,7 +28,7 @@ final class OpenHereTests: XCTestCase {
 
     /// Photos on workspace 2, launcher opened on the empty workspace 3: Photos moves to 3.
     func testPhotosOnWorkspaceTwoMovesToThreeAndDoesNotTakeYouToTwo() {
-        let action = OpenHere.plan(situation(on: [2], canMakeWindow: false), mode: .here, modifier: false)
+        let action = OpenHere.plan(situation(on: [2], command: .no), mode: .here, modifier: false)
         XCTAssertEqual(action, .moveWindowHere)
         XCTAssertTrue(OpenHere.staysOnTarget(action))
         XCTAssertFalse(OpenHere.followsActivation(action))
@@ -48,7 +43,7 @@ final class OpenHereTests: XCTestCase {
     }
 
     func testARunningAppThatCanMakeAWindowMakesOneAndTheActivationIsNotFollowed() {
-        let action = OpenHere.plan(situation(on: [1, 2], canMakeWindow: true), mode: .here, modifier: false)
+        let action = OpenHere.plan(situation(on: [1, 2], command: .yes), mode: .here, modifier: false)
         XCTAssertEqual(action, .newWindow)
         XCTAssertFalse(OpenHere.followsActivation(action), "the app comes forward ~54 ms before its window exists (ledger, 10-13)")
         XCTAssertTrue(OpenHere.staysOnTarget(action))
@@ -61,7 +56,7 @@ final class OpenHereTests: XCTestCase {
     }
 
     func testAnAppWithAWindowOnTheTargetBringsThatWindowForwardInsteadOfMakingAnother() {
-        XCTAssertEqual(OpenHere.plan(situation(on: [2, 3], canMakeWindow: true), mode: .here, modifier: false), .focusHere)
+        XCTAssertEqual(OpenHere.plan(situation(on: [2, 3], command: .yes), mode: .here, modifier: false), .focusHere)
         XCTAssertEqual(OpenHere.plan(situation(on: [3]), mode: .here, modifier: false), .focusHere)
     }
 
@@ -72,8 +67,8 @@ final class OpenHereTests: XCTestCase {
     // MARK: The modifier and the setting
 
     func testOptionGoesToWhereTheAppAlreadyIs() {
-        for canMakeWindow in [true, false] {
-            let action = OpenHere.plan(situation(on: [2], canMakeWindow: canMakeWindow), mode: .here, modifier: true)
+        for command in [OpenHere.WindowCommand.yes, .no, .unknown] {
+            let action = OpenHere.plan(situation(on: [2], command: command), mode: .here, modifier: true)
             XCTAssertEqual(action, .goThere)
             XCTAssertTrue(OpenHere.followsActivation(action))
             XCTAssertFalse(OpenHere.staysOnTarget(action))
@@ -106,6 +101,135 @@ final class OpenHereTests: XCTestCase {
         let all: [OpenHere.Action] = [.launch, .focusHere, .newWindow, .moveWindowHere, .reopen, .goThere]
         XCTAssertEqual(all.filter(OpenHere.followsActivation), [.goThere])
         XCTAssertEqual(all.filter { !OpenHere.staysOnTarget($0) }, [.goThere])
+    }
+
+    // MARK: Review round 1 (#125)
+
+    /// A no is never assumed: an app that was busy, showing a sheet or slow to answer is unknown, and an
+    /// unknown is tried as a new window. Only a known no moves the window.
+    func testAnUnknownIsTriedAsANewWindowAndOnlyAKnownNoMovesTheWindow() {
+        XCTAssertEqual(OpenHere.plan(situation(on: [2], command: .unknown), mode: .here, modifier: false), .newWindow)
+        XCTAssertEqual(OpenHere.plan(situation(on: [2], command: .yes), mode: .here, modifier: false), .newWindow)
+        XCTAssertEqual(OpenHere.plan(situation(on: [2], command: .no), mode: .here, modifier: false), .moveWindowHere)
+    }
+
+    /// The probe answered "no" once (busy) and "yes" next time: the second open makes a window. Nothing about
+    /// the first answer is kept, so the plan depends only on what is known now.
+    func testABusyNoThenAYesPlansANewWindowTheSecondTime() {
+        var evidence = NewWindowEvidence()
+        evidence.sawNo("org.ghostty", day: "2026-11-01")
+        XCTAssertFalse(evidence.knownSingleWindow("org.ghostty"), "one no, on one day, is not knowledge")
+        let first = OpenHere.plan(situation(on: [2], command: evidence.knownSingleWindow("org.ghostty") ? .no : .unknown), mode: .here, modifier: false)
+        XCTAssertEqual(first, .newWindow, "an app that said no once is still tried")
+        evidence.sawYes("org.ghostty")
+        let second = OpenHere.plan(situation(on: [2], command: .yes), mode: .here, modifier: false)
+        XCTAssertEqual(second, .newWindow)
+    }
+
+    func testSingleWindowIsKnownFromTheCuratedListOrThreeSeparateDays() {
+        var evidence = NewWindowEvidence()
+        for id in ["com.apple.Photos", "com.apple.Music", "com.apple.AppStore", "com.apple.systempreferences", "com.apple.calculator", "com.apple.MobileSMS"] {
+            XCTAssertTrue(evidence.knownSingleWindow(id), id)
+        }
+        XCTAssertFalse(evidence.knownSingleWindow("org.ghostty"))
+        evidence.sawNo("com.example.notes", day: "2026-11-01")
+        evidence.sawNo("com.example.notes", day: "2026-11-01")
+        evidence.sawNo("com.example.notes", day: "2026-11-02")
+        XCTAssertFalse(evidence.knownSingleWindow("com.example.notes"), "two days, however many reads")
+        evidence.sawNo("com.example.notes", day: "2026-11-04")
+        XCTAssertTrue(evidence.knownSingleWindow("com.example.notes"))
+        evidence.sawYes("com.example.notes")
+        XCTAssertFalse(evidence.knownSingleWindow("com.example.notes"), "a yes forgets every no")
+    }
+
+    func testTheEvidenceSurvivesBeingSaved() throws {
+        var evidence = NewWindowEvidence()
+        evidence.sawNo("com.example.a", day: "2026-11-01")
+        let back = try JSONDecoder().decode(NewWindowEvidence.self, from: JSONEncoder().encode(evidence))
+        XCTAssertEqual(back, evidence)
+    }
+
+    func testTheAgentWorkspaceAndAgentProcessesAreNotTheUsers() {
+        XCTAssertEqual(OpenHere.userWorkspaces([3, 9, 2], agentWorkspace: 9), [3, 2])
+        XCTAssertEqual(OpenHere.userWorkspaces([3, 9, 2], agentWorkspace: nil), [3, 9, 2])
+        XCTAssertEqual(OpenHere.userProcesses([100, 200, 300] as [Int32], agent: [200]), [100, 300])
+    }
+
+    func testOpenHereNeverReachesAnAgentsAppInTheSources() throws {
+        let spaces = try Repo.code("Sources/BaneySpaces/Spaces.swift")
+        let move = try XCTUnwrap(spaces.range(of: "func moveWindowHere("))
+        let moveBody = String(spaces[move.lowerBound...].prefix(1400))
+        XCTAssertTrue(moveBody.contains("AgentOwned.shared.pids.contains(pid)"), "an agent's process is never moved")
+        XCTAssertTrue(moveBody.contains("OpenHere.userWorkspaces(order, agentWorkspace: agentWorkspace)"), "the agent workspace is never a candidate")
+        let make = try XCTUnwrap(spaces.range(of: "func openWindowHere("))
+        XCTAssertTrue(String(spaces[make.lowerBound...].prefix(400)).contains("AgentOwned.shared.pids.contains(pid)"))
+        let launcher = try Repo.code("Sources/BaneySpaces/Launcher.swift")
+        XCTAssertTrue(launcher.contains("!agents.contains($0.processIdentifier)"), "the launcher's running copy is the user's")
+        let delegate = try Repo.code("Sources/BaneySpaces/AppDelegate.swift")
+        XCTAssertTrue(delegate.contains("where !agents.contains(e.pid)"), "windows on workspaces exclude an agent's processes")
+        XCTAssertTrue(delegate.contains("LSMultipleInstancesProhibited"), "an app that allows one copy is refused, not taken from the agent")
+        XCTAssertTrue(delegate.contains("createsNewApplicationInstance = newInstance"))
+        XCTAssertTrue(delegate.contains("in use by an agent; open it from the agent workspace or wait"))
+    }
+
+    /// The launcher caches no no, and reads no menu while the list is built.
+    func testNoNegativeIsCachedAndNoMenuIsReadOnTheKeystrokePath() throws {
+        let launcher = try Repo.code("Sources/BaneySpaces/Launcher.swift")
+        XCTAssertFalse(launcher.contains("[String: Bool]"), "no cache of yes and no")
+        XCTAssertTrue(launcher.contains("private var windowYes: [String: pid_t]"), "only a yes, for the process it was found in")
+        XCTAssertEqual(launcher.components(separatedBy: "canOpenWindow(").count - 1, 1, "the menu is read in exactly one place")
+        let probe = try XCTUnwrap(launcher.range(of: "private func probeWindowCommands()"))
+        let read = try XCTUnwrap(launcher.range(of: "canOpenWindow("))
+        let queue = try XCTUnwrap(launcher.range(of: "Self.probeQueue.async"))
+        XCTAssertGreaterThan(read.lowerBound, probe.lowerBound)
+        XCTAssertGreaterThan(read.lowerBound, queue.lowerBound, "and it is off the main thread")
+    }
+
+    // MARK: A launch registered before the request, activation first
+
+    func testAnActivationBeforeTheRequestReturnsIsHeldAndBound() {
+        let now = Date()
+        let launch = PendingLaunch(bundle: "com.apple.calculator", target: 3, before: [], until: now.addingTimeInterval(10))
+        XCTAssertEqual(launch.arrival(bundle: "com.apple.calculator", pid: 501, now: now, activation: true), .bind(pid: 501, newProcess: true),
+                       "the activation comes first, before openApplication's completion")
+        XCTAssertEqual(launch.arrival(bundle: "com.apple.Photos", pid: 9, now: now, activation: true), .unrelated)
+        XCTAssertEqual(launch.arrival(bundle: "com.apple.calculator", pid: 501, now: now.addingTimeInterval(11), activation: true), .expired)
+    }
+
+    func testAProcessThatWasAlreadyRunningIsNeverANewProcess() {
+        let now = Date()
+        let launch = PendingLaunch(bundle: "org.ghostty", target: 3, before: [77], until: now.addingTimeInterval(10))
+        XCTAssertEqual(launch.arrival(bundle: "org.ghostty", pid: 77, now: now, activation: true), .unrelated, "your own activation")
+        XCTAssertEqual(launch.arrival(bundle: "org.ghostty", pid: 77, now: now, activation: false), .bind(pid: 77, newProcess: false),
+                       "the request answered by the running copy: claimed, but its windows stay yours")
+    }
+
+    func testTheLaunchIsRegisteredBeforeTheRequestIsMade() throws {
+        let delegate = try Repo.code("Sources/BaneySpaces/AppDelegate.swift")
+        let expect = try XCTUnwrap(delegate.range(of: "spaces.expectLaunch(bundle: bundle, on: target)"))
+        let request = try XCTUnwrap(delegate.range(of: "NSWorkspace.shared.openApplication(at: url, configuration: config)"))
+        XCTAssertLessThan(expect.lowerBound, request.lowerBound)
+        XCTAssertTrue(delegate.contains("spaces.launchFailed()"), "a failed request clears it")
+    }
+
+    // MARK: The probe's gate
+
+    func testTheProbeGateIsAnExpiryAndIsClearedAtLaunch() throws {
+        let delegate = try Repo.code("Sources/BaneySpaces/AppDelegate.swift")
+        XCTAssertTrue(delegate.contains("until < Date().timeIntervalSince1970 + 61"), "an expiry far in the future is refused")
+        XCTAssertTrue(delegate.contains("clearStaleOpenHereGate()"))
+        XCTAssertTrue(delegate.contains("d.removeObject(forKey: \"openHereURLCommands\")"))
+        let probe = try Repo.text("scripts/open-here-probe.swift")
+        for sig in ["SIGINT", "SIGTERM", "SIGHUP"] { XCTAssertTrue(probe.contains(sig), sig) }
+        XCTAssertTrue(probe.contains("openGate()"))
+    }
+
+    // MARK: Showing the moved window without a switch
+
+    func testAWindowMovedToTheWorkspaceYouAreOnComesAloneWithoutASwitch() throws {
+        let spaces = try Repo.code("Sources/BaneySpaces/Spaces.swift")
+        XCTAssertTrue(spaces.contains("if n == model.current, showAlone(w) { return true }"))
+        XCTAssertTrue(spaces.contains("private func showAlone("))
     }
 
     // MARK: Source checks (the app target can't be imported)

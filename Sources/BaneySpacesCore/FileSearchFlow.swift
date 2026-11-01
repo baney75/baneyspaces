@@ -137,7 +137,10 @@ public final class FileSearchFlow {
             let cancelQuery = self.query(q) { [weak self] hits in
                 guard let self, self.current(mine), let hits else { return }
                 // What Spotlight found and what was already known, ranked as one list.
-                emit(.spotlight, FileSearch.rank(q, hits + near, home: self.home, now: self.now(), limit: limit))
+                // The same file from both is one row, the first (the warm copy is the one already on screen).
+                var seen = Set<String>()
+                let merged = (near + hits).filter { seen.insert($0.path).inserted }
+                emit(.spotlight, FileSearch.rank(q, merged, home: self.home, now: self.now(), limit: limit))
             }
             self.lock.lock()
             if self.generation == mine { self.stopQuery = cancelQuery; self.lock.unlock() } else { self.lock.unlock(); cancelQuery() }
