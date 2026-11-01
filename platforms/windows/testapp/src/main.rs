@@ -1,3 +1,4 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
 //! `bs-testapp`: one window with one text box, for the BaneySpaces live tests. It exists because the
 //! apps Windows ships either forward a second launch into a running copy (Notepad) or restore
 //! the user's unsaved text (Notepad), so none is safe to hand an agent. This one is its own
