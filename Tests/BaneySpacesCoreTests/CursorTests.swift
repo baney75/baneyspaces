@@ -711,6 +711,8 @@ private struct FakeHands {
     var act: TimeInterval = 0.012
     var readback: TimeInterval = 0.008
     static let lane = DispatchQueue(label: "fake-bounds-lane", attributes: .concurrent)
+    /// Actions that asked for the target's bounds, counted so a test can check none did without timing it.
+    static var framesWanted = 0
 
     func spin(_ t: TimeInterval) { let end = ProcessInfo.processInfo.systemUptime + t; while ProcessInfo.processInfo.systemUptime < end {} }
 
@@ -718,6 +720,7 @@ private struct FakeHands {
         spin(resolve)
         var event = e
         let wants = HandsEvents.wantsFrame(scope: e.scope, workspace: e.workspace)
+        if wants { Self.framesWanted += 1 }
         let id = wants ? HandsEvents.newActionID() : 0
         event.frame = nil; event.point = nil; event.id = id; event.frameComing = wants
         HandsEvents.willAct(event)
@@ -778,8 +781,12 @@ final class CursorOverheadTests: XCTestCase {
             for _ in 0..<100 { hands.run(e) }
             return (ProcessInfo.processInfo.systemUptime - t0) * 10
         }
+        FakeHands.framesWanted = 0
         let without = each(listening: false)
+        XCTAssertEqual(FakeHands.framesWanted, 0, "with no listener, no action asks for bounds")
         let with = each(listening: true)
+        // Not timed, so a slow runner can't hide it: a hidden cursor makes no action read bounds.
+        XCTAssertEqual(FakeHands.framesWanted, 0, "with the cursor hidden, no action asks for bounds")
         XCTAssertLessThan(with - without, hands.boundsRead * 1000 / 2,
                           "no bounds read: \(with) ms with the cursor hidden against \(without) ms without it")
     }
