@@ -163,17 +163,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         a.showSetup = { [weak self] in self?.showSetup() }
         return LauncherController(actions: a)
     }()
-    private lazy var trackpadSwipe: TrackpadSwipe = {
-        let s = TrackpadSwipe()
-        s.onSwipe = { [weak self] direction in
-            guard let self, self.started else { return }
-            switch direction {
-            case .up: if !self.viewer.isOpen { self.viewer.open() }
-            case .down: if self.viewer.isOpen { self.viewer.toggle() }
-            }
-        }
-        return s
-    }()
     private var missionControlTicks = 0
     private lazy var hotCorners: HotCornerWatcher = {
         let w = HotCornerWatcher()
@@ -220,7 +209,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         c.model.onFocusFinished = { [weak self] id in self?.session.focusFinished(id) }
         c.model.viewerKeysActive = { [weak self] in self?.missionControlKeys.isActive ?? false }
-        c.model.trackpadProblem = { [weak self] in self?.trackpadSwipe.problem }
         c.model.missionControlProblem = { SystemMissionControl.problem }
         c.model.onViewerKeysChange = { [weak self] on in
             MissionControlKeys.enabled = on
@@ -298,8 +286,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         missionControlKeys.start()
     }
 
-    /// macOS's Mission Control is off while BaneySpaces' overview answers its keys, its trackpad
-    /// swipe and its hot corners; switched off, without Accessibility, or while macOS won't let the
+    /// macOS's Mission Control is off while BaneySpaces' overview answers its keys, and its hot
+    /// corners; switched off, without Accessibility, or while macOS won't let the
     /// key watcher run (nothing would answer the key), all of it goes back.
     private func syncMissionControl() {
         guard missionControlWanted else { return giveMissionControlBack() }
@@ -310,7 +298,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return }
             self.armingMissionControl = false
             guard taken else { return self.giveMissionControlBack() }
-            self.trackpadSwipe.start()
             self.hotCorners.set(corners: SystemMissionControl.answeredCorners())
         }
     }
@@ -321,10 +308,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var missionControlWanted: Bool { started && MissionControlKeys.enabled && missionControlKeys.isActive }
 
     /// Not wanted, or not safe: without the launch agent that puts it back, Mission Control stays
-    /// on (and the swipe and corners stay quiet, since it would open beside the overview).
+    /// on (and the corners stay quiet, since it would open beside the overview).
     private func giveMissionControlBack() {
         let why = missionControlWanted ? SystemMissionControl.problem : nil
-        trackpadSwipe.stop()
         hotCorners.stop()
         // The agent goes with the switch, and only then; Accessibility lost or a quit leaves it loaded.
         SystemMissionControl.restore(keeping: why, removeAgent: !MissionControlKeys.enabled)
@@ -519,8 +505,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         spaces.flushWrites()
         // A clean quit, not a crash, for the next launch's crash-loop check.
         CrashLoop.launchEnded()
-        // Last: a fault in the private framework while letting go must not skip anything above.
-        trackpadSwipe.stop()
         hotCorners.stop()
     }
 
@@ -590,12 +574,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 if self.missionControlKeys.isActive { self.syncMissionControl() }
             }
             // Every ten seconds: proof of life for the launch agent, and System Settings changes
-            // to hot corners and trackpad gestures. Nothing here lists devices.
+            // to hot corners.
             self.missionControlTicks += 1
             if self.missionControlTicks % 5 == 0 {
                 if SystemMissionControl.isTakenByUs {
                     SystemMissionControl.beat()
-                    self.trackpadSwipe.refreshSettings()
                     self.hotCorners.set(corners: SystemMissionControl.answeredCorners())
                     self.checkMissionControlHeld()
                 } else if self.started, MissionControlKeys.enabled, self.missionControlKeys.isActive,
@@ -619,9 +602,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         missionControlKeys.stop()
         topDrag.stop()
         cancelSettling()
-        // Not watching any more, so macOS answers the drag, the swipe and the corners again until BaneySpaces is back.
+        // Not watching any more, so macOS answers the drag and the corners again until BaneySpaces is back.
         SystemTopDrag.restore()
-        trackpadSwipe.stop()
         hotCorners.stop()
         SystemMissionControl.restore()
         viewer.close()

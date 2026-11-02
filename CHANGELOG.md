@@ -1,5 +1,6 @@
 ## Unreleased
 
+- **The three-finger trackpad swipe is gone.** It opened the overview on accidental three- or four-finger touches, so BaneySpaces no longer reads the trackpad at all (no private MultitouchSupport framework). The Mission Control key, ⌃↑ and hot corners still open the overview, and macOS's own swipe to Mission Control stays off while BaneySpaces holds it. Pinned by `MissionControlGuardTests.testNoTrackpadSwipeCodeIsLeft`.
 - **The name "Deck" is gone from the product and docs.** The engine behind the launcher's terminal and agent rows, the hooks and the command socket is now the session engine. The socket is `baneyspaces.sock` (was `deck.sock`; the app still listens on the old name, and `baneyspaces` tries both, so a running client keeps working), its state file is `session.json`, and the optional extra-apps file is `~/.config/baneyspaces/session.json` (was `deck.json`; the first launch copies it over, and the old file stays). `baneyspaces doctor` prints `app:` instead of `deck:`. Past release notes keep the old name.
 - Soak gate: `scripts/soak-check.sh` before promoting a build to stable / GitHub Latest (does not unpublish 0.3.0).
 

@@ -149,8 +149,6 @@ final class SetupModel: ObservableObject {
     @Published var screenshotsFreed = SystemShortcuts.hasFreed
     /// The Mission Control key is switched on but macOS refused the key watcher.
     @Published var viewerKeysFailed = false
-    /// Why the trackpad swipe up doesn't open the overview, if it doesn't.
-    @Published var trackpadFailed: String?
     /// Why macOS's Mission Control couldn't be switched off (the way back couldn't be set up).
     @Published var missionControlFailed: String?
     /// The person asked for access a while ago and macOS still says no: most likely an old
@@ -165,8 +163,6 @@ final class SetupModel: ObservableObject {
     var onViewerKeysChange: ((Bool) -> Void)?
     /// Asked by the window controller; true while the Mission Control key watcher is running.
     var viewerKeysActive: () -> Bool = { true }
-    /// Asked by the window controller; why the trackpad swipe isn't working, or nil.
-    var trackpadProblem: () -> String? = { nil }
     var missionControlProblem: () -> String? = { nil }
     /// Called when every required step turns green while the window is open.
     var onReady: (() -> Void)?
@@ -218,8 +214,6 @@ final class SetupModel: ObservableObject {
         openAtLogin = status == .enabled
         loginNeedsApproval = status == .requiresApproval
         viewerKeysFailed = trusted && viewerKeys && !viewerKeysActive()
-        let swipe = trusted && viewerKeys ? trackpadProblem() : nil
-        if swipe != trackpadFailed { trackpadFailed = swipe }
         let mc = trusted && viewerKeys ? missionControlProblem() : nil
         if mc != missionControlFailed { missionControlFailed = mc }
         hooks = hooksInstalled()
@@ -604,15 +598,12 @@ struct SetupView: View {
                 .padding(10)
                 .background(Chrome.shape(.settingsCell, continuous: false).fill(Color.orange.opacity(0.12)))
             } else {
-                Text("The Mission Control key, ⌃↑, a swipe up with three or four fingers (as your trackpad settings have it) and any hot corner set to Mission Control open the overview; a swipe down closes it. macOS's Mission Control is switched off in the Dock while BaneySpaces runs, and comes back, with your hot corners as they were, when you turn this off or quit. A Magic Mouse's two-finger double tap opens nothing while this is on.")
+                Text("The Mission Control key, ⌃↑ and any hot corner set to Mission Control open the overview. macOS's Mission Control is switched off in the Dock while BaneySpaces runs, and comes back, with your hot corners as they were, when you turn this off or quit. A Magic Mouse's two-finger double tap opens nothing while this is on.")
                     .font(Chrome.font(12)).foregroundStyle(.secondary)
             }
             if let problem = model.missionControlFailed {
                 Text("macOS's Mission Control is still on. \(problem) BaneySpaces tries again every few minutes.")
                     .font(Chrome.font(12)).foregroundStyle(.orange)
-            }
-            if let problem = model.trackpadFailed {
-                Text(problem).font(Chrome.font(12)).foregroundStyle(.orange)
             }
             Toggle("Dragging a window to the top of the screen opens the overview", isOn: Binding(get: { model.topDrag }, set: { model.setTopDrag($0) }))
             Text("Let go over a workspace to send the window there; let go at the top and it fills the screen. Mission Control for that drag stays off while this is on, and comes back when you turn it off.")
