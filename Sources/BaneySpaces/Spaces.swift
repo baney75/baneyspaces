@@ -1072,15 +1072,21 @@ final class Spaces {
         })
         // Windows on another macOS desktop (full screen) from the window server, which answers when
         // a busy app doesn't; a window the app closed but kept is on no desktop and doesn't count.
-        var serverWindows: [pid_t: [WindowID]] = [:]
-        for w in CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? [] {
-            guard (w[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
-                  let id = (w[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
-                  let owner = (w[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
-                  let b = (w[kCGWindowBounds as String] as? NSDictionary).flatMap({ CGRect(dictionaryRepresentation: $0) }),
-                  b.width > 40, b.height > 40 else { continue }
-            serverWindows[owner, default: []].append(id)
-        }
+        // Read only once some app needs it: every window of every desktop is a big list.
+        lazy var serverWindows: [pid_t: [WindowID]] = {
+            var out: [pid_t: [WindowID]] = [:]
+            for w in CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? [] {
+                // The same filter as `showing`: invisible helper windows show nothing on any desktop.
+                guard (w[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+                      (w[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 0 > 0,
+                      let id = (w[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
+                      let owner = (w[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
+                      let b = (w[kCGWindowBounds as String] as? NSDictionary).flatMap({ CGRect(dictionaryRepresentation: $0) }),
+                      b.width > 40, b.height > 40 else { continue }
+                out[owner, default: []].append(id)
+            }
+            return out
+        }()
         let running = NSWorkspace.shared.runningApplications.map { app in
             let pid = app.processIdentifier
             // Only a candidate is asked about windows on other macOS desktops (full screen): an
@@ -1127,8 +1133,9 @@ final class Spaces {
             guard let self else { return }
             // Still hidden at the deadline: it can't be asked yet, so it is only reopened.
             let settled = NSRunningApplication(processIdentifier: pid)?.isHidden != true
-            // Released here, not after a queued finish, so a dropped queue can't lock the app out.
-            self.picking.remove(pid)
+            // Held a moment past the wait, so a busy app's window has time to appear before a second
+            // pick could press New Window again; released on a timer, so a dropped queue can't lock it out.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.picking.remove(pid) }
             let finish = { [weak self] in
                 guard let self, self.active else { return }
                 self.showWindowless(pid, settled: settled)
