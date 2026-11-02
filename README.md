@@ -72,14 +72,12 @@ Prefer to keep ⌘1 for your browser's first tab? Pick ⌃, ⌥ or ⌃⌥ in set
 
 ## See everything at once
 
-Press the Mission Control key (F3 on Apple keyboards) or ⌃↑, swipe up with three or four fingers
-on the trackpad (whichever your trackpad settings give Mission Control), or push the pointer into a
-hot corner you had set to Mission Control, and BaneySpaces shows all nine workspaces in the same 3×3
-grid as the number keys, with every window's app and title. A swipe down, Esc or the same key again
-puts you back.
+Press the Mission Control key (F3 on Apple keyboards) or ⌃↑, or push the pointer into a hot corner
+you had set to Mission Control, and BaneySpaces shows all nine workspaces in the same 3×3 grid as
+the number keys, with every window's app and title. Esc or the same key again puts you back.
 
 **macOS's Mission Control is replaced, not joined.** BaneySpaces switches it off in the Dock, so the
-"Desktop" view never opens from the trackpad, a hot corner or the keys, and it remaps any hot corner
+"Desktop" view never opens from a hot corner or the keys, and it remaps any hot corner
 that was set to Mission Control to nothing and answers that corner itself. It saves what was there
 first. To get Mission Control back, turn off **Settings › Keys › Use BaneySpaces' overview instead of
 Mission Control**: every setting goes back exactly as it was. Quitting BaneySpaces and uninstalling
@@ -100,11 +98,7 @@ on Mission Control back in System Settings). Doing that while BaneySpaces runs a
 notices within 20 seconds and switches its own overview off.
 
 App Exposé (⌃↓) goes with Mission Control, and so does a Magic Mouse's two-finger double tap,
-which opens nothing while this is on. The trackpad swipe uses macOS's private trackpad framework,
-loaded when BaneySpaces starts and checked against the touches it gets; if macOS won't load it or
-reports touches in a layout BaneySpaces doesn't read, Settings says so and the other ways in still
-work. Only trackpads are watched, with each trackpad's own finger settings, and Show Desktop and
-pinch gestures aren't taken for a swipe.
+which opens nothing while this is on.
 
 - **Click a workspace,** or press its number, to go there. The arrow keys move the highlight
   and Return goes to it.
@@ -350,7 +344,7 @@ Everything else is optional and already set sensibly:
 - **Your keys.** ⌘ by default, or ⌃, ⌥ or ⌃⌥ with what each one gives up. macOS uses ⌘⇧3, ⌘⇧4
   and ⌘⇧5 for screenshots and claims them first; **Free Them** turns those off so they can move
   windows (⌃⌘⇧3 and ⌃⌘⇧4 still capture to the clipboard), and **Turn Them Back On** undoes it.
-- **See every workspace at once.** The Mission Control key, ⌃↑, a three- or four-finger swipe up and
+- **See every workspace at once.** The Mission Control key, ⌃↑ and
   any hot corner you had set to Mission Control open the overview in place of macOS's. Switch **Use
   BaneySpaces' overview instead of Mission Control** off to get Mission Control back as it was.
 - **Start with your Mac.** On unless you turn it off. If macOS wants you to approve it, setup
