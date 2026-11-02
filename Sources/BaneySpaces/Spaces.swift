@@ -1070,13 +1070,24 @@ final class Spaces {
                   b.width > 40, b.height > 40 else { return nil }
             return (w[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value
         })
+        // Windows on another macOS desktop (full screen) from the window server, which answers when
+        // a busy app doesn't; a window the app closed but kept is on no desktop and doesn't count.
+        var serverWindows: [pid_t: [WindowID]] = [:]
+        for w in CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? [] {
+            guard (w[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+                  let id = (w[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
+                  let owner = (w[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
+                  let b = (w[kCGWindowBounds as String] as? NSDictionary).flatMap({ CGRect(dictionaryRepresentation: $0) }),
+                  b.width > 40, b.height > 40 else { continue }
+            serverWindows[owner, default: []].append(id)
+        }
         let running = NSWorkspace.shared.runningApplications.map { app in
             let pid = app.processIdentifier
             // Only a candidate is asked about windows on other macOS desktops (full screen): an
             // Accessibility call each, so not for apps already settled.
             let candidate = app.activationPolicy == .regular && !trackedPids.contains(pid)
             let elsewhere = candidate && !showing.contains(pid)
-                && (Windows.listedIDs(of: pid)?.contains { model.workspace(of: $0) == nil && !Windows.onNoOtherDesktop($0) } ?? false)
+                && (serverWindows[pid]?.contains { model.workspace(of: $0) == nil && !Windows.onNoOtherDesktop($0) } ?? false)
             return BackgroundApps.Running(pid: pid, name: app.localizedName ?? app.bundleIdentifier ?? "App",
                                           bundleID: app.bundleIdentifier, isRegular: app.activationPolicy == .regular,
                                           isTerminated: app.isTerminated, isHidden: app.isHidden, launchedAt: app.launchDate,
@@ -1110,30 +1121,45 @@ final class Spaces {
         }
         // The unhide lands when the app gets to it. Asked before then, a busy app can answer that
         // it has no window while one is coming back, and a New Window would make it a twin.
+        // A second pick before the first lands would open a second window.
+        guard picking.insert(pid).inserted else { return }
         waitUntil(timeout: 1, interval: 0.02, { NSRunningApplication(processIdentifier: pid)?.isHidden != true }) { [weak self] in
-            guard let self, self.active else { return }
-            if self.switching { return self.enqueue { [weak self] in self?.showWindowless(pid) } }
-            self.showWindowless(pid)
+            guard let self else { return }
+            // Still hidden at the deadline: it can't be asked yet, so it is only reopened.
+            let settled = NSRunningApplication(processIdentifier: pid)?.isHidden != true
+            // Released here, not after a queued finish, so a dropped queue can't lock the app out.
+            self.picking.remove(pid)
+            let finish = { [weak self] in
+                guard let self, self.active else { return }
+                self.showWindowless(pid, settled: settled)
+            }
+            if self.switching { return self.enqueue(finish) }
+            finish()
         }
     }
+
+    /// Apps with a Background pick waiting on their unhide.
+    private var picking = Set<pid_t>()
 
     /// The end of `showBackgroundApp` for an app with no window on any workspace. A window it has that
     /// no workspace holds (hidden before it was scanned, or launched hidden) joins this one. Only an
     /// app that clearly says it has no window gets a new one from its New Window command; when it
     /// can't say (busy, not answering) or its window isn't scanned yet, it is reopened like a Dock
     /// click, which shows the window it has rather than making another.
-    private func showWindowless(_ pid: pid_t) {
+    private func showWindowless(_ pid: pid_t, settled: Bool) {
         let listed = Windows.listedIDs(of: pid)
         let standard = Windows.standardIDs(of: pid)
         if !standard.isEmpty {
             refresh(full: true)
             let n = model.current
-            let adopt = standard.filter { windows[$0] != nil && model.workspace(of: $0) == nil }
+            // One on another macOS desktop (full screen) stays there; only this desktop's join.
+            let here = standard.filter { Windows.onNoOtherDesktop($0) }
+            let adopt = here.filter { windows[$0] != nil && model.workspace(of: $0) == nil }
             for id in adopt { model.assign(id, to: n) }
-            if let pick = adopt.max() ?? standard.filter({ model.workspace(of: $0) == n }).max() {
+            if let pick = adopt.max() ?? here.filter({ model.workspace(of: $0) == n }).max() {
                 return focus(pick, on: n, announce: false)
             }
-        } else if listed?.isEmpty == true, openWindowHere(pid) {
+        } else if settled, listed?.isEmpty == true, openWindowHere(pid) {
             return
         }
         guard let url = NSRunningApplication(processIdentifier: pid)?.bundleURL else { return focusApp(pid, announce: false) }
