@@ -166,6 +166,11 @@ final class WorkspaceDock {
         model.onSendHere = { [weak self] n in self?.onOwnDisplay { $0.moveFocused(to: n) } }
         model.onFocusApp = { [weak self] pid, n in self?.onOwnDisplay { $0.focusApp(pid, on: n, cycle: true) } }
         model.onFocusWindow = { [weak self] id, n in self?.onOwnDisplay { $0.focus(id, on: n) } }
+        model.onShowBackground = { [weak self] app in
+            Trace.log("dock background: \(app.name) picked (\(app.state.label))")
+            self?.model.backgroundOpen = false
+            self?.onOwnDisplay { $0.showBackgroundApp(app.pid) }
+        }
         model.onMove = { [weak self] ids, n in self?.spaces.move(ids, to: n) }
         model.liveWindows = { [weak self] n, refresh in
             guard let spaces = self?.spaces else { return [] }
@@ -192,6 +197,11 @@ final class WorkspaceDock {
         model.openable = { [weak self] pid in self?.openable(by: pid) ?? [] }
         // The workspace on the dock's own display, which a tile press changes.
         model.liveCurrent = { [weak self] in self.map { $0.spaces.workspace(onScreen: $0.shownOn) } ?? 0 }
+        // The Background tile follows apps coming and going and hiding; the model's own changes reload through `Spaces.onChange`.
+        for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification,
+                     NSWorkspace.didHideApplicationNotification, NSWorkspace.didUnhideApplicationNotification] {
+            NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.reload() }
+        }
         // A tile's right-click menu keeps the dock up while it's open.
         NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { [weak self] _ in
             self?.model.menuOpen = true
@@ -791,6 +801,7 @@ final class WorkspaceDock {
         switch side {
         case .more(let tile, _): "more:\(tile.id)"
         case .strip(let app, let n): "\(n):\(app.id)"
+        case .background: DockView.backgroundKey
         }
     }
 
@@ -928,10 +939,11 @@ final class WorkspaceDock {
     private func closeSideNow(_ reason: String) {
         guard model.liveSide != nil else { return }
         sideHeldForCheck = false
-        let kind = model.moreApps != nil ? "more" : "strip"
+        let kind = model.moreApps != nil ? "more" : model.stripApp != nil ? "strip" : "background"
         Trace.log("dock list closed (\(kind)): \(reason)")
         model.strip = nil
         model.more = nil
+        model.backgroundOpen = false
         model.onStrip = false
     }
 
@@ -1097,6 +1109,8 @@ final class DockModel: ObservableObject {
         case newWorkspace, launcher, overview
         /// The "+N" in a tile with more apps than fit.
         case more(Int)
+        /// The "Background" tile after the "+".
+        case background
     }
 
     @Published var tiles: [Tile] = []
@@ -1125,8 +1139,8 @@ final class DockModel: ObservableObject {
     @Published var strip: (workspace: Int, app: String)? {
         didSet {
             // Removed from under the pointer, it never hears the pointer leave.
-            if strip == nil, more == nil { onStrip = false }
-            if strip != nil { more = nil }
+            if !anySideOpen { onStrip = false }
+            if strip != nil { more = nil; backgroundOpen = false }
             rememberSide()
             if (strip == nil) != (oldValue == nil) || strip?.app != oldValue?.app { onLayoutChange() }
         }
@@ -1134,22 +1148,40 @@ final class DockModel: ObservableObject {
     /// The apps a tile had no room for, listed over it: opened by resting on its "+N".
     @Published var more: Int? {
         didSet {
-            if strip == nil, more == nil { onStrip = false }
+            if !anySideOpen { onStrip = false }
             if more != nil, strip != nil { strip = nil }
+            if more != nil { backgroundOpen = false }
             rememberSide()
             if more != oldValue { onLayoutChange() }
         }
     }
+    /// The running apps with no window anywhere (`BackgroundApps`), for the "Background" tile.
+    @Published private(set) var backgroundApps: [BackgroundApps.Entry] = []
+    /// The Background list: opened by resting on, or clicking, the "Background" tile.
+    @Published var backgroundOpen = false {
+        didSet {
+            guard backgroundOpen != oldValue else { return }
+            if backgroundOpen { strip = nil; more = nil }
+            if !anySideOpen { onStrip = false }
+            rememberSide()
+            onLayoutChange()
+        }
+    }
+    private var anySideOpen: Bool { strip != nil || more != nil || backgroundOpen }
+    /// Picking a row: unhide the app and bring it to the workspace you're on.
+    var onShowBackground: (BackgroundApps.Entry) -> Void = { _ in }
 
     /// What the side panel shows: a tile's "+N" list, or an app's window strip.
     enum Side {
         case more(tile: Tile, apps: [App])
         case strip(app: App, workspace: Int)
+        case background([BackgroundApps.Entry])
     }
     /// The list or strip that's open now, if one is.
     var liveSide: Side? {
         if let m = moreApps { return .more(tile: m.tile, apps: m.apps) }
         if let a = stripApp, let n = strip?.workspace { return .strip(app: a, workspace: n) }
+        if backgroundOpen, !backgroundApps.isEmpty { return .background(backgroundApps) }
         return nil
     }
     /// The last one that was open, so the side panel has something to draw while it fades out.
@@ -1280,6 +1312,15 @@ final class DockModel: ObservableObject {
             tile.unpinned = agents.filter { !windows.contains($0.window) }
             return tile
         }
+        let background = spaces.backgroundApps()
+        if background != backgroundApps {
+            if background.isEmpty != backgroundApps.isEmpty {
+                Trace.log(background.isEmpty ? "dock background: tile gone"
+                          : "dock background: tile appears, \(background.count) app\(background.count == 1 ? "" : "s") (\(background.map(\.name).joined(separator: ", ")))")
+            }
+            backgroundApps = background
+        }
+        if backgroundOpen, backgroundApps.isEmpty { backgroundOpen = false }
         // A strip for an app that's gone or down to one window closes.
         if let s = strip, (stripApp?.list.count ?? 0) < 2 || !tiles.contains(where: { $0.id == s.workspace }) { strip = nil }
         if more != nil, moreApps == nil { more = nil }
@@ -1308,6 +1349,7 @@ final class DockModel: ObservableObject {
         if drag != nil || fileDrag != nil { return }
         switch hover {
         case .app(let n, let id):
+            if backgroundOpen, !onStrip { backgroundOpen = false }
             if let s = strip, s.workspace == n, s.app == id { return }
             // Crossing another icon in the same tile on the way up to the strip keeps it; resting
             // there opens that app's strip instead. Another tile's app closes it.
@@ -1321,8 +1363,18 @@ final class DockModel: ObservableObject {
             dwell = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: work)
         case .newWorkspace, .launcher, .overview:
+            if !onStrip { strip = nil; more = nil; backgroundOpen = false }
+        case .background:
+            if backgroundOpen { return }
             if !onStrip { strip = nil; more = nil }
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, self.shown, self.hover == .background else { return }
+                self.backgroundOpen = true
+            }
+            dwell = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
         case .tile(let n):
+            if backgroundOpen, !onStrip { backgroundOpen = false }
             if let s = strip, s.workspace != n, !onStrip { strip = nil }
             if let m = more, m != n, !onStrip { more = nil }
         case .more(let n):
@@ -1426,6 +1478,7 @@ final class DockModel: ObservableObject {
         onStrip = false
         strip = nil
         more = nil
+        backgroundOpen = false
         // lastSide stays: the dock fades out with the list on it (`WorkspaceDock.hide`), and the next
         // `show` forgets it.
     }
@@ -1533,6 +1586,8 @@ struct DockView: View {
     static let originKey = "origin"
     /// The key for the bar's own frame, in the dock's space. No colon, for the same reason.
     static let barKey = "bar"
+    /// The "Background" tile's frame key, which the list opened from it is anchored to.
+    static let backgroundKey = "btn:background"
     @ObservedObject var model: DockModel
     /// The dock itself, or the panel of its own that the window strip and the "+N" list live in.
     enum Mode { case bar, side }
@@ -1566,6 +1621,7 @@ struct DockView: View {
         switch model.sideContent {
         case .more(let tile, let apps): moreList(apps, in: tile)
         case .strip(let app, let n): windowStrip(app, workspace: n)
+        case .background(let apps): backgroundList(apps)
         case nil: Color.clear.frame(width: 1, height: 1)
         }
     }
@@ -1638,6 +1694,7 @@ struct DockView: View {
         return layout {
             ForEach(model.tiles) { tile in tileView(tile) }
             if let n = model.firstEmpty, !model.tiles.contains(where: { $0.id == n }) { newWorkspaceButton(n) }
+            if !model.backgroundApps.isEmpty { backgroundButton }
             Chrome.pill().fill(Chrome.edge(0.14))
                 .frame(width: vertical ? 44 * k : 1, height: vertical ? 1 : 44 * k)
                 .padding(vertical ? .vertical : .horizontal, 4).padding(.bottom, vertical ? 0 : 14)
@@ -1687,6 +1744,7 @@ struct DockView: View {
         case .launcher: return "btn:launcher"
         case .overview: return "btn:overview"
         case .more(let n): return "more:\(n)"
+        case .background: return DockView.backgroundKey
         case nil: return ""
         }
     }
@@ -1770,6 +1828,8 @@ struct DockView: View {
         case .more(let n):
             guard let t = model.tiles.first(where: { $0.id == n }) else { return nil }
             return t.apps.dropFirst(DockModel.iconsShown).map(\.name).joined(separator: ", ")
+        case .background:
+            return "Running with no window: " + model.backgroundApps.map(\.name).joined(separator: ", ")
         case nil: return nil
         }
     }
@@ -1806,6 +1866,32 @@ struct DockView: View {
         }
         .padding(6).padding(.top, 4)
         .frame(width: 240)
+        .background(Chrome.panelBackground(.dockList))
+        .onHover { inside in model.onStrip = inside }
+    }
+
+    /// Apps running with no window on any workspace, a row each. Click one to bring it here.
+    private func backgroundList(_ apps: [BackgroundApps.Entry]) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 7) {
+                Text("\(apps.count) in the background").font(Chrome.font(12, .semibold)).foregroundStyle(Chrome.wash())
+                Spacer(minLength: 8)
+            }
+            .padding(.horizontal, 8).padding(.bottom, 4)
+            ScrollView(.vertical, showsIndicators: apps.count > 10) {
+                VStack(spacing: 2) {
+                    ForEach(apps) { app in
+                        BackgroundRow(app: app, tint: Chrome.accent) {
+                            guard model.clickCounts else { return }
+                            model.onShowBackground(app)
+                        }
+                    }
+                }
+            }
+            .frame(height: CGFloat(min(apps.count, 10)) * 30)
+        }
+        .padding(6).padding(.top, 4)
+        .frame(width: 280)
         .background(Chrome.panelBackground(.dockList))
         .onHover { inside in model.onStrip = inside }
     }
@@ -2117,6 +2203,36 @@ struct DockView: View {
         .accessibilityAction { model.onPick(n) }
     }
 
+    /// After the "+": how many apps run with no window anywhere. Rest on it or click it for the list.
+    private var backgroundButton: some View {
+        let open = model.hover == .background || model.backgroundOpen
+        let shape = Chrome.shape(.dockTile)
+        let vertical = model.edge.isVertical
+        return VStack(spacing: 5) {
+            shape.fill(Chrome.cell(open ? 0.13 : 0.06))
+                .overlay(shape.strokeBorder(Chrome.edge(open ? 0.18 : 0.08), lineWidth: Chrome.width(.dockTile)))
+                .overlay(
+                    VStack(spacing: 1) {
+                        Image(systemName: "moon.zzz").font(Chrome.font(13 * k, .medium)).foregroundStyle(Chrome.wash(open ? 0.9 : 0.55))
+                        Text("\(model.backgroundApps.count)")
+                            .font(Chrome.font(11, .bold, rounded: true)).foregroundStyle(Chrome.wash(open ? 1 : 0.85))
+                    }
+                )
+                .frame(width: vertical ? tileSize : tileSize * 0.75, height: vertical ? tileSize * 0.75 : tileSize)
+                .modifier(CenterReport(key: DockView.backgroundKey))
+            // In the number row under the tiles.
+            Text("Background").font(Chrome.font(9, .medium)).foregroundStyle(Chrome.wash(open ? 0.8 : 0.45))
+                .lineLimit(1).minimumScaleFactor(0.7).frame(width: vertical ? tileSize : tileSize * 0.75, height: 15)
+        }
+        .contentShape(Rectangle())
+        .onHover { model.setHover(.background, $0) }
+        .onTapGesture { model.backgroundOpen = true }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Background: \(model.backgroundApps.count) apps running with no window")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { model.backgroundOpen = true }
+    }
+
     /// Find an app and show every workspace: two small buttons sharing one tile's room, so the
     /// workspaces carry the dock. Stacked on a bottom or top dock, side by side on a side one.
     private var utilityButtons: some View {
@@ -2236,6 +2352,35 @@ private struct MoreRow: View {
         .simultaneousGesture(TapGesture().onEnded(action))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(app.name)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { action() }
+    }
+}
+
+/// One app in the Background list: its icon, name and why it's there.
+private struct BackgroundRow: View {
+    let app: BackgroundApps.Entry
+    let tint: Color
+    let action: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(nsImage: NSRunningApplication(processIdentifier: app.pid)?.icon ?? NSWorkspace.shared.icon(for: .application))
+                .resizable().interpolation(.high).frame(width: 18, height: 18)
+            Text(app.name).font(Chrome.font(12.5, hovered ? .semibold : .regular))
+                .foregroundStyle(Chrome.wash(hovered ? 1 : 0.85)).lineLimit(1).truncationMode(.tail)
+            Spacer(minLength: 6)
+            Text(app.state.label).font(Chrome.font(10, .medium)).foregroundStyle(Chrome.wash(0.4))
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 28)
+        .background(RowHighlight(on: hovered, tint: tint))
+        .contentShape(Rectangle())
+        .onHover { hovered = $0 }
+        .onTapGesture(perform: action)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(app.name), \(app.state.label)")
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { action() }
     }

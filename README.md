@@ -142,8 +142,13 @@ app's window comes forward, or over a tile and you go to that workspace, then dr
 window. Drop a file or link on an app's icon and that app opens it, if it can. A tile with more than four apps shows three
 and a "+N"; rest on the "+N" to list the rest and click one. You stay where
 you are. The dashed tile goes to
-the first empty workspace, and the two small buttons at the end open the launcher and the
-overview of all nine.
+the first empty workspace. Right after it, a small **Background** tile appears whenever an app is
+running with no window on any workspace (hidden, only minimized windows, or none at all, as when an
+app starts itself in the background): rest on it or click it to list those apps with why each is there,
+and click one to bring it forward on the workspace you're on (a minimized window comes back here; an app
+with no window is brought forward and any window it opens joins this workspace). Finder and menu bar apps
+aren't listed, and neither is an app BaneySpaces hid because its windows are on another workspace. The two
+small buttons at the end open the launcher and the overview of all nine.
 
 It can sit on any side of the screen: choose **Bottom**, **Left**, **Right** or **Top** under **Settings > Dock > Position on screen**, or from the dock's right-click menu. At the
 top it sits under the menu bar and waits half a second before opening, so reaching for a menu

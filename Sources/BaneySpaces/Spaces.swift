@@ -1034,6 +1034,55 @@ final class Spaces {
         }
     }
 
+    /// Running apps with no window to see on any workspace (the agent's included): none at all, or
+    /// only minimized ones (`BackgroundApps`). Call after `refresh()`.
+    /// An app BaneySpaces hid has its windows on a workspace, so it isn't one. A window not scanned
+    /// yet that a saved layout names counts as on its workspace, so a launch doesn't flash them all.
+    func backgroundApps() -> [BackgroundApps.Entry] {
+        var byPid: [pid_t: [Window]] = [:]
+        for (id, w) in windows where model.workspace(of: id) != nil { byPid[w.pid, default: []].append(w) }
+        var tracked: [BackgroundApps.TrackedWindow] = []
+        for (pid, list) in byPid {
+            // One window that isn't minimized settles it, so the rest aren't asked (each is an
+            // Accessibility call and this runs on every dock reload).
+            for w in list {
+                let minimized = w.isMinimized
+                tracked.append(.init(pid: pid, isMinimized: minimized))
+                if !minimized { break }
+            }
+        }
+        for e in pendingLayout.values where model.workspace(of: e.window) == nil { tracked.append(.init(pid: e.pid, isMinimized: false)) }
+        let running = NSWorkspace.shared.runningApplications.map {
+            BackgroundApps.Running(pid: $0.processIdentifier, name: $0.localizedName ?? $0.bundleIdentifier ?? "App",
+                                   bundleID: $0.bundleIdentifier, isRegular: $0.activationPolicy == .regular,
+                                   isTerminated: $0.isTerminated, isHidden: $0.isHidden)
+        }
+        return BackgroundApps.list(running: running, trackedWindows: tracked, selfPID: getpid())
+    }
+
+    /// Brings a background app (`backgroundApps()`) to the workspace you're on: unhides it; its most
+    /// recent minimized window is restored onto this workspace; with no window, it is brought forward
+    /// the way any windowless app is (`focusApp`), and a window it opens joins this workspace.
+    func showBackgroundApp(_ pid: pid_t) {
+        guard active else { return focusApp(pid) }
+        if switching { return enqueue { [weak self] in self?.showBackgroundApp(pid) } }
+        refresh()
+        let app = NSRunningApplication(processIdentifier: pid)
+        if app?.isHidden == true { app?.unhide() }
+        // Shown by hand, so BaneySpaces' record of having hidden it is stale.
+        if saved.hiddenApps.remove(pid) != nil { persist() }
+        let minimized = windows.values.filter { $0.pid == pid && model.workspace(of: $0.id) != nil && $0.isMinimized }
+        // The window used last on its workspace, else the newest (window numbers only grow).
+        let lastUsed = Set(model.lastFocused.values)
+        if let pick = minimized.filter({ lastUsed.contains($0.id) }).max(by: { $0.id < $1.id }) ?? minimized.max(by: { $0.id < $1.id }) {
+            let n = model.current
+            model.assign(pick.id, to: n)
+            focus(pick.id, on: n, announce: false)
+            return
+        }
+        focusApp(pid, announce: false)
+    }
+
     /// One window as the viewer shows it, with its workspace; nil for a window not on one.
     func entry(for id: WindowID) -> (Entry, Int)? {
         refresh()
