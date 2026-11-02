@@ -672,7 +672,10 @@ final class CursorDirectorTests: XCTestCase {
         var env = CursorEnvironment(); env.current = 9; env.agentWorkspace = 9; env.displays = [screen]
         d.setEnvironment(env)
         d.handsWillAct(event(at: CGPoint(x: 200, y: 200))); drain()
-        Thread.sleep(forTimeInterval: 0.25); drain()
+        // The prune runs on a real timer; a loaded CI runner can fire it late (#157), so wait for it
+        // with a deadline instead of one fixed sleep.
+        let deadline = Date().addingTimeInterval(2)
+        repeat { Thread.sleep(forTimeInterval: 0.02); drain() } while !s.calls.contains(.remove("a")) && Date() < deadline
         XCTAssertTrue(s.calls.contains(.remove("a")))
         clock += 1000
         d.handsWillAct(event(at: CGPoint(x: 300, y: 300))); drain()
@@ -767,10 +770,18 @@ final class CursorOverheadTests: XCTestCase {
         defer { HandsEvents.setListener(nil) }
         XCTAssertFalse(HandsEvents.wantsFrame(scope: "agent_workspace", workspace: 9))
         let e = HandsActionEvent(kind: "click", ref: "r", window: 1, pid: 1, app: "A", point: nil, session: "a", scope: "agent_workspace", workspace: 9)
-        let t0 = ProcessInfo.processInfo.systemUptime
-        for _ in 0..<100 { hands.run(e) }
-        let each = (ProcessInfo.processInfo.systemUptime - t0) * 10
-        XCTAssertLessThan(each, 24.5, "no bounds read: just the modelled \(hands.resolve * 1000 + hands.act * 1000 + hands.readback * 1000) ms")
+        // Against a baseline with no listener, measured the same way in the same run: a slow runner
+        // slows both (#157). A bounds read would add its modelled 8 ms; jitter stays well under half that.
+        func each(listening: Bool) -> Double {
+            HandsEvents.setListener(listening ? director : nil)
+            let t0 = ProcessInfo.processInfo.systemUptime
+            for _ in 0..<100 { hands.run(e) }
+            return (ProcessInfo.processInfo.systemUptime - t0) * 10
+        }
+        let without = each(listening: false)
+        let with = each(listening: true)
+        XCTAssertLessThan(with - without, hands.boundsRead * 1000 / 2,
+                          "no bounds read: \(with) ms with the cursor hidden against \(without) ms without it")
     }
 }
 
