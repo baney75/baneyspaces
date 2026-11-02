@@ -1061,8 +1061,8 @@ final class Spaces {
     }
 
     /// Brings a background app (`backgroundApps()`) to the workspace you're on: unhides it; its most
-    /// recent minimized window is restored onto this workspace; with no window, it is brought forward
-    /// the way any windowless app is (`focusApp`), and a window it opens joins this workspace.
+    /// recent minimized window is restored onto this workspace; with no window, it opens one here
+    /// (`openWindowHere`, else a reopen like a Dock click), and that window joins this workspace.
     func showBackgroundApp(_ pid: pid_t) {
         guard active else { return focusApp(pid) }
         if switching { return enqueue { [weak self] in self?.showBackgroundApp(pid) } }
@@ -1080,7 +1080,17 @@ final class Spaces {
             focus(pick.id, on: n, announce: false)
             return
         }
-        focusApp(pid, announce: false)
+        // No window. Plain activation often brings only the menu bar, which is how the app got
+        // lost. Its own New Window command opens one here, as the launcher does; an app without
+        // one is reopened like a Dock click, which makes most apps show their window.
+        if openWindowHere(pid) { return }
+        guard let url = app?.bundleURL else { return focusApp(pid, announce: false) }
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = true
+        NSWorkspace.shared.openApplication(at: url, configuration: config) { _, error in
+            guard let error else { return }
+            DispatchQueue.main.async { Trace.log("dock background: reopening \(url.lastPathComponent) failed: \(error.localizedDescription)") }
+        }
     }
 
     /// One window as the viewer shows it, with its workspace; nil for a window not on one.
