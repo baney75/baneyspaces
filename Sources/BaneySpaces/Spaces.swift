@@ -1076,7 +1076,7 @@ final class Spaces {
             // Accessibility call each, so not for apps already settled.
             let candidate = app.activationPolicy == .regular && !trackedPids.contains(pid)
             let elsewhere = candidate && !showing.contains(pid)
-                && (Windows.listedIDs(of: pid)?.contains { windows[$0] == nil && !Windows.onNoOtherDesktop($0) } ?? false)
+                && (Windows.listedIDs(of: pid)?.contains { model.workspace(of: $0) == nil && !Windows.onNoOtherDesktop($0) } ?? false)
             return BackgroundApps.Running(pid: pid, name: app.localizedName ?? app.bundleIdentifier ?? "App",
                                           bundleID: app.bundleIdentifier, isRegular: app.activationPolicy == .regular,
                                           isTerminated: app.isTerminated, isHidden: app.isHidden, launchedAt: app.launchDate,
@@ -1107,6 +1107,18 @@ final class Spaces {
             model.assign(pick.id, to: n)
             focus(pick.id, on: n, announce: false)
             return
+        }
+        // A window it has that no workspace holds (hidden before it was scanned, or launched
+        // hidden) came back with the unhide: it joins this workspace instead of getting a twin.
+        let standard = Windows.standardIDs(of: pid)
+        if !standard.isEmpty {
+            refresh(full: true)
+            let n = model.current
+            let adopt = standard.filter { windows[$0] != nil && model.workspace(of: $0) == nil }
+            for id in adopt { model.assign(id, to: n) }
+            if let pick = adopt.max() ?? standard.filter({ model.workspace(of: $0) == n }).max() {
+                return focus(pick, on: n, announce: false)
+            }
         }
         // No window. Plain activation often brings only the menu bar, which is how the app got
         // lost. Its own New Window command opens one here, as the launcher does; an app without

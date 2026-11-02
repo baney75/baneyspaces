@@ -1339,6 +1339,8 @@ final class DockModel: ObservableObject {
             backgroundApps = background
         }
         if backgroundOpen, backgroundApps.isEmpty { backgroundOpen = false }
+        // The tile went away under the pointer, which never reports leaving it.
+        if backgroundApps.isEmpty, hover == .background { hover = nil }
         // A strip for an app that's gone or down to one window closes.
         if let s = strip, (stripApp?.list.count ?? 0) < 2 || !tiles.contains(where: { $0.id == s.workspace }) { strip = nil }
         if more != nil, moreApps == nil { more = nil }
@@ -1847,6 +1849,7 @@ struct DockView: View {
             guard let t = model.tiles.first(where: { $0.id == n }) else { return nil }
             return t.apps.dropFirst(DockModel.iconsShown).map(\.name).joined(separator: ", ")
         case .background:
+            guard !model.backgroundApps.isEmpty else { return nil }
             return "Running with no window: " + model.backgroundApps.map(\.name).joined(separator: ", ")
         case nil: return nil
         }
