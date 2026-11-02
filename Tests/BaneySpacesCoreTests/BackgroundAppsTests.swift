@@ -111,6 +111,7 @@ final class BackgroundAppsTests: XCTestCase {
                        "Mail left, Notes keeps its place and new state, Calendar goes last")
     }
 
+    /// A tripwire on the source text, not a test of the behavior (pruning lives in AppKit-bound `refresh()`).
     /// Review 11-01 (r1 second-F9, #156): a saved layout's window counts as on its workspace only
     /// while the window server still has it. `refresh()` drops the rest, or a relaunched app that
     /// never reopened that window would stay off the list for good.
