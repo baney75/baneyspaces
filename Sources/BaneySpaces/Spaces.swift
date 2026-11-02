@@ -1042,7 +1042,13 @@ final class Spaces {
         var byPid: [pid_t: [Window]] = [:]
         for (id, w) in windows where model.workspace(of: id) != nil { byPid[w.pid, default: []].append(w) }
         var tracked: [BackgroundApps.TrackedWindow] = []
-        for (pid, list) in byPid {
+        for (pid, var list) in byPid {
+            // A hidden app's window closing doesn't prompt a scan, so its record can outlive it and
+            // keep a windowless app off the list. Ask the app, as `focusApp` does; one on another
+            // macOS desktop is never listed from here, so it still counts.
+            if NSRunningApplication(processIdentifier: pid)?.isHidden == true, let listed = Windows.listedIDs(of: pid) {
+                list = list.filter { listed.contains($0.id) || !Windows.onNoOtherDesktop($0.id) }
+            }
             // One window that isn't minimized settles it, so the rest aren't asked (each is an
             // Accessibility call and this runs on every dock reload).
             for w in list {
@@ -1052,10 +1058,29 @@ final class Spaces {
             }
         }
         for e in pendingLayout.values where model.workspace(of: e.window) == nil { tracked.append(.init(pid: e.pid, isMinimized: false)) }
-        let running = NSWorkspace.shared.runningApplications.map {
-            BackgroundApps.Running(pid: $0.processIdentifier, name: $0.localizedName ?? $0.bundleIdentifier ?? "App",
-                                   bundleID: $0.bundleIdentifier, isRegular: $0.activationPolicy == .regular,
-                                   isTerminated: $0.isTerminated, isHidden: $0.isHidden)
+        let trackedPids = Set(tracked.filter { !$0.isMinimized }.map(\.pid))
+        // Dialogs and alerts aren't tracked windows, yet they are on screen: one look at the window
+        // server for every app's normal-layer windows showing now.
+        let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        let showing = Set(info.compactMap { w -> pid_t? in
+            // Invisible helper windows sit on the same layer; they show nothing.
+            guard (w[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+                  (w[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 0 > 0,
+                  let b = (w[kCGWindowBounds as String] as? NSDictionary).flatMap({ CGRect(dictionaryRepresentation: $0) }),
+                  b.width > 40, b.height > 40 else { return nil }
+            return (w[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value
+        })
+        let running = NSWorkspace.shared.runningApplications.map { app in
+            let pid = app.processIdentifier
+            // Only a candidate is asked about windows on other macOS desktops (full screen): an
+            // Accessibility call each, so not for apps already settled.
+            let candidate = app.activationPolicy == .regular && !trackedPids.contains(pid)
+            let elsewhere = candidate && !showing.contains(pid)
+                && (Windows.listedIDs(of: pid)?.contains { windows[$0] == nil && !Windows.onNoOtherDesktop($0) } ?? false)
+            return BackgroundApps.Running(pid: pid, name: app.localizedName ?? app.bundleIdentifier ?? "App",
+                                          bundleID: app.bundleIdentifier, isRegular: app.activationPolicy == .regular,
+                                          isTerminated: app.isTerminated, isHidden: app.isHidden, launchedAt: app.launchDate,
+                                          hasUntrackedWindow: candidate && (showing.contains(pid) || elsewhere))
         }
         return BackgroundApps.list(running: running, trackedWindows: tracked, selfPID: getpid())
     }
@@ -1067,6 +1092,9 @@ final class Spaces {
         guard active else { return focusApp(pid) }
         if switching { return enqueue { [weak self] in self?.showBackgroundApp(pid) } }
         refresh()
+        // The list was drawn a moment ago: an app that has since opened a window on some workspace
+        // is just gone to, so nothing on another workspace is unhidden here or opened twice.
+        guard backgroundApps().contains(where: { $0.pid == pid }) else { return focusApp(pid, announce: false) }
         let app = NSRunningApplication(processIdentifier: pid)
         if app?.isHidden == true { app?.unhide() }
         // Shown by hand, so BaneySpaces' record of having hidden it is stale.

@@ -200,7 +200,9 @@ final class WorkspaceDock {
         // The Background tile follows apps coming and going and hiding; the model's own changes reload through `Spaces.onChange`.
         for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification,
                      NSWorkspace.didHideApplicationNotification, NSWorkspace.didUnhideApplicationNotification] {
-            NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.reload() }
+            NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                self?.appsChanged(launched: note.name == NSWorkspace.didLaunchApplicationNotification)
+            }
         }
         // A tile's right-click menu keeps the dock up while it's open.
         NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { [weak self] _ in
@@ -256,6 +258,20 @@ final class WorkspaceDock {
     }
 
     /// Workspaces changed: a shown dock follows along.
+    private var appsReload: DispatchWorkItem?
+
+    /// A workspace switch hides apps in a burst, one notification each: they come to one reload.
+    /// A launch is looked at again once its grace is over, when a windowless one starts to count.
+    private func appsChanged(launched: Bool) {
+        if launched {
+            DispatchQueue.main.asyncAfter(deadline: .now() + BackgroundApps.launchGrace + 0.1) { [weak self] in self?.appsChanged(launched: false) }
+        }
+        appsReload?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.reload() }
+        appsReload = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+    }
+
     func reload() {
         // Mid-switch the windows are on the move; the switch's end calls this again. A drag in
         // progress keeps its tiles; a reload could pull the dragged icon out from under it. One
@@ -1312,7 +1328,9 @@ final class DockModel: ObservableObject {
             tile.unpinned = agents.filter { !windows.contains($0.window) }
             return tile
         }
-        let background = spaces.backgroundApps()
+        // Rows keep their places under the pointer, so a click lands on the app it was aimed at.
+        let fresh = spaces.backgroundApps()
+        let background = backgroundOpen && onStrip ? BackgroundApps.held(backgroundApps, now: fresh) : fresh
         if background != backgroundApps {
             if background.isEmpty != backgroundApps.isEmpty {
                 Trace.log(background.isEmpty ? "dock background: tile gone"

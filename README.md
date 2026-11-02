@@ -146,8 +146,9 @@ the first empty workspace. Right after it, a small **Background** tile appears w
 running with no window on any workspace (hidden, only minimized windows, or none at all, as when an
 app starts itself in the background): rest on it or click it to list those apps with why each is there,
 and click one to bring it forward on the workspace you're on (a minimized window comes back here; an app
-with no window is brought forward and any window it opens joins this workspace). Finder and menu bar apps
-aren't listed, and neither is an app BaneySpaces hid because its windows are on another workspace. The two
+with no window opens one here). Finder, menu bar apps, an app showing a dialog or a full-screen window, and
+an app launched in the last 3 seconds aren't listed. Neither is an app with a window on some workspace, even
+one hidden with ⌘H: that workspace's tile shows it. The two
 small buttons at the end open the launcher and the overview of all nine.
 
 It can sit on any side of the screen: choose **Bottom**, **Left**, **Right** or **Top** under **Settings > Dock > Position on screen**, or from the dock's right-click menu. At the
