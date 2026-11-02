@@ -110,5 +110,17 @@ final class BackgroundAppsTests: XCTestCase {
                        [.init(pid: 2, name: "Notes", state: .minimized), .init(pid: 3, name: "Calendar", state: .noWindow)],
                        "Mail left, Notes keeps its place and new state, Calendar goes last")
     }
+
+    /// A tripwire on the source text, not a test of the behavior (pruning lives in AppKit-bound `refresh()`).
+    /// Review 11-01 (r1 second-F9, #156): a saved layout's window counts as on its workspace only
+    /// while the window server still has it. `refresh()` drops the rest, or a relaunched app that
+    /// never reopened that window would stay off the list for good.
+    func testPendingLayoutEntriesGoWithTheirWindows() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let spaces = try String(contentsOf: root.appendingPathComponent("Sources/BaneySpaces/Spaces.swift"), encoding: .utf8)
+        XCTAssertTrue(spaces.contains("pendingLayout = pendingLayout.filter { alive.contains($0.key) }"))
+        XCTAssertTrue(spaces.contains("for e in pendingLayout.values where model.workspace(of: e.window) == nil"),
+                      "backgroundApps reads the pruned entries")
+    }
 }
 

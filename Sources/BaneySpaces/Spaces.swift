@@ -1076,7 +1076,7 @@ final class Spaces {
             // Accessibility call each, so not for apps already settled.
             let candidate = app.activationPolicy == .regular && !trackedPids.contains(pid)
             let elsewhere = candidate && !showing.contains(pid)
-                && (Windows.listedIDs(of: pid)?.contains { windows[$0] == nil && !Windows.onNoOtherDesktop($0) } ?? false)
+                && (Windows.listedIDs(of: pid)?.contains { model.workspace(of: $0) == nil && !Windows.onNoOtherDesktop($0) } ?? false)
             return BackgroundApps.Running(pid: pid, name: app.localizedName ?? app.bundleIdentifier ?? "App",
                                           bundleID: app.bundleIdentifier, isRegular: app.activationPolicy == .regular,
                                           isTerminated: app.isTerminated, isHidden: app.isHidden, launchedAt: app.launchDate,
@@ -1108,11 +1108,35 @@ final class Spaces {
             focus(pick.id, on: n, announce: false)
             return
         }
-        // No window. Plain activation often brings only the menu bar, which is how the app got
-        // lost. Its own New Window command opens one here, as the launcher does; an app without
-        // one is reopened like a Dock click, which makes most apps show their window.
-        if openWindowHere(pid) { return }
-        guard let url = app?.bundleURL else { return focusApp(pid, announce: false) }
+        // The unhide lands when the app gets to it. Asked before then, a busy app can answer that
+        // it has no window while one is coming back, and a New Window would make it a twin.
+        waitUntil(timeout: 1, interval: 0.02, { NSRunningApplication(processIdentifier: pid)?.isHidden != true }) { [weak self] in
+            guard let self, self.active else { return }
+            if self.switching { return self.enqueue { [weak self] in self?.showWindowless(pid) } }
+            self.showWindowless(pid)
+        }
+    }
+
+    /// The end of `showBackgroundApp` for an app with no window on any workspace. A window it has that
+    /// no workspace holds (hidden before it was scanned, or launched hidden) joins this one. Only an
+    /// app that clearly says it has no window gets a new one from its New Window command; when it
+    /// can't say (busy, not answering) or its window isn't scanned yet, it is reopened like a Dock
+    /// click, which shows the window it has rather than making another.
+    private func showWindowless(_ pid: pid_t) {
+        let listed = Windows.listedIDs(of: pid)
+        let standard = Windows.standardIDs(of: pid)
+        if !standard.isEmpty {
+            refresh(full: true)
+            let n = model.current
+            let adopt = standard.filter { windows[$0] != nil && model.workspace(of: $0) == nil }
+            for id in adopt { model.assign(id, to: n) }
+            if let pick = adopt.max() ?? standard.filter({ model.workspace(of: $0) == n }).max() {
+                return focus(pick, on: n, announce: false)
+            }
+        } else if listed?.isEmpty == true, openWindowHere(pid) {
+            return
+        }
+        guard let url = NSRunningApplication(processIdentifier: pid)?.bundleURL else { return focusApp(pid, announce: false) }
         let config = NSWorkspace.OpenConfiguration()
         config.activates = true
         NSWorkspace.shared.openApplication(at: url, configuration: config) { _, error in
