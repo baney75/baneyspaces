@@ -1034,6 +1034,93 @@ final class Spaces {
         }
     }
 
+    /// Running apps with no window to see on any workspace (the agent's included): none at all, or
+    /// only minimized ones (`BackgroundApps`). Call after `refresh()`.
+    /// An app BaneySpaces hid has its windows on a workspace, so it isn't one. A window not scanned
+    /// yet that a saved layout names counts as on its workspace, so a launch doesn't flash them all.
+    func backgroundApps() -> [BackgroundApps.Entry] {
+        var byPid: [pid_t: [Window]] = [:]
+        for (id, w) in windows where model.workspace(of: id) != nil { byPid[w.pid, default: []].append(w) }
+        var tracked: [BackgroundApps.TrackedWindow] = []
+        for (pid, var list) in byPid {
+            // A hidden app's window closing doesn't prompt a scan, so its record can outlive it and
+            // keep a windowless app off the list. Ask the app, as `focusApp` does; one on another
+            // macOS desktop is never listed from here, so it still counts.
+            if NSRunningApplication(processIdentifier: pid)?.isHidden == true, let listed = Windows.listedIDs(of: pid) {
+                list = list.filter { listed.contains($0.id) || !Windows.onNoOtherDesktop($0.id) }
+            }
+            // One window that isn't minimized settles it, so the rest aren't asked (each is an
+            // Accessibility call and this runs on every dock reload).
+            for w in list {
+                let minimized = w.isMinimized
+                tracked.append(.init(pid: pid, isMinimized: minimized))
+                if !minimized { break }
+            }
+        }
+        for e in pendingLayout.values where model.workspace(of: e.window) == nil { tracked.append(.init(pid: e.pid, isMinimized: false)) }
+        let trackedPids = Set(tracked.filter { !$0.isMinimized }.map(\.pid))
+        // Dialogs and alerts aren't tracked windows, yet they are on screen: one look at the window
+        // server for every app's normal-layer windows showing now.
+        let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        let showing = Set(info.compactMap { w -> pid_t? in
+            // Invisible helper windows sit on the same layer; they show nothing.
+            guard (w[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+                  (w[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 0 > 0,
+                  let b = (w[kCGWindowBounds as String] as? NSDictionary).flatMap({ CGRect(dictionaryRepresentation: $0) }),
+                  b.width > 40, b.height > 40 else { return nil }
+            return (w[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value
+        })
+        let running = NSWorkspace.shared.runningApplications.map { app in
+            let pid = app.processIdentifier
+            // Only a candidate is asked about windows on other macOS desktops (full screen): an
+            // Accessibility call each, so not for apps already settled.
+            let candidate = app.activationPolicy == .regular && !trackedPids.contains(pid)
+            let elsewhere = candidate && !showing.contains(pid)
+                && (Windows.listedIDs(of: pid)?.contains { windows[$0] == nil && !Windows.onNoOtherDesktop($0) } ?? false)
+            return BackgroundApps.Running(pid: pid, name: app.localizedName ?? app.bundleIdentifier ?? "App",
+                                          bundleID: app.bundleIdentifier, isRegular: app.activationPolicy == .regular,
+                                          isTerminated: app.isTerminated, isHidden: app.isHidden, launchedAt: app.launchDate,
+                                          hasUntrackedWindow: candidate && (showing.contains(pid) || elsewhere))
+        }
+        return BackgroundApps.list(running: running, trackedWindows: tracked, selfPID: getpid())
+    }
+
+    /// Brings a background app (`backgroundApps()`) to the workspace you're on: unhides it; its most
+    /// recent minimized window is restored onto this workspace; with no window, it opens one here
+    /// (`openWindowHere`, else a reopen like a Dock click), and that window joins this workspace.
+    func showBackgroundApp(_ pid: pid_t) {
+        guard active else { return focusApp(pid) }
+        if switching { return enqueue { [weak self] in self?.showBackgroundApp(pid) } }
+        refresh()
+        // The list was drawn a moment ago: an app that has since opened a window on some workspace
+        // is just gone to, so nothing on another workspace is unhidden here or opened twice.
+        guard backgroundApps().contains(where: { $0.pid == pid }) else { return focusApp(pid, announce: false) }
+        let app = NSRunningApplication(processIdentifier: pid)
+        if app?.isHidden == true { app?.unhide() }
+        // Shown by hand, so BaneySpaces' record of having hidden it is stale.
+        if saved.hiddenApps.remove(pid) != nil { persist() }
+        let minimized = windows.values.filter { $0.pid == pid && model.workspace(of: $0.id) != nil && $0.isMinimized }
+        // The window used last on its workspace, else the newest (window numbers only grow).
+        let lastUsed = Set(model.lastFocused.values)
+        if let pick = minimized.filter({ lastUsed.contains($0.id) }).max(by: { $0.id < $1.id }) ?? minimized.max(by: { $0.id < $1.id }) {
+            let n = model.current
+            model.assign(pick.id, to: n)
+            focus(pick.id, on: n, announce: false)
+            return
+        }
+        // No window. Plain activation often brings only the menu bar, which is how the app got
+        // lost. Its own New Window command opens one here, as the launcher does; an app without
+        // one is reopened like a Dock click, which makes most apps show their window.
+        if openWindowHere(pid) { return }
+        guard let url = app?.bundleURL else { return focusApp(pid, announce: false) }
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = true
+        NSWorkspace.shared.openApplication(at: url, configuration: config) { _, error in
+            guard let error else { return }
+            DispatchQueue.main.async { Trace.log("dock background: reopening \(url.lastPathComponent) failed: \(error.localizedDescription)") }
+        }
+    }
+
     /// One window as the viewer shows it, with its workspace; nil for a window not on one.
     func entry(for id: WindowID) -> (Entry, Int)? {
         refresh()
