@@ -1,6 +1,6 @@
 name: Demo Cmd-Tab capture
 # Manual only. Stages a clean Cmd-Tab clip for marketing footage. A hosted runner usually has no
-# Screen Recording or Accessibility grant, so the live clip may be missing; the render MP4 (real
+# Screen Recording or Accessibility grant, so no live clip is ever recorded (SKIPPED.txt explains); the render MP4 (real
 # SwitcherView, fixture apps) is built every time and is the fallback.
 on:
   workflow_dispatch:
@@ -25,10 +25,6 @@ jobs:
             "select service,client,auth_value from access where service in ('kTCCServiceScreenCapture','kTCCServiceAccessibility','kTCCServicePostEvent','kTCCServiceListenEvent');" 2>&1 || true
           sqlite3 "$HOME/Library/Application Support/com.apple.TCC/TCC.db" \
             "select service,client,auth_value from access where service in ('kTCCServiceScreenCapture','kTCCServiceAccessibility','kTCCServicePostEvent','kTCCServiceListenEvent');" 2>&1 || true
-          echo "--- Accessibility trusted (AXIsProcessTrusted for swift)"
-          swift -e 'import ApplicationServices; print(AXIsProcessTrusted())' 2>&1 || true
-          echo "--- Screen Recording preflight"
-          swift -e 'import CoreGraphics; print(CGPreflightScreenCaptureAccess())' 2>&1 || true
       - name: Render the Cmd-Tab image sequence
         run: |
           mkdir -p "$RUNNER_TEMP/render"
@@ -41,57 +37,28 @@ jobs:
             -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2:color=black,format=yuv420p" \
             -c:v libx264 -movflags +faststart out/cmdtab-render.mp4
           ffprobe -v error -show_entries stream=width,height,nb_frames -of default=nw=1 out/cmdtab-render.mp4
-      - name: Stage a desktop and try a live capture
+      - name: Live Cmd-Tab (never recorded on a hosted runner)
         continue-on-error: true
         run: |
-          mkdir -p out/live "$RUNNER_TEMP/staged"
-          skip() {
-            echo "$1" | tee out/live/SKIPPED.txt
-            rm -f out/live/*.mov out/live/*.mp4
-            exit 0
-          }
-          # Without BaneySpaces running and trusted, Cmd-Tab is macOS's own switcher: a clip of it
-          # would be a false artifact, so skip the live capture instead.
-          if [ "$(swift -e 'import ApplicationServices; print(AXIsProcessTrusted())' 2>/dev/null)" != "true" ]; then
-            skip "Live capture skipped: this runner has no Accessibility grant, so BaneySpaces cannot take over Cmd-Tab. A clip would show macOS's native switcher. See the cmdtab-render artifact."
-          fi
-          open -a "$PWD/build/BaneySpaces.app" || skip "Live capture skipped: BaneySpaces.app would not open."
-          READY=0
-          for _ in $(seq 1 15); do
-            if pgrep -x BaneySpaces >/dev/null; then READY=1; break; fi
-            sleep 1
-          done
-          [ "$READY" = 1 ] || skip "Live capture skipped: BaneySpaces did not start within 15 s (pgrep found no process)."
+          mkdir -p out/live
+          # Apps mode must be on before launch (MissionControlKeys.cmdTabMode reads this key).
+          defaults write com.baney.baneyspaces cmdTabMode apps
+          defaults read com.baney.baneyspaces cmdTabMode
+          open -a "$PWD/build/BaneySpaces.app" || echo "BaneySpaces.app would not open"
           sleep 5
-          pgrep -x BaneySpaces >/dev/null || skip "Live capture skipped: BaneySpaces exited right after launch (see crash guard or missing permissions)."
-          echo "BaneySpaces running, pid $(pgrep -x BaneySpaces | head -1)"
-          # Invented documents only.
-          printf 'Launch checklist\n- tag the build\n- write the notes\n' > "$RUNNER_TEMP/staged/Launch checklist.txt"
-          printf 'Field notes\nNothing real here.\n' > "$RUNNER_TEMP/staged/Field notes.txt"
-          printf 'Inbox draft\nHello, this is a fixture.\n' > "$RUNNER_TEMP/staged/Inbox draft.txt"
-          # A plain solid wallpaper (needs no secrets; may be refused without a GUI session).
-          osascript -e 'tell application "System Events" to set picture of every desktop to "/System/Library/Desktop Pictures/Solid Colors/Space Gray Pro.png"' 2>&1 || echo "wallpaper: not set"
-          for f in "Launch checklist" "Field notes" "Inbox draft"; do
-            open -a TextEdit "$RUNNER_TEMP/staged/$f.txt" || true
-            sleep 2
-          done
-          # Record 8 seconds in the background, press Cmd-Tab three times with CGEvent.
-          screencapture -v -V 8 out/live/cmdtab-live.mov 2>&1 &
-          REC=$!
-          sleep 2
-          swift -e '
-          import CoreGraphics
-          import Foundation
-          func tap(_ key: CGKeyCode, _ flags: CGEventFlags) {
-              for down in [true, false] {
-                  let e = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: down)
-                  e?.flags = flags
-                  e?.post(tap: .cghidEventTap)
-              }
-          }
-          for _ in 0..<3 { tap(48, .maskCommand); Thread.sleep(forTimeInterval: 1.0) }
-          ' 2>&1 || true
-          wait $REC || echo "live capture failed (Screen Recording is likely not granted)"
+          pgrep -x BaneySpaces >/dev/null && echo "BaneySpaces running, pid $(pgrep -x BaneySpaces | head -1)" || echo "BaneySpaces not running"
+          # A hosted runner cannot grant BaneySpaces Accessibility or Screen Recording, and nothing
+          # here proves it owns Cmd-Tab. A clip would show macOS's native switcher, so none is made.
+          cat > out/live/SKIPPED.txt <<'EOT'
+          Live capture skipped: the GitHub-hosted runner cannot prove BaneySpaces owns Cmd-Tab.
+          BaneySpaces has no Accessibility or Screen Recording grant here and there is no takeover
+          signal, so a recording would show macOS's native switcher. See the cmdtab-render artifact
+          (real SwitcherView, fixture apps).
+          For a future VM or Mac with the grants: set `defaults write com.baney.baneyspaces cmdTabMode apps`,
+          launch BaneySpaces, open three TextEdit fixtures with invented text, record with
+          `screencapture -v -V 8`, and press Cmd-Tab three times.
+          EOT
+          rm -f out/live/*.mov out/live/*.mp4
           ls -la out/live
       - name: Upload the live clip
         uses: actions/upload-artifact@v4
