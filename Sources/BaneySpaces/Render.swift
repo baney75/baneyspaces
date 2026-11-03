@@ -123,6 +123,11 @@ enum Render {
             .enumerated().map { i, a in SwitcherModel.AppTile(pid: a.4 ? 99 : pid_t(i + 1), name: a.0, icon: icon(a.1), workspace: a.2, windows: a.3, isSplit: a.4) }
         appSwitcher.selected = 1
         guard save(SwitcherView(model: appSwitcher).padding(30), "switcher-apps.png", CGSize(width: 820, height: 0)) else { return 1 }
+        // The same switcher as an image sequence (selection 0→1→2→3), for `ffmpeg -framerate 2 -i switcher-seq-%02d.png`.
+        for frame in ProductRenderPlan.switcherSequence(tileCount: appSwitcher.apps.count) {
+            appSwitcher.selected = frame.selected
+            guard save(SwitcherView(model: appSwitcher).padding(30), frame.name, CGSize(width: 820, height: 0)) else { return 1 }
+        }
 
         // The Workspace Dock with workspace 4 current, hovering Terminal on workspace 1.
         let dock = DockModel()

@@ -73,4 +73,16 @@ public enum ProductRenderPlan {
         }
         return nil
     }
+
+    /// The ⌘Tab image sequence `--render` writes for the demo clip: `switcher-seq-00.png` …
+    /// with the selection stepping 0, 1, 2, 3 (clamped to the tiles there are). Every frame
+    /// is drawn at the same size so `ffmpeg -i switcher-seq-%02d.png` makes one video.
+    public static let switcherSequencePrefix = "switcher-seq-"
+
+    public static func switcherSequence(tileCount: Int, steps: Int = 4) -> [(name: String, selected: Int)] {
+        guard tileCount > 0, steps > 0 else { return [] }
+        return (0..<steps).map { i in
+            (String(format: "\(switcherSequencePrefix)%02d.png", i), min(i, tileCount - 1))
+        }
+    }
 }
