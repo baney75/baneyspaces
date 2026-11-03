@@ -67,4 +67,24 @@ final class ProductRenderPlanTests: XCTestCase {
         XCTAssertFalse(text.contains("model.tiles["), "the render must take its drag source from ProductRenderPlan.dragSource")
         XCTAssertTrue(text.contains("ProductRenderPlan.dragSource(in: model.tiles)"))
     }
+
+    func testTheSwitcherSequenceStepsTheSelectionInNumberedFrames() {
+        let frames = ProductRenderPlan.switcherSequence(tileCount: 6)
+        XCTAssertEqual(frames.map(\.name), ["switcher-seq-00.png", "switcher-seq-01.png", "switcher-seq-02.png", "switcher-seq-03.png"])
+        XCTAssertEqual(frames.map(\.selected), [0, 1, 2, 3])
+        XCTAssertEqual(ProductRenderPlan.switcherSequence(tileCount: 2).map(\.selected), [0, 1, 1, 1])
+        XCTAssertTrue(ProductRenderPlan.switcherSequence(tileCount: 0).isEmpty)
+    }
+
+    /// The render lives in the app target, so this reads the source: the sequence is drawn from the plan.
+    func testRenderWritesTheSwitcherSequenceAndKeepsTheStills() throws {
+        let source = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/BaneySpaces/Render.swift")
+        let text = try String(contentsOf: source, encoding: .utf8)
+        XCTAssertTrue(text.contains("ProductRenderPlan.switcherSequence(tileCount: appSwitcher.apps.count)"))
+        for still in ["switcher.png", "switcher-apps.png", "switcher-windows.png"] {
+            XCTAssertTrue(text.contains("\"\(still)\""), still)
+        }
+    }
 }

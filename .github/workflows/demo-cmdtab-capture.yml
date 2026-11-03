@@ -1,0 +1,74 @@
+name: Demo Cmd-Tab capture
+# Manual only. Stages a clean Cmd-Tab clip for marketing footage. A hosted runner usually has no
+# Screen Recording or Accessibility grant, so no live clip is ever recorded (SKIPPED.txt explains); the render MP4 (real
+# SwitcherView, fixture apps) is built every time and is the fallback.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  capture:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ffmpeg
+        run: brew install ffmpeg
+      - name: Build BaneySpaces (same ad-hoc bundle as ci.yml)
+        run: BANEYSPACES_ADHOC=1 BANEYSPACES_ARM64_ONLY=1 scripts/bundle.sh
+      - name: Privacy status on this runner
+        continue-on-error: true
+        run: |
+          sw_vers
+          echo "--- TCC databases (read-only listing)"
+          sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" \
+            "select service,client,auth_value from access where service in ('kTCCServiceScreenCapture','kTCCServiceAccessibility','kTCCServicePostEvent','kTCCServiceListenEvent');" 2>&1 || true
+          sqlite3 "$HOME/Library/Application Support/com.apple.TCC/TCC.db" \
+            "select service,client,auth_value from access where service in ('kTCCServiceScreenCapture','kTCCServiceAccessibility','kTCCServicePostEvent','kTCCServiceListenEvent');" 2>&1 || true
+      - name: Render the Cmd-Tab image sequence
+        run: |
+          mkdir -p "$RUNNER_TEMP/render"
+          build/BaneySpaces.app/Contents/MacOS/BaneySpaces --render "$RUNNER_TEMP/render"
+          ls "$RUNNER_TEMP/render" | grep switcher-seq
+      - name: Build the render MP4
+        run: |
+          mkdir -p out
+          ffmpeg -y -framerate 2 -i "$RUNNER_TEMP/render/switcher-seq-%02d.png" \
+            -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2:color=black,format=yuv420p" \
+            -c:v libx264 -movflags +faststart out/cmdtab-render.mp4
+          ffprobe -v error -show_entries stream=width,height,nb_frames -of default=nw=1 out/cmdtab-render.mp4
+      - name: Live Cmd-Tab (never recorded on a hosted runner)
+        continue-on-error: true
+        run: |
+          mkdir -p out/live
+          # Apps mode must be on before launch (MissionControlKeys.cmdTabMode reads this key).
+          defaults write com.baney.baneyspaces cmdTabMode apps
+          defaults read com.baney.baneyspaces cmdTabMode
+          open -a "$PWD/build/BaneySpaces.app" || echo "BaneySpaces.app would not open"
+          sleep 5
+          pgrep -x BaneySpaces >/dev/null && echo "BaneySpaces running, pid $(pgrep -x BaneySpaces | head -1)" || echo "BaneySpaces not running"
+          # A hosted runner cannot grant BaneySpaces Accessibility or Screen Recording, and nothing
+          # here proves it owns Cmd-Tab. A clip would show macOS's native switcher, so none is made.
+          cat > out/live/SKIPPED.txt <<'EOT'
+          Live capture skipped: the GitHub-hosted runner cannot prove BaneySpaces owns Cmd-Tab.
+          BaneySpaces has no Accessibility or Screen Recording grant here and there is no takeover
+          signal, so a recording would show macOS's native switcher. See the cmdtab-render artifact
+          (real SwitcherView, fixture apps).
+          For a future VM or Mac with the grants: set `defaults write com.baney.baneyspaces cmdTabMode apps`,
+          launch BaneySpaces, open three TextEdit fixtures with invented text, record with
+          `screencapture -v -V 8`, and press Cmd-Tab three times.
+          EOT
+          rm -f out/live/*.mov out/live/*.mp4
+          ls -la out/live
+      - name: Upload the live clip
+        uses: actions/upload-artifact@v4
+        with:
+          name: cmdtab-live
+          path: out/live/
+          if-no-files-found: warn
+      - name: Upload the render MP4
+        uses: actions/upload-artifact@v4
+        with:
+          name: cmdtab-render
+          path: out/cmdtab-render.mp4
+          if-no-files-found: error
