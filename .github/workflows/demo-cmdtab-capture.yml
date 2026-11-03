@@ -45,6 +45,26 @@ jobs:
         continue-on-error: true
         run: |
           mkdir -p out/live "$RUNNER_TEMP/staged"
+          skip() {
+            echo "$1" | tee out/live/SKIPPED.txt
+            rm -f out/live/*.mov out/live/*.mp4
+            exit 0
+          }
+          # Without BaneySpaces running and trusted, Cmd-Tab is macOS's own switcher: a clip of it
+          # would be a false artifact, so skip the live capture instead.
+          if [ "$(swift -e 'import ApplicationServices; print(AXIsProcessTrusted())' 2>/dev/null)" != "true" ]; then
+            skip "Live capture skipped: this runner has no Accessibility grant, so BaneySpaces cannot take over Cmd-Tab. A clip would show macOS's native switcher. See the cmdtab-render artifact."
+          fi
+          open -a "$PWD/build/BaneySpaces.app" || skip "Live capture skipped: BaneySpaces.app would not open."
+          READY=0
+          for _ in $(seq 1 15); do
+            if pgrep -x BaneySpaces >/dev/null; then READY=1; break; fi
+            sleep 1
+          done
+          [ "$READY" = 1 ] || skip "Live capture skipped: BaneySpaces did not start within 15 s (pgrep found no process)."
+          sleep 5
+          pgrep -x BaneySpaces >/dev/null || skip "Live capture skipped: BaneySpaces exited right after launch (see crash guard or missing permissions)."
+          echo "BaneySpaces running, pid $(pgrep -x BaneySpaces | head -1)"
           # Invented documents only.
           printf 'Launch checklist\n- tag the build\n- write the notes\n' > "$RUNNER_TEMP/staged/Launch checklist.txt"
           printf 'Field notes\nNothing real here.\n' > "$RUNNER_TEMP/staged/Field notes.txt"
