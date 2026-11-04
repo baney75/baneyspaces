@@ -16,8 +16,12 @@ if xcrun --sdk macosx --show-sdk-path >/dev/null 2>&1 && [ "${BANEYSPACES_ARM64_
 swift build -c release "${ARCHS[@]}"
 BIN=$(swift build -c release "${ARCHS[@]}" --show-bin-path)/BaneySpaces
 cp "$BIN" "$APP/Contents/MacOS/BaneySpaces"
-# swift build points a dev binary at engine/lib; the bundle finds its library in Contents/Frameworks.
-install_name_tool -delete_rpath "$PWD/engine/lib" "$APP/Contents/MacOS/BaneySpaces"
+# swift build points a dev binary at engine/lib; the bundle finds its library in Contents/Frameworks. The path is
+# the package's real path, which isn't always $PWD: under mktemp (install.sh's updates) $PWD is /var/folders/… and
+# the rpath /private/var/folders/…. So delete the engine/lib rpaths the binary has, as otool reads them.
+for rp in $(otool -l "$APP/Contents/MacOS/BaneySpaces" | awk '/cmd LC_RPATH/ { r = 1 } r && $1 == "path" { print $2; r = 0 }' | grep '/engine/lib$' | sort -u); do
+  install_name_tool -delete_rpath "$rp" "$APP/Contents/MacOS/BaneySpaces"
+done
 # The session engine's command. It lives in Resources: the file system ignores case, so "baneyspaces" can't sit
 # beside "BaneySpaces" in MacOS.
 cp "$(dirname "$BIN")/baneyspaces-cli" "$APP/Contents/Resources/bin/baneyspaces"
@@ -85,6 +89,7 @@ codesign --verify --deep --strict "$APP"
 # The app must find its library next to itself, not where it was built.
 otool -L "$APP/Contents/MacOS/BaneySpaces" | grep -q '@rpath/libagent_desktop_ffi.dylib' || { echo "bundle: BaneySpaces doesn't link the engine through @rpath" >&2; exit 1; }
 otool -l "$APP/Contents/MacOS/BaneySpaces" | grep -A2 LC_RPATH | grep -q '@executable_path/../Frameworks' || { echo "bundle: no @executable_path/../Frameworks rpath" >&2; exit 1; }
+! otool -l "$APP/Contents/MacOS/BaneySpaces" | grep -A2 LC_RPATH | grep -q '/engine/lib ' || { echo "bundle: the build folder's engine/lib rpath is still in the app" >&2; exit 1; }
 [ "$(otool -D "$APP/Contents/Frameworks/libagent_desktop_ffi.dylib" | grep -c '^@rpath/libagent_desktop_ffi.dylib$')" -ge 1 ] || { echo "bundle: the engine's install name isn't @rpath" >&2; exit 1; }
 if otool -l "$APP/Contents/MacOS/BaneySpaces" | grep -A2 LC_RPATH | grep -q "$PWD/engine/lib"; then echo "bundle: the app still points at the build folder" >&2; exit 1; fi
 echo "built $APP ($VERSION, $(lipo -archs "$APP/Contents/MacOS/BaneySpaces"))"
