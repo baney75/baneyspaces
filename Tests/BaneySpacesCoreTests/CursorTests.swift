@@ -152,6 +152,10 @@ final class CursorVisibilityTests: XCTestCase {
         XCTAssertEqual(decide(scope: "lent", window: 3, current: 3), .show)
         XCTAssertEqual(decide(scope: "lent", window: 3, current: 5), .hidden(.notWatching), "a lent window parked on another workspace")
         XCTAssertEqual(decide(scope: "lent", window: nil, current: 3), .hidden(.notWatching))
+        // Full Access (PR #167, Codex review): one of Donovan's windows shows the cursor like a lent one.
+        XCTAssertEqual(decide(scope: "full_access", window: 3, current: 3), .show)
+        XCTAssertEqual(decide(scope: "full_access", window: 3, current: 5), .hidden(.notWatching))
+        XCTAssertTrue(CursorVisibility.wantsFrame(enabled: true, scope: "full_access", windowWorkspace: 3, shown: [2, 3], agent: 9))
     }
 
     func testAnythingElseIsHidden() {
