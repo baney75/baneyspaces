@@ -13,11 +13,21 @@ final class AgentAccess {
     /// running apps it claimed a window of. Their windows are refused again once the mode is no longer Full Access,
     /// even on the agent workspace. Kept by start time, so a reused pid is never taken for one.
     private var grants = AgentOwnedSet()
+    /// The same grants as saved: those of processes that have quit drop out at the next launch.
+    private var saved: [[Double]] = []
     /// Called on the main thread after the mode changes: the menu bar, Settings, state.json.
     var onChange: ((AgentAccessMode) -> Void)?
 
+    /// Where the grants are kept, so a relaunch of BaneySpaces doesn't forget them: pid and start time pairs.
+    static let grantsKey = "agentAccessGrants"
+
     private init() {
         if mode != .standard { Trace.log("agent access at launch: \(mode.rawValue) (saved in Settings)") }
+        // Only the processes still running as the same process (pid and start time) come back.
+        for pair in UserDefaults.standard.array(forKey: Self.grantsKey) as? [[Double]] ?? [] where pair.count == 2 {
+            let pid = Int32(pair[0])
+            if let t = AgentOwned.startTime(pid), abs(t - pair[1]) < 0.5 { grants.add(pid, startedAt: t); saved.append(pair) }
+        }
     }
 
     var current: AgentAccessMode {
@@ -27,7 +37,13 @@ final class AgentAccess {
 
     func grant(_ pid: Int32) {
         guard let t = AgentOwned.startTime(pid) else { return }
-        lock.lock(); grants.add(pid, startedAt: t); lock.unlock()
+        lock.lock()
+        grants.add(pid, startedAt: t)
+        saved.removeAll { Int32($0[0]) == pid }
+        saved.append([Double(pid), t])
+        let all = saved
+        lock.unlock()
+        UserDefaults.standard.set(all, forKey: Self.grantsKey)
     }
 
     /// Whether `pid` is one Full Access let in.

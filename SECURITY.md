@@ -28,8 +28,9 @@ not a public issue.
 - **Agent access.** Settings > Agents sets what agent tools may use: Read Only, Default (the agent
   workspace and apps you lend) or Full Access (every window on every workspace, and any app, still
   from behind and never while you are using the app). Only a real click in BaneySpaces widens it;
-  the socket can read it but never change it, and a caller on another machine never gets more
-  than Default.
+  the socket can read it but never change it, and `agent open` from another machine never gets
+  more than Default. `agent run` from another machine already runs any command as you, so the
+  mode doesn't change what it can do.
 - **Hooks.** `baneyspaces hooks install` adds entries to `~/.claude/settings.json` and a file
   in `~/.grok/hooks`. It backs up the settings file once and removes only its own entries.
 - Settings and window positions stay in `~/Library/Application Support/BaneySpaces` and its

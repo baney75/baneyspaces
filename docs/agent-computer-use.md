@@ -114,7 +114,10 @@ window BaneySpaces doesn't place, and never BaneySpaces' own windows. `agent ope
 
 - What Full Access let in goes out with it: a process `agent open` started off the list, or one of Donovan's apps it
   claimed a window of, is refused on the agent workspace once the mode is no longer Full Access.
-- A caller on another machine (`remote on`) gets Default at most: Full Access is for agents on this Mac.
+- `agent open` from another machine (`remote on`) gets Default at most: Full Access is for agents on this Mac. Remote
+  `agent run` already runs any command as Donovan, so the mode doesn't change it.
+- What Full Access let in is kept (pid and start time) across a relaunch of BaneySpaces, and is refused by `agent move`
+  and left out of `agent status` once the mode narrows.
 
 - Only Donovan changes the mode: the Settings picker or the menu's "Switch to Default" row. A change that widens access
   (to Default from Read Only, or to Full Access) shows a sheet whose confirm button is off for the first second and

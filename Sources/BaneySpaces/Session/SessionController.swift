@@ -606,6 +606,9 @@ final class SessionController {
                 h.claim(app.processIdentifier, n, true, nil)
                 if files.isEmpty {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        // The mode may have narrowed in the 1.5 s since the request was let in.
+                        let now = AgentAccess.shared.current
+                        guard AgentAccessGate.sessionRefusal(op: "open", mode: now) == nil, separate || now == .full else { return }
                         if Windows.standardIDs(of: app.processIdentifier).isEmpty { _ = newWindow(app) }
                     }
                 }
@@ -647,7 +650,9 @@ final class SessionController {
             guard let id else { return .init(ok: false, error: "nothing matches") }
             // Anyone can reach this op through the socket, so it moves only windows of processes started for an agent.
             // Sending one of your own windows here is yours to do, with the keys or the dock.
-            guard SocketPolicy.mayMove(windowPid: h.pidOf(id), startedForAgents: AgentOwned.shared.pids) else {
+            // A process Full Access let in is the agent's only while the mode is still Full Access.
+            let granted = h.pidOf(id).map { AgentAccess.shared.current != .full && AgentAccess.shared.grantedUnderFull($0) } ?? false
+            guard !granted, SocketPolicy.mayMove(windowPid: h.pidOf(id), startedForAgents: AgentOwned.shared.pids) else {
                 return .init(ok: false, error: "needs_lend: window \(id) isn't an agent's; only windows of apps BaneySpaces started for an agent move here",
                              info: ["code": "needs_lend", "suggestion": "Move your own window with its workspace key (⌘⇧\(n)), or lend the app with `baneyspaces agent lend <app>`."])
             }
@@ -662,7 +667,10 @@ final class SessionController {
         let access = AgentAccess.shared.current.rawValue
         guard let n = agentHost.workspace() else { return .init(ok: true, info: ["workspace": "off", "access": access]) }
         var info = ["workspace": "\(n)", "current": "\(agentHost.current())", "access": access]
-        for (i, w) in agentHost.windows().enumerated() { info["window.\(i)"] = "\(w.id)\t\(w.app)\t\(w.title)" }
+        // A process Full Access let in is listed only while the mode is still Full Access.
+        let full = AgentAccess.shared.current == .full
+        let listed = agentHost.windows().filter { w in full || !(agentHost.pidOf(w.id).map { AgentAccess.shared.grantedUnderFull($0) } ?? false) }
+        for (i, w) in listed.enumerated() { info["window.\(i)"] = "\(w.id)\t\(w.app)\t\(w.title)" }
         return .init(ok: true, items: engine.items.filter { $0.workspace == n }, info: info)
     }
 

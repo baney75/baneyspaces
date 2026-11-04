@@ -43,7 +43,7 @@ public enum AgentAccessMode: String, CaseIterable, Codable, Sendable {
     public var detail: String {
         switch self {
         case .readOnly:
-            return "Agents can list, read and capture the windows they could use in Default, and can't click, type, open apps, run commands, move windows or turn the agent workspace on or off."
+            return "Agents can list, read and capture the windows they could use in Default, and can't click, type, open apps, run commands, move windows or turn the agent workspace on."
         case .standard:
             return "Agents work on the agent workspace, in apps BaneySpaces starts for them (TextEdit, Preview, Calculator) and in apps you lend."
         case .full:
@@ -56,7 +56,7 @@ public enum AgentAccessMode: String, CaseIterable, Codable, Sendable {
 public enum AgentAccessGate {
     public static let changes: Set<String> = ["click", "type", "set-value", "press", "click-at", "drag", "scroll", "select", "toggle", "open"]
     /// The session engine's own agent ops that start or move something.
-    public static let sessionChanges: Set<String> = ["open", "run", "move", "on", "off"]
+    public static let sessionChanges: Set<String> = ["open", "run", "move", "on"]
 
     public static func refusal(verb: String, mode: AgentAccessMode) -> HandsError? {
         guard mode == .readOnly, changes.contains(verb) else { return nil }

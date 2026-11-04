@@ -90,9 +90,11 @@ final class HandsRouter {
         lock.lock(); let bad = refused.contains(w.id); lock.unlock()
         // Under Full Access Donovan's documents are open to agents, so a window refused for showing one is usable again.
         if bad, mode != .full { return .denied(HandsError(.needsSandbox, "window \(w.id) showed a document of Donovan's", suggestion: "Open your own file from the handoff folder.", retry: .never)) }
-        let d = ScopeGuard.check(w, agentWorkspace: agent, lends: lends.current(), now: Date(), inUse: UserActivity.shared.inUse(w.pid), mode: mode, selfPid: getpid())
+        let book = lends.current()
+        let d = ScopeGuard.check(w, agentWorkspace: agent, lends: book, now: Date(), inUse: UserActivity.shared.inUse(w.pid), mode: mode, selfPid: getpid())
         // What Full Access let onto the agent workspace goes out with it. A window of that process Donovan lends later still counts as lent.
         if d == .onAgentWorkspace, mode != .full, AgentAccess.shared.grantedUnderFull(w.pid) {
+            if book.isLent(w, now: Date()) { return .lent }
             return .denied(HandsError(.needsSandbox, "\(w.app) was opened for agents under Full Access, and agent access is \(mode.title) now",
                                       suggestion: "Ask Donovan to set Full Access again (Settings > Agents), or work in an app `baneyspaces agent open` starts in \(mode.title).", retry: .never))
         }

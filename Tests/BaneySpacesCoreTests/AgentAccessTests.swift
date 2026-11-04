@@ -108,8 +108,8 @@ final class ReadOnlyGateTests: XCTestCase {
     }
 
     func testTheSessionOpsThatStartOrMoveAreRefused() {
-        for op in ["open", "run", "move", "on", "off"] { XCTAssertNotNil(AgentAccessGate.sessionRefusal(op: op, mode: .readOnly), op) }
-        for op in ["status", "mode", "cursor", "lend-ask"] { XCTAssertNil(AgentAccessGate.sessionRefusal(op: op, mode: .readOnly), op) }
+        for op in ["open", "run", "move", "on"] { XCTAssertNotNil(AgentAccessGate.sessionRefusal(op: op, mode: .readOnly), op) }
+        for op in ["status", "mode", "off", "cursor", "lend-ask"] { XCTAssertNil(AgentAccessGate.sessionRefusal(op: op, mode: .readOnly), op) }
         XCTAssertNil(AgentAccessGate.sessionRefusal(op: "open", mode: .standard))
     }
 
@@ -228,9 +228,9 @@ final class AgentAccessSurfaceTests: XCTestCase {
         let router = try HandsSourceTests.code("Sources/BaneySpaces/Hands/HandsRouter.swift")
         let handle = try XCTUnwrap(HandsSourceTests.block(after: "func handle(_ req: HandsRequest)", in: router))
         XCTAssertTrue(handle.range(of: "AgentAccessGate.refusal(verb: req.verb")!.lowerBound < handle.range(of: "switch req.verb")!.lowerBound)
-        XCTAssertTrue(router.contains("mode: mode)"), "the scope guard is asked with the mode")
+        XCTAssertTrue(router.contains("mode: mode, selfPid: getpid())"), "the scope guard is asked with the mode")
         let session = try HandsSourceTests.code("Sources/BaneySpaces/Session/SessionController.swift")
-        let agent = try XCTUnwrap(HandsSourceTests.block(after: "func agent(_ sub: String, _ args: [String])", in: session))
+        let agent = try XCTUnwrap(HandsSourceTests.block(after: "func agent(_ sub: String, _ args: [String], remote: Bool = false)", in: session))
         XCTAssertTrue(agent.range(of: "AgentAccessGate.sessionRefusal(op: sub")!.lowerBound < agent.range(of: "switch sub")!.lowerBound)
         // Review r1 (second-G6): only the app delegate (Settings, the menu) asks to change the mode.
         let app = HandsSourceTests.root.appendingPathComponent("Sources")
@@ -261,5 +261,14 @@ final class AgentAccessSurfaceTests: XCTestCase {
         XCTAssertTrue(inUse.lowerBound < open.range(of: "AgentActivity.shared.markLaunch(pid: pid, for: 3)")!.lowerBound)
         XCTAssertTrue(open.contains("AgentAccess.shared.grant(pid)") && open.contains("if !separate { AgentAccess.shared.grant(app.processIdentifier) }"))
         XCTAssertTrue(session.contains("remote: r.caller?.hasPrefix(\"remote \") == true"))
+        // Review r2: grants survive a relaunch, reach move and status, and the delayed New Window rechecks the mode.
+        let access = try HandsSourceTests.code("Sources/BaneySpaces/Hands/AgentAccess.swift")
+        XCTAssertTrue(access.contains("UserDefaults.standard.set(all, forKey: Self.grantsKey)") && access.contains("UserDefaults.standard.array(forKey: Self.grantsKey)"))
+        let move = try XCTUnwrap(HandsSourceTests.between("case \"move\":", "h.move(id, n)", in: session))
+        XCTAssertTrue(move.contains("AgentAccess.shared.grantedUnderFull($0)"))
+        XCTAssertTrue(session.contains("guard AgentAccessGate.sessionRefusal(op: \"open\", mode: now) == nil, separate || now == .full else { return }"))
+        let status = try XCTUnwrap(HandsSourceTests.block(after: "func agentStatus()", in: session))
+        XCTAssertTrue(status.contains("grantedUnderFull"))
+        XCTAssertTrue(decide.contains("if book.isLent(w, now: Date()) { return .lent }"), "a lend still wins (second-N4)")
     }
 }
