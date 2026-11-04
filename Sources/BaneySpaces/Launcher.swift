@@ -1241,7 +1241,9 @@ enum Brew {
     }
 
     private static func runInTerminal(_ command: String) {
-        let url = Spaces.folder.appendingPathComponent("launcher.command")
+        // One file per run: Ghostty reads it only once its window exists, and a second run must not overwrite it first.
+        let url = Spaces.folder.appendingPathComponent("launcher-\(UUID().uuidString.prefix(8).lowercased()).command")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 120) { try? FileManager.default.removeItem(at: url) }
         let script = """
         #!/bin/zsh
         export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
