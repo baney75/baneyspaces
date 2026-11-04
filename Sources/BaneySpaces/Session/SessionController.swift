@@ -436,7 +436,8 @@ final class SessionController {
             guard let q = r.target, let item = engine.find(q) else { return .init(ok: false, error: "nothing matches") }
             guard engine.send(item, r.text ?? "") else { return .init(ok: false, error: "\(item.label) isn't a Ghostty terminal") }
             return .init(ok: true, info: ["id": item.id, "label": item.label])
-        case .agent: return agent(r.text ?? "status", r.args ?? [])
+        // The remote server names every caller "remote …" (Server.swift), and a local caller claiming it only loses access.
+        case .agent: return agent(r.text ?? "status", r.args ?? [], remote: r.caller?.hasPrefix("remote ") == true)
         case .sandbox:
             // Answered by the server off the main thread (`handleSandbox`); a sandbox request that
             // reaches here came through a path that doesn't know how.
@@ -496,7 +497,7 @@ final class SessionController {
     // MARK: agent workspace
 
     /// `baneyspaces agent …`: work for agents on a workspace you aren't looking at.
-    func agent(_ sub: String, _ args: [String]) -> Wire.Reply {
+    func agent(_ sub: String, _ args: [String], remote: Bool = false) -> Wire.Reply {
         let h = agentHost
         // Read Only (Settings > Agents) refuses every op that starts or moves something, whoever sent it.
         if let e = AgentAccessGate.sessionRefusal(op: sub, mode: AgentAccess.shared.current) {
@@ -522,7 +523,8 @@ final class SessionController {
             let mode = AgentAccess.shared.current
             return .init(ok: true, info: ["access": mode.rawValue, "title": mode.title, "detail": mode.detail])
         case "open":
-            let mode = AgentAccess.shared.current
+            // Full Access is for agents on this Mac: a caller on another machine gets Default at most.
+            let mode = remote ? AgentAccess.shared.current.forRemote : AgentAccess.shared.current
             guard let n = h.workspace() else { return .init(ok: false, error: "the agent workspace is off: baneyspaces agent on") }
             guard let name = args.first, let url = Self.appURL(name) else { return .init(ok: false, error: "no app called \(args.first ?? "")") }
             let appName = url.deletingPathExtension().lastPathComponent
@@ -551,7 +553,14 @@ final class SessionController {
             // window is claimed for the agent workspace and made from behind; the process stays Donovan's.
             if !separate, let running = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == bundle && before.contains($0.processIdentifier) }) {
                 let pid = running.processIdentifier
-                AgentActivity.shared.markLaunch(pid: pid, for: 8)
+                // His hands are on it: nothing is claimed, opened or pressed.
+                if UserActivity.shared.inUse(pid) {
+                    return .init(ok: false, error: "\(appName) is in front or was used in the last 30 s",
+                                 info: ["code": HandsErrorCode.inUse.rawValue, "suggestion": "Wait until Donovan has been away from \(appName) for 30 seconds."])
+                }
+                AgentAccess.shared.grant(pid)
+                // Only as long as the claim (3 s for a running app): an activation the New Window press causes isn't followed.
+                AgentActivity.shared.markLaunch(pid: pid, for: 3)
                 h.claim(pid, n, false, nil)
                 let asked: Bool
                 if !files.isEmpty {
@@ -592,6 +601,7 @@ final class SessionController {
                 // Not a new process (the app ran this launch inside Donovan's): leave it entirely alone.
                 guard !before.contains(app.processIdentifier) else { return }
                 AgentOwned.shared.add(app.processIdentifier)
+                if !separate { AgentAccess.shared.grant(app.processIdentifier) }
                 AgentActivity.shared.markLaunch(pid: app.processIdentifier, for: 8)
                 h.claim(app.processIdentifier, n, true, nil)
                 if files.isEmpty {

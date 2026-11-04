@@ -124,7 +124,12 @@ public enum ScopeDecision: Equatable, Sendable {
 /// he is using. A window BaneySpaces doesn't place (a menu, a panel) is refused in every mode.
 public enum ScopeGuard {
     public static func check(_ w: HandsWindow, agentWorkspace: Int?, lends: LendBook, now: Date, inUse: Bool = false,
-                             mode: AgentAccessMode = .standard) -> ScopeDecision {
+                             mode: AgentAccessMode = .standard, selfPid: Int32? = nil) -> ScopeDecision {
+        // BaneySpaces' own windows (Settings, the consent sheets) are never an agent's, in any mode.
+        if let me = selfPid, w.pid == me {
+            return .denied(HandsError(.permissionDenied, "window \(w.id) is BaneySpaces' own",
+                                      suggestion: "Agents never use BaneySpaces' windows; its settings are Donovan's.", retry: .never))
+        }
         if let agent = agentWorkspace, w.workspace == agent {
             // His hands are on this app (in front, or used in the last 30 s): the agent waits, even here.
             if inUse {
@@ -161,9 +166,9 @@ public enum ScopeGuard {
 
     /// The windows an agent may use now.
     public static func visible(_ windows: [HandsWindow], agentWorkspace: Int?, lends: LendBook, now: Date, inUse: (Int32) -> Bool = { _ in false },
-                               mode: AgentAccessMode = .standard) -> [(window: HandsWindow, scope: ScopeDecision)] {
+                               mode: AgentAccessMode = .standard, selfPid: Int32? = nil) -> [(window: HandsWindow, scope: ScopeDecision)] {
         windows.compactMap { w in
-            let d = check(w, agentWorkspace: agentWorkspace, lends: lends, now: now, inUse: inUse(w.pid), mode: mode)
+            let d = check(w, agentWorkspace: agentWorkspace, lends: lends, now: now, inUse: inUse(w.pid), mode: mode, selfPid: selfPid)
             return d.allowed ? (w, d) : nil
         }
     }

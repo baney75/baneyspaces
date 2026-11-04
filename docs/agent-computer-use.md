@@ -103,13 +103,18 @@ Donovan picks how much agents may use in Settings > Agents (Donovan, 2026-11-04)
 
 | Mode | Agents may |
 | --- | --- |
-| Read Only | List, `snapshot`, `find`, `get` and `shot` the windows Default allows. Every verb that changes something (`click`, `type`, `set-value`, `press`, `click-at`, `drag`, `scroll`, `select`, `toggle`, `open`) and the session ops `agent open`, `agent run` and `agent move` answer `permission_denied` (retry never). |
+| Read Only | List, `snapshot`, `find`, `get` and `shot` the windows Default allows. Every verb that changes something (`click`, `type`, `set-value`, `press`, `click-at`, `drag`, `scroll`, `select`, `toggle`, `open`) and the session ops `agent open`, `run`, `move`, `on` and `off` answer `permission_denied` (retry never), checked again right before each action is delivered. |
 | Default | Everything above, on the agent workspace, in apps BaneySpaces starts from its short list, and in lent windows. |
-| Full Access | Read and act on every window BaneySpaces places, on every workspace (scope `full_access`), and `agent open` any app and any existing file. An app off the list that isn't running starts on the agent workspace; one already running gets a new window there instead of a second copy. |
+| Full Access | Read and act on every window BaneySpaces places, on every workspace (scope `full_access`), and `agent open` any app (browsers included) and any existing file or folder. An app off the list that isn't running starts on the agent workspace; one already running gets a new window there instead of a second copy, refused with `in_use` while Donovan is using it. |
 
 Every mode keeps the background-only rules below: no activation, no raised window, no Space change, no global input,
 nothing while Donovan is using the app (`in_use`, 30 s), no Open or Save panel (or a window holding one), and no
-window BaneySpaces doesn't place. URLs still wait for agent browser profiles.
+window BaneySpaces doesn't place, and never BaneySpaces' own windows. `agent open` takes no URL argument in any mode
+(that waits for agent browser profiles).
+
+- What Full Access let in goes out with it: a process `agent open` started off the list, or one of Donovan's apps it
+  claimed a window of, is refused on the agent workspace once the mode is no longer Full Access.
+- A caller on another machine (`remote on`) gets Default at most: Full Access is for agents on this Mac.
 
 - Only Donovan changes the mode: the Settings picker or the menu's "Switch to Default" row. A change that widens access
   (to Default from Read Only, or to Full Access) shows a sheet whose confirm button is off for the first second and

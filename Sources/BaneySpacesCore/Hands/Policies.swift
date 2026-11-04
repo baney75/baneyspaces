@@ -68,7 +68,7 @@ public enum AgentOpenGate {
             }
             if full {
                 guard let r = HandoffPath.resolveAnywhere(t, relativeTo: handoff) else {
-                    return .failure(HandsError(.badArguments, "\(t) isn't a file on this Mac", suggestion: "Pass the full path of a file that exists.", retry: .safe))
+                    return .failure(HandsError(.badArguments, "\(t) isn't a file or folder on this Mac", suggestion: "Pass the full path of one that exists.", retry: .safe))
                 }
                 files.append(r.path)
                 continue

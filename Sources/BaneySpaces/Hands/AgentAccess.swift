@@ -9,6 +9,10 @@ final class AgentAccess {
     static let shared = AgentAccess()
     private let lock = NSLock()
     private var mode = AgentAccessMode(saved: UserDefaults.standard.string(forKey: AgentAccessMode.defaultsKey))
+    /// Processes `agent open` reached only because of Full Access: an app off the list it started, or one of Donovan's
+    /// running apps it claimed a window of. Their windows are refused again once the mode is no longer Full Access,
+    /// even on the agent workspace. Kept by start time, so a reused pid is never taken for one.
+    private var grants = AgentOwnedSet()
     /// Called on the main thread after the mode changes: the menu bar, Settings, state.json.
     var onChange: ((AgentAccessMode) -> Void)?
 
@@ -19,6 +23,17 @@ final class AgentAccess {
     var current: AgentAccessMode {
         lock.lock(); defer { lock.unlock() }
         return mode
+    }
+
+    func grant(_ pid: Int32) {
+        guard let t = AgentOwned.startTime(pid) else { return }
+        lock.lock(); grants.add(pid, startedAt: t); lock.unlock()
+    }
+
+    /// Whether `pid` is one Full Access let in.
+    func grantedUnderFull(_ pid: Int32) -> Bool {
+        lock.lock(); let g = grants; lock.unlock()
+        return g.contains(pid, startedAt: AgentOwned.startTime(pid))
     }
 
     /// Main thread only. The caller has already asked Donovan when the change widens access.

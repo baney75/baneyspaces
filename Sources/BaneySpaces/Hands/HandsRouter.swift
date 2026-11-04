@@ -90,7 +90,13 @@ final class HandsRouter {
         lock.lock(); let bad = refused.contains(w.id); lock.unlock()
         // Under Full Access Donovan's documents are open to agents, so a window refused for showing one is usable again.
         if bad, mode != .full { return .denied(HandsError(.needsSandbox, "window \(w.id) showed a document of Donovan's", suggestion: "Open your own file from the handoff folder.", retry: .never)) }
-        return ScopeGuard.check(w, agentWorkspace: agent, lends: lends.current(), now: Date(), inUse: UserActivity.shared.inUse(w.pid), mode: mode)
+        let d = ScopeGuard.check(w, agentWorkspace: agent, lends: lends.current(), now: Date(), inUse: UserActivity.shared.inUse(w.pid), mode: mode, selfPid: getpid())
+        // What Full Access let onto the agent workspace goes out with it. A window of that process Donovan lends later still counts as lent.
+        if d == .onAgentWorkspace, mode != .full, AgentAccess.shared.grantedUnderFull(w.pid) {
+            return .denied(HandsError(.needsSandbox, "\(w.app) was opened for agents under Full Access, and agent access is \(mode.title) now",
+                                      suggestion: "Ask Donovan to set Full Access again (Settings > Agents), or work in an app `baneyspaces agent open` starts in \(mode.title).", retry: .never))
+        }
+        return d
     }
 
     /// The scope check an engine call runs on its queue at the moment it executes, plus, for a call on a ref,
@@ -98,6 +104,12 @@ final class HandsRouter {
     /// agent could edit).
     func check(_ w: HandsWindow, ref: String? = nil) -> HandsEngine.Check {
         { [self] in gate(w) ?? ref.flatMap { refProblem($0) } }
+    }
+
+    /// The same for a call that changes something: Read Only, set after the request was let in, stops it here too.
+    func actingCheck(_ w: HandsWindow, ref: String? = nil) -> HandsEngine.Check {
+        let scope = check(w, ref: ref)
+        return { AgentAccessGate.actingRefusal(mode: AgentAccess.shared.current) ?? scope() }
     }
 
     private func refmapURL(_ sid: String) -> URL { HandsEngine.stateRoot.appendingPathComponent("snapshots/\(sid)/refmap.json") }
@@ -157,7 +169,7 @@ final class HandsRouter {
     private func windows() -> HandsEnvelope {
         let (all, agent) = listWindows(fresh: true)
         let mode = AgentAccess.shared.current
-        let usable = ScopeGuard.visible(all, agentWorkspace: agent, lends: lends.current(), now: Date(), inUse: { UserActivity.shared.inUse($0) }, mode: mode)
+        let usable = all.map { ($0, decide($0, agent)) }.filter { $0.1.allowed }.map { (window: $0.0, scope: $0.1) }
             // Under Full Access every window is listed without reading each one (that would ask every app on the Mac);
             // a panel is still refused when the window is used.
             .filter { mode == .full || inspectProblem($0.window) == nil }
@@ -369,7 +381,7 @@ final class HandsRouter {
                 }
             }
             // The scope and ref checks run again on the process queue, at the moment the call executes.
-            let reply = HandsEngine.shared.act(window: w, ref: ref, kind: kind, text: text, direction: direction, amount: amount, check: check(w, ref: ref))
+            let reply = HandsEngine.shared.act(window: w, ref: ref, kind: kind, text: text, direction: direction, amount: amount, check: actingCheck(w, ref: ref))
             switch reply {
             case .failed(let e): return .failure(e)
             case .ok(let engine):

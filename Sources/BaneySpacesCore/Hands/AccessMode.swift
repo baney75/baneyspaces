@@ -28,6 +28,10 @@ public enum AgentAccessMode: String, CaseIterable, Codable, Sendable {
     /// on a consent sheet does that. Narrowing never asks.
     public func widens(from old: AgentAccessMode) -> Bool { rank > old.rank }
 
+    /// What a caller on another machine gets: never more than Default. Full Access is for agents on this Mac;
+    /// a remote caller only gives the agent workspace work (SECURITY.md).
+    public var forRemote: AgentAccessMode { self == .full ? .standard : self }
+
     public var title: String {
         switch self {
         case .readOnly: return "Read Only"
@@ -39,7 +43,7 @@ public enum AgentAccessMode: String, CaseIterable, Codable, Sendable {
     public var detail: String {
         switch self {
         case .readOnly:
-            return "Agents can list, read and capture the windows they could use in Default, and can't click, type, open apps or run commands."
+            return "Agents can list, read and capture the windows they could use in Default, and can't click, type, open apps, run commands, move windows or turn the agent workspace on or off."
         case .standard:
             return "Agents work on the agent workspace, in apps BaneySpaces starts for them (TextEdit, Preview, Calculator) and in apps you lend."
         case .full:
@@ -52,11 +56,17 @@ public enum AgentAccessMode: String, CaseIterable, Codable, Sendable {
 public enum AgentAccessGate {
     public static let changes: Set<String> = ["click", "type", "set-value", "press", "click-at", "drag", "scroll", "select", "toggle", "open"]
     /// The session engine's own agent ops that start or move something.
-    public static let sessionChanges: Set<String> = ["open", "run", "move"]
+    public static let sessionChanges: Set<String> = ["open", "run", "move", "on", "off"]
 
     public static func refusal(verb: String, mode: AgentAccessMode) -> HandsError? {
         guard mode == .readOnly, changes.contains(verb) else { return nil }
         return readOnly(verb)
+    }
+
+    /// The check right before an action is delivered (and before each retry): the mode may have narrowed to Read Only
+    /// since the request was let in.
+    public static func actingRefusal(mode: AgentAccessMode) -> HandsError? {
+        mode == .readOnly ? readOnly("this action") : nil
     }
 
     public static func sessionRefusal(op: String, mode: AgentAccessMode) -> HandsError? {

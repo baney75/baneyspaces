@@ -48,6 +48,21 @@ final class FullAccessScopeTests: XCTestCase {
         XCTAssertEqual(e.code, .inUse)
     }
 
+    /// Review r1 (first-F4): Settings and the consent sheets are never an agent's.
+    func testBaneySpacesOwnWindowsAreRefusedInEveryMode() {
+        for mode in AgentAccessMode.allCases {
+            XCTAssertFalse(ScopeGuard.check(win(2, pid: 42), agentWorkspace: 9, lends: LendBook(), now: now, mode: mode, selfPid: 42).allowed, "\(mode)")
+            XCTAssertFalse(ScopeGuard.check(win(9, pid: 42), agentWorkspace: 9, lends: LendBook(), now: now, mode: mode, selfPid: 42).allowed, "\(mode)")
+        }
+    }
+
+    /// Review r1 (second-G4): a caller on another machine never gets Full Access.
+    func testRemoteCallersGetDefaultAtMost() {
+        XCTAssertEqual(AgentAccessMode.full.forRemote, .standard)
+        XCTAssertEqual(AgentAccessMode.standard.forRemote, .standard)
+        XCTAssertEqual(AgentAccessMode.readOnly.forRemote, .readOnly)
+    }
+
     func testFullAccessStillRefusesAWindowBaneySpacesDoesNotPlace() {
         XCTAssertFalse(ScopeGuard.check(win(nil), agentWorkspace: 9, lends: LendBook(), now: now, mode: .full).allowed)
     }
@@ -93,9 +108,16 @@ final class ReadOnlyGateTests: XCTestCase {
     }
 
     func testTheSessionOpsThatStartOrMoveAreRefused() {
-        for op in ["open", "run", "move"] { XCTAssertNotNil(AgentAccessGate.sessionRefusal(op: op, mode: .readOnly), op) }
-        for op in ["status", "mode", "on", "off", "cursor", "lend-ask"] { XCTAssertNil(AgentAccessGate.sessionRefusal(op: op, mode: .readOnly), op) }
+        for op in ["open", "run", "move", "on", "off"] { XCTAssertNotNil(AgentAccessGate.sessionRefusal(op: op, mode: .readOnly), op) }
+        for op in ["status", "mode", "cursor", "lend-ask"] { XCTAssertNil(AgentAccessGate.sessionRefusal(op: op, mode: .readOnly), op) }
         XCTAssertNil(AgentAccessGate.sessionRefusal(op: "open", mode: .standard))
+    }
+
+    /// Review r1 (sol-F2): the mode can narrow between letting a request in and delivering it.
+    func testTheDeliveryCheckRefusesUnderReadOnly() {
+        XCTAssertEqual(AgentAccessGate.actingRefusal(mode: .readOnly)?.code, .permissionDenied)
+        XCTAssertNil(AgentAccessGate.actingRefusal(mode: .standard))
+        XCTAssertNil(AgentAccessGate.actingRefusal(mode: .full))
     }
 }
 
@@ -210,7 +232,34 @@ final class AgentAccessSurfaceTests: XCTestCase {
         let session = try HandsSourceTests.code("Sources/BaneySpaces/Session/SessionController.swift")
         let agent = try XCTUnwrap(HandsSourceTests.block(after: "func agent(_ sub: String, _ args: [String])", in: session))
         XCTAssertTrue(agent.range(of: "AgentAccessGate.sessionRefusal(op: sub")!.lowerBound < agent.range(of: "switch sub")!.lowerBound)
-        XCTAssertFalse(session.contains("AgentAccess.shared.set("), "the socket side never sets the mode")
-        XCTAssertFalse(router.contains("AgentAccess.shared.set(") || router.contains("AgentAccess.shared.request("))
+        // Review r1 (second-G6): only the app delegate (Settings, the menu) asks to change the mode.
+        let app = HandsSourceTests.root.appendingPathComponent("Sources")
+        let files = FileManager.default.enumerator(atPath: app.path)!.compactMap { $0 as? String }.filter { $0.hasSuffix(".swift") }
+        for f in files where !f.hasSuffix("BaneySpaces/AppDelegate.swift") && !f.hasSuffix("Hands/AgentAccess.swift") {
+            let text = try HandsSourceTests.code("Sources/" + f)
+            XCTAssertFalse(text.contains("AgentAccess.shared.set(") || text.contains("AgentAccess.shared.request("), "\(f) must not change agent access")
+        }
+        XCTAssertTrue(try HandsSourceTests.code("Sources/BaneySpaces/AppDelegate.swift").contains("AgentAccess.shared.request("))
+    }
+
+    /// Review r1 fixes, pinned in the code that carries them.
+    func testTheRoundOneFixesStayInPlace() throws {
+        let router = try HandsSourceTests.code("Sources/BaneySpaces/Hands/HandsRouter.swift")
+        let decide = try XCTUnwrap(HandsSourceTests.block(after: "func decide(_ w: HandsWindow, _ agent: Int?)", in: router))
+        XCTAssertTrue(decide.contains("selfPid: getpid()"), "BaneySpaces' own windows (first-F4)")
+        XCTAssertTrue(decide.contains("d == .onAgentWorkspace, mode != .full, AgentAccess.shared.grantedUnderFull(w.pid)"), "grants end with Full Access (first-F1)")
+        let act = try XCTUnwrap(HandsSourceTests.block(after: "private func act(", in: router))
+        XCTAssertTrue(act.contains("check: actingCheck(w, ref: ref))"), "Read Only at delivery (sol-F2)")
+        let bg = try HandsSourceTests.code("Sources/BaneySpaces/Hands/HandsRouter+Background.swift")
+        XCTAssertTrue(bg.contains("let scopeCheck = actingCheck(w, ref: ref)"), "and for keys and pointer, retries included")
+        XCTAssertTrue(bg.contains("AgentAccess.shared.current == .full && !owned.contains(w.pid) ? .full : .agentWorkspace"), "sol-F3")
+        let session = try HandsSourceTests.code("Sources/BaneySpaces/Session/SessionController.swift")
+        let open = try XCTUnwrap(HandsSourceTests.between("case \"open\":", "case \"lend-ask\":", in: session))
+        XCTAssertTrue(open.contains("let mode = remote ? AgentAccess.shared.current.forRemote : AgentAccess.shared.current"), "second-G4")
+        let inUse = try XCTUnwrap(open.range(of: "if UserActivity.shared.inUse(pid) {"))
+        XCTAssertTrue(inUse.lowerBound < open.range(of: "h.claim(pid, n, false, nil)")!.lowerBound, "in_use before any claim (sol-F1)")
+        XCTAssertTrue(inUse.lowerBound < open.range(of: "AgentActivity.shared.markLaunch(pid: pid, for: 3)")!.lowerBound)
+        XCTAssertTrue(open.contains("AgentAccess.shared.grant(pid)") && open.contains("if !separate { AgentAccess.shared.grant(app.processIdentifier) }"))
+        XCTAssertTrue(session.contains("remote: r.caller?.hasPrefix(\"remote \") == true"))
     }
 }
