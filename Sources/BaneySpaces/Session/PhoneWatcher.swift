@@ -52,8 +52,10 @@ final class PhoneWatcher {
     private func startTracker() {
         guard running, let adb = Self.adb else { return }
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: adb)
-        p.arguments = ["track-devices", "-l"]
+        // Through the guard, so the tracker ends with BaneySpaces even after a crash or kill -9.
+        let guarded = ChildGuard.wrap([adb, "track-devices", "-l"])
+        p.executableURL = URL(fileURLWithPath: guarded.executable)
+        p.arguments = guarded.arguments
         let out = Pipe()
         p.standardOutput = out
         p.standardError = FileHandle.nullDevice

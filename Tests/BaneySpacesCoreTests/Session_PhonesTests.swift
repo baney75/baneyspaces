@@ -122,3 +122,44 @@ final class AdbInputTests: XCTestCase {
         XCTAssertEqual(AdbTrack.inputText("a;b|c&d"), "'a;b|c&d'")
     }
 }
+
+final class ChildGuardTests: XCTestCase {
+    func testWrapKeepsTheCommandAsSeparateArguments() {
+        let w = ChildGuard.wrap(["/opt/homebrew/bin/adb", "track-devices", "-l"])
+        XCTAssertEqual(w.executable, "/bin/sh")
+        XCTAssertEqual(Array(w.arguments.prefix(2)), ["-c", ChildGuard.script])
+        XCTAssertEqual(Array(w.arguments.suffix(3)), ["/opt/homebrew/bin/adb", "track-devices", "-l"],
+                       "the command is passed as \"$@\", never spliced into the script")
+    }
+
+    private func run(_ command: [String]) throws -> (Process, Pipe) {
+        let w = ChildGuard.wrap(command)
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: w.executable)
+        p.arguments = w.arguments
+        let out = Pipe()
+        p.standardOutput = out
+        try p.run()
+        return (p, out)
+    }
+
+    func testTheWrappedCommandRunsAndItsExitStatusComesBack() throws {
+        let (p, out) = try run(["/bin/sh", "-c", "echo hi; exit 7"])
+        p.waitUntilExit()
+        XCTAssertEqual(String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8), "hi\n")
+        XCTAssertEqual(p.terminationStatus, 7)
+    }
+
+    func testTerminateReachesTheWrappedCommand() throws {
+        // The command prints its own pid, then sleeps far longer than the test.
+        let (p, out) = try run(["/bin/sh", "-c", "echo $$; exec sleep 300"])
+        let line = String(data: out.fileHandleForReading.availableData, encoding: .utf8) ?? ""
+        let pid = try XCTUnwrap(pid_t(line.trimmingCharacters(in: .whitespacesAndNewlines)))
+        XCTAssertEqual(kill(pid, 0), 0, "the command is running")
+        p.terminate()
+        p.waitUntilExit()
+        let deadline = Date().addingTimeInterval(5)
+        while kill(pid, 0) == 0, Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+        XCTAssertEqual(kill(pid, 0), -1, "terminate() on the wrapper must not leave the command behind")
+    }
+}
