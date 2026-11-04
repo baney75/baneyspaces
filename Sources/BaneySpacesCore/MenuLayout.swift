@@ -71,20 +71,32 @@ public enum MenuEntry: Equatable, Sendable {
     /// "N agents finished while you were away", a submenu listing them.
     case finished(count: Int)
     case update(UpdateNotice)
+    /// "Agents Have Full Access: Switch to Default": there only while agent access isn't Default, so a mode that
+    /// stays until Donovan changes it is never out of sight.
+    case access(AgentAccessMode)
     case separator
 }
 
 extension MenuLayout {
-    public static func entries(rows: [Row], finished: Int, update: UpdateNotice?, dockOn: Bool? = nil) -> [MenuEntry] {
+    public static func entries(rows: [Row], finished: Int, update: UpdateNotice?, dockOn: Bool? = nil, access: AgentAccessMode = .standard) -> [MenuEntry] {
         var out = rows.map(MenuEntry.workspace)
         out += [.separator, .showAll, .find]
         if let dockOn { out.append(.dock(on: dockOn)) }
         var pending: [MenuEntry] = []
+        if access != .standard { pending.append(.access(access)) }
         if finished > 0 { pending.append(.finished(count: finished)) }
         if let update { pending.append(.update(update)) }
         if !pending.isEmpty { out.append(.separator); out += pending }
         out += [.separator, .settings, .quit]
         return out
+    }
+
+    public static func accessTitle(_ mode: AgentAccessMode) -> String {
+        switch mode {
+        case .full: return "Agents Have Full Access: Switch to Default"
+        case .readOnly: return "Agents Are Read Only: Switch to Default"
+        case .standard: return "Agent Access: Default"
+        }
     }
 
     /// "1 Agent Finished While You Were Away" / "3 Agents Finished While You Were Away".

@@ -436,7 +436,8 @@ final class SessionController {
             guard let q = r.target, let item = engine.find(q) else { return .init(ok: false, error: "nothing matches") }
             guard engine.send(item, r.text ?? "") else { return .init(ok: false, error: "\(item.label) isn't a Ghostty terminal") }
             return .init(ok: true, info: ["id": item.id, "label": item.label])
-        case .agent: return agent(r.text ?? "status", r.args ?? [])
+        // The remote server names every caller "remote …" (Server.swift), and a local caller claiming it only loses access.
+        case .agent: return agent(r.text ?? "status", r.args ?? [], remote: r.caller?.hasPrefix("remote ") == true)
         case .sandbox:
             // Answered by the server off the main thread (`handleSandbox`); a sandbox request that
             // reaches here came through a path that doesn't know how.
@@ -496,8 +497,12 @@ final class SessionController {
     // MARK: agent workspace
 
     /// `baneyspaces agent …`: work for agents on a workspace you aren't looking at.
-    func agent(_ sub: String, _ args: [String]) -> Wire.Reply {
+    func agent(_ sub: String, _ args: [String], remote: Bool = false) -> Wire.Reply {
         let h = agentHost
+        // Read Only (Settings > Agents) refuses every op that starts or moves something, whoever sent it.
+        if let e = AgentAccessGate.sessionRefusal(op: sub, mode: AgentAccess.shared.current) {
+            return .init(ok: false, error: e.message, info: ["code": e.code.rawValue, "suggestion": e.suggestion])
+        }
         switch sub {
         case "on":
             let n = args.first.flatMap(Int.init) ?? h.workspace() ?? 9
@@ -513,16 +518,23 @@ final class SessionController {
             return .init(ok: true, info: ["workspace": "off"])
         case "status":
             return agentStatus()
+        case "mode":
+            // Shows the mode only: changing it is Donovan's, in Settings (SocketPolicy refuses `agent mode <name>`).
+            let mode = AgentAccess.shared.current
+            return .init(ok: true, info: ["access": mode.rawValue, "title": mode.title, "detail": mode.detail])
         case "open":
+            // Full Access is for agents on this Mac: a caller on another machine gets Default at most.
+            let mode = remote ? AgentAccess.shared.current.forRemote : AgentAccess.shared.current
             guard let n = h.workspace() else { return .init(ok: false, error: "the agent workspace is off: baneyspaces agent on") }
             guard let name = args.first, let url = Self.appURL(name) else { return .init(ok: false, error: "no app called \(args.first ?? "")") }
             let appName = url.deletingPathExtension().lastPathComponent
             let bundle = Bundle(url: url)?.bundleIdentifier ?? ""
             // The gate every caller of this op goes through, the socket included: only apps verified to start a
-            // separate instance, only files from the handoff folder, no URLs.
+            // separate instance, only files from the handoff folder, no URLs. Full Access (Donovan's) opens any app and file.
             let files: [URL]
             switch AgentOpenGate.check(app: appName, bundle: bundle, targets: Array(args.dropFirst()), handoff: HandsRouter.handoffFolder, appURL: url,
-                                     probeFolder: ProbeAppTrust.folder, probeTrusted: bundle == AgentAppPolicy.canvasProbeBundle && ProbeAppTrust.trusted(url)) {
+                                     probeFolder: ProbeAppTrust.folder, probeTrusted: bundle == AgentAppPolicy.canvasProbeBundle && ProbeAppTrust.trusted(url),
+                                     mode: mode) {
             case .failure(let e): return .init(ok: false, error: e.message, info: ["code": e.code.rawValue, "suggestion": e.suggestion])
             case .success(let paths): files = paths.map { URL(fileURLWithPath: $0) }
             }
@@ -533,8 +545,36 @@ final class SessionController {
             // Only apps verified to run a separate copy get here (the gate above). A new instance every time,
             // told not to restore what the app had open (it would be Donovan's documents), so every window it makes
             // is the agent's.
-            guard AgentAppPolicy.needsSeparateInstance(bundle: bundle) else {
+            let separate = AgentAppPolicy.needsSeparateInstance(bundle: bundle)
+            guard separate || mode == .full else {
                 return .init(ok: false, error: "\(appName) isn't an app an agent starts", info: ["code": "needs_sandbox"])
+            }
+            // Full Access, an app off the list that is already running: no second copy (many apps can't run one). Its next
+            // window is claimed for the agent workspace and made from behind; the process stays Donovan's.
+            if !separate, let running = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == bundle && before.contains($0.processIdentifier) }) {
+                let pid = running.processIdentifier
+                // His hands are on it: nothing is claimed, opened or pressed.
+                if UserActivity.shared.inUse(pid) {
+                    return .init(ok: false, error: "\(appName) is in front or was used in the last 30 s",
+                                 info: ["code": HandsErrorCode.inUse.rawValue, "suggestion": "Wait until Donovan has been away from \(appName) for 30 seconds."])
+                }
+                AgentAccess.shared.grant(pid)
+                // Only as long as the claim (3 s for a running app): an activation the New Window press causes isn't followed.
+                AgentActivity.shared.markLaunch(pid: pid, for: 3)
+                h.claim(pid, n, false, nil)
+                let asked: Bool
+                if !files.isEmpty {
+                    NSWorkspace.shared.open(files, withApplicationAt: url, configuration: cfg) { _, _ in }
+                    asked = true
+                } else if let item = Windows.newWindowItem(pid) {
+                    asked = AXUIElementPerformAction(item, kAXPressAction as CFString) == .success
+                } else { asked = false }
+                guard asked else {
+                    h.unclaim(pid)
+                    return .init(ok: true, info: ["workspace": "\(n)", "app": appName, "pid": "\(pid)",
+                                                  "note": "\(appName) is already running and has no New Window command; with full access its windows are open to agents where they are"])
+                }
+                return .init(ok: true, info: ["workspace": "\(n)", "app": appName, "pid": "\(pid)", "note": "\(appName) is already running; its new window opens on the agent workspace in a moment"])
             }
             cfg.createsNewApplicationInstance = true
             cfg.arguments = ["-ApplePersistenceIgnoreState", "YES"]
@@ -561,10 +601,14 @@ final class SessionController {
                 // Not a new process (the app ran this launch inside Donovan's): leave it entirely alone.
                 guard !before.contains(app.processIdentifier) else { return }
                 AgentOwned.shared.add(app.processIdentifier)
+                if !separate { AgentAccess.shared.grant(app.processIdentifier) }
                 AgentActivity.shared.markLaunch(pid: app.processIdentifier, for: 8)
                 h.claim(app.processIdentifier, n, true, nil)
                 if files.isEmpty {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        // The mode may have narrowed in the 1.5 s since the request was let in.
+                        let now = AgentAccess.shared.current
+                        guard AgentAccessGate.sessionRefusal(op: "open", mode: now) == nil, separate || now == .full else { return }
                         if Windows.standardIDs(of: app.processIdentifier).isEmpty { _ = newWindow(app) }
                     }
                 }
@@ -606,21 +650,27 @@ final class SessionController {
             guard let id else { return .init(ok: false, error: "nothing matches") }
             // Anyone can reach this op through the socket, so it moves only windows of processes started for an agent.
             // Sending one of your own windows here is yours to do, with the keys or the dock.
-            guard SocketPolicy.mayMove(windowPid: h.pidOf(id), startedForAgents: AgentOwned.shared.pids) else {
+            // A process Full Access let in is the agent's only while the mode is still Full Access.
+            let granted = h.pidOf(id).map { AgentAccess.shared.current != .full && AgentAccess.shared.grantedUnderFull($0) } ?? false
+            guard !granted, SocketPolicy.mayMove(windowPid: h.pidOf(id), startedForAgents: AgentOwned.shared.pids) else {
                 return .init(ok: false, error: "needs_lend: window \(id) isn't an agent's; only windows of apps BaneySpaces started for an agent move here",
                              info: ["code": "needs_lend", "suggestion": "Move your own window with its workspace key (⌘⇧\(n)), or lend the app with `baneyspaces agent lend <app>`."])
             }
             h.move(id, n)
             return .init(ok: true, info: ["workspace": "\(n)", "moved": "window \(id)"])
         default:
-            return .init(ok: false, error: "usage: baneyspaces agent status|on [N]|off|open <app> [file…]|lend <app>|run [--dir D] -- <cmd>|move <row>|cursor on|theme <name>")
+            return .init(ok: false, error: "usage: baneyspaces agent status|mode|on [N]|off|open <app> [file…]|lend <app>|run [--dir D] -- <cmd>|move <row>|cursor on|theme <name>")
         }
     }
 
     func agentStatus() -> Wire.Reply {
-        guard let n = agentHost.workspace() else { return .init(ok: true, info: ["workspace": "off"]) }
-        var info = ["workspace": "\(n)", "current": "\(agentHost.current())"]
-        for (i, w) in agentHost.windows().enumerated() { info["window.\(i)"] = "\(w.id)\t\(w.app)\t\(w.title)" }
+        let access = AgentAccess.shared.current.rawValue
+        guard let n = agentHost.workspace() else { return .init(ok: true, info: ["workspace": "off", "access": access]) }
+        var info = ["workspace": "\(n)", "current": "\(agentHost.current())", "access": access]
+        // A process Full Access let in is listed only while the mode is still Full Access.
+        let full = AgentAccess.shared.current == .full
+        let listed = agentHost.windows().filter { w in full || !(agentHost.pidOf(w.id).map { AgentAccess.shared.grantedUnderFull($0) } ?? false) }
+        for (i, w) in listed.enumerated() { info["window.\(i)"] = "\(w.id)\t\(w.app)\t\(w.title)" }
         return .init(ok: true, items: engine.items.filter { $0.workspace == n }, info: info)
     }
 

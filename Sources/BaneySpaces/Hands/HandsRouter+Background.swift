@@ -79,7 +79,7 @@ extension HandsRouter {
         // The mark covers the whole action: the queue wait, the readings, the post and the proof, and a short tail.
         let token = AgentActivity.shared.begin(pid: w.pid, window: w.id)
         defer { AgentActivity.shared.end(token) }
-        let scopeCheck = check(w, ref: ref)
+        let scopeCheck = actingCheck(w, ref: ref)
         if let e = scopeCheck() { return .failure(e) }
         guard BackgroundAX.serverWindow(w.id) != nil else {
             return .failure(HandsError(.windowNotFound, "the window server does not list window \(w.id)", suggestion: "Run `baneyspaces agent windows` and try again.", retry: .safe))
@@ -286,8 +286,10 @@ extension HandsRouter {
         guard let live, live.pid == w.pid, let server = BackgroundAX.serverWindow(w.id) else { return nil }
         let scope: ScopeKind
         switch decide(live, agent) {
-        case .onAgentWorkspace: scope = .agentWorkspace
+        // Under Full Access one of Donovan's processes with a window claimed onto the agent workspace is his, like a lent one.
+        case .onAgentWorkspace: scope = AgentAccess.shared.current == .full && !owned.contains(w.pid) ? .full : .agentWorkspace
         case .lent: scope = .lent
+        case .fullAccess: scope = .full
         case .denied: scope = .outside
         }
         let axWindows = BackgroundAX.windows(pid: w.pid)

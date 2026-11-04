@@ -55,12 +55,20 @@ enum LendConsent {
             return false
         }
         guard response == .alertSecondButtonReturn, !timedOut else { return refuse("not confirmed") }
-        // The click (or key) that ended the sheet: the right kind, on the button, after it was enabled, hardware only.
+        if let why = notByHand(alert: alert, button: button, enabledAt: enabledAt) { return refuse(why) }
+        refusals[app] = nil
+        pause = 15
+        return true
+    }
+
+    /// Nil when the event that ended the sheet was Donovan's: the right kind, on the button, after it was enabled,
+    /// hardware only. Otherwise why not. Read right after `runModal` returns.
+    static func notByHand(alert: NSAlert, button: NSButton, enabledAt: TimeInterval) -> String? {
         guard let event = NSApp.currentEvent, let cg = event.cgEvent,
               UserEventSource.isGenuine(sourcePID: cg.getIntegerValueField(.eventSourceUnixProcessID),
                                         sourceState: cg.getIntegerValueField(.eventSourceStateID),
                                         age: ProcessInfo.processInfo.systemUptime - event.timestamp) else {
-            return refuse("the answer did not come from a real click")
+            return "the answer did not come from a real click"
         }
         let kind: ConsentClick.Kind
         switch event.type {
@@ -75,10 +83,47 @@ enum LendConsent {
         }()
         let activation = event.type == .keyDown && [" ", "\r"].contains(event.charactersIgnoringModifiers ?? "") && alert.window.firstResponder === button
         guard ConsentClick.valid(kind: kind, eventTime: event.timestamp, buttonEnabledAt: enabledAt, insideButton: inside, keyIsActivation: activation) else {
-            return refuse("the answer was not a click on the button")
+            return "the answer was not a click on the button"
         }
-        refusals[app] = nil
-        pause = 15
+        return nil
+    }
+}
+
+/// Widening agent access (Read Only to Default, or anything to Full Access) is decided here, the same way a lend is:
+/// a sheet whose confirm button is disabled for the first second and counts only for a real click or key on it.
+/// The Settings picker and the menu are ordinary controls an Accessibility client could press, so they only ask.
+/// Narrowing access never asks.
+enum AccessConsent {
+    private static var showing = false
+
+    /// Main thread only. False for "Keep", a timeout, a second sheet while one is up, and any answer that did not
+    /// come from a real click or key.
+    static func ask(_ mode: AgentAccessMode) -> Bool {
+        guard Thread.isMainThread, !showing else { return false }
+        showing = true
+        defer { showing = false }
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = mode == .full ? "Give agents full access to this Mac?" : "Switch agents to \(mode.title)?"
+        alert.informativeText = mode.detail + (mode == .full ? " It stays on until you change it in Settings > Agents or the BaneySpaces menu." : "")
+        alert.addButton(withTitle: "Keep \(AgentAccess.shared.current.title)")   // first button: the default (Return)
+        alert.addButton(withTitle: mode == .full ? "Give Full Access" : "Switch")
+        let button = alert.buttons[1]
+        button.isEnabled = false
+        let enabledAt = ProcessInfo.processInfo.systemUptime + LendConsent.enableAfter
+        let enable = Timer(timeInterval: LendConsent.enableAfter, repeats: false) { _ in button.isEnabled = true }
+        RunLoop.main.add(enable, forMode: .common)
+        var timedOut = false
+        let timer = Timer(timeInterval: LendConsent.giveUp, repeats: false) { _ in timedOut = true; NSApp.abortModal() }
+        RunLoop.main.add(timer, forMode: .common)
+        defer { timer.invalidate(); enable.invalidate() }
+        let response = alert.runModal()
+        guard response == .alertSecondButtonReturn, !timedOut else { return false }
+        if let why = LendConsent.notByHand(alert: alert, button: button, enabledAt: enabledAt) {
+            Trace.log("agent access to \(mode.rawValue) refused: \(why)")
+            return false
+        }
         return true
     }
 }

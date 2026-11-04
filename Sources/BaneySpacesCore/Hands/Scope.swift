@@ -103,6 +103,8 @@ public struct LendBook: Equatable, Sendable {
 public enum ScopeDecision: Equatable, Sendable {
     case onAgentWorkspace
     case lent
+    /// One of Donovan's windows, open to agents because he set Full Access.
+    case fullAccess
     case denied(HandsError)
 
     public var allowed: Bool { if case .denied = self { return false }; return true }
@@ -110,6 +112,7 @@ public enum ScopeDecision: Equatable, Sendable {
         switch self {
         case .onAgentWorkspace: return "agent_workspace"
         case .lent: return "lent"
+        case .fullAccess: return "full_access"
         case .denied(let e): return e.code.rawValue
         }
     }
@@ -117,9 +120,16 @@ public enum ScopeDecision: Equatable, Sendable {
 
 /// The one rule that keeps agents off the user's screen: an agent may read or act only on a window
 /// on the agent workspace, or on a window that is lent right now and that the user isn't using.
-/// Everything else, including a window BaneySpaces doesn't place, is refused.
+/// Under Full Access (`mode`, Donovan's to set) every window BaneySpaces places is open too, but never one
+/// he is using. A window BaneySpaces doesn't place (a menu, a panel) is refused in every mode.
 public enum ScopeGuard {
-    public static func check(_ w: HandsWindow, agentWorkspace: Int?, lends: LendBook, now: Date, inUse: Bool = false) -> ScopeDecision {
+    public static func check(_ w: HandsWindow, agentWorkspace: Int?, lends: LendBook, now: Date, inUse: Bool = false,
+                             mode: AgentAccessMode = .standard, selfPid: Int32? = nil) -> ScopeDecision {
+        // BaneySpaces' own windows (Settings, the consent sheets) are never an agent's, in any mode.
+        if let me = selfPid, w.pid == me {
+            return .denied(HandsError(.permissionDenied, "window \(w.id) is BaneySpaces' own",
+                                      suggestion: "Agents never use BaneySpaces' windows; its settings are Donovan's.", retry: .never))
+        }
         if let agent = agentWorkspace, w.workspace == agent {
             // His hands are on this app (in front, or used in the last 30 s): the agent waits, even here.
             if inUse {
@@ -136,6 +146,13 @@ public enum ScopeGuard {
             }
             return .lent
         }
+        if mode == .full, w.workspace != nil {
+            if inUse {
+                return .denied(HandsError(.inUse, "\(w.app) is in front or was used in the last 30 s",
+                                          suggestion: "Wait until Donovan has been away from \(w.app) for 30 seconds.", retry: .safe))
+            }
+            return .fullAccess
+        }
         guard agentWorkspace != nil else {
             return .denied(HandsError(.agentWorkspaceOff,
                                       "there is no agent workspace, and \(w.app) isn't lent",
@@ -148,9 +165,10 @@ public enum ScopeGuard {
     }
 
     /// The windows an agent may use now.
-    public static func visible(_ windows: [HandsWindow], agentWorkspace: Int?, lends: LendBook, now: Date, inUse: (Int32) -> Bool = { _ in false }) -> [(window: HandsWindow, scope: ScopeDecision)] {
+    public static func visible(_ windows: [HandsWindow], agentWorkspace: Int?, lends: LendBook, now: Date, inUse: (Int32) -> Bool = { _ in false },
+                               mode: AgentAccessMode = .standard, selfPid: Int32? = nil) -> [(window: HandsWindow, scope: ScopeDecision)] {
         windows.compactMap { w in
-            let d = check(w, agentWorkspace: agentWorkspace, lends: lends, now: now, inUse: inUse(w.pid))
+            let d = check(w, agentWorkspace: agentWorkspace, lends: lends, now: now, inUse: inUse(w.pid), mode: mode, selfPid: selfPid)
             return d.allowed ? (w, d) : nil
         }
     }

@@ -53,14 +53,25 @@ public enum AgentAppPolicy {
 
 /// `agent open`'s one gate, used by the router and by the session engine's raw `open` (which other callers on the socket reach).
 public enum AgentOpenGate {
-    /// The files to hand over (resolved), or why not.
-    public static func check(app: String, bundle: String, targets: [String], handoff: URL, appURL: URL? = nil, probeFolder: URL? = nil, probeTrusted: Bool = false) -> Result<[String], HandsError> {
-        if let e = AgentAppPolicy.refusal(app: app, bundle: bundle, appURL: appURL, probeFolder: probeFolder, probeTrusted: probeTrusted) { return .failure(e) }
+    /// The files to hand over (resolved), or why not. Under Full Access any app may start and any existing file
+    /// may be opened (a relative path is read from the handoff folder); URLs still wait for agent browser profiles.
+    public static func check(app: String, bundle: String, targets: [String], handoff: URL, appURL: URL? = nil, probeFolder: URL? = nil, probeTrusted: Bool = false,
+                             mode: AgentAccessMode = .standard) -> Result<[String], HandsError> {
+        if let e = AgentAccessGate.refusal(verb: "open", mode: mode) { return .failure(e) }
+        let full = mode == .full
+        if !full, let e = AgentAppPolicy.refusal(app: app, bundle: bundle, appURL: appURL, probeFolder: probeFolder, probeTrusted: probeTrusted) { return .failure(e) }
         var files: [String] = []
         for t in targets {
             if t.contains("://") {
                 return .failure(HandsError(.notSupported, "opening a URL needs an agent browser profile, which arrives in a later phase",
-                                           suggestion: "Open a file from the handoff folder instead.", retry: .never))
+                                           suggestion: "Open a file instead.", retry: .never))
+            }
+            if full {
+                guard let r = HandoffPath.resolveAnywhere(t, relativeTo: handoff) else {
+                    return .failure(HandsError(.badArguments, "\(t) isn't a file or folder on this Mac", suggestion: "Pass the full path of one that exists.", retry: .safe))
+                }
+                files.append(r.path)
+                continue
             }
             guard let r = HandoffPath.resolve(t, in: handoff) else { return .failure(HandoffPath.error(t, folder: handoff)) }
             files.append(r.path)
@@ -90,6 +101,15 @@ public enum HandoffPath {
         let root = folder.standardizedFileURL.resolvingSymlinksInPath().path
         guard url.path.hasPrefix(root + "/"), FileManager.default.fileExists(atPath: url.path) else { return nil }
         return url
+    }
+
+    /// Full Access: the path, resolved through symlinks, when a file or folder exists there; relative paths are
+    /// read from `folder`.
+    public static func resolveAnywhere(_ target: String, relativeTo folder: URL) -> URL? {
+        let expanded = (target as NSString).expandingTildeInPath
+        let base = expanded.hasPrefix("/") ? URL(fileURLWithPath: expanded) : folder.appendingPathComponent(expanded)
+        let url = base.standardizedFileURL.resolvingSymlinksInPath()
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
     public static func error(_ target: String, folder: URL) -> HandsError {
@@ -197,6 +217,10 @@ public enum SocketPolicy {
         // The cursor is how Donovan sees agent activity: an agent may pick its look, but only he switches it off (Settings).
         if r.op == .agent, r.text?.lowercased() == "cursor", r.args?.first?.lowercased() == "off" {
             return "turning the agent cursor off is Donovan's to do, in BaneySpaces Settings; agents may change its theme: `baneyspaces agent cursor theme <name>`"
+        }
+        // Agent access (Read Only, Default, Full Access) is set only in Settings, behind a real click: nothing on the socket changes it.
+        if r.op == .agent, r.text?.lowercased() == "mode", let want = r.args?.first, !want.isEmpty {
+            return "changing agent access to \(want) is Donovan's to do, in BaneySpaces Settings > Agents; `baneyspaces agent mode` shows the current one"
         }
         if r.op == .sandbox, r.text?.lowercased() == "images" {
             return "deleting the sandbox's images (24 GB to download again) is Donovan's to do: Settings > Agents > Delete Images"

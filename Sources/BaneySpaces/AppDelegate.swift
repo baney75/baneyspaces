@@ -220,6 +220,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         c.model.onTopDragChange = { [weak self] on in self?.setTopDrag(on) }
         c.model.onDockEdgeChange = { [weak self] e in self?.setDockEdge(e) }
         c.model.onDockAgentStatusChange = { [weak self] on in self?.setDockAgentStatus(on) }
+        c.model.onAgentAccessPick = { AgentAccess.shared.request($0) }
         // Every event, not just any: an older install lacks StopFailure, which the red badge needs.
         c.model.hooksInstalled = {
             guard let d = FileManager.default.contents(atPath: NSHomeDirectory() + "/.claude/settings.json") else { return .noClaudeCode }
@@ -684,7 +685,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.button?.image = image
         // Agents that finished while you were elsewhere, counted beside the workspace number.
         let n = started && session.started ? session.unseenCount : 0
-        statusItem.button?.title = n > 0 ? " \(n)" : ""
+        // Full Access stays until Donovan changes it, so the menu bar says so for as long as it is on.
+        let full = AgentAccess.shared.current == .full ? " Full" : ""
+        statusItem.button?.title = (n > 0 ? " \(n)" : "") + full
+        statusItem.button?.toolTip = full.isEmpty ? nil : "Agents have full access (Settings > Agents)"
         statusItem.button?.imagePosition = .imageLeading
     }
 
@@ -731,6 +735,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in HandsLends.shared.expire() }
+        AgentAccess.shared.onChange = { [weak self] mode in
+            guard let self else { return }
+            if self.setup.model.agentAccess != mode { self.setup.model.agentAccess = mode }
+            self.spaces.saveState()
+            self.updateIcon()
+        }
         session.sandboxHandler = { [weak self] r in self?.sandbox.service.handle(r) ?? Wire.Reply(ok: false, error: "not ready") }
         sandbox.start()
         sandbox.cleanupAtLaunch()
@@ -765,7 +775,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for n in Workspaces.range { apps[n] = spaces.apps(on: n) }
         let entries = MenuLayout.entries(rows: MenuLayout.rows(current: spaces.model.current, apps: apps),
                                          finished: session.started ? session.unseenCount : 0, update: updateNotice(),
-                                         dockOn: WorkspaceDock.enabled)
+                                         dockOn: WorkspaceDock.enabled, access: AgentAccess.shared.current)
         for entry in entries { menu.addItem(menuItem(for: entry)) }
     }
 
@@ -804,9 +814,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 it.attributedTitle = NSAttributedString(string: it.title, attributes: [.font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)])
             }
             return it
+        case .access(let mode):
+            let it = item(MenuLayout.accessTitle(mode), #selector(accessToDefault))
+            if mode == .full { it.attributedTitle = NSAttributedString(string: it.title, attributes: [.font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)]) }
+            return it
         case .separator:
             return .separator()
         }
+    }
+
+    /// Full Access back to Default narrows and happens at once; Read Only to Default widens and asks first.
+    @objc private func accessToDefault() {
+        DispatchQueue.main.async { AgentAccess.shared.request(.standard) }
     }
 
     private func item(_ title: String, _ action: Selector, key: String = "") -> NSMenuItem {

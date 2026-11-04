@@ -97,6 +97,39 @@ Lending is the only way an agent touches a window you were already using, and on
   shows a lend badge, and returns when that agent's session ends (its MCP connection closes or its
   `agent run` exits) or after 30 minutes.
 
+## Access modes
+
+Donovan picks how much agents may use in Settings > Agents (Donovan, 2026-11-04). The mode stays until he changes it.
+
+| Mode | Agents may |
+| --- | --- |
+| Read Only | List, `snapshot`, `find`, `get` and `shot` the windows Default allows. Every verb that changes something (`click`, `type`, `set-value`, `press`, `click-at`, `drag`, `scroll`, `select`, `toggle`, `open`) and the session ops `agent open`, `run`, `move`, `on` and `off` answer `permission_denied` (retry never), checked again right before each action is delivered. |
+| Default | Everything above, on the agent workspace, in apps BaneySpaces starts from its short list, and in lent windows. |
+| Full Access | Read and act on every window BaneySpaces places, on every workspace (scope `full_access`), and `agent open` any app (browsers included) and any existing file or folder. An app off the list that isn't running starts on the agent workspace; one already running gets a new window there instead of a second copy, refused with `in_use` while Donovan is using it. |
+
+Every mode keeps the background-only rules below: no activation, no raised window, no Space change, no global input,
+nothing while Donovan is using the app (`in_use`, 30 s), no Open or Save panel (or a window holding one), and no
+window BaneySpaces doesn't place, and never BaneySpaces' own windows. `agent open` takes no URL argument in any mode
+(that waits for agent browser profiles).
+
+- What Full Access let in goes out with it: a process `agent open` started off the list, or one of Donovan's apps it
+  claimed a window of, is refused on the agent workspace once the mode is no longer Full Access.
+- `agent open` from another machine (`remote on`) gets Default at most: Full Access is for agents on this Mac. Remote
+  `agent run` already runs any command as Donovan, so the mode doesn't change it.
+- What Full Access let in is kept (pid and start time) across a relaunch of BaneySpaces, and is refused by `agent move`
+  and left out of `agent status` once the mode narrows.
+
+- Only Donovan changes the mode: the Settings picker or the menu's "Switch to Default" row. A change that widens access
+  (to Default from Read Only, or to Full Access) shows a sheet whose confirm button is off for the first second and
+  counts only a hardware click or key on it, the same check as a lend (`LendConsent.notByHand`). Narrowing never asks.
+- The socket refuses `agent mode <name>`; `baneyspaces agent mode` and `agent status` show the mode, `agent windows`
+  carries `access`, and `state.json` has `agentAccess`. No config.toml key sets it.
+- While it isn't Default, the menu has a row saying so, and under Full Access the menu bar shows "Full". `trace.log`
+  records each change and, at launch, a saved mode other than Default.
+- Known limit: BaneySpaces hides the apps of the workspaces you aren't on, and a hidden app's windows refuse keys and
+  the pointer (`not_supported`) even under Full Access; the accessibility verbs (`click`, `type`, `set-value`, `toggle`,
+  `select`) still reach them. Put the app on Settings > Automation's keep-usable list to park it instead of hiding it.
+
 ## Interface
 
 One command family and one MCP server, the same verbs either way:
@@ -293,9 +326,9 @@ Not proved live yet: see the pull request. The unit tests prove the decisions; o
   BaneySpaces' own probes (`scripts/*-probe.swift`), only after 10 idle minutes, and each probe aborts
   the moment a listen-only event tap sees an event whose source isn't the probe's own pid.
 - No `activate`, `SetFrontProcess` or Space change on behalf of an agent.
-- No action on a window outside the agent workspace unless that app is lent.
+- No action on a window outside the agent workspace unless that app is lent, or Donovan set Full Access (see Access modes).
 - Snapshots and captures can hold private content, and an MCP caller is a model whose provider sees
   every result. So results only ever come from the agent workspace, the sandbox or a lent app, never
-  from your workspaces; captures are returned only when the caller asks for one; and no snapshot text
+  from your workspaces unless you set Full Access; captures are returned only when the caller asks for one; and no snapshot text
   or capture goes into a log. Every action does leave a record without content (agent id, verb, pid,
   window id, ref, route, result code, refusal reason), kept 30 days, so you can see who did what.

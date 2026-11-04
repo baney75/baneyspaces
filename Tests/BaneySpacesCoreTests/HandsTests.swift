@@ -898,8 +898,11 @@ final class HandsSourceTests: XCTestCase {
         let calls = router.components(separatedBy: "HandsEngine.shared.").dropFirst()
         XCTAssertGreaterThanOrEqual(calls.count, 6)
         for c in calls where !c.hasPrefix("permissionProblem") {
-            XCTAssertTrue(c.prefix(260).contains("check: check(w"), "an engine call without a check: \(c.prefix(80))")
+            // An acting call's check is the same scope check with the Read Only check in front (`actingCheck`, #167).
+            XCTAssertTrue(c.prefix(260).contains("check: check(w") || c.prefix(260).contains("check: actingCheck(w"), "an engine call without a check: \(c.prefix(80))")
         }
+        let acting = try XCTUnwrap(Self.block(after: "func actingCheck(", in: router))
+        XCTAssertTrue(acting.contains("let scope = check(w, ref: ref)") && acting.contains("?? scope()"), "actingCheck still runs the scope check")
         // ...and the engine runs it on the queue, right before the work, not when the call was enqueued.
         let engine = try Self.code("Sources/BaneySpaces/Hands/HandsEngine.swift")
         let run = try XCTUnwrap(Self.block(after: "private func run(window", in: engine))
@@ -1020,7 +1023,8 @@ final class HandsSourceTests: XCTestCase {
         let inspect = try XCTUnwrap(Self.block(after: "private func inspectProblem(", in: router))
         XCTAssertTrue(inspect.contains("seen.panel") && inspect.contains("HandoffPath.contains(document: doc, in: Self.handoffFolder)"))
         XCTAssertTrue(inspect.contains("refused.insert(w.id)"))
-        XCTAssertTrue(router.contains(".filter { inspectProblem($0.window) == nil }"), "the windows list hides them too")
+        // Under Full Access the list skips reading every window (documents are open then); panels are refused at use (#167).
+        XCTAssertTrue(router.contains(".filter { mode == .full || inspectProblem($0.window) == nil }"), "the windows list hides them too")
     }
 
     func testOnlyDonovanLends() throws {
