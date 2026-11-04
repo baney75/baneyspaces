@@ -30,11 +30,6 @@ public struct TerminalAgent: Equatable, Sendable {
     /// shell, so it gets the PATH your terminal has, and leaves a shell open when it quits. Not an
     /// interactive shell: a .zshrc that ends in `exec tmux` would take it over before the agent
     /// ran. Nil for a path with anything a shell would read as more than a name.
-    /// What to type into a terminal's shell to start it: the path, quoted. Nil for a path `script(at:)` refuses too.
-    public func typedCommand(at path: String) -> String? {
-        script(at: path) == nil ? nil : "'\(path)'"
-    }
-
     public func script(at path: String) -> String? {
         guard path.hasPrefix("/"), path.allSatisfy({ $0.isLetter || $0.isNumber || "/._-+@ ".contains($0) }) else { return nil }
         return """
@@ -49,6 +44,15 @@ public struct TerminalAgent: Equatable, Sendable {
 /// Which terminal the launcher opens agents in. macOS has no default-terminal setting; the app
 /// that opens .command files is the nearest thing, and it stays Terminal unless changed. So
 /// Terminal counts only when nothing better is installed.
+/// A command Ghostty runs itself (its `command` setting, through `/bin/sh -c`): zsh running the script file, the path
+/// single-quoted. A window made this way never shows Ghostty's "Allow Ghostty to execute …?", which only its
+/// open-a-file path asks.
+public enum GhosttyRun {
+    public static func command(script path: String) -> String {
+        "/bin/zsh '" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+}
+
 public enum TerminalChoice {
     public static let terminal = "com.apple.Terminal"
     /// Terminals, best first. One is picked only when it says it opens .command files.

@@ -193,6 +193,18 @@ enum Scripts {
         	return "ok"
         end newWindow
 
+        on runWindow(dir, cmd)
+        	tell application id "com.mitchellh.ghostty"
+        		set cfg to new surface configuration
+        		if dir is not "" then set initial working directory of cfg to dir
+        		set command of cfg to cmd
+        		set wait after command of cfg to true
+        		new window with configuration cfg
+        		activate
+        	end tell
+        	return "ok"
+        end runWindow
+
         """)
     }
 

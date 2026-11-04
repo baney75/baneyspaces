@@ -496,27 +496,32 @@ final class Engine {
         return true
     }
 
-    /// A Ghostty window running `command` in `dir`, made by Ghostty's own scripting. Handing Ghostty a script file
-    /// (`agent-codex.command`) shows "Allow Ghostty to execute …?" every time (Donovan, 2026-11-04); a window it makes
-    /// itself, with the command as its initial input, asks nothing. `orElse` runs (on the main thread) when BaneySpaces
-    /// may not script Ghostty, so the caller can still open the script. A Ghostty that isn't running is started
-    /// first, and opens its own first window as well.
-    func runInGhostty(in dir: String?, command: String, orElse: @escaping () -> Void) {
+    /// A Ghostty window running the script file `script`, made by Ghostty's own scripting with the script as the window's
+    /// command. Handing Ghostty the file to open (`agent-codex.command`) shows "Allow Ghostty to execute …?" every time
+    /// (Donovan, 2026-11-04); only Ghostty's open-a-file path asks. Nothing is typed into his shell, so his rc files and
+    /// history are untouched, and the script is the same one Terminal would run. Like New Terminal, the window is made
+    /// with Ghostty in front (`activate`), not from behind, which is what froze his terminals on 2026-10-14.
+    /// `orElse` runs on the main thread when Ghostty can't be scripted: Automation not allowed within 5 s (a first-time
+    /// consent, or a Ghostty still starting), or the script call failing. A Ghostty that isn't running is started
+    /// first and opens its own first window as well.
+    func runInGhostty(in dir: String?, script file: URL, orElse: @escaping () -> Void) {
         let spec = Catalog.known[0]
         guard let s = script(for: spec) else { return orElse() }
-        func send() -> Bool {
-            guard Automation.allowed(spec.bundleID) else { return false }
-            OSA.queue.async { _ = s.call("newWindow", [dir ?? "", command]) }
-            return true
+        let command = GhosttyRun.command(script: file.path)
+        func attempt(_ left: Int) {
+            guard Automation.allowed(spec.bundleID) else {
+                if left > 0 { DispatchQueue.main.asyncAfter(deadline: .now() + 1) { attempt(left - 1) } } else { orElse() }
+                return
+            }
+            OSA.queue.async {
+                let ok = s.call("runWindow", [dir ?? "", command]) == "ok"
+                if !ok { DispatchQueue.main.async { orElse() } }
+            }
         }
-        if NSWorkspace.shared.runningApplications.contains(where: { $0.bundleIdentifier == spec.bundleID }) {
-            if !send() { orElse() }
-            return
-        }
+        if NSWorkspace.shared.runningApplications.contains(where: { $0.bundleIdentifier == spec.bundleID }) { return attempt(5) }
         guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: spec.bundleID) else { return orElse() }
         NSWorkspace.shared.openApplication(at: url, configuration: .init()) { app, _ in
-            // Automation can be checked only once it runs.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { if app == nil || !send() { orElse() } }
+            DispatchQueue.main.async { if app == nil { orElse() } else { attempt(5) } }
         }
     }
 
