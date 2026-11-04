@@ -122,3 +122,75 @@ final class AdbInputTests: XCTestCase {
         XCTAssertEqual(AdbTrack.inputText("a;b|c&d"), "'a;b|c&d'")
     }
 }
+
+final class ChildGuardTests: XCTestCase {
+    func testWrapKeepsTheCommandAsSeparateArguments() {
+        let w = ChildGuard.wrap(["/opt/homebrew/bin/adb", "track-devices", "-l"])
+        XCTAssertEqual(w.executable, "/bin/sh")
+        XCTAssertEqual(Array(w.arguments.prefix(2)), ["-c", ChildGuard.script])
+        XCTAssertEqual(Array(w.arguments.suffix(3)), ["/opt/homebrew/bin/adb", "track-devices", "-l"],
+                       "the command is passed as \"$@\", never spliced into the script")
+    }
+
+    /// The wrapper with a stdin pipe, as the app starts it. Keep `life` open for as long as the command should live.
+    private func run(_ command: [String], life: Pipe = Pipe()) throws -> (process: Process, out: Pipe, life: Pipe) {
+        let w = ChildGuard.wrap(command)
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: w.executable)
+        p.arguments = w.arguments
+        let out = Pipe()
+        p.standardInput = life
+        p.standardOutput = out
+        try p.run()
+        return (p, out, life)
+    }
+
+    /// The pid a `echo $$; exec sleep 300` command prints, and a cleanup in case the test fails.
+    private func sleeperPid(_ out: Pipe) throws -> pid_t {
+        let line = String(data: out.fileHandleForReading.availableData, encoding: .utf8) ?? ""
+        let pid = try XCTUnwrap(pid_t(line.trimmingCharacters(in: .whitespacesAndNewlines)))
+        addTeardownBlock { kill(pid, SIGKILL) }
+        return pid
+    }
+
+    private func gone(_ pid: pid_t, within seconds: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while kill(pid, 0) == 0, Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+        return kill(pid, 0) == -1
+    }
+
+    func testTheWrappedCommandRunsAndItsExitStatusComesBack() throws {
+        let r = try run(["/bin/sh", "-c", "echo hi; exit 7"])
+        r.process.waitUntilExit()
+        XCTAssertEqual(String(data: r.out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8), "hi\n")
+        XCTAssertEqual(r.process.terminationStatus, 7)
+    }
+
+    func testTerminateReachesTheWrappedCommand() throws {
+        let r = try run(["/bin/sh", "-c", "echo $$; exec sleep 300"])
+        let pid = try sleeperPid(r.out)
+        XCTAssertEqual(kill(pid, 0), 0, "the command is running")
+        r.process.terminate()
+        r.process.waitUntilExit()
+        XCTAssertTrue(gone(pid, within: 5), "terminate() on the wrapper must not leave the command behind")
+    }
+
+    /// The headline path: the process holding the pipe dies by kill -9 and the command goes with it.
+    func testTheCommandDiesWhenTheProcessHoldingThePipeIsKilled() throws {
+        let life = Pipe()
+        // The stand-in for BaneySpaces: a process whose stdout is the pipe's write end, and nothing else holds it.
+        let parent = Process()
+        parent.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        parent.arguments = ["300"]
+        parent.standardOutput = life.fileHandleForWriting
+        try parent.run()
+        addTeardownBlock { kill(parent.processIdentifier, SIGKILL) }
+        try life.fileHandleForWriting.close()
+        let r = try run(["/bin/sh", "-c", "echo $$; exec sleep 300"], life: life)
+        let pid = try sleeperPid(r.out)
+        XCTAssertEqual(kill(pid, 0), 0, "the command is running while its parent lives")
+        XCTAssertFalse(gone(pid, within: 1), "and it stays up")
+        kill(parent.processIdentifier, SIGKILL)
+        XCTAssertTrue(gone(pid, within: 3), "the command must end within seconds of its parent being killed")
+    }
+}
