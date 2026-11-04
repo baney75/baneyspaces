@@ -46,8 +46,8 @@ public enum CursorVisibility {
             // Parked windows are out of view; the cursor is drawn only while you are on the agent workspace.
             guard let agent, shown.contains(agent), windowWorkspace == agent else { return .hidden(.notWatching) }
             return .show
-        case "lent":
-            // A lent app is on your own workspace: it shows when you are on that workspace.
+        case "lent", "full_access":
+            // A lent app, or any window under Full Access, is on your own workspace: it shows when you are on that workspace.
             guard let windowWorkspace, shown.contains(windowWorkspace) else { return .hidden(.notWatching) }
             return .show
         default:
