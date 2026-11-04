@@ -1241,6 +1241,15 @@ enum Brew {
     }
 
     private static func runInTerminal(_ command: String) {
+        // Ghostty asks "Allow Ghostty to execute …?" for every script file it is handed: type the command into a window it makes instead.
+        if Terminals.isGhostty(Terminals.handler()), let ghostty = Terminals.ghostty {
+            let typed = "export PATH=\"/opt/homebrew/bin:/usr/local/bin:$PATH\"; \(command); echo; echo \"Finished. You can close this window.\""
+            return ghostty(NSHomeDirectory(), typed) { openScript(command) }
+        }
+        openScript(command)
+    }
+
+    private static func openScript(_ command: String) {
         let url = Spaces.folder.appendingPathComponent("launcher.command")
         let script = """
         #!/bin/zsh
@@ -1264,6 +1273,17 @@ enum Brew {
 
 /// Your terminal, and the coding agents it can run.
 enum Terminals {
+    /// Opens a Ghostty window in a folder with a command typed in, or runs the last argument when it can't
+    /// (`Engine.runInGhostty`). Set by the app delegate.
+    static var ghostty: ((_ dir: String?, _ command: String, _ orElse: @escaping () -> Void) -> Void)?
+
+    static func isGhostty(_ app: URL?) -> Bool { app.flatMap { Bundle(url: $0)?.bundleIdentifier } == Catalog.known[0].bundleID }
+
+    /// The app that opens .command files now.
+    static func handler() -> URL? {
+        UTType("com.apple.terminal.shell-script").flatMap { NSWorkspace.shared.urlForApplication(toOpen: $0) }
+    }
+
     /// The terminal agents open in: see `TerminalChoice`.
     static func app() -> URL? {
         guard let type = UTType("com.apple.terminal.shell-script") else { return nil }
@@ -1276,8 +1296,16 @@ enum Terminals {
         return byID[pick] ?? handler ?? ws.urlForApplication(withBundleIdentifier: TerminalChoice.terminal)
     }
 
-    /// Writes the agent's script and hands it to the terminal, which runs it in a new window.
+    /// Starts the agent in a new window of the terminal. Ghostty makes the window itself with the agent typed in, since
+    /// a script file handed to it asks "Allow Ghostty to execute …?" every time; other terminals run a script.
     static func open(_ agent: TerminalAgent, at path: String, in terminal: URL) {
+        if isGhostty(terminal), let ghostty, let typed = agent.typedCommand(at: path) {
+            return ghostty(NSHomeDirectory(), typed) { openScript(agent, at: path, in: terminal) }
+        }
+        openScript(agent, at: path, in: terminal)
+    }
+
+    private static func openScript(_ agent: TerminalAgent, at path: String, in terminal: URL) {
         let url = Spaces.folder.appendingPathComponent("agent-\(agent.command).command")
         guard let script = agent.script(at: path) else {
             return Toast.show("Couldn’t start \(agent.name) from \(path)", symbol: "exclamationmark.triangle.fill")

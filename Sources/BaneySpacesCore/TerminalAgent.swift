@@ -30,6 +30,11 @@ public struct TerminalAgent: Equatable, Sendable {
     /// shell, so it gets the PATH your terminal has, and leaves a shell open when it quits. Not an
     /// interactive shell: a .zshrc that ends in `exec tmux` would take it over before the agent
     /// ran. Nil for a path with anything a shell would read as more than a name.
+    /// What to type into a terminal's shell to start it: the path, quoted. Nil for a path `script(at:)` refuses too.
+    public func typedCommand(at path: String) -> String? {
+        script(at: path) == nil ? nil : "'\(path)'"
+    }
+
     public func script(at path: String) -> String? {
         guard path.hasPrefix("/"), path.allSatisfy({ $0.isLetter || $0.isNumber || "/._-+@ ".contains($0) }) else { return nil }
         return """

@@ -496,6 +496,30 @@ final class Engine {
         return true
     }
 
+    /// A Ghostty window running `command` in `dir`, made by Ghostty's own scripting. Handing Ghostty a script file
+    /// (`agent-codex.command`) shows "Allow Ghostty to execute …?" every time (Donovan, 2026-11-04); a window it makes
+    /// itself, with the command as its initial input, asks nothing. `orElse` runs (on the main thread) when BaneySpaces
+    /// may not script Ghostty, so the caller can still open the script. A Ghostty that isn't running is started
+    /// first, and opens its own first window as well.
+    func runInGhostty(in dir: String?, command: String, orElse: @escaping () -> Void) {
+        let spec = Catalog.known[0]
+        guard let s = script(for: spec) else { return orElse() }
+        func send() -> Bool {
+            guard Automation.allowed(spec.bundleID) else { return false }
+            OSA.queue.async { _ = s.call("newWindow", [dir ?? "", command]) }
+            return true
+        }
+        if NSWorkspace.shared.runningApplications.contains(where: { $0.bundleIdentifier == spec.bundleID }) {
+            if !send() { orElse() }
+            return
+        }
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: spec.bundleID) else { return orElse() }
+        NSWorkspace.shared.openApplication(at: url, configuration: .init()) { app, _ in
+            // Automation can be checked only once it runs.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { if app == nil || !send() { orElse() } }
+        }
+    }
+
     /// A new Ghostty window in `dir`, optionally running `command`.
     func newTerminal(in dir: String?, command: String = "") {
         guard let s = script(for: Catalog.known[0]) else { return }

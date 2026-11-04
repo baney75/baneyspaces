@@ -156,6 +156,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         a.newClaude = { [weak self] in self?.session.newClaude(in: self?.terminalFolder) }
         a.newTerminal = { [weak self] in self?.session.engine.newTerminal(in: self?.terminalFolder) }
+        Terminals.ghostty = { [weak self] dir, command, orElse in
+            guard let self else { return orElse() }
+            self.session.engine.runInGhostty(in: dir, command: command, orElse: orElse)
+        }
         a.bringBack = { [weak self] in self?.bringBack() }
         a.toggleDock = { [weak self] in self?.toggleWorkspaceDock() }
         a.dockOn = { WorkspaceDock.enabled }
