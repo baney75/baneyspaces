@@ -496,6 +496,49 @@ final class Engine {
         return true
     }
 
+    private lazy var ghosttyRun = Scripts.ghosttyRun()
+
+    /// AppleScript errors that mean the request never reached Ghostty, so opening the file instead can't make a second window.
+    static let neverReached: Set<Int> = [OSA.didNotCompile, -600, -609, -1743, -1728, -10000]
+
+    /// A Ghostty window running the script file `script`, made by Ghostty's own scripting with the script as the window's
+    /// command. Handing Ghostty the file to open (`agent-codex.command`) shows "Allow Ghostty to execute …?" every time
+    /// (Donovan, 2026-11-04); only Ghostty's open-a-file path asks. Nothing is typed into his shell, so his rc files and
+    /// history are untouched, and the script is the same one Terminal would run. Like New Terminal, Ghostty is brought
+    /// forward before the window is made, never asked for one from behind (that froze his terminals on 2026-10-14), and
+    /// the call is bounded by a 10 s timeout.
+    /// `orElse` runs on the main thread when the request can't reach Ghostty: Automation denied, still not allowed after
+    /// 5 s (a first-time consent, or a Ghostty still starting), or an error that says nothing was sent. A timeout or any
+    /// other error after sending shows a toast instead, so a slow Ghostty never gets a second window.
+    func runInGhostty(in dir: String?, script file: URL, orElse: @escaping () -> Void) {
+        let id = Catalog.known[0].bundleID
+        let s = ghosttyRun
+        let command = GhosttyRun.command(script: file.path)
+        func attempt(_ left: Int) {
+            let running = NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == id }
+            switch running ? Automation.status(id) : .waiting {
+            case .denied: return orElse()
+            case .waiting:
+                if left > 0 { DispatchQueue.main.asyncAfter(deadline: .now() + 1) { attempt(left - 1) } } else { orElse() }
+                return
+            case .allowed: break
+            }
+            OSA.queue.async {
+                let r = s.run("runWindow", [dir ?? "", command])
+                guard r.error != 0 || r.out != "ok" else { return }
+                DispatchQueue.main.async {
+                    if r.out == "not running" || Self.neverReached.contains(r.error) { orElse() }
+                    else { Toast.show("Ghostty didn’t answer; try again in a moment", symbol: "exclamationmark.triangle.fill") }
+                }
+            }
+        }
+        if NSWorkspace.shared.runningApplications.contains(where: { $0.bundleIdentifier == id }) { return attempt(5) }
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) else { return orElse() }
+        NSWorkspace.shared.openApplication(at: url, configuration: .init()) { app, _ in
+            DispatchQueue.main.async { if app == nil { orElse() } else { attempt(5) } }
+        }
+    }
+
     /// A new Ghostty window in `dir`, optionally running `command`.
     func newTerminal(in dir: String?, command: String = "") {
         guard let s = script(for: Catalog.known[0]) else { return }

@@ -65,6 +65,16 @@ enum Automation {
     /// The app quit: ask again next time.
     static func forget(_ bundleID: String) { lock.withLock { yes[bundleID] = nil } }
 
+    enum Status { case allowed, waiting, denied }
+
+    /// `waiting`: macOS is asking Donovan (the first time), or the app isn't running yet; `denied`: refused in System Settings.
+    static func status(_ bundleID: String) -> Status {
+        if allowed(bundleID) { return .allowed }
+        let target = NSAppleEventDescriptor(bundleIdentifier: bundleID)
+        let s = AEDeterminePermissionToAutomateTarget(target.aeDesc, typeWildCard, typeWildCard, false)
+        return s == OSStatus(errAEEventNotPermitted) ? .denied : .waiting
+    }
+
     static func allowed(_ bundleID: String) -> Bool {
         if let at = lock.withLock({ yes[bundleID] }), Date().timeIntervalSince(at) < remember { return true }
         let target = NSAppleEventDescriptor(bundleIdentifier: bundleID)
@@ -92,6 +102,28 @@ enum Scripts {
     property fs : character id 31
     property rs : character id 30
     """
+
+    /// The launcher's agents and brew rows in Ghostty: a window whose command is a script file. A script of its own, so
+    /// a Ghostty whose dictionary lacks a term here breaks only this, and the caller falls back to opening the file.
+    /// Ghostty comes forward first, then makes the window (the order New Terminal's window needs to land in front).
+    static func ghosttyRun() -> OSA {
+        OSA("""
+        on runWindow(dir, cmd)
+        	if not (application id "com.mitchellh.ghostty" is running) then return "not running"
+        	with timeout of 10 seconds
+        		tell application id "com.mitchellh.ghostty"
+        			activate
+        			set cfg to new surface configuration
+        			if dir is not "" then set initial working directory of cfg to dir
+        			set command of cfg to cmd
+        			set wait after command of cfg to true
+        			new window with configuration cfg
+        		end tell
+        	end timeout
+        	return "ok"
+        end runWindow
+        """)
+    }
 
     static func ghostty() -> OSA {
         OSA(header + """

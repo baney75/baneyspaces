@@ -41,6 +41,15 @@ public struct TerminalAgent: Equatable, Sendable {
     }
 }
 
+/// A command Ghostty runs itself (its `command` setting, through `/bin/sh -c`): zsh running the script file, the path
+/// single-quoted. A window made this way never shows Ghostty's "Allow Ghostty to execute …?", which only its
+/// open-a-file path asks.
+public enum GhosttyRun {
+    public static func command(script path: String) -> String {
+        "/bin/zsh '" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+}
+
 /// Which terminal the launcher opens agents in. macOS has no default-terminal setting; the app
 /// that opens .command files is the nearest thing, and it stays Terminal unless changed. So
 /// Terminal counts only when nothing better is installed.
