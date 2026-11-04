@@ -498,6 +498,10 @@ final class SessionController {
     /// `baneyspaces agent …`: work for agents on a workspace you aren't looking at.
     func agent(_ sub: String, _ args: [String]) -> Wire.Reply {
         let h = agentHost
+        // Read Only (Settings > Agents) refuses every op that starts or moves something, whoever sent it.
+        if let e = AgentAccessGate.sessionRefusal(op: sub, mode: AgentAccess.shared.current) {
+            return .init(ok: false, error: e.message, info: ["code": e.code.rawValue, "suggestion": e.suggestion])
+        }
         switch sub {
         case "on":
             let n = args.first.flatMap(Int.init) ?? h.workspace() ?? 9
@@ -513,16 +517,22 @@ final class SessionController {
             return .init(ok: true, info: ["workspace": "off"])
         case "status":
             return agentStatus()
+        case "mode":
+            // Shows the mode only: changing it is Donovan's, in Settings (SocketPolicy refuses `agent mode <name>`).
+            let mode = AgentAccess.shared.current
+            return .init(ok: true, info: ["access": mode.rawValue, "title": mode.title, "detail": mode.detail])
         case "open":
+            let mode = AgentAccess.shared.current
             guard let n = h.workspace() else { return .init(ok: false, error: "the agent workspace is off: baneyspaces agent on") }
             guard let name = args.first, let url = Self.appURL(name) else { return .init(ok: false, error: "no app called \(args.first ?? "")") }
             let appName = url.deletingPathExtension().lastPathComponent
             let bundle = Bundle(url: url)?.bundleIdentifier ?? ""
             // The gate every caller of this op goes through, the socket included: only apps verified to start a
-            // separate instance, only files from the handoff folder, no URLs.
+            // separate instance, only files from the handoff folder, no URLs. Full Access (Donovan's) opens any app and file.
             let files: [URL]
             switch AgentOpenGate.check(app: appName, bundle: bundle, targets: Array(args.dropFirst()), handoff: HandsRouter.handoffFolder, appURL: url,
-                                     probeFolder: ProbeAppTrust.folder, probeTrusted: bundle == AgentAppPolicy.canvasProbeBundle && ProbeAppTrust.trusted(url)) {
+                                     probeFolder: ProbeAppTrust.folder, probeTrusted: bundle == AgentAppPolicy.canvasProbeBundle && ProbeAppTrust.trusted(url),
+                                     mode: mode) {
             case .failure(let e): return .init(ok: false, error: e.message, info: ["code": e.code.rawValue, "suggestion": e.suggestion])
             case .success(let paths): files = paths.map { URL(fileURLWithPath: $0) }
             }
@@ -533,8 +543,29 @@ final class SessionController {
             // Only apps verified to run a separate copy get here (the gate above). A new instance every time,
             // told not to restore what the app had open (it would be Donovan's documents), so every window it makes
             // is the agent's.
-            guard AgentAppPolicy.needsSeparateInstance(bundle: bundle) else {
+            let separate = AgentAppPolicy.needsSeparateInstance(bundle: bundle)
+            guard separate || mode == .full else {
                 return .init(ok: false, error: "\(appName) isn't an app an agent starts", info: ["code": "needs_sandbox"])
+            }
+            // Full Access, an app off the list that is already running: no second copy (many apps can't run one). Its next
+            // window is claimed for the agent workspace and made from behind; the process stays Donovan's.
+            if !separate, let running = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == bundle && before.contains($0.processIdentifier) }) {
+                let pid = running.processIdentifier
+                AgentActivity.shared.markLaunch(pid: pid, for: 8)
+                h.claim(pid, n, false, nil)
+                let asked: Bool
+                if !files.isEmpty {
+                    NSWorkspace.shared.open(files, withApplicationAt: url, configuration: cfg) { _, _ in }
+                    asked = true
+                } else if let item = Windows.newWindowItem(pid) {
+                    asked = AXUIElementPerformAction(item, kAXPressAction as CFString) == .success
+                } else { asked = false }
+                guard asked else {
+                    h.unclaim(pid)
+                    return .init(ok: true, info: ["workspace": "\(n)", "app": appName, "pid": "\(pid)",
+                                                  "note": "\(appName) is already running and has no New Window command; with full access its windows are open to agents where they are"])
+                }
+                return .init(ok: true, info: ["workspace": "\(n)", "app": appName, "pid": "\(pid)", "note": "\(appName) is already running; its new window opens on the agent workspace in a moment"])
             }
             cfg.createsNewApplicationInstance = true
             cfg.arguments = ["-ApplePersistenceIgnoreState", "YES"]
@@ -613,13 +644,14 @@ final class SessionController {
             h.move(id, n)
             return .init(ok: true, info: ["workspace": "\(n)", "moved": "window \(id)"])
         default:
-            return .init(ok: false, error: "usage: baneyspaces agent status|on [N]|off|open <app> [file…]|lend <app>|run [--dir D] -- <cmd>|move <row>|cursor on|theme <name>")
+            return .init(ok: false, error: "usage: baneyspaces agent status|mode|on [N]|off|open <app> [file…]|lend <app>|run [--dir D] -- <cmd>|move <row>|cursor on|theme <name>")
         }
     }
 
     func agentStatus() -> Wire.Reply {
-        guard let n = agentHost.workspace() else { return .init(ok: true, info: ["workspace": "off"]) }
-        var info = ["workspace": "\(n)", "current": "\(agentHost.current())"]
+        let access = AgentAccess.shared.current.rawValue
+        guard let n = agentHost.workspace() else { return .init(ok: true, info: ["workspace": "off", "access": access]) }
+        var info = ["workspace": "\(n)", "current": "\(agentHost.current())", "access": access]
         for (i, w) in agentHost.windows().enumerated() { info["window.\(i)"] = "\(w.id)\t\(w.app)\t\(w.title)" }
         return .init(ok: true, items: engine.items.filter { $0.workspace == n }, info: info)
     }

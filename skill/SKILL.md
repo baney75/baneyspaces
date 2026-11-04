@@ -69,8 +69,11 @@ go on. A ref belongs to the snapshot that printed it and fails closed when the U
 
 Scope rules, enforced by the app, not by your good behavior:
 
-- You may act on a window only if it is on the agent workspace or its app is lent. Anything else returns
+- In Default you may act on a window only if it is on the agent workspace or its app is lent. Anything else returns
   `outside_agent_workspace`; reads (snapshot, get, find, shot) are refused the same way.
+- Agent access is Donovan's: `baneyspaces agent mode` shows Read Only, Default or Full Access. Under Read Only only
+  `windows`, `snapshot`, `find`, `get` and `shot` work. Under Full Access windows on his workspaces show `scope: full_access`
+  and work like a lent app (never while he is using it). You cannot change the mode; ask him in words.
 - You cannot lend. To use an app Donovan already has open, tell him (a `needs_lend` or
   `outside_agent_workspace` error says so). Running `baneyspaces agent lend <app>` only shows him a sheet; nothing lends
   until he clicks Lend, and one asked for by an agent he didn't expect is a nuisance, so ask in words first. A lend names that

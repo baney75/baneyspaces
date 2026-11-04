@@ -165,7 +165,9 @@ public enum BackgroundRoute: String, Codable, Sendable {
     case windowPointer = "window_pointer"
 }
 
-public enum ScopeKind: String, Sendable { case agentWorkspace, lent, outside }
+/// `full`: one of Donovan's windows under Full Access. Like a lent window it is his own process, so it is not
+/// asked to be one BaneySpaces started; every later check (in front, hidden, sheet, siblings) still holds.
+public enum ScopeKind: String, Sendable { case agentWorkspace, lent, full, outside }
 public enum WindowCondition: String, Sendable { case normal, minimized, appHidden }
 
 /// What reads the result back. An action with `.none` is refused before anything is posted.

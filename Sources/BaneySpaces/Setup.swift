@@ -24,6 +24,10 @@ final class SetupModel: ObservableObject {
     var onDockEdgeChange: ((DockEdge) -> Void)?
     @Published var dockAgentStatus = WorkspaceDock.agentStatus
     var onDockAgentStatusChange: ((Bool) -> Void)?
+    /// What agents may use (Settings > Agents). Shows the mode in force: a pick that widens access takes effect
+    /// only after the consent sheet, so this follows `AgentAccess`, never the picker.
+    @Published var agentAccess = AgentAccess.shared.current
+    var onAgentAccessPick: ((AgentAccessMode) -> Void)?
     /// Whether Claude Code and Grok report to BaneySpaces; agent badges need it.
     enum HookState { case on, off, noClaudeCode, unreadable }
     var hooksInstalled: () -> HookState = { .on }
@@ -334,6 +338,14 @@ final class SetupModel: ObservableObject {
     func setDockAgentStatus(_ on: Bool) {
         dockAgentStatus = on
         onDockAgentStatusChange?(on)
+    }
+
+    /// After the picker's own update: the consent sheet is modal and must not run inside a SwiftUI binding.
+    func pickAgentAccess(_ mode: AgentAccessMode) {
+        DispatchQueue.main.async { [weak self] in
+            self?.onAgentAccessPick?(mode)
+            self?.agentAccess = AgentAccess.shared.current
+        }
     }
 
     func installHooks() {
@@ -774,6 +786,17 @@ struct SetupView: View {
     // MARK: Agents
 
     @ViewBuilder private var agents: some View {
+        section("Agent access") {
+            Picker("", selection: Binding(get: { model.agentAccess }, set: { model.pickAgentAccess($0) })) {
+                ForEach(AgentAccessMode.allCases, id: \.self) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented).labelsHidden().fixedSize()
+            Text(model.agentAccess.detail).font(.callout).foregroundStyle(model.agentAccess == .full ? .orange : .secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("Only you change this, here or in the BaneySpaces menu. More access asks you first; it stays until you change it.")
+                .font(.callout).foregroundStyle(.secondary)
+        }
+
         section("Sandbox") {
             Toggle("Allow the sandbox: a throwaway macOS VM for agent work", isOn: Binding(get: { model.sandbox.enabled },
                 set: { var s = model.sandbox; s.enabled = $0; model.setSandbox(s) }))

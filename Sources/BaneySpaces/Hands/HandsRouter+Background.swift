@@ -288,6 +288,7 @@ extension HandsRouter {
         switch decide(live, agent) {
         case .onAgentWorkspace: scope = .agentWorkspace
         case .lent: scope = .lent
+        case .fullAccess: scope = .full
         case .denied: scope = .outside
         }
         let axWindows = BackgroundAX.windows(pid: w.pid)

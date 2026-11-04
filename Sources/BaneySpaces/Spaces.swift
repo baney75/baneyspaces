@@ -1903,6 +1903,7 @@ final class Spaces {
             "agentWorkspace": Self.agentWorkspace ?? 0,
             // Apps lent to agents right now (`baneyspaces agent lend`), with when they go back.
             "lent": HandsLends.shared.stateEntries(),
+            "agentAccess": AgentAccess.shared.current.rawValue,
             "parked": saved.frames.keys.sorted(),
             "hiddenApps": saved.hiddenApps.sorted(),
             // Apps the last scan couldn't read, and windows from the saved layout still waiting

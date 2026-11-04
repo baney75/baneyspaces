@@ -212,9 +212,15 @@ case "agent":
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         struct Out: Encodable { let info: [String: String]; let items: [Item] }
         out(String(data: try! enc.encode(Out(info: info, items: r.items ?? [])), encoding: .utf8)!)
+    } else if sub == "mode" {
+        out("agent access: \(info["title"] ?? info["access"] ?? "?")")
+        if let d = info["detail"] { out("  " + d) }
+        out("  Donovan changes it in BaneySpaces Settings > Agents.")
     } else if sub == "status" || sub == "on" {
-        guard let ws = info["workspace"], ws != "off" else { out("agent workspace: off (baneyspaces agent on [N])"); break }
+        let access = AgentAccessMode(saved: info["access"]).title
+        guard let ws = info["workspace"], ws != "off" else { out("agent workspace: off (baneyspaces agent on [N])\nagent access: \(access)"); break }
         out("agent workspace: \(ws) (you're on \(info["current"] ?? "?"))")
+        out("agent access: \(access)")
         let wins = info.filter { $0.key.hasPrefix("window.") }.sorted { $0.key < $1.key }.map(\.value)
         out(wins.isEmpty ? "  no windows there yet" : wins.map { "  " + $0 }.joined(separator: "\n"))
     } else {

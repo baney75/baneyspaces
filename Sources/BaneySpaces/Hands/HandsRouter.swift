@@ -55,6 +55,7 @@ final class HandsRouter {
     func handle(_ req: HandsRequest) -> HandsEnvelope {
         lends.expire()
         if HandsTools.userOnly.contains(req.verb) { return .failure(HandsParse.askedForLend(req.string("app"))) }
+        if let e = AgentAccessGate.refusal(verb: req.verb, mode: AgentAccess.shared.current) { return .failure(e) }
         if req.verb != "windows", req.verb != "open", let problem = HandsEngine.shared.permissionProblem() { return .failure(problem) }
         switch req.verb {
         case "windows": return windows()
@@ -85,9 +86,11 @@ final class HandsRouter {
     }
 
     func decide(_ w: HandsWindow, _ agent: Int?) -> ScopeDecision {
+        let mode = AgentAccess.shared.current
         lock.lock(); let bad = refused.contains(w.id); lock.unlock()
-        if bad { return .denied(HandsError(.needsSandbox, "window \(w.id) showed a document of Donovan's", suggestion: "Open your own file from the handoff folder.", retry: .never)) }
-        return ScopeGuard.check(w, agentWorkspace: agent, lends: lends.current(), now: Date(), inUse: UserActivity.shared.inUse(w.pid))
+        // Under Full Access Donovan's documents are open to agents, so a window refused for showing one is usable again.
+        if bad, mode != .full { return .denied(HandsError(.needsSandbox, "window \(w.id) showed a document of Donovan's", suggestion: "Open your own file from the handoff folder.", retry: .never)) }
+        return ScopeGuard.check(w, agentWorkspace: agent, lends: lends.current(), now: Date(), inUse: UserActivity.shared.inUse(w.pid), mode: mode)
     }
 
     /// The scope check an engine call runs on its queue at the moment it executes, plus, for a call on a ref,
@@ -123,8 +126,16 @@ final class HandsRouter {
     /// Windows of a process BaneySpaces started for an agent are used only while they show nothing of Donovan's:
     /// no document from outside the handoff folder (a restored one, or one opened through a panel), and never an
     /// Open or Save panel, which would browse his files. Checked on every use, so a late window is covered too.
+    /// Under Full Access documents are open, but no window of any process is used while it is (or holds) a panel.
     private func inspectProblem(_ w: HandsWindow) -> HandsError? {
+        let full = AgentAccess.shared.current == .full
         let (owned, seen) = onMain { (host.agentOwned(), host.inspect(w.id)) }
+        if full {
+            guard seen.panel else { return nil }
+            // Not remembered: one of Donovan's windows with a sheet up is usable again once the sheet closes.
+            return HandsError(.needsSandbox, "window \(w.id) of \(w.app) is or holds an Open or Save panel",
+                              suggestion: "Agents never drive an Open or Save panel, even with full access. Wait for it to close, or open the file with `baneyspaces agent open <app> <file>`.", retry: .never)
+        }
         guard owned.contains(w.pid) else { return nil }
         var why: String?
         if seen.panel { why = "window \(w.id) of \(w.app) is an Open or Save panel" }
@@ -145,12 +156,16 @@ final class HandsRouter {
 
     private func windows() -> HandsEnvelope {
         let (all, agent) = listWindows(fresh: true)
-        let usable = ScopeGuard.visible(all, agentWorkspace: agent, lends: lends.current(), now: Date(), inUse: { UserActivity.shared.inUse($0) })
-            .filter { inspectProblem($0.window) == nil }
+        let mode = AgentAccess.shared.current
+        let usable = ScopeGuard.visible(all, agentWorkspace: agent, lends: lends.current(), now: Date(), inUse: { UserActivity.shared.inUse($0) }, mode: mode)
+            // Under Full Access every window is listed without reading each one (that would ask every app on the Mac);
+            // a panel is still refused when the window is used.
+            .filter { mode == .full || inspectProblem($0.window) == nil }
             .sorted { $0.window.id < $1.window.id }
         let titles = onMain { host.titles(usable.map(\.window.id)) }
         return .success(.object([
             "agent_workspace": agent.map(JSONValue.int) ?? .null,
+            "access": .string(mode.rawValue),
             "windows": .array(usable.map { u in
                 var w = u.window
                 w.title = titles[w.id] ?? ""
@@ -425,7 +440,8 @@ final class HandsRouter {
         try? FileManager.default.createDirectory(at: Self.handoffFolder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let files: [String]
         switch AgentOpenGate.check(app: display, bundle: bundle, targets: req.args["targets"]?.array?.compactMap(\.string) ?? [], handoff: Self.handoffFolder, appURL: url,
-                                     probeFolder: ProbeAppTrust.folder, probeTrusted: bundle == AgentAppPolicy.canvasProbeBundle && ProbeAppTrust.trusted(url)) {
+                                     probeFolder: ProbeAppTrust.folder, probeTrusted: bundle == AgentAppPolicy.canvasProbeBundle && ProbeAppTrust.trusted(url),
+                                     mode: AgentAccess.shared.current) {
         case .failure(let e): return .failure(e)
         case .success(let f): files = f
         }
