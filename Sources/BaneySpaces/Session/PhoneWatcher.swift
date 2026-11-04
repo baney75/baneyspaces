@@ -13,6 +13,8 @@ final class PhoneWatcher {
     var phones: [Phone] { android + ios }
 
     private var tracker: Process?
+    /// The guard's stdin. Its write end closes when BaneySpaces dies, which tells the guard to end the tracker.
+    private var trackerLife: Pipe?
     private var buffer = Data()
     private var running = false
     private var iosTimer: Timer?
@@ -39,6 +41,7 @@ final class PhoneWatcher {
         running = false
         tracker?.terminate()
         tracker = nil
+        trackerLife = nil
         iosTimer?.invalidate()
         iterators.forEach { IOObjectRelease($0) }
         iterators.removeAll()
@@ -56,6 +59,8 @@ final class PhoneWatcher {
         let guarded = ChildGuard.wrap([adb, "track-devices", "-l"])
         p.executableURL = URL(fileURLWithPath: guarded.executable)
         p.arguments = guarded.arguments
+        let life = Pipe()
+        p.standardInput = life
         let out = Pipe()
         p.standardOutput = out
         p.standardError = FileHandle.nullDevice
@@ -67,7 +72,7 @@ final class PhoneWatcher {
             // adb's server restarted or went away: try again shortly, while the session engine is on.
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) { self?.startTracker() }
         }
-        do { try p.run(); tracker = p } catch { tracker = nil }
+        do { try p.run(); tracker = p; trackerLife = life } catch { tracker = nil; trackerLife = nil }
     }
 
     private func received(_ chunk: Data) {
