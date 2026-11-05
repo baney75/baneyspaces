@@ -28,6 +28,12 @@ window id, or a pid.
 | `mcp` | yes | yes | yes |
 | `doctor` | yes | yes | yes |
 
+## Doctor
+
+`doctor` prints the app's status lines. On macOS one is `polycarp_theme`: `none (...)`, or
+`in force: <title> (<name>, mode <m>)` when a Polycarp theme draws instead of `appearance.theme` and
+`appearance.palette` ([themes.md](themes.md), "Polycarp themes"). It needs the app running and past launch.
+
 ## State file
 
 `state.json` is the model's `view` plus `"version": 1`, `"platform"`, `"agent_workspace"`, and, on
