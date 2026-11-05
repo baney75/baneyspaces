@@ -138,7 +138,7 @@ The quality bar every platform is measured against, by a probe that fails:
 
 ```toml
 [animation]
-preset = "baneyspaces"             # baneyspaces | omarchy | snappy | smooth | off
+preset = "polycarp"                # polycarp | baneyspaces | omarchy | snappy | smooth | off
 speed = 1.0                        # multiplies every duration; 0 = off, 0.5 = twice as fast
 respect_reduce_motion = true
 
