@@ -1,0 +1,25 @@
+{
+  "about": "Voice fast-path baselines from spaces/scripts/bench-voice --write. A measurement more than 25% over its baseline fails core/ffi/tests/speed.rs (the startup number has a 10 ms floor). rtf is null until measured on a Mac with a speech model (POLYCARP_BENCH_MODELS).",
+  "appLaunchToFirstFrame": {
+    "baseline": null,
+    "how": "live check on the Mac; steps in the header of spaces/scripts/bench-voice"
+  },
+  "regressionLimit": 1.25,
+  "startToReadyMs": {
+    "baseline": 15.38,
+    "model": false
+  },
+  "transcribeRtf": {
+    "baseline": null
+  },
+  "browser": {
+    "versionMs": 53.2,
+    "toolsListMs": 88.8,
+    "tools": 43,
+    "binaryMB": 73.1,
+    "runs": 15,
+    "arch": "arm64",
+    "measuredWith": "scripts/browser-speed.mjs",
+    "toleranceOverRecorded": 0.25
+  }
+}
