@@ -21,5 +21,21 @@
     "arch": "arm64",
     "measuredWith": "scripts/browser-speed.mjs",
     "toleranceOverRecorded": 0.25
+  },
+  "panel": {
+    "about": "The extension's side panel opening, in a throwaway Chromium: scripts/panel-speed.mjs. Bytes are enforced by test/panel-size.test.mjs; times depend on the Mac's load, so they're recorded here and not enforced.",
+    "openBytesBefore": 8114650,
+    "openBytes": 1767210,
+    "before": {
+      "coldReadyMs": 400,
+      "warmReadyMs": 108,
+      "warmReadyWorstMs": 220
+    },
+    "after": {
+      "coldReadyMs": 130,
+      "warmReadyMs": 62,
+      "warmReadyWorstMs": 80
+    },
+    "measuredOn": "2026-11-07, Mac under load average 15, four alternating pairs"
   }
 }
