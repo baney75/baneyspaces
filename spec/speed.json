@@ -10,7 +10,7 @@
     "model": false
   },
   "transcribeRtf": {
-    "baseline": null
+    "baseline": 0.047
   },
   "browser": {
     "versionMs": 53.2,
@@ -37,5 +37,10 @@
       "warmReadyWorstMs": 80
     },
     "measuredOn": "2026-11-07, Mac under load average 15, four alternating pairs"
+  },
+  "longDictation": {
+    "about": "One voice, 45 s and up, nine speakers: core/ffi/tests/speed.rs long_dictation_in_pieces. Wait after release.",
+    "allAtOnceMs": 2057,
+    "inPiecesMs": 81
   }
 }
