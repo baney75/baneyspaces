@@ -33,6 +33,10 @@ use std::time::{Duration, Instant};
 const LAUNCHER: &str = "/usr/lib/at-spi-bus-launcher";
 const REGISTRYD: &str = "/usr/lib/at-spi2-registryd";
 
+/// The programs of a stack: the session bus, the launcher, the registry and the accessibility bus
+/// the launcher starts (dbus-daemon or dbus-broker, depending on how at-spi2-core was built).
+const STACK_PROGRAMS: &[&str] = &["dbus-daemon", "dbus-broker", "dbus-broker-launch", "at-spi-bus-launcher", "at-spi2-registryd"];
+
 #[derive(Clone, Debug)]
 pub struct BusInfo {
     /// The private session bus address apps (and the engine, for these windows) use.
@@ -180,7 +184,8 @@ pub fn start(run: &Path, token: &str) -> Result<(Vec<Child>, BusInfo), String> {
 }
 
 /// Kills the leftovers of an earlier daemon: any bus-stack process of ours whose directory is gone,
-/// and any in `run` that no live token owns. Returns how many it killed.
+/// and any in `run` that no live token owns. A command line proves nothing (an editor can have a
+/// stack's file open), so only `stack_member` picks what dies. Returns how many it killed.
 pub fn sweep(run: &Path, live_tags: &HashSet<String>) -> usize {
     let Ok(dir) = std::fs::read_dir("/proc") else { return 0 };
     let me = std::process::id();
@@ -189,19 +194,32 @@ pub fn sweep(run: &Path, live_tags: &HashSet<String>) -> usize {
         if pid == me {
             continue;
         }
-        let mut text = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-        text.push(0);
-        text.extend(std::fs::read(format!("/proc/{pid}/environ")).unwrap_or_default().split(|b| *b == 0).filter(|kv| kv.starts_with(b"XDG_RUNTIME_DIR=")).flatten());
-        if let Some((base, tag)) = stack_path(&String::from_utf8_lossy(&text)) {
+        let Ok(exe) = std::fs::read_link(format!("/proc/{pid}/exe")) else { continue };
+        let environ = std::fs::read(format!("/proc/{pid}/environ")).unwrap_or_default();
+        if let Some((base, tag)) = stack_member(&exe.to_string_lossy(), &environ) {
             let orphan = !base.exists() || (base == run && !live_tags.contains(&tag));
             if orphan {
-                // SAFETY: SIGKILL to a process whose command line named one of our stacks.
+                // SAFETY: SIGKILL to a stack program running in one of our private runtime directories.
                 unsafe { libc::kill(pid as i32, libc::SIGKILL) };
                 killed += 1;
             }
         }
     }
     killed
+}
+
+/// `(…/baneyspaces, tag)` when this process is part of a stack: `exe` (the /proc link) is a stack
+/// program and its `XDG_RUNTIME_DIR` is exactly a private runtime directory, which `start_here` sets
+/// and nothing outside a stack inherits.
+fn stack_member(exe: &str, environ: &[u8]) -> Option<(PathBuf, String)> {
+    let program = exe.strip_suffix(" (deleted)").unwrap_or(exe).rsplit('/').next()?;
+    if !STACK_PROGRAMS.contains(&program) {
+        return None;
+    }
+    let dir = environ.split(|b| *b == 0).find_map(|kv| kv.strip_prefix(b"XDG_RUNTIME_DIR="))?;
+    let dir = std::str::from_utf8(dir).ok()?;
+    let (base, tag) = stack_path(dir)?;
+    (dir == format!("{}/rt-{tag}", base.display())).then_some((base, tag))
 }
 
 /// `(…/baneyspaces, tag)` from the first word that names a stack: `…/baneyspaces/bus-<tag>` or
@@ -360,6 +378,41 @@ pub fn sweep_dirs(run: &Path, live_tags: &HashSet<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::process::CommandExt;
+
+    /// Sweeps look at every process, so one test's sweep would count another test's processes.
+    static SWEEPS: Mutex<()> = Mutex::new(());
+
+    /// A process whose /proc exe is a stack program, in the given private runtime directory.
+    fn fake_stack_process(dir: &Path, rt: String) -> Child {
+        let exe = dir.join("dbus-daemon");
+        if !exe.exists() {
+            std::fs::copy("/usr/bin/sleep", &exe).unwrap();
+        }
+        // A concurrent fork can hold the fresh copy open for a moment (ETXTBSY). arg0 keeps a
+        // multi-call coreutils working under the new name.
+        for _ in 0..50 {
+            match Command::new(&exe).arg0("sleep").arg("60").env("XDG_RUNTIME_DIR", &rt).spawn() {
+                Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) => std::thread::sleep(Duration::from_millis(20)),
+                spawned => return spawned.unwrap(),
+            }
+        }
+        panic!("{} stayed busy", exe.display());
+    }
+
+    #[test]
+    fn only_a_stack_program_in_a_private_runtime_dir_is_a_member() {
+        let rt = b"HOME=/home/x\0XDG_RUNTIME_DIR=/run/user/1000/baneyspaces/rt-deadbeef\0";
+        let (b, t) = stack_member("/usr/bin/dbus-daemon", rt).unwrap();
+        assert_eq!((b, t.as_str()), (PathBuf::from("/run/user/1000/baneyspaces"), "deadbeef"));
+        assert!(stack_member("/usr/lib/at-spi2-registryd (deleted)", rt).is_some(), "an orphan that outlived a package upgrade");
+        // `nvim /run/user/1000/baneyspaces/rt-deadbeef/session.conf`: its own program, your runtime dir.
+        assert!(stack_member("/usr/bin/nvim", b"XDG_RUNTIME_DIR=/run/user/1000\0").is_none());
+        assert!(stack_member("/usr/bin/nvim", rt).is_none(), "the wrong program, even in a stack's environment");
+        assert!(stack_member("/usr/bin/dbus-daemon", b"XDG_RUNTIME_DIR=/run/user/1000\0").is_none(), "your own session bus");
+        assert!(stack_member("/usr/bin/dbus-daemon", b"XDG_RUNTIME_DIR=/tmp/baneyspaces/rt-deadbeef/session.conf\0").is_none(), "a path under a stack is not a stack");
+        assert!(stack_member("/usr/bin/dbus-daemon", b"OTHER=/tmp/baneyspaces/rt-deadbeef\0").is_none());
+    }
 
     #[test]
     fn the_private_bus_refuses_portals_and_notifications() {
@@ -383,12 +436,12 @@ mod tests {
 
     #[test]
     fn the_sweep_kills_a_stack_whose_directory_is_gone_and_spares_a_live_one() {
+        let _one_sweep_at_a_time = SWEEPS.lock().unwrap_or_else(|p| p.into_inner());
         let run = std::env::temp_dir().join(format!("bs-sweep-{}/baneyspaces", std::process::id()));
         std::fs::create_dir_all(&run).unwrap();
-        // $0 of `sh -c` carries the marker, as a bus daemon's --address would.
-        let gone = Command::new("sh").args(["-c", "sleep 60; :", "/nonexistent-zz/baneyspaces/bus-deadbeef"]).spawn().unwrap();
-        let live = Command::new("sh").args(["-c", "sleep 60; :", &format!("{}/bus-11112222", run.display())]).spawn().unwrap();
-        let orphan = Command::new("sh").args(["-c", "sleep 60; :", &format!("{}/bus-99998888", run.display())]).spawn().unwrap();
+        let gone = fake_stack_process(&run, "/nonexistent-zz/baneyspaces/rt-deadbeef".into());
+        let live = fake_stack_process(&run, format!("{}/rt-11112222", run.display()));
+        let orphan = fake_stack_process(&run, format!("{}/rt-99998888", run.display()));
         let tags: HashSet<String> = ["11112222".to_string()].into();
         assert_eq!(sweep(&run, &tags), 2);
         let (mut gone, mut live, mut orphan) = (gone, live, orphan);
@@ -401,21 +454,46 @@ mod tests {
     }
 
     #[test]
+    fn the_sweep_spares_a_program_that_only_names_a_stack_path() {
+        let _one_sweep_at_a_time = SWEEPS.lock().unwrap_or_else(|p| p.into_inner());
+        let run = std::env::temp_dir().join(format!("bs-sweep-editor-{}/baneyspaces", std::process::id()));
+        std::fs::create_dir_all(&run).unwrap();
+        // An editor with a dead stack's file open: the path is in its arguments and nowhere else.
+        let mut editor = Command::new("sh").arg0("nvim").args(["-c", "sleep 60; :", "/nonexistent-zz/baneyspaces/rt-deadbeef/session.conf"]).spawn().unwrap();
+        sweep(&run, &HashSet::new());
+        std::thread::sleep(Duration::from_millis(100));
+        let survived = editor.try_wait().unwrap().is_none();
+        let _ = editor.kill();
+        let _ = editor.wait();
+        let _ = std::fs::remove_dir_all(run.parent().unwrap());
+        assert!(survived, "a program that only names a stack path must not be killed");
+    }
+
+    #[test]
     fn a_private_stack_starts_has_its_own_a11y_bus_and_stops_clean() {
         if ![LAUNCHER, REGISTRYD, "/usr/bin/dbus-daemon"].iter().all(|p| Path::new(p).exists()) {
             return;
         }
-        let run = std::env::temp_dir().join(format!("bs-bus-{}", std::process::id()));
+        let run = std::env::temp_dir().join(format!("bs-bus-{}/baneyspaces", std::process::id()));
         std::fs::create_dir_all(&run).unwrap();
         let tok = "0123456789abcdef";
         let (mut kids, info) = start(&run, tok).unwrap();
         assert!(socket_path(&run, tok).exists());
         assert!(rt_dir(&run, tok).join("at-spi").exists(), "the a11y bus lives in the private runtime dir");
         assert!(info.addr.starts_with("unix:path="));
+        // Every process of a real stack is one the sweep would pick, the accessibility bus included.
+        let in_group = |pid: u32| std::fs::read_to_string(format!("/proc/{pid}/stat")).ok().and_then(|s| s[s.rfind(')')? + 1..].split_whitespace().nth(2)?.parse::<u32>().ok()) == Some(info.pid);
+        let members: Vec<u32> = std::fs::read_dir("/proc").unwrap().flatten().filter_map(|e| e.file_name().to_str()?.parse().ok()).filter(|p| in_group(*p)).collect();
+        assert!(members.len() >= 4, "bus, launcher, registry and accessibility bus: {members:?}");
+        for pid in members {
+            let exe = std::fs::read_link(format!("/proc/{pid}/exe")).unwrap();
+            let environ = std::fs::read(format!("/proc/{pid}/environ")).unwrap();
+            assert_eq!(stack_member(&exe.to_string_lossy(), &environ).map(|m| m.1), Some(tag(tok).to_string()), "{}", exe.display());
+        }
         stop(&run, tok, Some(&mut kids), Some(&info));
         assert!(!socket_path(&run, tok).exists());
         assert!(!rt_dir(&run, tok).exists());
         assert!(crate::proc::start_time(info.pid) != Some(info.start), "the leader is gone");
-        let _ = std::fs::remove_dir_all(&run);
+        let _ = std::fs::remove_dir_all(run.parent().unwrap());
     }
 }
