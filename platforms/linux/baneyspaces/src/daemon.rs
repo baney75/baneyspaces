@@ -36,6 +36,8 @@ pub struct Client {
     pub class: String,
     pub title: String,
     pub mapped: bool,
+    /// Hyprland's `stableId`: the window's identifier in ext-foreign-toplevel-list, which `agent shot` captures by.
+    pub stable_id: String,
 }
 
 #[derive(Clone, Debug)]
@@ -206,6 +208,7 @@ impl Core {
                         class: c["class"].as_str().unwrap_or("").into(),
                         title: c["title"].as_str().unwrap_or("").into(),
                         mapped: c["mapped"].as_bool().unwrap_or(true),
+                        stable_id: c["stableId"].as_str().unwrap_or("").into(),
                     })
                     .collect()
             })
@@ -1609,6 +1612,34 @@ mod tests {
 
     fn mon(id: i64, name: &str, focused: bool, ws: i64) -> Value {
         json!({ "id": id, "name": name, "focused": focused, "disabled": false, "activeWorkspace": { "id": ws, "name": ws.to_string() }, "specialWorkspace": { "name": "" } })
+    }
+
+    #[test]
+    fn shot_refuses_every_window_outside_scope_before_anything_is_captured() {
+        let me = std::process::id();
+        let start = crate::proc::start_time(me).unwrap_or(0);
+        let client = |addr: &str, ws: &str| json!({ "address": addr, "pid": me, "workspace": { "id": if ws == AGENT_SPECIAL { -98 } else { 3 }, "name": ws }, "monitor": 0, "class": "foot", "title": "t", "mapped": true, "stableId": "18000002" });
+        // Hyprland's view: one window of yours on workspace 3, one parked on the agent workspace by you, and
+        // one the model thinks is the agent's but Hyprland has on workspace 3 now.
+        let clients = json!([client("0xuser", "3"), client("0xparked", AGENT_SPECIAL), client("0xmoved", "3")]).to_string();
+        let (mut c, log) = fake_hypr("shot-scope", move |r| if r == "j/clients" { clients.clone() } else { "ok".into() });
+        c.model.apply(Event::ObserveWindow { window: "0xuser".into(), pid: me, start, app: "foot".into(), workspace: Some(3) }).unwrap();
+        c.model.apply(Event::ObserveWindow { window: "0xparked".into(), pid: me, start, app: "foot".into(), workspace: None }).unwrap();
+        c.model.apply(Event::ObserveWindow { window: "0xmoved".into(), pid: me, start, app: "foot".into(), workspace: None }).unwrap();
+        let state = c.paths.state.clone();
+        let shared: Shared = Arc::new(Mutex::new(c));
+        let code = |args: Value| crate::shot::run(&shared, "t", &args).error.map(|e| e.code).unwrap_or_default();
+        assert_eq!(code(json!({ "verb": "shot" })), "invalid_args", "a window is required");
+        assert_eq!(code(json!({ "verb": "shot", "window": "0xuser", "out": "../x.png" })), "invalid_args", "out is a name, never a path");
+        assert_eq!(code(json!({ "verb": "shot", "window": "0xuser" })), "not_in_scope", "your own window");
+        assert_eq!(code(json!({ "verb": "shot", "window": "0xnone" })), "not_found", "a window Hyprland does not have");
+        assert_eq!(code(json!({ "verb": "shot", "window": "0xparked" })), "needs_lend", "a window you parked is guarded, not drivable");
+        shared.lock().unwrap().model.apply(Event::AgentRegister { pid: me, start }).unwrap();
+        assert_eq!(code(json!({ "verb": "shot", "window": "0xmoved" })), "not_in_scope", "Hyprland's word on the workspace is final");
+        assert!(!state.join("shots").exists(), "nothing was captured or written");
+        assert!(log.lock().unwrap().iter().all(|r| r == "j/clients"), "only reads reached Hyprland: {:?}", log.lock().unwrap());
+        let refusals = std::fs::read_to_string(state.join("actions.jsonl")).unwrap_or_default();
+        assert_eq!(refusals.lines().filter(|l| l.contains("\"shot\"")).count(), 6, "every refusal is in the action log");
     }
 
     #[test]

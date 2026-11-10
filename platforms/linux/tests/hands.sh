@@ -29,6 +29,35 @@ sleep 0.4
 eq "the app's own label shows the click (independent readback)" "$(baneyspaces agent snapshot --window "$GW" | jq '[.. | objects | select(.name=="count 1")] | length')" "1"
 same_screen "after click"
 
+echo "-- shot: one agent window, captured while it stays hidden"
+SHOTS="$XDG_STATE_HOME/baneyspaces/shots"
+# The window background's colour in a PNG, read with GdkPixbuf (the GTK stack this test already needs).
+colour() { /usr/bin/python3 -I -c 'import sys, gi
+gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import GdkPixbuf
+p = GdkPixbuf.Pixbuf.new_from_file(sys.argv[1]); d = p.get_pixels()
+o = (p.get_height() - 8) * p.get_rowstride() + (p.get_width() // 2) * p.get_n_channels(); r, g, b = d[o], d[o + 1], d[o + 2]
+print("red" if r > 150 and b < 80 else "blue" if b > 150 and r < 80 else "other %d,%d,%d" % (r, g, b))' "$1" 2>&1; }
+GSIZE="$(H clients | jq -r ".[]|select(.address==\"$GW\")|\"\\(.size[0])x\\(.size[1])\"")"
+SH="$(baneyspaces agent shot --window "$GW" --out count1.png)"
+eq "shot works" "$(echo "$SH" | jq -r .ok)" "true"
+eq "it is written in the shots folder under the name given" "$(echo "$SH" | jq -r .data.path)" "$SHOTS/count1.png"
+eq "the picture is the window's size" "$(echo "$SH" | jq -r '"\(.data.width)x\(.data.height)"')" "$GSIZE"
+eq "the evidence hash is the file's" "$(echo "$SH" | jq -r .data.evidence.sha256)" "$(sha256sum "$SHOTS/count1.png" | cut -d' ' -f1)"
+eq "the evidence says what it is and that the picture settled; no cursor is drawn" "$(echo "$SH" | jq -c '[.data.evidence.kind, .data.evidence.settled, .data.cursor]')" '["capture_hash",true,false]'
+eq "the result names the window and its process" "$(echo "$SH" | jq -r '"\(.data.target.window) \(.data.target.pid)"')" "$GW $GPID"
+eq "the file and the folder are private" "$(stat -c %a "$SHOTS/count1.png") $(stat -c %a "$SHOTS")" "600 700"
+eq "the picture shows the click (red: the count is odd)" "$(colour "$SHOTS/count1.png")" "red"
+eq "the shot reports no screen change" "$(echo "$SH" | jq -r .data.screen_changed)" "false"
+same_screen "after shot"
+# A hidden window does not repaint until it is captured, so a single capture would show the frame before this click.
+baneyspaces agent click "$BTN" >/dev/null; sleep 0.4
+SH2="$(baneyspaces agent shot --window "$GW")"
+eq "a shot right after an action shows it, not the frame before (blue: the count is even)" "$(colour "$(echo "$SH2" | jq -r .data.path)")" "blue"
+check "with no name given it is window-<address>-<time>.png" sh -c "echo '$(echo "$SH2" | jq -r .data.path)' | grep -qE '/shots/window-${GW#0x}-[0-9]+\.png$'"
+eq "no temporary file is left in the shots folder" "$(ls -A "$SHOTS" | grep -c '^\.')" "0"
+same_screen "after the second shot"
+
 SV="$(baneyspaces agent set-value "$ENT" "hello")"
 eq "set-value works" "$(echo "$SV" | jq -r .ok)" "true"
 eq "set-value read back from the element" "$(baneyspaces agent get "$ENT" value | jq -r '.data.result.value // .data.result.text')" "hello"
@@ -46,11 +75,17 @@ echo "-- scope: only a process BaneySpaces started, only on the agent workspace"
 eq "a user window is not_in_scope" "$(baneyspaces agent snapshot --window "$W2" | jq -r .error.code)" "not_in_scope"
 baneyspaces agent move "$W3" >/dev/null; sleep 0.3
 eq "a window you parked is needs_lend (not an agent process)" "$(baneyspaces agent snapshot --window "$W3" | jq -r .error.code)" "needs_lend"
+eq "a shot of a window you parked is needs_lend too" "$(baneyspaces agent shot --window "$W3" | jq -r .error.code)" "needs_lend"
 baneyspaces agent bring "$W3" >/dev/null; sleep 0.3
 eq "an unknown window is not_found" "$(baneyspaces agent snapshot --window 0xdead | jq -r .error.code)" "not_found"
 eq "a bare ref is invalid_args" "$(baneyspaces agent click @e1 | jq -r .error.code)" "invalid_args"
 eq "a ref from nowhere is stale_ref, retry after a snapshot" "$(baneyspaces agent click @sbogus:e1 | jq -r '"\(.error.code) \(.error.retry)"')" "stale_ref after_snapshot"
-eq "a capture of one window is not_supported on Wayland, with a suggestion" "$(baneyspaces agent shot --window "$GW" | jq -r '"\(.error.code) \(.error.suggestion|length>0)"')" "not_supported true"
+NSHOTS="$(ls -A "$SHOTS" | wc -l)"
+eq "a shot of a user window is not_in_scope" "$(baneyspaces agent shot --window "$W2" | jq -r .error.code)" "not_in_scope"
+eq "a shot of an unknown window is not_found" "$(baneyspaces agent shot --window 0xdead | jq -r .error.code)" "not_found"
+eq "a shot with a path for a name is invalid_args" "$(baneyspaces agent shot --window "$GW" --out ../escape.png | jq -r .error.code)" "invalid_args"
+eq "a shot needs a window" "$(baneyspaces agent shot | jq -r .error.code)" "invalid_args"
+eq "no refused shot wrote a file" "$(ls -A "$SHOTS" | wc -l) $(ls "$XDG_STATE_HOME/baneyspaces" | grep -c escape)" "$NSHOTS 0"
 eq "keys are refused" "$(baneyspaces agent press @sa:e1 Return | jq -r .error.code)" "not_supported"
 eq "lend is refused" "$(baneyspaces agent lend foot | jq -r .error.code)" "not_supported"
 same_screen "after the refusals"
@@ -66,6 +101,19 @@ eq "a call whose window left the agent workspace mid-call is refused" "$(jq -r '
 hyprctl dispatch "hl.dsp.window.move({ workspace = \"special:agent\", follow = false, window = \"address:$GW\" })" >/dev/null; sleep 0.5
 eq "(the test puts it back)" "$(client_ws $GW)" "special:agent"
 same_screen "after the mid-call move"
+# The same for a shot: the window leaves between the guard and the capture, and nothing is kept.
+NSHOTS="$(ls -A "$SHOTS" | wc -l)"
+ctl '{"op":"test_stall","args":{"ms":2500}}' >/dev/null
+( baneyspaces agent shot --window "$GW" --out moved.png > "$TMP/stalled-shot.out" 2>&1 ) & SP=$!
+sleep 1
+hyprctl dispatch "hl.dsp.window.move({ workspace = \"$(mon_ws $M1)\", follow = false, window = \"address:$GW\" })" >/dev/null
+wait $SP
+ctl '{"op":"test_stall","args":{"ms":0}}' >/dev/null
+eq "a shot whose window left the agent workspace mid-call is refused" "$(jq -r '.error.code + " " + .error.retry' "$TMP/stalled-shot.out")" "not_in_scope never"
+eq "and no picture was kept" "$(ls -A "$SHOTS" | wc -l)" "$NSHOTS"
+hyprctl dispatch "hl.dsp.window.move({ workspace = \"special:agent\", follow = false, window = \"address:$GW\" })" >/dev/null; sleep 0.5
+eq "(the test puts it back again)" "$(client_ws $GW)" "special:agent"
+same_screen "after the mid-shot move"
 # The window closes: the old ref must not resolve to anything else.
 kill "$GPID" 2>/dev/null; sleep 1
 eq "after the app is gone its refs are stale or not found" "$(baneyspaces agent click "$BTN" | jq -r '.error.code' | grep -cE '^(stale_ref|not_found)$')" "1"
@@ -91,12 +139,14 @@ MCP_OUT="$(printf '%s\n' \
   "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"agent_snapshot\",\"arguments\":{\"window\":\"$GW2\",\"interactive\":true}}}" \
   "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"agent_snapshot\",\"arguments\":{\"window\":\"$W2\"}}}" \
   '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"switch","arguments":{}}}' \
+  "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"tools/call\",\"params\":{\"name\":\"agent_shot\",\"arguments\":{\"window\":\"$GW2\"}}}" \
   | baneyspaces mcp)"
-eq "MCP: 3 replies for 5 messages with ids (the notification gets none)" "$(echo "$MCP_OUT" | wc -l)" "5"
+eq "MCP: 6 replies for 6 messages with ids (the notification gets none)" "$(echo "$MCP_OUT" | wc -l)" "6"
 eq "MCP: initialize answers" "$(echo "$MCP_OUT" | sed -n 1p | jq -r .result.serverInfo.name)" "baneyspaces"
 eq "MCP: tools/list has 13 agent tools" "$(echo "$MCP_OUT" | sed -n 2p | jq '.result.tools|length')" "13"
 eq "MCP: no tool switches or moves your workspaces" "$(echo "$MCP_OUT" | sed -n 2p | jq '[.result.tools[].name|select(test("switch|move"))]|length')" "0"
 eq "MCP: a snapshot of an agent window works" "$(echo "$MCP_OUT" | sed -n 3p | jq -r '.result.structuredContent.ok')" "true"
 eq "MCP: a snapshot of your window is refused" "$(echo "$MCP_OUT" | sed -n 4p | jq -r '.result.structuredContent.error.code, .result.isError' | tr '\n' ' ')" "not_in_scope true "
 eq "MCP: an unknown tool is a JSON-RPC error" "$(echo "$MCP_OUT" | sed -n 5p | jq -r .error.code)" "-32602"
+eq "MCP: a shot of an agent window works and is a PNG" "$(echo "$MCP_OUT" | sed -n 6p | jq -r '.result.structuredContent.data.path' | xargs file -b | cut -d, -f1)" "PNG image data"
 same_screen "after MCP"

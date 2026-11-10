@@ -61,7 +61,7 @@ pub fn snapshot_of(reference: &str) -> Option<&str> {
 
 /// What the user can see, so a result can say whether it changed while an action ran. The pointer
 /// is left out: the user moves it all the time, and an agent's call never has to.
-fn screen_state(c: &Core) -> Value {
+pub(crate) fn screen_state(c: &Core) -> Value {
     let mons: Vec<Value> = c
         .monitors()
         .iter()
@@ -288,18 +288,19 @@ pub fn build_argv(verb: &str, args: &Value, window: Option<&str>, reference: &st
     Ok(a)
 }
 
-struct Plan {
+pub(crate) struct Plan {
     /// The environment the engine runs in for this window: the launch's private session bus, so it
     /// finds the agent's accessibility bus and not yours.
-    env: Vec<(String, String)>,
-    window: String,
-    pid: u32,
-    start: u64,
-    title: String,
+    pub env: Vec<(String, String)>,
+    pub window: String,
+    pub pid: u32,
+    pub start: u64,
+    pub title: String,
+    pub class: String,
 }
 
 /// The scope guard, against the compositor's own view and the model's.
-fn guard(c: &Core, window: &str, expect: Option<&SnapInfo>) -> Result<Plan, Envelope> {
+pub(crate) fn guard(c: &Core, window: &str, expect: Option<&SnapInfo>) -> Result<Plan, Envelope> {
     let Some(cl) = c.client(window) else {
         return Err(Envelope::err(
             "not_found",
@@ -349,6 +350,7 @@ fn guard(c: &Core, window: &str, expect: Option<&SnapInfo>) -> Result<Plan, Enve
         pid: cl.pid,
         start,
         title: cl.title,
+        class: cl.class,
     })
 }
 
@@ -357,12 +359,8 @@ pub fn run(shared: &Shared, agent: &str, args: &Value) -> Envelope {
     let invalid =
         |m: &str| Envelope::err("invalid_args", m, Retry::Never, "Run `baneyspaces help`.");
     if verb == "shot" {
-        // Refused here, not left to the engine: a capture can show your whole screen, and no
-        // per-window capture path exists on Hyprland yet.
-        let env = Envelope::err("not_supported", "agent shot is not available on Linux: there is no per-window capture path that keeps to the agent workspace", Retry::Never, "Read the window with snapshot or find, and check results with get.");
-        let c = crate::daemon::lock(shared);
-        record(&c, agent, "shot", None, args["window"].as_str(), None, "local", &env);
-        return env;
+        // Not the engine: the compositor captures the window itself (see shot.rs), behind the same guard.
+        return crate::shot::run(shared, agent, args);
     }
     let Some(engine) = locate() else {
         return Envelope::err(

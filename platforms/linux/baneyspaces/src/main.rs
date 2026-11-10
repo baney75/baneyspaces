@@ -9,6 +9,7 @@ mod hypr;
 mod paths;
 mod proc;
 mod scheme;
+mod shot;
 
 use baneyspaces_core::envelope::{Envelope, Retry};
 use baneyspaces_core::{keymap, mcp};
@@ -35,7 +36,8 @@ const HELP: &str = "baneyspaces (Linux, Hyprland)
   agent get <ref> <property>     agent click <ref>      agent toggle <ref>
   agent set-value <ref> <value>  agent type <ref> <text>
   agent select <ref> <value>     agent scroll <ref> <up|down|left|right> [amount]
-  agent shot --window W          agent log [--since SECS]
+  agent shot --window W [--out NAME]   a PNG of one agent window, in the state folder's shots/
+  agent log [--since SECS]
   agent press|key|pointer ...    not supported yet (phase 3-4)
   keys [--hypr-lua]              the key map for this platform
   daemon [--trace]               run the daemon (Omarchy autostarts it)
@@ -257,7 +259,7 @@ fn agent_request(mut a: Vec<String>) -> Result<Value, Envelope> {
 fn hands_request(verb: &str, mut a: Vec<String>) -> Result<Value, Envelope> {
     // `--window` belongs to the verbs that name a window. For the others everything after the ref is
     // data (typed text may well contain it).
-    let window = if matches!(verb, "snapshot" | "find") { take(&mut a, "--window") } else { None };
+    let window = if matches!(verb, "snapshot" | "find" | "shot") { take(&mut a, "--window") } else { None };
     let mut args = json!({ "verb": verb });
     if let Some(w) = window {
         args["window"] = json!(w);
@@ -300,6 +302,11 @@ fn hands_request(verb: &str, mut a: Vec<String>) -> Result<Value, Envelope> {
             args["direction"] = json!(a[1]);
             if let Some(n) = a.get(2).and_then(|s| s.parse::<u64>().ok()) {
                 args["amount"] = json!(n);
+            }
+        }
+        "shot" => {
+            if let Some(o) = take(&mut a, "--out") {
+                args["out"] = json!(o);
             }
         }
         _ => {}
@@ -455,6 +462,15 @@ mod tests {
         assert_eq!(req["args"]["value"], "see --window docs");
         let req = request(v(&["agent", "snapshot", "--window", "0x1", "-i"])).unwrap();
         assert_eq!(req["args"]["window"], "0x1");
+    }
+
+    #[test]
+    fn shot_takes_its_window_and_out_name() {
+        let req = request(v(&["agent", "shot", "--window", "0x5da0", "--out", "page.png"])).unwrap();
+        assert_eq!(req["op"], "hands");
+        assert_eq!((req["args"]["verb"].as_str(), req["args"]["window"].as_str(), req["args"]["out"].as_str()), (Some("shot"), Some("0x5da0"), Some("page.png")));
+        let req = request(v(&["agent", "shot", "--window", "0x1"])).unwrap();
+        assert!(req["args"].get("out").is_none());
     }
 
     #[test]

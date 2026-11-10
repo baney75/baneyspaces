@@ -166,8 +166,41 @@ the Mac build pins (`engine.pin`, 5261b52), built from source with its own `Carg
 acts through AT-SPI. The daemon runs it as a child process, headless (it is never given `--headed`,
 so it posts no global input), after the scope guard, and maps its envelope onto ours. Results carry
 the engine's own evidence: `verified` is true only when the engine read the outcome back from the
-element. `press`, `key` and `pointer` are `not_supported` (phase 3-4). `shot` is refused locally with `not_supported`: a capture can show your whole screen, and no
-per-window capture path exists on Hyprland yet.
+element. `press`, `key` and `pointer` are `not_supported` (phase 3-4).
+
+### `agent shot`: one window, captured while it stays hidden
+
+`baneyspaces agent shot --window W [--out NAME]` writes a PNG of one agent window into
+`$XDG_STATE_HOME/baneyspaces/shots/` (folder 0700, file 0600, written whole and renamed, so a reader
+never sees half a file). `NAME` is a plain file name (no `/`, no leading `.`); without it the file is
+`window-<address>-<unix time>.png`. The result has the Mac's shape: `path`, `width`, `height`,
+`cursor` (always false: Linux draws no agent cursor), `evidence` (`kind: "capture_hash"`, the PNG's
+`sha256`, plus `frames` and `settled`, below) and `target`.
+
+The engine is not used. The daemon runs `grim -T <stableId>` (grim 1.5 or later, the system binary),
+which asks Hyprland for that one window through `ext-foreign-toplevel-list-v1` and
+`ext-image-copy-capture-v1`. Hyprland names each window in that list by the `stableId` that `hyprctl
+clients` reports, so the window is picked by its identity, never by its place on a screen, and grim
+is never given `-o` or `-g`. The window stays on `special:agent`: nothing is shown, focused or moved.
+
+The scope guard is the one every verb uses (on `special:agent` by Hyprland's word, a process the
+daemon registered, pid and start time), and it runs again before every capture and once more before
+the file is written, with the window's `stableId` compared too. A window that leaves the agent
+workspace mid-call is refused `not_in_scope` and no picture is kept. A window you parked is
+`needs_lend`.
+
+**A hidden window does not repaint on its own.** Hyprland sends no frame callbacks to a window on a
+hidden special workspace, so the app keeps showing its last frame and the first capture after an
+action shows the window as it was before it (measured on Hyprland 0.56.2: the label read "count 0"
+after the click that made it "count 1"). A capture is a frame for the app, and it repaints after it.
+So the daemon captures until two captures in a row are the same picture, at most five, 120 ms
+apart, and answers with the last; `evidence.settled` is true when two agreed and `evidence.frames`
+is how many were taken. An app that never stops animating does not settle; its picture is then the
+newest frame it drew, at most one frame old, and `settled` is false. (Hyprland's `render_unfocused`
+window rule, applied when the window maps, also keeps a hidden window current; it is not used because
+it makes every agent window keep drawing in the background, and `set_prop` after the window has
+mapped did not have that effect.) Without grim, or with a grim that has no `-T`, `shot` answers
+`not_supported` and says what is missing.
 
 ## Install on an Omarchy seat (part 2 does this on seat-b and seat-a)
 
@@ -199,4 +232,5 @@ did not change.
 Known limits: a key press itself is not simulated (the test runs the command each binding is bound
 to, and checks the binding table); the pointer check excludes the step where the test forces
 Hyprland to focus an agent window, because Hyprland warps the pointer to a window it is told to
-focus; `shot` is refused locally.
+focus. The `shot` checks read the test app's background colour, which flips with every click, so a
+capture that showed the frame before the last click would fail them.
