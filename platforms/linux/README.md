@@ -130,6 +130,95 @@ log`. Records older than 30 days are dropped when a line is appended (looked for
 hour) and at start. `screen_changed` is its own field: the outcome stays in `result`, and the pointer
 is not part of the comparison.
 
+## Agents manage their own workspace
+
+An agent opens its apps in the background on `special:agent` and arranges them there, so you never
+have to. The verbs, argument names and result fields are the Mac's (`HandsRouter+Workspaces.swift`
+in PR #106), so an agent's script written for the Mac works on Omarchy. Window ids differ: on Linux
+a window is its Hyprland address (`0x5da0...`), on the Mac a number. Take ids from results, never
+type them.
+
+| Verb | macOS | Linux (Omarchy, Hyprland) | Windows |
+| --- | --- | --- | --- |
+| `agent workspaces` | yes | yes: the nine and `special:agent` (`number`, `shown`, `current`, `agent`, `windows`), `agent_workspace_shown`, `your_windows` | not supported yet |
+| `agent open <app> [file...] [--new_window=false] [--wait S]` | yes | yes: `reused`, `focus: {changed, returned}`, the window recorded for your session, also when it comes after `open` answered (`window: null, pending: true`) | not supported yet (plain `agent open` only) |
+| `agent arrange full\|halves\|thirds\|grid [window...]`, `frames 0xADDR=x,y,w,h ...` | yes | yes: the Mac's frames, applied at once while the workspace stays hidden (`applied: "now"`) | not supported yet |
+| `agent move --window W [--frame x,y,w,h]` | yes, including a lent window or one under Full Access | yes for the agent's own windows; your windows, including one you parked on the agent workspace, and anything that needs a lend or Full Access are `not_supported` (no lend sheet on Linux yet) | not supported yet |
+| `agent close --window W` | yes: only windows this session opened | yes: only windows this session opened, by address, `stableId`, pid and start time (another window that later gets the same address is not the session's) | not supported yet |
+| Child windows (dialogs) | usable under the child window rules | usable when its process is an agent process: floating, on `special:agent` or on no workspace yet; a dialog of any other process is not | not supported yet |
+
+`agent move <window>` (no `--window`) is still yours: it parks one of your windows there and stays
+refused to agents. The Mac tells the two apart the same way.
+
+How each verb reaches Hyprland. Every dispatch names its window (`window = "address:0x..."`; an
+address is checked to be `0x` and hex digits first, because a dispatcher with no window acts on the
+focused one), and none shows a workspace or moves focus. `agentws::loud` lists what is never sent,
+the verbs refuse their own dispatch if it matches, and the unit tests check every string sent.
+
+| Verb | Dispatches (Hyprland's Lua API) | Why focus stays where it is |
+| --- | --- | --- |
+| `workspaces` | none (`j/workspaces`, `j/monitors`, `j/clients`) | read only; counts, never titles of your windows |
+| `open` | `hl.dsp.exec_cmd(cmd, { workspace = "special:agent silent" })` (unchanged) | the exec rule places the window silently; the guard undoes any activation |
+| `arrange`, `move --frame` | `hl.dsp.window.float({ action = "enable", ... })`, `hl.dsp.window.resize({ x = W, y = H, ... })`, `hl.dsp.window.move({ x = X, y = Y, ... })` | these change the layout target only; float raises the window within `special:agent`, it does not focus it |
+| `move` of an agent window Hyprland has not placed on any workspace yet | `hl.dsp.window.move({ workspace = "special:agent", follow = false, ... })` | `follow = false` is the silent move: the target is not shown |
+| `close` | `hl.dsp.window.close({ ... })` | a close request, as Super+W sends; the app may ask to save first, and that dialog comes back as `opened` |
+
+Frames are in logical pixels from the top-left of the usable area (bars excluded) of the monitor that
+holds `special:agent`, at least 240 by 160, kept inside the area: the Mac's points, the same numbers.
+
+Where Linux differs from the Mac, and why:
+
+- **No lend, no Full Access.** Linux has no lend sheet yet, so a window on your workspaces is never
+  moved or laid out for an agent: `not_supported`, with a message that says so. A window you park on
+  the agent workspace yourself (`agent move <window>`) is still yours: no frame, no move, no close.
+- **Checked right before each dispatch.** Hyprland is asked again before every float, resize, move
+  and close: the window must still be on `special:agent` and belong to the same agent process (pid
+  and start time). If you took one back meanwhile, the call stops there, sends nothing more, and
+  answers `not_in_scope` with `changed` and `not_changed` lists. An agent's window you move to one of
+  your workspaces is yours from then on: every verb refuses it (`not_in_scope`), and `workspaces`
+  lists it as `moved_out_by_user` until you move it back.
+- **A slow start.** `open` records its session with the launch, before the window exists. With a
+  `--wait` shorter than the app's start it answers `window: null, pending: true` (`pid` is `null`
+  while Hyprland has not started the process yet), never an error, and the first window
+  of the process that launch started is still recorded for that session when it comes (for 120 s);
+  two sessions opening the same app each get only their own.
+- **Workspace names.** `agent_workspace` is `"special:agent"` and its row in `workspaces` has
+  `number: null` and `name: "special:agent"`; `from` and `to` in `move` are Hyprland workspace names.
+- **Error codes.** A refusal the Mac answers `permission_denied` or `outside_agent_workspace` is
+  `not_in_scope` here, the code `spec/envelope.md` already has for it.
+- **`access`** is always `"default"`: there are no access modes on Linux.
+- **Sessions** are the Mac's: `--session S`, else `$BANEYSPACES_SESSION`, else your terminal, else
+  `default`. The record is kept in memory, so after a daemon restart `close` refuses what was opened
+  before it (it fails closed). Like the agent id, the session is the caller's word: accident-proofing.
+- **A dialog** is a floating window of an agent process on `special:agent` that is not the first of
+  its process to arrive there (so a process always keeps a window of its own; a window `arrange`
+  floated does not count), or one Hyprland has not placed on any
+  workspace. Hyprland does not report a parent, so `parent` is the oldest other window of the process.
+- **MCP.** The verbs are on the CLI. The shared MCP catalog (`spec/mcp-tools.json`) is unchanged:
+  its test refuses any tool named `move` and `spec/cli.md` says no tool lists your workspaces, so
+  adding `agent_workspaces`, `agent_arrange`, `agent_move` and `agent_close` there is a spec decision
+  of its own.
+
+### Try it on Omarchy
+
+None of this has run on a live Hyprland yet. On a real session, with the daemon running and a
+terminal of yours in front on workspace 1, check after each step that your window still has focus
+and `special:agent` stays hidden (`hyprctl -j monitors | jq '.[].specialWorkspace.name'` prints `""`):
+
+```sh
+baneyspaces agent workspaces | jq '.data | {agent_workspace_shown, rows: [.workspaces[] | {number, shown, windows}]}'
+A=$(baneyspaces agent open foot --session try | jq -r .data.window); echo "$A"
+B=$(baneyspaces agent open foot --session try | jq -r .data.window)
+baneyspaces agent open foot --new_window=false --session try | jq .data.reused     # true, nothing started
+baneyspaces agent arrange halves --session try | jq '.data.windows[] | {window, applied, frame}'
+hyprctl -j clients | jq ".[] | select(.address==\"$A\") | {floating, at, size}"     # the frame from arrange
+baneyspaces agent move --window "$A" --frame 0,0,800,600 --session try | jq .data
+baneyspaces agent move --window "$(hyprctl -j activewindow | jq -r .address)" | jq .error.code   # not_supported: yours
+baneyspaces agent close --window "$B" --session other | jq .error.code              # not_in_scope: not this session's
+baneyspaces agent close --window "$B" --session try | jq .data.closed               # true
+baneyspaces agent-workspace show                                                   # you: see the two windows laid out
+```
+
 ## When the compositor says no, or the daemon is slow
 
 A switch or move whose Hyprland dispatch fails comes back `compositor_error`, never `ok`, and the
@@ -217,7 +306,7 @@ Part 1 does not apply it to any seat.
 ## Tests
 
 ```sh
-cargo test                                  # core, the 89 conformance cases, the daemon's pure parts
+cargo test                                  # core, the 89 conformance cases, the daemon's pure parts and the agent workspace verbs (against a fake Hyprland socket)
 platforms/linux/tests/omarchy-scripts.sh    # install/uninstall against a throwaway HOME
 platforms/linux/tests/nested.sh             # the integration test; prints PASS or FAIL with counts
 ```

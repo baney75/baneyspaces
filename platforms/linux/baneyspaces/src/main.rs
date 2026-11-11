@@ -1,6 +1,7 @@
 //! `baneyspaces` for Linux (Omarchy, Hyprland). The CLI sends one request to `baneyspaces daemon`
 //! and prints the envelope; `baneyspaces mcp` serves the agent tools over stdio.
 
+mod agentws;
 mod apps;
 mod bus;
 mod daemon;
@@ -26,10 +27,17 @@ const HELP: &str = "baneyspaces (Linux, Hyprland)
   overview                       show or hide the overview (drawn by the shell plugin, part 2)
   agent-workspace show|hide|toggle   show the agent workspace (you only; agents never do)
   agent status|windows           what is on the agent workspace
-  agent open <app> [file...]     start an allowlisted app (by name) on the agent workspace, with files
-                                 from the handoff folder only: no flags, no paths, no URLs
+  agent open <app> [file...] [--new_window=false] [--wait S]
+                                 start an allowlisted app (by name) on the agent workspace, with files
+                                 from the handoff folder only: no flags, no paths, no URLs. The result's
+                                 window is recorded for your session (--new_window=false reuses it)
+  agent workspaces               the nine and the agent workspace: shown, current, window counts (read only)
+  agent arrange full|halves|thirds|grid [window...] | frames 0xADDR=x,y,w,h ...
+                                 lay out the agent workspace's windows (never yours)
+  agent move --window W [--frame x,y,w,h]   an agent window onto the agent workspace, or a new frame
+  agent close --window W         close a window your session's `agent open` made (nothing else)
   agent run [--dir D] -- CMD...  run a command in a terminal on the agent workspace
-  agent move <window>            park one of your windows there (not drivable)
+  agent move <window>            park one of your windows there (not drivable; you only)
   agent bring <window>           bring a window you parked back
   agent snapshot --window W [-i] [--compact]
   agent find --window W [--role R] [--name N] [--text T]
@@ -46,6 +54,7 @@ const HELP: &str = "baneyspaces (Linux, Hyprland)
   doctor                         what works and what does not
 
 Flags, before the command: --agent-id ID (names you in the action log), --text (short human output).
+After open, arrange, move --window and close: --session S (default $BANEYSPACES_SESSION, else your terminal).
 With no daemon running, `switch` and `move` fall back to Hyprland's own dispatch.
 Every command prints one JSON envelope: {ok, data} or {ok:false, error:{code, message, retry, suggestion}}.
 ";
@@ -142,6 +151,38 @@ fn take_switch(args: &mut Vec<String>, flag: &str) -> bool {
     }
 }
 
+/// A Mac-style boolean flag: `--name` is true, `--name=false` or `--name=0` is false. Both spellings
+/// (`new_window`, `new-window`) are taken.
+fn take_bool(args: &mut Vec<String>, name: &str) -> Option<bool> {
+    let names = [format!("--{name}"), format!("--{}", name.replace('_', "-"))];
+    let i = args.iter().position(|a| names.iter().any(|n| a == n || a.starts_with(&format!("{n}="))))?;
+    let a = args.remove(i);
+    Some(match a.split_once('=') {
+        Some((_, v)) => v != "false" && v != "0",
+        None => true,
+    })
+}
+
+/// The terminal this command runs in, the Mac's default session.
+fn controlling_tty() -> Option<String> {
+    (0..3).find_map(|fd| {
+        let p = std::fs::read_link(format!("/proc/self/fd/{fd}")).ok()?;
+        let s = p.to_string_lossy().into_owned();
+        (s.starts_with("/dev/pts/") || s.starts_with("/dev/tty")).then_some(s)
+    })
+}
+
+/// The agent session a request belongs to: `--session S`, else `$BANEYSPACES_SESSION`, else the
+/// terminal, else "default" (the Mac's order). `close` closes only what this session's `open` made.
+/// Like the agent id, it is the caller's word: accident-proofing, not a boundary.
+fn session_of(args: &mut Vec<String>, env: Option<String>, tty: Option<String>) -> String {
+    take(args, "--session").or(env.filter(|s| !s.is_empty())).or(tty).unwrap_or_else(|| "default".into())
+}
+
+fn session(args: &mut Vec<String>) -> String {
+    session_of(args, std::env::var("BANEYSPACES_SESSION").ok(), controlling_tty())
+}
+
 fn need(args: &[String], n: usize, usage: &str) -> Result<(), Envelope> {
     if args.len() >= n {
         Ok(())
@@ -225,9 +266,52 @@ fn agent_request(mut a: Vec<String>) -> Result<Value, Envelope> {
     match sub.as_str() {
         "status" | "windows" => req(&format!("agent_{sub}"), json!({})),
         "open" => {
+            let session = session(&mut a);
+            let new_window = take_bool(&mut a, "new_window");
+            let wait = match take(&mut a, "--wait") {
+                None => None,
+                Some(w) => Some(w.parse::<u64>().map_err(|_| fail("invalid_args", &format!("--wait takes seconds, not {w}"), "usage: agent open <app> [file...] [--new_window=false] [--wait S]"))?),
+            };
             need(&a, 1, "agent open <app> [args...]")?;
             let app = a.remove(0);
-            req("agent_open", json!({ "app": app, "args": a }))
+            let mut args = json!({ "app": app, "args": a, "session": session });
+            if let Some(n) = new_window {
+                args["new_window"] = json!(n);
+            }
+            if let Some(w) = wait {
+                args["wait"] = json!(w);
+            }
+            req("agent_open", args)
+        }
+        "workspaces" => req("agent_workspaces", json!({})),
+        "arrange" => {
+            let session = session(&mut a);
+            need(&a, 1, "agent arrange full|halves|thirds|grid [window...] | frames 0xADDR=x,y,w,h ...")?;
+            let layout = a.remove(0);
+            req("agent_arrange", json!({ "layout": layout, "windows": a, "session": session }))
+        }
+        // `agent move --window W` is the agent's verb (the Mac's hands `move`); `agent move <window>`
+        // stays yours and parks one of your windows (refused to agents). The Mac tells them apart the same way.
+        "move" if a.iter().any(|x| x == "--window") => {
+            let session = session(&mut a);
+            let window = take(&mut a, "--window");
+            let frame = take(&mut a, "--frame");
+            if !a.is_empty() || window.is_none() {
+                return Err(fail("invalid_args", "usage: agent move --window 0xADDR [--frame x,y,width,height]", "Run `baneyspaces help`."));
+            }
+            let mut args = json!({ "window": window, "session": session });
+            if let Some(f) = frame {
+                args["frame"] = json!(f);
+            }
+            req("agent_move_window", args)
+        }
+        "close" => {
+            let session = session(&mut a);
+            let window = take(&mut a, "--window");
+            if !a.is_empty() || window.is_none() {
+                return Err(fail("invalid_args", "usage: agent close --window 0xADDR", "Run `baneyspaces help`."));
+            }
+            req("agent_close", json!({ "window": window, "session": session }))
         }
         "run" => {
             let dir = take(&mut a, "--dir");
@@ -338,7 +422,12 @@ fn mcp_tool_to_request(name: &str, args: &Value, agent: &str) -> Value {
         .replace('_', "-");
     match verb.as_str() {
         "status" | "windows" => json!({ "op": format!("agent_{verb}"), "agent": agent }),
-        "open" => json!({ "op": "agent_open", "agent": agent, "args": args }),
+        "open" => {
+            // This server's own session, always: a tool argument cannot claim another session's windows.
+            let mut a = if args.is_object() { args.clone() } else { json!({}) };
+            a["session"] = json!(format!("mcp:{}", std::process::id()));
+            json!({ "op": "agent_open", "agent": agent, "args": a })
+        }
         v => {
             let mut a = args.clone();
             a["verb"] = json!(v);
@@ -511,6 +600,51 @@ mod tests {
         // Your own shell still falls back.
         assert!(guarded_fallback(&req, false, &probe).unwrap().ok);
         assert!(ran.get());
+    }
+
+    #[test]
+    fn the_agent_workspace_verbs_parse_to_the_macs_argument_names() {
+        let req = request(v(&["agent", "workspaces"])).unwrap();
+        assert_eq!(req["op"], "agent_workspaces");
+        let req = request(v(&["agent", "arrange", "halves", "0xa1", "0xa2", "--session", "s1"])).unwrap();
+        assert_eq!(req, json!({ "op": "agent_arrange", "args": { "layout": "halves", "windows": ["0xa1", "0xa2"], "session": "s1" } }));
+        let req = request(v(&["agent", "arrange", "frames", "0xa1=0,0,800,600", "--session", "s1"])).unwrap();
+        assert_eq!(req["args"]["windows"], json!(["0xa1=0,0,800,600"]));
+        let req = request(v(&["agent", "move", "--window", "0xa1", "--frame", "0,0,800,600", "--session", "s1"])).unwrap();
+        assert_eq!(req, json!({ "op": "agent_move_window", "args": { "window": "0xa1", "frame": "0,0,800,600", "session": "s1" } }));
+        let req = request(v(&["agent", "close", "--window", "0xa1", "--session", "s1"])).unwrap();
+        assert_eq!(req, json!({ "op": "agent_close", "args": { "window": "0xa1", "session": "s1" } }));
+        assert!(request(v(&["agent", "close", "0xa1"])).is_err(), "close names its window with --window, as on the Mac");
+        assert!(request(v(&["agent", "move", "--window", "0xa1", "extra"])).is_err());
+        let req = request(v(&["agent", "open", "foot", "--new_window=false", "--wait", "3", "--session", "s1"])).unwrap();
+        assert_eq!(req, json!({ "op": "agent_open", "args": { "app": "foot", "args": [], "session": "s1", "new_window": false, "wait": 3 } }));
+        let req = request(v(&["agent", "open", "mpv", "clip.mp4", "--new-window", "--session", "s1"])).unwrap();
+        assert_eq!((req["args"]["args"].clone(), req["args"]["new_window"].clone()), (json!(["clip.mp4"]), json!(true)));
+        assert!(request(v(&["agent", "open", "foot", "--wait", "soon"])).is_err());
+    }
+
+    #[test]
+    fn agent_move_with_a_window_flag_is_the_agents_verb_and_without_it_yours() {
+        let mine = request(v(&["agent", "move", "0xc1"])).unwrap();
+        assert_eq!(mine, json!({ "op": "agent_move", "args": { "window": "0xc1" } }), "yours: parks a window (refused to agents)");
+        let agents = request(v(&["agent", "move", "--window", "0xa1", "--session", "s"])).unwrap();
+        assert_eq!(agents["op"], "agent_move_window");
+    }
+
+    #[test]
+    fn the_session_is_the_flag_then_the_environment_then_the_terminal() {
+        let mut a = v(&["x", "--session", "flag"]);
+        assert_eq!(session_of(&mut a, Some("env".into()), Some("/dev/pts/3".into())), "flag");
+        assert_eq!(a, v(&["x"]));
+        assert_eq!(session_of(&mut v(&[]), Some("env".into()), Some("/dev/pts/3".into())), "env");
+        assert_eq!(session_of(&mut v(&[]), Some(String::new()), Some("/dev/pts/3".into())), "/dev/pts/3");
+        assert_eq!(session_of(&mut v(&[]), None, None), "default");
+    }
+
+    #[test]
+    fn an_mcp_open_is_always_this_servers_session() {
+        let r = mcp_tool_to_request("agent_open", &json!({ "app": "foot", "session": "someone-else" }), "a");
+        assert_eq!(r["args"]["session"], format!("mcp:{}", std::process::id()));
     }
 
     #[test]

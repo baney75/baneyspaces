@@ -290,7 +290,7 @@ pub fn run(shared: &Shared, agent: &str, args: &Value) -> Envelope {
                 return env;
             }
         };
-        let stable = c.client(&window).map(|cl| cl.stable_id).unwrap_or_default();
+        let stable = plan.stable.clone();
         (plan, stable, screen_state(&c), c.paths.state.clone())
     };
     let Some(grim) = locate_grim() else {
@@ -312,7 +312,7 @@ pub fn run(shared: &Shared, agent: &str, args: &Value) -> Envelope {
         std::thread::sleep(Duration::from_millis(stall)); // test only: lets nested.sh move the window mid-shot
     }
     let started = Instant::now();
-    let expect = crate::hands::SnapInfo { window: plan.window.clone(), pid: plan.pid, start: plan.start };
+    let expect = crate::hands::SnapInfo { window: plan.window.clone(), pid: plan.pid, start: plan.start, stable: plan.stable.clone() };
     let still_ours = || -> Result<(), Envelope> {
         let c = crate::daemon::lock(shared);
         let same_window = c.client(&plan.window).is_some_and(|cl| cl.stable_id == stable);

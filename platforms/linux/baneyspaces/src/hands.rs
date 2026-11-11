@@ -26,6 +26,8 @@ pub struct SnapInfo {
     pub window: String,
     pub pid: u32,
     pub start: u64,
+    /// Hyprland's `stableId` of the window: an address is reused for a later window, this is not.
+    pub stable: String,
 }
 
 /// Finds the pinned engine: `$BANEYSPACES_ENGINE`, `engine/` beside the binary or in the source
@@ -295,6 +297,8 @@ pub(crate) struct Plan {
     pub window: String,
     pub pid: u32,
     pub start: u64,
+    /// Hyprland's `stableId` of the window when it was guarded.
+    pub stable: String,
     pub title: String,
     pub class: String,
 }
@@ -309,30 +313,29 @@ pub(crate) fn guard(c: &Core, window: &str, expect: Option<&SnapInfo>) -> Result
             "Run `baneyspaces agent status` for the agent workspace's windows.",
         ));
     };
+    let start = proc::start_time(cl.pid).unwrap_or(0);
+    // A dialog of an agent process that Hyprland has placed on no workspace yet is the agent's: it is
+    // not on yours. Same pid and start time as a registered agent process, and floating; nothing else.
+    let unplaced_child = crate::agentws::unplaced_child(&c.model, &cl, start);
     // Hyprland's word is final: the window must be on the agent workspace right now.
-    if cl.ws_name != AGENT_SPECIAL {
+    if cl.ws_name != AGENT_SPECIAL && !unplaced_child {
         return Err(Envelope::err("not_in_scope", "that window is not on the agent workspace", Retry::Never, "Agents act only on windows on the agent workspace. Start the app with `baneyspaces agent open`."));
     }
-    let start = proc::start_time(cl.pid).unwrap_or(0);
     if let Some(s) = expect {
-        if s.pid != cl.pid || (s.start != 0 && s.start != start) {
+        // The address is the same; the window is not, if its `stableId` changed (the old one closed).
+        if s.pid != cl.pid || (s.start != 0 && s.start != start) || s.stable != cl.stable_id {
             return Err(Envelope::err(
                 "stale_ref",
-                "the window now belongs to a different process than the snapshot",
+                "the window is not the one the snapshot was taken of (another window or process has its address now)",
                 Retry::AfterSnapshot,
                 "Take a new snapshot.",
             ));
         }
     }
-    check_scope(
-        &c.model,
-        &WindowFacts {
-            window: window.into(),
-            pid: cl.pid,
-            pid_start: start,
-        },
-    )
-    .map_err(|r| r.envelope())?;
+    // The model does not track a window on no workspace; the pid check above is its scope.
+    if !unplaced_child {
+        check_scope(&c.model, &WindowFacts { window: window.into(), pid: cl.pid, pid_start: start }).map_err(|r| r.envelope())?;
+    }
     // The app's session bus ended when the daemon restarted: it keeps a dead bus address and its
     // accessibility is gone, so there is nothing to read. Say so rather than answer wrongly.
     if c.bus_lost_for(cl.pid) {
@@ -349,6 +352,7 @@ pub(crate) fn guard(c: &Core, window: &str, expect: Option<&SnapInfo>) -> Result
         window: window.into(),
         pid: cl.pid,
         start,
+        stable: cl.stable_id,
         title: cl.title,
         class: cl.class,
     })
@@ -459,7 +463,7 @@ pub fn run(shared: &Shared, agent: &str, args: &Value) -> Envelope {
     }
     {
         let c = crate::daemon::lock(shared);
-        let expect = SnapInfo { window: plan.window.clone(), pid: plan.pid, start: plan.start };
+        let expect = SnapInfo { window: plan.window.clone(), pid: plan.pid, start: plan.start, stable: plan.stable.clone() };
         if guard(&c, &plan.window, Some(&expect)).is_err() {
             let env = Envelope::err("not_in_scope", "the window changed while the call was being prepared (it moved, or its process changed), so nothing was sent", Retry::Never, "Take a new snapshot of a window on the agent workspace.");
             record(&c, agent, &verb, Some(plan.pid), Some(&plan.window), reference.as_deref(), "atspi", &env);
@@ -499,6 +503,7 @@ pub fn run(shared: &Shared, agent: &str, args: &Value) -> Envelope {
                     window: plan.window.clone(),
                     pid: plan.pid,
                     start: plan.start,
+                    stable: plan.stable.clone(),
                 },
             );
         }

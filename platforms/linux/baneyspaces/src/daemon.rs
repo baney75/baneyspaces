@@ -1,6 +1,7 @@
 //! `baneyspaces daemon`: the model driven by Hyprland's events, the control socket the CLI talks
 //! to, `state.json`, the agent workspace and the agent action log.
 
+use crate::agentws;
 use crate::apps;
 use crate::bus;
 use crate::hands;
@@ -38,6 +39,8 @@ pub struct Client {
     pub mapped: bool,
     /// Hyprland's `stableId`: the window's identifier in ext-foreign-toplevel-list, which `agent shot` captures by.
     pub stable_id: String,
+    /// Floating rather than tiled. A floating window of an agent process next to its main window is a dialog.
+    pub floating: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -90,7 +93,31 @@ pub struct Core {
     pub bus_children: HashMap<String, Vec<std::process::Child>>,
     /// Stacks to take down once the Core lock is released (stopping waits for processes).
     pub pending_stops: Vec<bus::StopJob>,
+    /// Which windows each agent session's `open` made, so `close` closes only those.
+    pub sessions: agentws::SessionWindows,
+    /// Windows `arrange` or `move --frame` floated (so they are not mistaken for dialogs): address
+    /// -> the window's `stableId` then. Read through `is_placed`, which checks both.
+    pub placed: HashMap<String, String>,
+    /// Address -> Hyprland's `stableId` of the window the model tracks there. An address comes back
+    /// for a later window and a `stableId` does not, so a tracked address that reports another one
+    /// is a new window whose close was missed (`open_client`).
+    pub stable: HashMap<String, String>,
+    /// Launch token -> the session whose `open` sent it, recorded with the exec. The token's first
+    /// window is claimed for that session when it registers, whether or not `open` is still waiting.
+    pub claims: HashMap<String, Claim>,
 }
+
+/// A session's claim on the first window of one launch.
+#[derive(Clone, Debug)]
+pub struct Claim {
+    pub session: String,
+    pub app: String,
+    /// Unix seconds after which the claim lapses (an app that never opens a window claims nothing later).
+    pub until: u64,
+}
+
+/// How long a launch's claim waits for its first window.
+pub const CLAIM_SECS: u64 = 120;
 
 pub type Shared = Arc<Mutex<Core>>;
 
@@ -209,6 +236,7 @@ impl Core {
                         title: c["title"].as_str().unwrap_or("").into(),
                         mapped: c["mapped"].as_bool().unwrap_or(true),
                         stable_id: c["stableId"].as_str().unwrap_or("").into(),
+                        floating: c["floating"].as_bool().unwrap_or(false),
                     })
                     .collect()
             })
@@ -464,30 +492,86 @@ impl Core {
         true
     }
 
+    /// Whether `arrange` or `move --frame` floated this very window: the address and the `stableId`
+    /// it had then. A window with no `stableId` is never taken for one that was placed.
+    pub fn is_placed(&self, c: &Client) -> bool {
+        !c.stable_id.is_empty() && self.placed.get(&c.addr) == Some(&c.stable_id)
+    }
+
+    /// Whether the window Hyprland reports at this address is another one than the model tracks
+    /// there: the tracked one closed (its event was missed) and the address was given out again.
+    fn replaced(&self, c: &Client) -> bool {
+        self.model.is_tracked(&c.addr) && self.stable.get(&c.addr).is_some_and(|known| *known != c.stable_id)
+    }
+
     /// A window Hyprland reports: classify and feed the model. `existing` windows (found at
     /// start, or arriving from outside the scheme) are mirrored exactly where they are; a new
     /// window follows the placement rules.
     pub fn open_client(&mut self, c: &Client, existing: bool) {
-        if !c.mapped || self.model.is_tracked(&c.addr) {
+        if !c.mapped {
             return;
+        }
+        if self.model.is_tracked(&c.addr) {
+            if !self.replaced(c) {
+                return;
+            }
+            // Same address, another `stableId`: the window tracked here closed and its event was
+            // missed. It ends like any closed window (its session record and its placed record go),
+            // and this one is handled as the new window it is.
+            self.log(&format!("window {} was replaced by another at the same address; the old one's records are dropped", c.addr));
+            self.window_gone(&c.addr);
+        }
+        // A new window: nothing recorded under its address (a missed close) carries over to it. A
+        // resync rebuilds the model from windows that still exist, so their records stay, but only
+        // for the same window (`stableId`), never for another one at its address.
+        if self.resyncing {
+            self.sessions.keep_only(&c.addr, &c.stable_id);
+            if !self.is_placed(c) {
+                self.placed.remove(&c.addr);
+            }
+        } else {
+            self.sessions.forget(&c.addr);
+            self.placed.remove(&c.addr);
         }
         let on_agent = c.ws_name == AGENT_SPECIAL;
         let n = if on_agent { None } else { decode(c.ws_id, &c.ws_name) };
         if !on_agent && n.is_none() {
             return; // outside the scheme: not ours
         }
+        self.stable.insert(c.addr.clone(), c.stable_id.clone());
         self.reconcile_agents();
         self.adopt_agent_pid(c.pid);
         let start = proc::start_time(c.pid).unwrap_or(0);
         if existing {
             let ev = Event::ObserveWindow { window: c.addr.clone(), pid: c.pid, start, app: c.class.clone(), workspace: n };
             let _ = self.apply(ev);
+            self.claim_window(&c.addr, c.pid, start);
             return;
         }
         let monitor = self.monitors().into_iter().find(|m| m.id == c.monitor).map(|m| m.name);
         let _ = self.apply(Event::Open { window: c.addr.clone(), pid: c.pid, start, app: c.class.clone(), monitor, workspace: n });
         if on_agent && !matches!(self.model.home(&c.addr), Some(Home::Agent)) {
             let _ = self.apply(Event::AgentSend { window: c.addr.clone() });
+        }
+        self.claim_window(&c.addr, c.pid, start);
+    }
+
+    /// A new window on the agent workspace whose process is the one a launch started (the first pid
+    /// registered with that token, not any other process carrying it) takes that launch's claim:
+    /// the session whose `open` sent it. Once: the launch's later windows are not claimed.
+    pub fn claim_window(&mut self, addr: &str, pid: u32, start: u64) {
+        if !matches!(self.model.home(addr), Some(Home::Agent)) || self.model.pid_of(addr) != Some(pid) {
+            return;
+        }
+        let Some(tok) = self.token_pids.iter().find(|(_, v)| v.first() == Some(&pid)).map(|(t, _)| t.clone()) else { return };
+        let Some(claim) = self.claims.remove(&tok) else { return };
+        if claim.until < now() {
+            return;
+        }
+        // The `stableId` `open_client` just saw for this window; none recorded means no ownership.
+        let stable = self.stable.get(addr).cloned().unwrap_or_default();
+        if !self.sessions.record(&claim.session, addr, agentws::Opened { pid, start, app: claim.app.clone(), stable }) {
+            self.log(&format!("window {addr} was not claimed for session {}: another session owns it", claim.session));
         }
     }
 
@@ -507,6 +591,7 @@ impl Core {
         };
         self.resyncing = true;
         self.model = Model::new();
+        self.stable.clear();
         let order = self.paths.read("monitors.json").and_then(|t| serde_json::from_str::<Vec<String>>(&t).ok()).unwrap_or_default();
         mons.sort_by_key(|m| (order.iter().position(|o| *o == m.name).unwrap_or(usize::MAX), m.id));
         for m in &mons {
@@ -596,6 +681,7 @@ impl Core {
     /// A launch token whose processes are all gone: stop its private bus, delete its profile.
     fn drop_token(&mut self, tok: &str) {
         let info = self.tokens.remove(tok);
+        self.claims.remove(tok);
         let kids = self.bus_children.remove(tok);
         // Stopping a stack waits for processes to exit; that happens after the lock is released.
         self.pending_stops.push(bus::StopJob { run: self.paths.run.clone(), token: tok.to_string(), kids, info: info.and_then(|i| i.bus) });
@@ -606,6 +692,7 @@ impl Core {
     /// and agent profiles older than a week that no live token owns are deleted.
     pub fn reap_tokens(&mut self) {
         let t = now();
+        self.claims.retain(|_, cl| cl.until >= t);
         let gone: Vec<String> = self.tokens.iter().filter(|(tok, i)| t.saturating_sub(i.at) > 60 && proc::pids_with_token(tok).is_empty()).map(|(tok, _)| tok.clone()).collect();
         for tok in &gone {
             self.drop_token(tok);
@@ -618,18 +705,29 @@ impl Core {
     }
 
     /// Windows the compositor has and the model lacks (an event missed), and the other way round.
+    /// A tracked address that now reports another `stableId` is both: its window closed and a new
+    /// one took the address, so `open_client` ends the old one and takes the new one in.
     pub fn reconcile_windows(&mut self) {
         let Ok(clients) = self.try_clients() else { return };
         for c in &clients {
-            if !self.model.is_tracked(&c.addr) {
+            if !self.model.is_tracked(&c.addr) || self.replaced(c) {
                 self.open_client(c, true);
             }
         }
         let live: HashSet<&str> = clients.iter().map(|c| c.addr.as_str()).collect();
         let gone: Vec<String> = self.model.window_ids().into_iter().filter(|w| !live.contains(*w)).map(String::from).collect();
         for w in gone {
-            let _ = self.apply(Event::Close { window: w });
+            self.window_gone(&w);
         }
+    }
+
+    /// A window closed, by its event or found missing by reconciliation. Every record keyed to its
+    /// address ends here: an address can come back for a later window, which starts unowned.
+    fn window_gone(&mut self, addr: &str) {
+        self.sessions.forget(addr);
+        self.placed.remove(addr);
+        self.stable.remove(addr);
+        let _ = self.apply(Event::Close { window: addr.to_string() });
     }
 
     /// R-F2 on Linux rests on `misc:focus_on_activate = false`: with it, an app asking for focus
@@ -698,9 +796,7 @@ impl Core {
                     self.open_client(&c, false);
                 }
             }
-            HyprEvent::CloseWindow { addr } => {
-                let _ = self.apply(Event::Close { window: addr });
-            }
+            HyprEvent::CloseWindow { addr } => self.window_gone(&addr),
             HyprEvent::ActiveWindow { addr } => {
                 // An event can arrive after the focus has moved on (our own dispatches make some: a
                 // monitor is focused for a moment to hide the agent workspace there). Only what is
@@ -994,6 +1090,12 @@ pub fn handle(shared: &Shared, req: &Value, peer: Option<u32>) -> Envelope {
             }
         }
         "agent_status" | "agent_windows" => Envelope::ok(agent_status(&lock(shared))),
+        // The agent workspace verbs (the Mac's names). `agent_move_window` is the agent's `move --window`;
+        // `agent_move` above is yours (it parks one of your windows) and stays refused to agents.
+        "agent_workspaces" => agentws::workspaces(shared, &agent),
+        "agent_arrange" => agentws::arrange(shared, &agent, &args),
+        "agent_move_window" => agentws::move_window(shared, &agent, &args),
+        "agent_close" => agentws::close_window(shared, &agent, &args),
         "agent_open" => agent_open(shared, &agent, &args, false),
         "test_open" => agent_open(shared, &agent, &args, true),
         "test_reap" => {
@@ -1038,11 +1140,8 @@ fn ls(c: &Core) -> Value {
 }
 
 fn agent_status(c: &Core) -> Value {
-    let clients: BTreeMap<String, Client> = c
-        .clients()
-        .into_iter()
-        .map(|x| (x.addr.clone(), x))
-        .collect();
+    let list = c.clients();
+    let clients: BTreeMap<String, Client> = list.iter().map(|x| (x.addr.clone(), x.clone())).collect();
     let windows: Vec<Value> = c
         .model
         .agent_windows()
@@ -1050,7 +1149,10 @@ fn agent_status(c: &Core) -> Value {
         .map(|w| {
             let cl = clients.get(w);
             let pid = c.model.pid_of(w);
-            json!({ "window": w, "app": cl.map(|c| c.class.clone()).unwrap_or_default(), "title": cl.map(|c| c.title.clone()).unwrap_or_default(), "pid": pid, "drivable": pid.is_some_and(|p| c.model.agent_proc(p).is_some() && !c.bus_lost_for(p)) })
+            // A dialog of an agent process: floating, not floated by `arrange`, not its process's first window there (`agentws::standing`).
+            let dialog = cl.filter(|x| x.floating && !c.is_placed(x) && x.ws_name == AGENT_SPECIAL && !agentws::oldest_of(&c.model, &list, x.pid, w));
+            let parent = dialog.and_then(|d| agentws::parent_of(&c.model, &list, d));
+            json!({ "window": w, "app": cl.map(|c| c.class.clone()).unwrap_or_default(), "title": cl.map(|c| c.title.clone()).unwrap_or_default(), "pid": pid, "drivable": pid.is_some_and(|p| c.model.agent_proc(p).is_some() && !c.bus_lost_for(p)), "kind": if dialog.is_some() { "dialog" } else { "window" }, "parent": parent })
         })
         .collect();
     json!({ "workspace": AGENT_SPECIAL, "shown": c.model.agent_shown(), "windows": windows, "processes": c.model.agent_pids().len(), "refused": c.model.refused() })
@@ -1197,14 +1299,25 @@ fn prepare(c: &Core, plan: &Plan, token: &str) -> Result<Prepared, Envelope> {
     }
 }
 
+/// What `open` adds to a launch: the agent session it belongs to (`close` closes only what a
+/// session's `open` made) and how long to wait for the window (`wait`, at most 7 s as on the Mac;
+/// 8 s when it is not given).
+#[derive(Default)]
+struct OpenOpts {
+    session: String,
+    wait: Option<u64>,
+}
+
 /// Starts the plan as a new process on the agent workspace, on a private session bus of its own,
 /// then waits for a window of its own.
-fn launch_on_agent(shared: &Shared, agent: &str, plan: Plan) -> Envelope {
+fn launch_on_agent(shared: &Shared, agent: &str, plan: Plan, opts: &OpenOpts) -> Envelope {
     let token = match proc::random_token() {
         Ok(t) => t,
         Err(e) => return Envelope::err("internal", format!("no random bytes: {e}"), Retry::Never, ""),
     };
     let private_bus = !matches!(plan, Plan::Test { private_bus: false, .. });
+    // Only `open` claims its window for the session; `run` is the agent's own shell.
+    let claims = !matches!(plan, Plan::Run { .. });
     // 1. Under the lock, briefly: check the plan and read what is needed.
     let (prep, known, run_dir) = {
         let c = lock(shared);
@@ -1240,8 +1353,10 @@ fn launch_on_agent(shared: &Shared, agent: &str, plan: Plan) -> Envelope {
     }
     // 3. Under the lock again: record the launch and start the app. The app does not get the means to
     //    drive the compositor (its IPC signature): accident-proofing, like the rest.
-    {
+    let (front_before, refused_before) = {
         let mut c = lock(shared);
+        let front = c.hypr.json("activewindow").ok().and_then(|v| v["address"].as_str().map(String::from));
+        let refused = c.model.refused();
         let (kids, bus_info) = match started {
             Some((k, i)) => (Some(k), Some(i)),
             None => (None, None),
@@ -1256,6 +1371,9 @@ fn launch_on_agent(shared: &Shared, agent: &str, plan: Plan) -> Envelope {
         );
         c.tokens.insert(token.clone(), TokenInfo { agent: agent.into(), app: label.clone(), at: now(), bus: bus_info, bus_lost: false });
         c.save_tokens();
+        if claims && !opts.session.is_empty() {
+            c.claims.insert(token.clone(), Claim { session: opts.session.clone(), app: label.clone(), until: now() + CLAIM_SECS });
+        }
         let lua = format!("hl.dsp.exec_cmd({}, {{ workspace = \"{} silent\" }})", lua_str(&cmd), AGENT_SPECIAL);
         if let Err(e) = c.hypr.dispatch(&lua) {
             c.drop_token(&token);
@@ -1264,23 +1382,47 @@ fn launch_on_agent(shared: &Shared, agent: &str, plan: Plan) -> Envelope {
             record(&c, agent, "open", None, None, None, "exec", &env);
             return env;
         }
-    }
+        (front, refused)
+    };
     let label = label.as_str();
-    let deadline = Instant::now() + Duration::from_secs(8);
-    while Instant::now() < deadline {
+    let deadline = Instant::now() + opts.wait.map(|w| Duration::from_secs(w.min(7))).unwrap_or(Duration::from_secs(8));
+    // At least one look, even with `wait: 0` (the Mac's rule).
+    // Whether a process of this launch was ever seen. Hyprland starts it after the exec is answered
+    // (sh, then env, then the app), so a short wait can end before there is one.
+    let mut seen = false;
+    loop {
         std::thread::sleep(Duration::from_millis(50));
-        let c = lock(shared);
+        if !seen {
+            seen = !proc::pids_with_token(&token).is_empty(); // reads /proc, so before the lock
+        }
+        let mut c = lock(shared);
         if let Some(pid) = c.token_pids.get(&token).and_then(|v| v.first()).copied() {
             if let Some(w) = c.model.agent_windows().into_iter().find(|w| c.model.pid_of(w) == Some(pid)).map(String::from) {
-                let title = c.client(&w).map(|x| x.title).unwrap_or_default();
-                let env = Envelope::ok(json!({ "window": w, "pid": pid, "app": label, "title": title, "workspace": AGENT_SPECIAL, "start": proc::start_time(pid) }));
+                let (title, stable) = c.client(&w).map(|x| (x.title, x.stable_id)).unwrap_or_default();
+                let start = proc::start_time(pid);
+                let front_after = c.hypr.json("activewindow").ok().and_then(|v| v["address"].as_str().map(String::from));
+                let focus = agentws::focus_json(front_before.as_deref(), front_after.as_deref(), refused_before, c.model.refused());
+                let mut data = json!({ "window": w, "pid": pid, "app": label, "title": title, "workspace": AGENT_SPECIAL, "start": start, "reused": false, "focus": focus });
+                // Normally the window took the claim when it registered; this is the fallback.
+                c.claims.remove(&token);
+                if claims && !c.sessions.opened_by(&opts.session, &w, pid, start.unwrap_or(0), &stable) && !c.sessions.record(&opts.session, &w, agentws::Opened { pid, start: start.unwrap_or(0), app: label.to_string(), stable: stable.clone() }) {
+                    data["window_identified"] = json!(false);
+                    data["note"] = json!("this window is not recorded for your session (no session, or another session owns it), so `close` will refuse it");
+                }
+                let env = Envelope::ok(data);
                 record(&c, agent, "open", Some(pid), Some(&w), None, "exec", &env);
                 return env;
             }
         }
+        if Instant::now() >= deadline {
+            break;
+        }
     }
     let c = lock(shared);
     let alive = proc::pids_with_token(&token);
+    let seen = seen || !alive.is_empty();
+    // `open --wait N`: the caller asked not to wait for the window, so "not here yet" is an answer.
+    let short_wait = claims && opts.wait.is_some();
     // Windows that appeared while we waited and are not the agent's: the app may have forwarded to
     // a copy of yours. They are left exactly where they are; this only says so.
     let strays: Vec<Value> = c
@@ -1290,7 +1432,9 @@ fn launch_on_agent(shared: &Shared, agent: &str, plan: Plan) -> Envelope {
         .filter(|w| !known.contains(*w) && !c.model.is_agent_window(w))
         .map(|w| json!({ "window": w, "pid": c.model.pid_of(w) }))
         .collect();
-    let mut env = if alive.is_empty() {
+    // No process now means it came and went only if one was seen, or the full default wait has
+    // passed. After a short wait with none seen yet, the app is most likely still being started.
+    let mut env = if alive.is_empty() && (seen || !short_wait) {
         let extra = if strays.is_empty() { "" } else { "; a window of yours appeared meanwhile and was left where it is" };
         Envelope::err(
             "single_instance",
@@ -1298,11 +1442,32 @@ fn launch_on_agent(shared: &Shared, agent: &str, plan: Plan) -> Envelope {
             Retry::Never,
             "Agents drive only a process BaneySpaces started. Use the app's files or command line instead, or ask the user to lend it.",
         )
-    } else {
+    } else if !short_wait {
         Envelope::err("timeout", format!("{label} is running (pid {}) but opened no window within 8 s", alive[0]), Retry::Never, "Check `baneyspaces agent status`; the app may need a display flag.")
+    } else {
+        // Still starting. Its first window is claimed for this session when it comes (the claim was
+        // recorded with the exec), so this is not a failure: the window is just not here yet.
+        let front_after = c.hypr.json("activewindow").ok().and_then(|v| v["address"].as_str().map(String::from));
+        let focus = agentws::focus_json(front_before.as_deref(), front_after.as_deref(), refused_before, c.model.refused());
+        let pid = c.token_pids.get(&token).and_then(|v| v.first()).copied().or(alive.first().copied());
+        let claimed = c.claims.contains_key(&token);
+        Envelope::ok(json!({
+            "window": Value::Null,
+            "pending": true,
+            "pid": pid,
+            "app": label,
+            "workspace": AGENT_SPECIAL,
+            "reused": false,
+            "focus": focus,
+            "note": if claimed { "the app is still starting; its first window goes to your session when it appears. Run `baneyspaces agent windows` to find it." } else { "the app is still starting. Run `baneyspaces agent windows` to find its window." },
+        }))
     };
     if !strays.is_empty() {
-        env = env.with_data(json!({ "windows_that_appeared": strays }));
+        if let Some(d) = env.data.as_mut() {
+            d["windows_that_appeared"] = json!(strays);
+        } else {
+            env = env.with_data(json!({ "windows_that_appeared": strays }));
+        }
     }
     record(&c, agent, "open", alive.first().copied(), None, None, "exec", &env);
     env
@@ -1316,13 +1481,27 @@ fn agent_open(shared: &Shared, agent: &str, args: &Value, test: bool) -> Envelop
     let Some(app) = arg_str(args, "app") else {
         return Envelope::err("invalid_args", "an app is required", Retry::Never, "Example: baneyspaces agent open foot");
     };
-    let list = str_list(args, "args");
+    // `targets` is the Mac's name for the files.
+    let mut list = str_list(args, "args");
+    if list.is_empty() {
+        list = str_list(args, "targets");
+    }
+    let opts = OpenOpts { session: arg_str(args, "session").unwrap_or("").to_string(), wait: args["wait"].as_u64() };
+    // `new_window: false` with no files: this session's window of that app, if it still has one. Nothing starts.
+    if args["new_window"].as_bool() == Some(false) && list.is_empty() && !opts.session.is_empty() {
+        let c = lock(shared);
+        if let Some(data) = agentws::reuse(&c, &opts.session, app) {
+            let env = Envelope::ok(data);
+            record(&c, agent, "open", env.data.as_ref().and_then(|d| d["pid"].as_u64()).map(|p| p as u32), env.data.as_ref().and_then(|d| d["window"].as_str()), None, "reuse", &env);
+            return env;
+        }
+    }
     let plan = if test {
         Plan::Test { app: app.into(), args: list, private_bus: args["private_bus"].as_bool().unwrap_or(true) }
     } else {
         Plan::Open { app: app.into(), files: list }
     };
-    launch_on_agent(shared, agent, plan)
+    launch_on_agent(shared, agent, plan, &opts)
 }
 
 /// `agent run`: a command in a terminal on the agent workspace. It is a shell with your uid, so
@@ -1333,7 +1512,7 @@ fn agent_run(shared: &Shared, agent: &str, args: &Value) -> Envelope {
     if cmd.is_empty() {
         return Envelope::err("invalid_args", "a command is required after --", Retry::Never, "Example: baneyspaces agent run --dir ~/Projects/x -- claude");
     }
-    launch_on_agent(shared, agent, Plan::Run { cmd, dir: arg_str(args, "dir").map(String::from) })
+    launch_on_agent(shared, agent, Plan::Run { cmd, dir: arg_str(args, "dir").map(String::from) }, &OpenOpts::default())
 }
 
 // ---- serving --------------------------------------------------------------------------------
@@ -1422,6 +1601,10 @@ pub fn run(trace: bool) -> i32 {
         stall_ms: 0,
         bus_children: HashMap::new(),
         pending_stops: vec![],
+        sessions: agentws::SessionWindows::default(),
+        placed: HashMap::new(),
+        stable: HashMap::new(),
+        claims: HashMap::new(),
     };
     let shared: Shared = Arc::new(Mutex::new(core));
     // Connect to Hyprland's events FIRST. They queue in the socket while the state is read, so a
@@ -1549,7 +1732,7 @@ pub fn call_timeout(paths: &Paths, req: &Value, wait: Duration) -> Envelope {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn temp_paths(tag: &str) -> Paths {
@@ -1587,11 +1770,15 @@ mod tests {
             stall_ms: 0,
             bus_children: HashMap::new(),
             pending_stops: vec![],
+            sessions: agentws::SessionWindows::default(),
+            placed: HashMap::new(),
+        stable: HashMap::new(),
+            claims: HashMap::new(),
         }
     }
 
     /// A stand-in for Hyprland's socket: answers each request with `answer(request)` and logs it.
-    fn fake_hypr(tag: &str, answer: impl Fn(&str) -> String + Send + 'static) -> (Core, std::sync::Arc<Mutex<Vec<String>>>) {
+    pub(crate) fn fake_hypr(tag: &str, answer: impl Fn(&str) -> String + Send + 'static) -> (Core, std::sync::Arc<Mutex<Vec<String>>>) {
         let paths = temp_paths(tag);
         let dir = paths.run.join("hypr");
         std::fs::create_dir_all(&dir).unwrap();
@@ -1610,8 +1797,263 @@ mod tests {
         (test_core_on(paths, Hypr::at(dir)), log)
     }
 
-    fn mon(id: i64, name: &str, focused: bool, ws: i64) -> Value {
+    pub(crate) fn mon(id: i64, name: &str, focused: bool, ws: i64) -> Value {
         json!({ "id": id, "name": name, "focused": focused, "disabled": false, "activeWorkspace": { "id": ws, "name": ws.to_string() }, "specialWorkspace": { "name": "" } })
+    }
+
+    /// A window that closes with its event missed leaves no record behind, and a later window at the
+    /// same address, of the same process, starts unowned.
+    #[test]
+    fn a_missed_close_leaves_no_owner_for_the_address() {
+        let me = std::process::id();
+        let start = crate::proc::start_time(me).unwrap_or(0);
+        let listed: std::sync::Arc<Mutex<Vec<Value>>> = Default::default();
+        let list = listed.clone();
+        let (mut c, _log) = fake_hypr("missed-close", move |r| match r {
+            "j/clients" => Value::Array(list.lock().unwrap().clone()).to_string(),
+            "j/monitors" => json!([mon(0, "A", true, 1)]).to_string(),
+            _ => "[]".into(),
+        });
+        c.model.apply(Event::AgentRegister { pid: me, start }).unwrap();
+        let w = json!({ "address": "0xe1", "pid": me, "workspace": { "id": -98, "name": AGENT_SPECIAL }, "monitor": 0, "class": "foot", "title": "t", "mapped": true, "floating": false, "stableId": "1" });
+        let cl = Core::parse_clients(&json!([w.clone()]))[0].clone();
+        listed.lock().unwrap().push(w);
+        c.open_client(&cl, false);
+        assert!(c.sessions.record("s1", "0xe1", agentws::Opened { pid: me, start, app: "foot".into(), stable: "1".into() }));
+        c.placed.insert("0xe1".into(), "1".into());
+        // It closes; its event is missed and reconciliation finds it gone.
+        listed.lock().unwrap().clear();
+        c.reconcile_windows();
+        assert!(!c.model.is_tracked("0xe1"));
+        assert_eq!(c.sessions.owner("0xe1"), None, "reconciliation forgets the session record");
+        assert!(!c.placed.contains_key("0xe1"));
+        // A record the model no longer backs (say, from before a rebuild) does not pass to a new window there.
+        assert!(c.sessions.record("s1", "0xe1", agentws::Opened { pid: me, start, app: "foot".into(), stable: "1".into() }));
+        c.open_client(&cl, false);
+        assert!(!c.sessions.opened_by("s1", "0xe1", me, start, "1"), "a new window at that address starts unowned");
+    }
+
+    /// One window of this test process on the agent workspace, as `hyprctl -j clients` lists it.
+    fn agent_client(addr: &str, stable: &str) -> Value {
+        json!({ "address": addr, "pid": std::process::id(), "workspace": { "id": -98, "name": AGENT_SPECIAL }, "monitor": 0, "class": "foot", "title": "t", "mapped": true, "floating": true, "stableId": stable })
+    }
+
+    /// A Core that tracks window 0xe1 (`stableId` 1) of this process, opened by session s1 and floated
+    /// by `arrange`. Returns it with the list its fake Hyprland answers `clients` from, and the log.
+    #[allow(clippy::type_complexity)]
+    fn owned_window(tag: &str) -> (Core, std::sync::Arc<Mutex<Vec<Value>>>, std::sync::Arc<Mutex<Vec<String>>>) {
+        let me = std::process::id();
+        let start = crate::proc::start_time(me).unwrap_or(0);
+        let listed: std::sync::Arc<Mutex<Vec<Value>>> = Default::default();
+        let list = listed.clone();
+        let (mut c, log) = fake_hypr(tag, move |r| match r {
+            "j/clients" => Value::Array(list.lock().unwrap().clone()).to_string(),
+            "j/monitors" => json!([mon(0, "A", true, 1)]).to_string(),
+            "j/workspaces" => "[]".into(),
+            _ => "ok".into(),
+        });
+        c.model.apply(Event::AgentRegister { pid: me, start }).unwrap();
+        let w = agent_client("0xe1", "1");
+        let cl = Core::parse_clients(&json!([w.clone()]))[0].clone();
+        listed.lock().unwrap().push(w);
+        c.open_client(&cl, false);
+        assert!(c.sessions.record("s1", "0xe1", agentws::Opened { pid: me, start, app: "foot".into(), stable: "1".into() }));
+        c.placed.insert("0xe1".into(), "1".into());
+        assert!(c.sessions.opened_by("s1", "0xe1", me, start, "1") && c.is_placed(&cl), "the window is s1's and placed");
+        (c, listed, log)
+    }
+
+    /// What must hold once another window has the address of one a session opened: no session owns
+    /// it, it is not taken for a window `arrange` floated, and `close` from that session is refused
+    /// with nothing sent.
+    fn assert_replacement_is_unowned(c: Core, log: &std::sync::Arc<Mutex<Vec<String>>>) {
+        let me = std::process::id();
+        let start = crate::proc::start_time(me).unwrap_or(0);
+        let new = Core::parse_clients(&json!([agent_client("0xe1", "2")]))[0].clone();
+        assert!(c.model.is_tracked("0xe1"), "the new window is tracked");
+        assert_eq!(c.stable.get("0xe1").map(String::as_str), Some("2"));
+        assert_eq!(c.sessions.owner("0xe1"), None, "the old window's session does not own the new one");
+        for stable in ["1", "2", ""] {
+            assert!(!c.sessions.opened_by("s1", "0xe1", me, start, stable), "stableId {stable:?}");
+        }
+        assert!(!c.is_placed(&new), "and it was not floated by arrange");
+        let shared: Shared = std::sync::Arc::new(Mutex::new(c));
+        log.lock().unwrap().clear();
+        let e = agentws::close_window(&shared, "t", &json!({ "window": "0xe1", "session": "s1" }));
+        assert_eq!(e.error.as_ref().map(|e| e.code.as_str()), Some("not_in_scope"), "close is refused");
+        assert!(!log.lock().unwrap().iter().any(|r| r.starts_with("/dispatch")), "and nothing is sent");
+    }
+
+    /// The close event is missed and the same process opens another window at the same address
+    /// before reconciliation runs: its open event must not leave the old session owning it.
+    #[test]
+    fn a_window_replaced_at_its_address_loses_its_session_when_it_opens() {
+        let (mut c, listed, log) = owned_window("replaced-open");
+        *listed.lock().unwrap() = vec![agent_client("0xe1", "2")];
+        let new = Core::parse_clients(&json!([agent_client("0xe1", "2")]))[0].clone();
+        c.open_client(&new, false);
+        assert_replacement_is_unowned(c, &log);
+    }
+
+    /// The same, with the new window's open event missed too: reconciliation finds the address
+    /// still listed, with another `stableId`.
+    #[test]
+    fn a_window_replaced_at_its_address_loses_its_session_at_reconciliation() {
+        let (mut c, listed, log) = owned_window("replaced-reconcile");
+        *listed.lock().unwrap() = vec![agent_client("0xe1", "2")];
+        c.reconcile_windows();
+        assert_replacement_is_unowned(c, &log);
+    }
+
+    /// The same window seen again keeps its records, by an event, by reconciliation or by a rebuild
+    /// of the model; a rebuild that finds another window at the address drops them.
+    #[test]
+    fn the_same_window_keeps_its_session_and_a_rebuild_checks_the_stable_id() {
+        let me = std::process::id();
+        let start = crate::proc::start_time(me).unwrap_or(0);
+        let (mut c, listed, _log) = owned_window("replaced-same");
+        let same = Core::parse_clients(&json!([agent_client("0xe1", "1")]))[0].clone();
+        c.open_client(&same, false);
+        c.reconcile_windows();
+        c.resync();
+        assert!(c.sessions.opened_by("s1", "0xe1", me, start, "1"), "still s1's");
+        assert!(c.is_placed(&same), "still placed");
+        *listed.lock().unwrap() = vec![agent_client("0xe1", "2")];
+        c.resync();
+        assert_eq!(c.sessions.owner("0xe1"), None, "a rebuild does not carry the record to another window");
+        assert!(!c.placed.contains_key("0xe1"));
+    }
+
+    /// A window with no `stableId` is never owned: there is nothing to tell it from a later window
+    /// at its address.
+    #[test]
+    fn a_window_without_a_stable_id_is_owned_by_no_session() {
+        let me = std::process::id();
+        let start = crate::proc::start_time(me).unwrap_or(0);
+        let (mut c, _log) = fake_hypr("no-stable", |_| "[]".into());
+        c.model.apply(Event::AgentRegister { pid: me, start }).unwrap();
+        let cl = Core::parse_clients(&json!([agent_client("0xe1", "")]))[0].clone();
+        c.open_client(&cl, false);
+        c.sessions.record("s1", "0xe1", agentws::Opened { pid: me, start, app: "foot".into(), stable: String::new() });
+        c.placed.insert("0xe1".into(), String::new());
+        assert!(!c.sessions.opened_by("s1", "0xe1", me, start, ""), "no stableId, no ownership");
+        assert!(!c.is_placed(&cl));
+    }
+
+    /// `open --wait 0` looks once, before Hyprland has started anything: that is "not here yet", not
+    /// a failed launch, and the window still goes to the session when it comes.
+    #[test]
+    fn a_wait_shorter_than_the_launch_is_pending_and_keeps_the_claim() {
+        let kids: std::sync::Arc<Mutex<Vec<std::process::Child>>> = Default::default();
+        let spawned = kids.clone();
+        let listed: std::sync::Arc<Mutex<Vec<Value>>> = Default::default();
+        let list = listed.clone();
+        let (core, _log) = fake_hypr("slow-launch", move |r| {
+            if let Some(i) = r.find("BANEYSPACES_AGENT_TOKEN=") {
+                // As Hyprland does: the exec is answered at once and the process starts later.
+                let tok: String = r[i + 24..].chars().take_while(|ch| ch.is_ascii_hexdigit()).collect();
+                let spawned = spawned.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(400));
+                    let child = std::process::Command::new("sleep").arg("30").env("BANEYSPACES_AGENT_TOKEN", tok).spawn().unwrap();
+                    spawned.lock().unwrap().push(child);
+                });
+                return "ok".into();
+            }
+            match r {
+                "j/clients" => Value::Array(list.lock().unwrap().clone()).to_string(),
+                "j/monitors" => json!([mon(0, "A", true, 1)]).to_string(),
+                "j/workspaces" => "[]".into(),
+                _ => "ok".into(),
+            }
+        });
+        let shared: Shared = std::sync::Arc::new(Mutex::new(core));
+        let e = agent_open(&shared, "t", &json!({ "app": "sleep", "args": ["30"], "private_bus": false, "session": "s1", "wait": 0 }), true);
+        let d = e.data.as_ref().unwrap_or_else(|| panic!("not an error while the app is still being started: {:?}", e.error));
+        assert_eq!((d["window"].clone(), d["pending"].clone(), d["pid"].clone()), (Value::Null, json!(true), Value::Null));
+        // The process starts and its window comes: it is s1's.
+        let waited = Instant::now();
+        while kids.lock().unwrap().is_empty() && waited.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let pid = kids.lock().unwrap()[0].id();
+        let w = json!({ "address": "0xe7", "pid": pid, "workspace": { "id": -98, "name": AGENT_SPECIAL }, "monitor": 0, "class": "sleep", "title": "t", "mapped": true, "floating": false, "stableId": "7" });
+        listed.lock().unwrap().push(w.clone());
+        {
+            let mut c = shared.lock().unwrap();
+            let cl = Core::parse_clients(&json!([w]))[0].clone();
+            c.open_client(&cl, false);
+            assert_eq!(c.sessions.owner("0xe7"), Some("s1"), "the claim outlived the answer");
+            assert!(c.sessions.opened_by("s1", "0xe7", pid, crate::proc::start_time(pid).unwrap_or(0), "7"));
+        }
+        for k in kids.lock().unwrap().iter_mut() {
+            let _ = k.kill();
+            let _ = k.wait();
+        }
+    }
+
+    /// `open` with `wait: 0` answers before the window exists; the window still goes to that session,
+    /// and two sessions' launches of the same app each get only their own process's window.
+    #[test]
+    fn a_window_that_comes_after_open_answered_is_still_its_sessions() {
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        // The fake Hyprland starts a real process for each exec, carrying the launch's token, as Hyprland would.
+        let kids: std::sync::Arc<Mutex<Vec<std::process::Child>>> = Default::default();
+        let spawned = kids.clone();
+        let listed: std::sync::Arc<Mutex<Vec<Value>>> = Default::default();
+        let list = listed.clone();
+        let execs = AtomicUsize::new(0);
+        let (core, log) = fake_hypr("claims", move |r| {
+            if let Some(i) = r.find("BANEYSPACES_AGENT_TOKEN=") {
+                let tok: String = r[i + 24..].chars().take_while(|ch| ch.is_ascii_hexdigit()).collect();
+                execs.fetch_add(1, SeqCst);
+                let child = std::process::Command::new("sleep").arg("30").env("BANEYSPACES_AGENT_TOKEN", tok).spawn().unwrap();
+                spawned.lock().unwrap().push(child);
+                return "ok".into();
+            }
+            match r {
+                "j/clients" => Value::Array(list.lock().unwrap().clone()).to_string(),
+                "j/monitors" => json!([mon(0, "A", true, 1)]).to_string(),
+                "j/workspaces" => "[]".into(),
+                _ => "ok".into(),
+            }
+        });
+        let shared: Shared = std::sync::Arc::new(Mutex::new(core));
+        let open = |session: &str| agent_open(&shared, "t", &json!({ "app": "sleep", "args": ["30"], "private_bus": false, "session": session, "wait": 0 }), true);
+        let a = open("s1");
+        let b = open("s2");
+        for e in [&a, &b] {
+            let d = e.data.as_ref().unwrap_or_else(|| panic!("ok while the app starts: {:?}", e.error));
+            assert_eq!((d["window"].clone(), d["pending"].clone()), (Value::Null, json!(true)));
+        }
+        let pids: Vec<u32> = kids.lock().unwrap().iter().map(|k| k.id()).collect();
+        assert_eq!(pids.len(), 2);
+        // The windows come, s2's first, each on the agent workspace.
+        let window = |addr: &str, pid: u32| json!({ "address": addr, "pid": pid, "workspace": { "id": -98, "name": AGENT_SPECIAL }, "monitor": 0, "class": "sleep", "title": "t", "mapped": true, "floating": false, "stableId": "1" });
+        for (addr, pid) in [("0xe2", pids[1]), ("0xe1", pids[0])] {
+            listed.lock().unwrap().push(window(addr, pid));
+            let mut c = shared.lock().unwrap();
+            let cl = Core::parse_clients(&json!([window(addr, pid)]))[0].clone();
+            c.open_client(&cl, false);
+        }
+        {
+            let c = shared.lock().unwrap();
+            assert_eq!(c.sessions.owner("0xe1"), Some("s1"));
+            assert_eq!(c.sessions.owner("0xe2"), Some("s2"), "each launch claims only its own process's window");
+            assert!(c.claims.is_empty(), "each claim is used once");
+        }
+        let close = |w: &str, s: &str| agentws::close_window(&shared, "t", &json!({ "window": w, "session": s }));
+        log.lock().unwrap().clear();
+        let refused = close("0xe1", "s2");
+        assert_eq!(refused.error.as_ref().map(|e| e.code.as_str()), Some("not_in_scope"), "another session's window");
+        assert!(!log.lock().unwrap().iter().any(|r| r.starts_with("/dispatch")), "nothing sent for the refusal");
+        let ok = close("0xe1", "s1");
+        assert!(ok.ok, "{:?}", ok.error);
+        assert!(log.lock().unwrap().iter().any(|r| r == &format!("/dispatch {}", agentws::close("0xe1"))));
+        for k in kids.lock().unwrap().iter_mut() {
+            let _ = k.kill();
+            let _ = k.wait();
+        }
     }
 
     #[test]

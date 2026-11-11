@@ -18,6 +18,11 @@ window id, or a pid.
 | `agent open <app> [file...]` | yes | yes: an allowlisted app by name, files from the handoff folder only | yes |
 | `agent run [--dir D] -- CMD` | yes | yes | yes |
 | `agent move <window>`, `agent bring <window>` | yes | yes | yes |
+| `agent workspaces` | yes | yes (`special:agent` row, `number: null`) | not supported yet |
+| `agent open ... [--new_window=false] [--wait S]` | yes | yes | not supported yet |
+| `agent arrange full\|halves\|thirds\|grid [window...]`, `frames ID=x,y,w,h ...` | yes | yes | not supported yet |
+| `agent move --window W [--frame x,y,w,h]` (the agent's verb; without `--window` it is yours) | yes | yes; a window that needs a lend or Full Access is `not_supported` | not supported yet |
+| `agent close --window W` (only windows this session's `open` made) | yes | yes | not supported yet |
 | `agent snapshot|find|get|click|set-value|type|toggle|select|scroll|shot` | yes | yes (AT-SPI) | yes (UI Automation) |
 | `agent press|key|pointer` | phase 3-4 | `not_supported` (part 1) | phase 3-4 |
 | `agent log [--since SECS]` | yes | yes | yes |
