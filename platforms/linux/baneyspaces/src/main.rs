@@ -19,6 +19,7 @@ use std::io::Write;
 
 const HELP: &str = "baneyspaces (Linux, Hyprland)
 
+  --version                      this build's version and the commit it came from
   switch <n>                     show workspace n (1-9) here, or go to the display that shows it
   move <n> [--stay] [--window W] send the front window to workspace n and follow it (--stay: don't)
   focus-monitor <name>           go to a monitor
@@ -473,7 +474,30 @@ fn doctor(paths: &paths::Paths) -> Envelope {
     Envelope::ok(json!({ "healthy": ok, "checks": checks }))
 }
 
+/// What this binary was built from (build.rs). It is kept in the file as plain text so `polycarp version`
+/// can read it without running anything.
+#[used]
+static BUILD_STAMP: &str = env!("POLYCARP_BUILD_STAMP");
+
+/// "baneyspaces 0.1.0 (abc1234)", with "-dirty" when tracked files had changes, or the version alone
+/// for a build made outside a git checkout.
+fn version_line(stamp: &str) -> String {
+    let fields: Vec<&str> = stamp.split('|').collect();
+    let (commit, dirty, version) = match fields.as_slice() {
+        ["polycarp-build", "v1", commit, _date, dirty, version, "end", ..] => (*commit, *dirty == "1", *version),
+        _ => ("", false, env!("CARGO_PKG_VERSION")),
+    };
+    if commit.len() < 7 {
+        return format!("baneyspaces {version}");
+    }
+    format!("baneyspaces {version} ({}{})", &commit[..7], if dirty { "-dirty" } else { "" })
+}
+
 fn main() {
+    if matches!(std::env::args().nth(1).as_deref(), Some("--version" | "-V" | "version")) {
+        println!("{}", version_line(BUILD_STAMP));
+        return;
+    }
     let (globals, args) = split_globals(std::env::args().skip(1).collect());
     let text = globals.text;
     let agent = globals
@@ -537,6 +561,20 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_version_line_carries_the_commit_from_the_stamp() {
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        let stamp = |dirty: u8| format!("polycarp-build|v1|{sha}|2026-11-10T00:00:00Z|{dirty}|0.1.0|end|");
+        assert_eq!(version_line(&stamp(0)), "baneyspaces 0.1.0 (0123456)");
+        assert_eq!(version_line(&stamp(1)), "baneyspaces 0.1.0 (0123456-dirty)");
+        // Built outside a checkout: no commit, so the version alone.
+        assert_eq!(version_line("polycarp-build|v1|||0|0.1.0|end|"), "baneyspaces 0.1.0");
+        assert_eq!(version_line("garbage"), format!("baneyspaces {}", env!("CARGO_PKG_VERSION")));
+        // The stamp this binary carries is in the shape `polycarp version` looks for.
+        assert!(BUILD_STAMP.starts_with("polycarp-build|v1|") && BUILD_STAMP.ends_with("|end|"), "{BUILD_STAMP}");
+        assert_eq!(BUILD_STAMP.split('|').count(), 8, "{BUILD_STAMP}");
+    }
 
     fn v(a: &[&str]) -> Vec<String> {
         a.iter().map(|s| s.to_string()).collect()
