@@ -11,6 +11,8 @@ Every `baneyspaces` command and every MCP tool result is one JSON object.
 - `error.data` (optional): extra facts about the failure, never content.
 - `error.code`: one of the codes below. `error.message`: for a person. `error.suggestion`: what to
   do next, always present (may be empty only for `internal`).
+- `error.next_call` (optional, macOS for now): the one call to make next, `{ "tool", "arguments" }`, always a read or
+  the same safe verb with a fixed argument, never a foreground action. Absent when there is none.
 - `error.retry`:
   - `safe`: nothing was delivered; the same call can be sent again.
   - `after_snapshot`: take a new snapshot first; refs from the old one no longer hold.
@@ -35,6 +37,7 @@ Every `baneyspaces` command and every MCP tool result is one JSON object.
 | `not_supported` | Not on this platform or phase (keys and pointer on Linux part 1). |
 | `unverified` | macOS phase 4 only: keys or pointer events were posted to the one process and nothing read back from the window shows they landed. `retry` is `never`. Other platforms answer `not_supported` for keys and pointer. |
 | `daemon_down` | `baneyspaces daemon` is not running. |
+| `stale_bare_row` | macOS: a bare row number (`"ref":"5"`) that could mean a row from an older read: the session's recent snapshots disagree on row 5, or its last read was a `since` or `query` read, which doesn't list every row. Nothing was sent; `retry` is `after_snapshot` and `error.next_call` is a full `snapshot` of the window. |
 | `stale_ref` | The ref, window or process changed since the snapshot. |
 | `single_instance` | The app forwarded to a running instance; it can't be driven as an agent process. `error.data.windows_that_appeared` lists windows that opened meanwhile (left where they are). |
 | `needs_sandbox` | The app is not on the list of apps with a verified separate-process launch, so an agent may not start it (it could hand the request to your copy, or take over your launches). Refused before launch. |

@@ -213,6 +213,9 @@ fn hands_request(verb: &str, mut a: Vec<String>) -> Result<Value, Envelope> {
     }
     match verb {
         "snapshot" => {
+            if let Some(e) = baneyspaces_core::mcp::rows_flags_refusal(&a) {
+                return Err(e);
+            }
             args["interactive"] =
                 json!(take_switch(&mut a, "-i") | take_switch(&mut a, "--interactive"));
             args["compact"] = json!(take_switch(&mut a, "--compact"));
@@ -252,6 +255,9 @@ fn hands_request(verb: &str, mut a: Vec<String>) -> Result<Value, Envelope> {
             }
         }
         _ => {}
+    }
+    if let Some(e) = args.get("ref").and_then(Value::as_str).and_then(baneyspaces_core::mcp::bare_ref_refusal) {
+        return Err(e);
     }
     Ok(json!({ "op": "hands", "args": args }))
 }
@@ -454,5 +460,11 @@ mod tests {
         let r = request(v(&["agent", "snapshot", "--window", "w-1", "-i"])).unwrap();
         assert_eq!(r["args"]["window"], "w-1");
         assert_eq!(r["args"]["interactive"], true);
+        let e = request(v(&["agent", "snapshot", "--window", "W", "--query", "Save"])).unwrap_err();
+        assert_eq!(e.error.as_ref().map(|e| e.code.as_str()), Some("not_supported"), "rows are macOS only for now");
+        let e = request(v(&["agent", "click", "5"])).unwrap_err();
+        assert_eq!(e.error.as_ref().map(|e| e.code.as_str()), Some("not_supported"), "a bare row number is macOS only for now");
+        let e = request(v(&["agent", "snapshot", "--window", "W", "--format=rows"])).unwrap_err();
+        assert_eq!(e.error.as_ref().map(|e| e.code.as_str()), Some("not_supported"));
     }
 }
