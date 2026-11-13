@@ -24,6 +24,7 @@ window id, or a pid.
 | `agent move --window W [--frame x,y,w,h]` (the agent's verb; without `--window` it is yours) | yes | yes; a window that needs a lend or Full Access is `not_supported` | not supported yet |
 | `agent close --window W` (only windows this session's `open` made) | yes | yes | not supported yet |
 | `agent snapshot|find|get|click|set-value|type|toggle|select|scroll|shot` | yes | yes (AT-SPI) | yes (UI Automation) |
+| `agent get <ref> --copy`, `agent type <ref> --paste` (the agent clipboard: text held per session in Polycarp's memory, gone when the session ends or after an hour unused; a call with no session of its own, or the shared `default`, gets none. cmd+c, cmd+x and cmd+v in `press`, by key code and by the key's character in the Mac's layouts, and a `click` or `select` of a Cut, Copy or Paste item answer `not_supported`) | yes | not listed (`invalid_args`) | not listed |
 | `agent snapshot` rows: `--format rows\|json`, `--query`, `--since latest`, `--max_elements N`; a bare row number as a ref (the MCP `snapshot` tool answers rows by default) | yes | `not_supported` (JSON tree only) | `not_supported` (JSON tree only) |
 | `agent menu --window W "Format > Font > Bold"` (AXPress on the menu-bar item; only a copy this session's `open` started, with W its one window and focused; waits while that copy is in front; refused by bar position, key equivalent and identifier, before anything is pressed or listed: the Apple, Window and Help menus, the app menu but About and Settings, full screen and the tab overview, Open and Open Recent, cut, copy and paste, and items that reach past the app (Emoji & Symbols, Dictation, Speech, AutoFill, Writing Tools, Print, Page Setup, Share, Import from iPhone); an item whose attributes can't be read is refused; for 1 s after the press, a file panel it raises is cancelled and a new window outside the agent workspace fails the call, closed only when tied to the press (the app's, its child process's, or a system helper's with no input from Donovan) and tracked by Polycarp, else reported as still open or left alone; the call fails with `not_supported` or `outside_agent_workspace`) | yes | not listed; `invalid_args` (unknown agent command) | not listed |
 | `agent press|key|pointer` | phase 3-4 | `not_supported` (part 1) | phase 3-4 |
@@ -56,7 +57,9 @@ holds snapshot text, values, typed text or captures. Records older than 30 days 
 
 ## MCP
 
-`baneyspaces mcp` serves [mcp-tools.json](mcp-tools.json) over stdio. There is no tool that switches,
+`baneyspaces mcp` serves [mcp-tools.json](mcp-tools.json) over stdio: the Rust core's catalog, as Linux serves it. The Mac's
+`computer_*` tools come from its own catalog (`HandsTools` in Tools.swift) and add macOS-only arguments, such as `copy` on
+`get` and `paste` on `type`. There is no tool that switches,
 moves or lists your workspaces.
 
 ## Global flags
