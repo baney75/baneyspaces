@@ -233,6 +233,14 @@ fn hands_request(verb: &str, mut a: Vec<String>) -> Result<Value, Envelope> {
             args["property"] = json!(a[1]);
         }
         "click" | "toggle" => {
+            for k in ["button", "item"] {
+                if let Some(v) = take(&mut a, &format!("--{k}")) {
+                    args[k] = json!(v);
+                }
+            }
+            if let Some(e) = baneyspaces_core::envelope::refuse_right_click(verb, &args) {
+                return Err(e);
+            }
             need(&a, 1, &format!("agent {verb} <ref>"))?;
             args["ref"] = json!(a[0]);
         }

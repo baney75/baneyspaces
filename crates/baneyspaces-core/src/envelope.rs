@@ -81,6 +81,21 @@ impl Envelope {
     }
 }
 
+/// A right click on a ref (`click` with `button: right`) opens a context menu, which only macOS proves and keeps on the
+/// agent workspace for now. Linux and Windows refuse it rather than press the element as a left click would.
+pub fn refuse_right_click(verb: &str, args: &Value) -> Option<Envelope> {
+    let button = args["button"].as_str().unwrap_or("left");
+    if verb != "click" || (button.eq_ignore_ascii_case("left") && args.get("item").map_or(true, Value::is_null)) {
+        return None;
+    }
+    Some(Envelope::err(
+        "not_supported",
+        "a right click on a ref is macOS only for now; nothing was pressed",
+        Retry::Never,
+        "Use click without button for the element's own action.",
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,6 +111,17 @@ mod tests {
     fn error_shape_carries_code_retry_and_suggestion() {
         let v: Value = serde_json::from_str(&Envelope::err("not_in_scope", "m", Retry::Never, "s").to_json()).unwrap();
         assert_eq!(v, json!({"ok":false,"error":{"code":"not_in_scope","message":"m","retry":"never","suggestion":"s"}}));
+    }
+
+    #[test]
+    fn a_right_click_on_a_ref_is_refused_never_pressed() {
+        for args in [json!({"ref":"@s:e1","button":"right"}), json!({"ref":"@s:e1","button":"Right","item":"Rename"}), json!({"ref":"@s:e1","item":"Rename"}), json!({"ref":"@s:e1","button":"middle"})] {
+            let e = refuse_right_click("click", &args).unwrap_or_else(|| panic!("{args}"));
+            assert_eq!((e.error.as_ref().unwrap().code.as_str(), e.error.as_ref().unwrap().retry), ("not_supported", Retry::Never));
+        }
+        assert!(refuse_right_click("click", &json!({"ref":"@s:e1"})).is_none());
+        assert!(refuse_right_click("click", &json!({"ref":"@s:e1","button":"left"})).is_none());
+        assert!(refuse_right_click("toggle", &json!({"ref":"@s:e1","button":"right"})).is_none());
     }
 
     #[test]

@@ -360,6 +360,9 @@ pub(crate) fn guard(c: &Core, window: &str, expect: Option<&SnapInfo>) -> Result
 
 pub fn run(shared: &Shared, agent: &str, args: &Value) -> Envelope {
     let verb = args["verb"].as_str().unwrap_or("").to_string();
+    if let Some(e) = baneyspaces_core::envelope::refuse_right_click(&verb, args) {
+        return e;
+    }
     let invalid =
         |m: &str| Envelope::err("invalid_args", m, Retry::Never, "Run `baneyspaces help`.");
     if verb == "shot" {

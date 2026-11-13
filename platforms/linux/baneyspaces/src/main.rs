@@ -371,6 +371,14 @@ fn hands_request(verb: &str, mut a: Vec<String>) -> Result<Value, Envelope> {
             args["property"] = json!(a[1]);
         }
         "click" | "toggle" => {
+            for k in ["button", "item"] {
+                if let Some(v) = take(&mut a, &format!("--{k}")) {
+                    args[k] = json!(v);
+                }
+            }
+            if let Some(e) = baneyspaces_core::envelope::refuse_right_click(verb, &args) {
+                return Err(e);
+            }
             need(&a, 1, &format!("agent {verb} <ref>"))?;
             args["ref"] = json!(a[0]);
         }
@@ -597,6 +605,9 @@ mod tests {
         assert_eq!(req["args"]["window"], "0x1");
         let e = request(v(&["agent", "snapshot", "--window", "W", "--query", "Save"])).unwrap_err();
         assert_eq!(e.error.as_ref().map(|e| e.code.as_str()), Some("not_supported"), "rows are macOS only for now");
+        let e = request(v(&["agent", "click", "@sab:e3", "--button", "right"])).unwrap_err();
+        assert_eq!(e.error.as_ref().map(|e| e.code.as_str()), Some("not_supported"), "a right click on a ref is macOS only for now");
+        assert!(request(v(&["agent", "click", "@sab:e3", "--button", "left"])).is_ok());
         let e = request(v(&["agent", "click", "5"])).unwrap_err();
         assert_eq!(e.error.as_ref().map(|e| e.code.as_str()), Some("not_supported"), "a bare row number is macOS only for now");
         let e = request(v(&["agent", "snapshot", "--window", "W", "--format=rows"])).unwrap_err();
