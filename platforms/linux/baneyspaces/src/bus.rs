@@ -383,12 +383,23 @@ mod tests {
 
     #[test]
     fn the_sweep_kills_a_stack_whose_directory_is_gone_and_spares_a_live_one() {
+        use std::os::unix::process::CommandExt;
         let run = std::env::temp_dir().join(format!("bs-sweep-{}/baneyspaces", std::process::id()));
         std::fs::create_dir_all(&run).unwrap();
-        // $0 of `sh -c` carries the marker, as a bus daemon's --address would.
-        let gone = Command::new("sh").args(["-c", "sleep 60; :", "/nonexistent-zz/baneyspaces/bus-deadbeef"]).spawn().unwrap();
-        let live = Command::new("sh").args(["-c", "sleep 60; :", &format!("{}/bus-11112222", run.display())]).spawn().unwrap();
-        let orphan = Command::new("sh").args(["-c", "sleep 60; :", &format!("{}/bus-99998888", run.display())]).spawn().unwrap();
+        // argv[0] carries the marker, as a bus daemon's --address would. Not `sh -c "sleep 60; :" <marker>`: sh forks to
+        // run sleep, and the fork carries the marker until it execs, so a sweep in that gap killed 3 (CI job 131673049735).
+        let gone = Command::new("sleep").arg0("/nonexistent-zz/baneyspaces/bus-deadbeef").arg("60").spawn().unwrap();
+        let live = Command::new("sleep").arg0(&format!("{}/bus-11112222", run.display())).arg("60").spawn().unwrap();
+        let orphan = Command::new("sleep").arg0(&format!("{}/bus-99998888", run.display())).arg("60").spawn().unwrap();
+        // The spawn returns once the child has started its exec, which can be before the kernel sets its new
+        // command line: a sweep in that gap reads an empty one and passes the process over (1 killed, not 2).
+        for kid in [&gone, &live, &orphan] {
+            let t = std::time::Instant::now();
+            while stack_path(&String::from_utf8_lossy(&std::fs::read(format!("/proc/{}/cmdline", kid.id())).unwrap_or_default())).is_none() {
+                assert!(t.elapsed().as_secs() < 5, "pid {} never showed its marker", kid.id());
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
         let tags: HashSet<String> = ["11112222".to_string()].into();
         assert_eq!(sweep(&run, &tags), 2);
         let (mut gone, mut live, mut orphan) = (gone, live, orphan);
