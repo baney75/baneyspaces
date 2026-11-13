@@ -84,8 +84,13 @@ impl Envelope {
 /// A right click on a ref (`click` with `button: right`) opens a context menu, which only macOS proves and keeps on the
 /// agent workspace for now. Linux and Windows refuse it rather than press the element as a left click would.
 pub fn refuse_right_click(verb: &str, args: &Value) -> Option<Envelope> {
-    let button = args["button"].as_str().unwrap_or("left");
-    if verb != "click" || (button.eq_ignore_ascii_case("left") && args.get("item").map_or(true, Value::is_null)) {
+    // A button that is there but no string (`2`, `true`) is no left click either (231 r1 first-F6).
+    let left = match args.get("button") {
+        None | Some(Value::Null) => true,
+        Some(Value::String(b)) => b.eq_ignore_ascii_case("left"),
+        Some(_) => false,
+    };
+    if verb != "click" || (left && args.get("item").map_or(true, Value::is_null)) {
         return None;
     }
     Some(Envelope::err(
@@ -96,10 +101,66 @@ pub fn refuse_right_click(verb: &str, args: &Value) -> Option<Envelope> {
     ))
 }
 
+/// `agent click|toggle <ref> [--button B] [--item I]`, `--button=B` too: the flags into `args`, the ref left in `words`.
+/// A flag with no value, a flag on `toggle`, or any other `--` word is refused, never dropped: a dropped `--button=right`
+/// pressed the element as a left click (231 r1 second-S2, second-S3).
+pub fn click_flags(verb: &str, words: &mut Vec<String>, args: &mut Value) -> Result<(), Envelope> {
+    let bad = |why: String| Envelope::err("invalid_args", why, Retry::Never, &format!("usage: agent {verb} <ref>{}", if verb == "click" { " [--button left|right] [--item <title>]" } else { "" }));
+    for k in ["button", "item"] {
+        let (flag, inline) = (format!("--{k}"), format!("--{k}="));
+        while let Some(i) = words.iter().position(|w| *w == flag || w.starts_with(&inline)) {
+            let w = words.remove(i);
+            let v = match w.strip_prefix(&inline) {
+                Some(v) => v.to_string(),
+                None if i < words.len() && !words[i].starts_with("--") => words.remove(i),
+                None => String::new(),
+            };
+            if verb != "click" {
+                return Err(bad(format!("{verb} takes no {flag}; nothing was pressed")));
+            }
+            if v.is_empty() {
+                return Err(bad(format!("{flag} needs a value; nothing was pressed")));
+            }
+            args[k] = Value::String(v);
+        }
+    }
+    if let Some(w) = words.iter().find(|w| w.starts_with("--")) {
+        return Err(bad(format!("unknown option {w}; nothing was pressed")));
+    }
+    refuse_right_click(verb, args).map_or(Ok(()), Err)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn flags(verb: &str, words: &[&str]) -> Result<(Vec<String>, Value), String> {
+        let mut w: Vec<String> = words.iter().map(|s| s.to_string()).collect();
+        let mut a = json!({});
+        click_flags(verb, &mut w, &mut a).map(|_| (w, a)).map_err(|e| e.error.map(|e| e.code).unwrap_or_default())
+    }
+
+    /// 231 r1 second-S2, second-S3, first-F6: no spelling of a right click is dropped and pressed as a left click.
+    #[test]
+    fn a_right_click_is_never_dropped_into_a_left_click() {
+        for words in [&["@s:e3", "--button=right"][..], &["@s:e3", "--button", "right"], &["--item=Rename", "@s:e3"], &["@s:e3", "--item", "Rename"]] {
+            assert_eq!(flags("click", words).err().as_deref(), Some("not_supported"), "{words:?}");
+        }
+        for words in [&["@s:e3", "--button"][..], &["@s:e3", "--button="], &["@s:e3", "--button", "--item", "x"], &["@s:e3", "--buton=right"], &["@s:e3", "--force"]] {
+            assert_eq!(flags("click", words).err().as_deref(), Some("invalid_args"), "{words:?}");
+        }
+        for words in [&["@s:e1", "--button", "right"][..], &["@s:e1", "--item=Rename"], &["@s:e1", "--button=left"]] {
+            assert_eq!(flags("toggle", words).err().as_deref(), Some("invalid_args"), "toggle {words:?}");
+        }
+        let (w, a) = flags("click", &["@s:e3", "--button=left"]).unwrap();
+        assert_eq!((w, a), (vec!["@s:e3".to_string()], json!({"button": "left"})));
+        assert_eq!(flags("toggle", &["@s:e1"]).unwrap().0, vec!["@s:e1".to_string()]);
+        for b in [json!(2), json!(true), json!(["right"])] {
+            assert!(refuse_right_click("click", &json!({"ref": "@s:e3", "button": b})).is_some(), "button {b}");
+        }
+        assert!(refuse_right_click("click", &json!({"ref": "@s:e3", "button": null})).is_none());
+    }
 
     #[test]
     fn ok_shape_has_no_error_key() {
