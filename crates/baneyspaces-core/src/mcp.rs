@@ -104,6 +104,14 @@ fn rows_refusal(name: &str, args: &Value) -> Option<Envelope> {
     if let Some(e) = args.get("ref").and_then(Value::as_str).and_then(bare_ref_refusal) {
         return Some(e);
     }
+    if name == "agent_snapshot" && (args.get("screenshot").is_some_and(|v| v != false) || args.get("zoom").is_some()) {
+        return Some(Envelope::err(
+            "not_supported",
+            "screenshot and zoom on snapshot are macOS only for now",
+            Retry::Never,
+            "Call agent_shot with the window for its picture.",
+        ));
+    }
     let asked: Vec<&str> = ROWS_ARGS.iter().copied().filter(|k| args.get(*k).is_some_and(|v| !(*k == "format" && v == "json"))).collect();
     (name == "agent_snapshot" && !asked.is_empty()).then(|| rows_not_supported(&asked))
 }
@@ -264,6 +272,16 @@ mod tests {
         assert!(rows_flags_refusal(&v(&["--window", "0x1", "--format", "rows"])).is_some());
         assert!(rows_refusal("agent_snapshot", &json!({"window": "0x1", "format": "json"})).is_none());
         assert!(rows_refusal("agent_snapshot", &json!({"window": "0x1", "format": "rows"})).is_some());
+    }
+
+    // Item 6: a snapshot picture is macOS only; the answer names the call that works here.
+    #[test]
+    fn a_snapshot_screenshot_is_not_supported_here() {
+        let e = rows_refusal("agent_snapshot", &json!({"window": "0x1", "screenshot": true})).and_then(|e| e.error).unwrap();
+        assert_eq!(e.code, "not_supported");
+        assert!(e.suggestion.contains("agent_shot"));
+        assert!(rows_refusal("agent_snapshot", &json!({"window": "0x1", "zoom": "0,0,10,10"})).is_some());
+        assert!(rows_refusal("agent_snapshot", &json!({"window": "0x1", "screenshot": false})).is_none());
     }
 
     // Review r1 second-F7: a bare row number as a ref is refused, from MCP and for the CLI.
