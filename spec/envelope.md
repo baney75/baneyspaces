@@ -26,7 +26,8 @@ Every `baneyspaces` command and every MCP tool result is one JSON object.
   writes the selection on the container in the same transaction. `data.landed` is `press`, `selection_write`,
   `already_selected` or `none`, and `data.evidence` (`kind: selection_readback`) holds the selection read before, after
   the press and after the write. The write is never made after a press that selected the row. A press that failed is
-  named in `data.press_error` (`code`, `message`); a write the acting check refused answers with that refusal. The
+  named in `data.press_error` (`code`, `message`). A refused write is the error only when the press failed too;
+  after a press that ran it is reported in `data.selection_write` (`code`, `error`) and its code decides `data.next_call`. The
   readbacks read in the view of the snapshot the row number came from. Linux and Windows: the press only.
 - MCP and CLI, macOS: every error carries `error.next_call`, a read or `null` for none, and an unverified result carries
   `data.next_call`. Linux and Windows: not yet.
