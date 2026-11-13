@@ -1684,14 +1684,27 @@ pub fn run(trace: bool) -> i32 {
     0
 }
 
-/// An exclusive, non-blocking lock on a file next to the socket. Two daemons starting together
-/// (the autostart fires on start and on reload) cannot both pass the check-then-bind that follows.
+/// How long a starting daemon waits for the lock. A process the last daemon spawned holds a copy of
+/// its lock fd from fork to exec, so the lock can stay taken for a moment after that daemon is gone.
+/// A daemon that is really running holds it for good, and a second one still gives up.
+pub const LOCK_WAIT: Duration = Duration::from_millis(500);
+
+/// An exclusive lock on a file next to the socket. Two daemons starting together (the autostart
+/// fires on start and on reload) cannot both pass the check-then-bind that follows.
 pub fn take_lock(paths: &Paths) -> Result<std::fs::File, String> {
+    take_lock_within(paths, LOCK_WAIT)
+}
+
+fn take_lock_within(paths: &Paths, wait: Duration) -> Result<std::fs::File, String> {
     use std::os::unix::io::AsRawFd;
     let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(paths.run.join("daemon.lock")).map_err(|e| format!("cannot open the lock file: {e}"))?;
+    let t = Instant::now();
     // SAFETY: a valid fd from the file just opened.
-    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        return Err("already running (the lock is held)".into());
+    while unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        if t.elapsed() >= wait {
+            return Err("already running (the lock is held)".into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
     }
     Ok(f)
 }
@@ -2309,6 +2322,32 @@ pub(crate) mod tests {
         assert!(take_lock(&p).is_err(), "a second daemon must not get past the lock");
         drop(first);
         assert!(take_lock(&p).is_ok(), "and it is free again once the first is gone");
+    }
+
+    /// A process spawned by the last daemon holds a copy of its lock fd until it execs (any test here that spawns one
+    /// copies this one's fd: the lock test above failed once in 25 runs at 64 threads). That copy is forced: a forked
+    /// child keeps it for 100 ms after the first daemon is gone, and the next daemon must still start.
+    #[test]
+    fn the_lock_is_free_once_a_child_mid_spawn_lets_go_of_its_copy() {
+        let p = temp_paths("lock-fork");
+        let first = take_lock(&p).unwrap();
+        // SAFETY: the child calls only async-signal-safe functions (usleep, _exit) before it exits.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            unsafe {
+                libc::usleep(100_000);
+                libc::_exit(0);
+            }
+        }
+        drop(first);
+        let t = Instant::now();
+        let second = take_lock(&p);
+        let took = t.elapsed();
+        let mut status = 0;
+        // SAFETY: pid is the child forked above.
+        unsafe { libc::waitpid(pid, &mut status, 0) };
+        assert!(second.is_ok(), "the next daemon gave up after {took:?} while a child still held the old lock");
     }
 
     #[test]
