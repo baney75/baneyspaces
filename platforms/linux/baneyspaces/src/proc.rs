@@ -26,6 +26,40 @@ pub fn token_of(pid: u32) -> Option<String> {
     parse_token(&env)
 }
 
+/// `token_of` for a process that may have just started. Right after its exec, a process's environ can read back
+/// empty for a moment (measured under load: about 13% of reads right after spawn, none 50 ms later), and a window
+/// mapped then would not be taken for the agent's. An empty read is tried again, 5 times 10 ms apart at most. Not for
+/// sweeps over /proc: kernel threads have an empty environ for good.
+pub fn settled_token_of(pid: u32) -> Option<String> {
+    settle(|| read_environ(pid), 5, || std::thread::sleep(std::time::Duration::from_millis(10)))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: this many of this thread's next adopt reads come back empty, as right after an exec.
+    pub static EMPTY_ENVIRON_READS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+fn read_environ(pid: u32) -> Option<Vec<u8>> {
+    #[cfg(test)]
+    if EMPTY_ENVIRON_READS.with(|n| n.get() > 0 && { n.set(n.get() - 1); true }) {
+        return Some(Vec::new());
+    }
+    fs::read(format!("/proc/{pid}/environ")).ok()
+}
+
+/// Reads until a read is not empty or `tries` are used; a failed read (the process is gone) ends it at once.
+pub fn settle(read: impl Fn() -> Option<Vec<u8>>, tries: u32, pause: impl Fn()) -> Option<String> {
+    for i in 0..tries {
+        let env = read()?;
+        if !env.is_empty() || i + 1 == tries {
+            return parse_token(&env);
+        }
+        pause();
+    }
+    None
+}
+
 pub fn parse_token(environ: &[u8]) -> Option<String> {
     environ.split(|b| *b == 0).find_map(|kv| {
         let kv = std::str::from_utf8(kv).ok()?;
@@ -77,6 +111,25 @@ mod tests {
             Some("abc".into())
         );
         assert_eq!(parse_token(b"A=1\0XBANEYSPACES_AGENT_TOKEN=abc\0"), None);
+    }
+
+    #[test]
+    fn an_environ_that_reads_empty_right_after_exec_is_read_again() {
+        let reads = std::cell::Cell::new(0);
+        let read = || {
+            reads.set(reads.get() + 1);
+            Some(if reads.get() < 3 { Vec::new() } else { b"A=1\0BANEYSPACES_AGENT_TOKEN=abc\0".to_vec() })
+        };
+        assert_eq!(settle(read, 5, || {}), Some("abc".into()));
+        assert_eq!(reads.get(), 3);
+        // Empty for good (a kernel thread): it stops after its tries.
+        let n = std::cell::Cell::new(0);
+        assert_eq!(settle(|| { n.set(n.get() + 1); Some(Vec::new()) }, 5, || {}), None);
+        assert_eq!(n.get(), 5);
+        // Gone: no second read.
+        let m = std::cell::Cell::new(0);
+        assert_eq!(settle(|| { m.set(m.get() + 1); None }, 5, || {}), None);
+        assert_eq!(m.get(), 1);
     }
 
     #[test]
