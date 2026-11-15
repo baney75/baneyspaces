@@ -1,5 +1,6 @@
 //! Where the daemon keeps things. State lives under `$XDG_STATE_HOME/baneyspaces`
 //! (default `~/.local/state/baneyspaces`); the control socket under `$XDG_RUNTIME_DIR/baneyspaces`.
+//! The data and config homes are read only, to find what Polycarp installed (`apps::polycarp_extension`).
 
 use std::fs;
 use std::io::Write;
@@ -10,6 +11,10 @@ use std::path::PathBuf;
 pub struct Paths {
     pub state: PathBuf,
     pub run: PathBuf,
+    /// `$XDG_DATA_HOME` (default `~/.local/share`).
+    pub data: PathBuf,
+    /// `$XDG_CONFIG_HOME` (default `~/.config`).
+    pub config: PathBuf,
 }
 
 impl Paths {
@@ -23,7 +28,9 @@ impl Paths {
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("/tmp"))
             .join("baneyspaces");
-        Self { state, run }
+        let data = std::env::var("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(&home).join(".local/share"));
+        let config = std::env::var("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(&home).join(".config"));
+        Self { state, run, data, config }
     }
 
     pub fn ensure(&self) -> Result<(), String> {
