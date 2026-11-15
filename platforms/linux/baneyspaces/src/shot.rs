@@ -100,7 +100,8 @@ pub fn grim_has_toplevel(help: &str) -> bool {
 }
 
 /// Whether this grim offers `-T`, asked once per binary (its path and modification time), not on
-/// every shot.
+/// every shot. Only an answer grim gave is kept: a run that timed out or could not start says
+/// nothing about grim, so the next shot asks again.
 fn grim_captures_one_window(grim: &Path) -> bool {
     static SEEN: Mutex<Option<(PathBuf, SystemTime, bool)>> = Mutex::new(None);
     let stamp = std::fs::metadata(grim).and_then(|m| m.modified()).ok();
@@ -111,7 +112,10 @@ fn grim_captures_one_window(grim: &Path) -> bool {
         }
     }
     // grim prints its usage for -h; some versions exit non-zero after it, so either answer is read.
-    let ok = run_with_deadline(grim, &["-h".into()], Duration::from_secs(5)).is_ok_and(|r| grim_has_toplevel(&(String::from_utf8_lossy(&r.out).into_owned() + &r.err)));
+    let Ok(r) = run_with_deadline(grim, &["-h".into()], Duration::from_secs(5)) else {
+        return false;
+    };
+    let ok = grim_has_toplevel(&(String::from_utf8_lossy(&r.out).into_owned() + &r.err));
     *seen = stamp.map(|s| (grim.to_path_buf(), s, ok));
     ok
 }
@@ -518,6 +522,24 @@ mod tests {
         let old = "Usage: grim [options...] [output-file]\n  -t png|ppm|jpeg Set the output filetype.\n  -o <output>     Set the output name to capture.\n";
         assert!(grim_has_toplevel(new));
         assert!(!grim_has_toplevel(old));
+    }
+
+    #[test]
+    fn a_grim_that_could_not_run_once_is_asked_again() {
+        let d = std::env::temp_dir().join(format!("bs-grim-probe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let grim = d.join("grim");
+        std::fs::write(&grim, "#!/bin/sh\necho '  -T <identifier> Set the identifier of a foreign toplevel handle to capture.'\n").unwrap();
+        // Not executable yet: the probe cannot start, like a spawn that fails under load.
+        std::fs::set_permissions(&grim, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let stamp = std::fs::metadata(&grim).unwrap().modified().unwrap();
+        assert!(!grim_captures_one_window(&grim));
+        // The same binary (chmod leaves the modification time alone) now runs and offers -T.
+        std::fs::set_permissions(&grim, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(std::fs::metadata(&grim).unwrap().modified().unwrap(), stamp);
+        assert!(grim_captures_one_window(&grim));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
