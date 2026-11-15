@@ -384,6 +384,12 @@ fn main() {
             print!("{HELP}");
             0
         }
+        // `agent <verb> --help`: that verb's usage, before anything reaches the daemon.
+        "agent" if baneyspaces_core::agent_help::asked(&args[1..]) => {
+            let verb = args.get(1).map(String::as_str).filter(|v| !v.starts_with('-'));
+            print!("{}", baneyspaces_core::agent_help::text(verb, HELP));
+            0
+        }
         "daemon" => run_daemon(&args),
         "keys" => {
             let platform = take(&mut args, "--platform").unwrap_or_else(|| "windows".into());

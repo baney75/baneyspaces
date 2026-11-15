@@ -3,6 +3,7 @@
 //! Every non-macOS platform links this; `spec/` is the contract it implements.
 
 pub mod agent;
+pub mod agent_help;
 pub mod conformance;
 pub mod envelope;
 pub mod keymap;
