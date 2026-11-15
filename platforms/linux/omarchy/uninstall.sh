@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Removes what install.sh added and leaves ~/.config/hypr/hyprland.lua as it was. `--dry-run`
-# prints what would happen. Omarchy's own bindings come back on the next Hyprland reload, because
-# the include that unbound them is gone. `--purge` also removes the binary, the engine and the
-# state (state.json, the action log, backups).
+# Removes what install.sh added and leaves ~/.config/hypr/hyprland.lua as it was. The agent skill
+# goes only where its text is still what baneyspaces wrote. `--dry-run` prints what would happen.
+# Omarchy's own bindings come back on the next Hyprland reload, because the include that unbound them
+# is gone. `--purge` also removes the binary, the engine and the state (state.json, the action log,
+# backups).
 set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DRY=0; PURGE=0; BIN_DIR="$HOME/.local/bin"
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -53,6 +55,20 @@ if [ -f "$MAIN" ] && grep -qF -- "$BEGIN" "$MAIN"; then
 else
   say "no baneyspaces block in $MAIN"
 fi
+# The agent skill, only where it is still the text BaneySpaces wrote: the installed binary's
+# (`skill print`) or this checkout's. A copy someone edited, or the Mac's, stays.
+REF="$(mktemp -d)"
+if [ -n "$BS" ]; then "$BS" skill print > "$REF/binary" 2>/dev/null || rm -f "$REF/binary"; fi
+for skill in "$HOME/.claude/skills/baneyspaces/SKILL.md" "$HOME/.agents/skills/baneyspaces/SKILL.md"; do
+  [ -f "$skill" ] || continue
+  if { [ -s "$REF/binary" ] && cmp -s "$REF/binary" "$skill"; } || cmp -s "$HERE/../skill/SKILL.md" "$skill"; then
+    say "remove the agent skill $skill"
+    do_ "rm -f '$skill'; rmdir '$(dirname "$skill")' 2>/dev/null || true"
+  else
+    say "kept $skill: its text is not what baneyspaces wrote"
+  fi
+done
+rm -rf "$REF"
 say "remove $DEST"
 do_ "rm -rf '$DEST'"
 if [ "$PURGE" = 1 ]; then

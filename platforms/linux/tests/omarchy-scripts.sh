@@ -6,7 +6,17 @@ T="$(mktemp -d /tmp/bs-omarchy.XXXXXX)"; trap 'rm -rf "$T"' EXIT
 # Nothing here may reach a real daemon: its socket lives under XDG_RUNTIME_DIR and the script finds
 # the binary on PATH, so both point into the temp dir.
 export HOME="$T/home" XDG_RUNTIME_DIR="$T/run" PATH="$T/bin:/usr/bin:/bin"; unset XDG_STATE_HOME XDG_DATA_HOME; mkdir -p "$T/run" "$T/bin"; mkdir -p "$HOME/.config/hypr" "$T/src/target/debug" "$T/src/platforms/linux/engine"
-printf '#!/bin/sh\necho "$@" >> "$HOME/stub.calls"\n' > "$T/src/target/debug/baneyspaces"; chmod +x "$T/src/target/debug/baneyspaces"
+# The stub writes and prints its own skill text, so a copy is known to be the binary's, not the checkout's.
+cat > "$T/src/target/debug/baneyspaces" <<'STUB'
+#!/bin/sh
+echo "$@" >> "$HOME/stub.calls"
+case "$1 $2" in
+  "skill print") echo "the binary's skill";;
+  "skill install") mkdir -p "$HOME/.claude/skills/baneyspaces" && echo "the binary's skill" > "$HOME/.claude/skills/baneyspaces/SKILL.md";;
+esac
+STUB
+chmod +x "$T/src/target/debug/baneyspaces"
+CLAUDE_SKILL="$HOME/.claude/skills/baneyspaces/SKILL.md"; AGENTS_SKILL="$HOME/.agents/skills/baneyspaces/SKILL.md"
 printf '#!/bin/sh\n' > "$T/src/platforms/linux/engine/agent-desktop"; chmod +x "$T/src/platforms/linux/engine/agent-desktop"
 cat > "$HOME/.config/hypr/hyprland.lua" <<'LUA'
 dofile((os.getenv("OMARCHY_PATH") or "/usr/share/omarchy") .. "/default/hypr/bootstrap.lua")
@@ -29,6 +39,8 @@ chk "and copies no include" test ! -e "$HOME/.config/hypr/baneyspaces"
 chk "dry-run exits 0 and says it is a dry run" grep -q '^\[dry-run\]' "$T/dry.out"
 chk "dry-run changes nothing" test "$(cat "$M")" = "$ORIG"
 chk "dry-run creates no files" test ! -e "$HOME/.config/hypr/baneyspaces" -a ! -e "$HOME/.local"
+chk "dry-run says it would install the agent skill" grep -q 'dry-run.*agent skill' "$T/dry.out"
+chk "dry-run installs no skill" test ! -e "$HOME/.claude"
 "$OM/uninstall.sh" --dry-run >"$T/udry.out" 2>&1; chk "uninstall dry-run changes nothing" test "$(cat "$M")" = "$ORIG"
 chk "uninstall dry-run says it would stop the daemon" grep -q 'dry-run.*stop the baneyspaces daemon' "$T/udry.out"
 
@@ -47,12 +59,28 @@ chk "the backup is the original" sh -c "cmp -s '$T/orig.lua' '$HOME'/.local/stat
 chk "the script never touched bindings.lua" test ! -e "$HOME/.config/hypr/bindings.lua"
 "$OM/install.sh" --src "$T/src" >/dev/null 2>&1
 chk "a second install adds no second block" test "$(grep -cF -- '>>> baneyspaces' "$M")" = 1
+chk "install runs the installed binary's skill install" grep -qx 'skill install' "$HOME/stub.calls"
+chk "so the agent skill is there" grep -qx "the binary's skill" "$CLAUDE_SKILL"
+# A copy in the shared folder with this checkout's text is BaneySpaces' too.
+mkdir -p "$(dirname "$AGENTS_SKILL")" && cp "$HERE/../skill/SKILL.md" "$AGENTS_SKILL"
+"$OM/uninstall.sh" --dry-run >"$T/udry2.out" 2>&1
+chk "uninstall dry-run says it would remove the skill" grep -q "dry-run.*remove the agent skill $CLAUDE_SKILL" "$T/udry2.out"
+chk "and leaves it" test -f "$CLAUDE_SKILL" -a -f "$AGENTS_SKILL"
 
 "$OM/uninstall.sh" >/dev/null 2>&1
 chk 'uninstall stops the daemon (it ran baneyspaces stop)' grep -qx 'stop' "$HOME/stub.calls"
 chk "uninstall restores hyprland.lua byte for byte" cmp -s "$T/orig.lua" "$M"
 chk "uninstall removes the include" test ! -e "$HOME/.config/hypr/baneyspaces"
 chk "uninstall keeps the state (backups, log) by default" test -d "$HOME/.local/state/baneyspaces"
+chk "uninstall removes the skill the binary wrote, and its folder" test ! -e "$(dirname "$CLAUDE_SKILL")"
+chk "and the copy with this checkout's text" test ! -e "$(dirname "$AGENTS_SKILL")"
+chk "and leaves the skills folders themselves" test -d "$HOME/.claude/skills" -a -d "$HOME/.agents/skills"
+# A skill someone edited is not ours to remove.
+"$OM/install.sh" --src "$T/src" >/dev/null 2>&1; echo "my own notes" >> "$CLAUDE_SKILL"
+"$OM/uninstall.sh" >"$T/uedit.out" 2>&1
+chk "uninstall keeps an edited skill" grep -q 'my own notes' "$CLAUDE_SKILL"
+chk "and says why" grep -q "kept $CLAUDE_SKILL" "$T/uedit.out"
+rm -rf "$HOME/.claude/skills/baneyspaces"
 # A hyprland.lua that does not end in a newline comes back exactly as it was.
 printf 'require("hypr.bindings")\n-- my own line, no newline at the end' > "$M"; cp "$M" "$T/orig2.lua"
 "$OM/install.sh" --src "$T/src" >/dev/null 2>&1

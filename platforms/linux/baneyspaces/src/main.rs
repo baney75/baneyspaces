@@ -15,6 +15,7 @@ mod png;
 mod proc;
 mod scheme;
 mod shot;
+mod skill;
 
 use baneyspaces_core::envelope::{Envelope, Retry};
 use baneyspaces_core::{keymap, mcp};
@@ -57,6 +58,11 @@ const HELP: &str = "baneyspaces (Linux, Hyprland)
   stop                           stop the daemon (uninstall.sh does this)
   mcp                            MCP server on stdio (agent tools only)
   doctor                         what works and what does not
+  skill install [--path P]       write the agent skill to ~/.claude/skills/baneyspaces/SKILL.md, and to
+                                 ~/.agents/skills/baneyspaces when ~/.agents/skills or ~/.codex exists
+                                 (--path: to that one file or folder instead)
+  skill path                     where the skill goes, and whether each copy is current
+  skill print                    the skill's text, as this build writes it
 
 Flags, before the command: --agent-id ID (names you in the action log), --text (short human output).
 After open, arrange, move --window and close: --session S (default $BANEYSPACES_SESSION, else your terminal).
@@ -543,6 +549,13 @@ fn main() {
             }
         }
         "doctor" => print(&doctor(&paths), text),
+        "skill" => match skill::run(&args[1..], std::env::var_os("HOME").map(std::path::PathBuf::from)) {
+            skill::Out::Envelope(env) => print(&env, text),
+            skill::Out::Text(t) => {
+                print!("{t}");
+                0
+            }
+        },
         "mcp" => {
             let stdin = std::io::stdin();
             let mut out = std::io::stdout();

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Installs BaneySpaces on an Omarchy/Hyprland seat: the binary, the pinned hands engine, the key
-# bindings include and the daemon's autostart. Everything it changes is backed up first and
+# bindings include, the daemon's autostart and the agent skill. Everything it changes is backed up first and
 # `uninstall.sh` puts it back. `--dry-run` prints what would happen and changes nothing.
 #
 #   install.sh [--dry-run] [--no-binary] [--bin DIR] [--src DIR]
@@ -101,6 +101,12 @@ if [ "$BINARY" = 1 ]; then
   else
     say "no hands engine built (platforms/linux/scripts/build-engine.sh); agent hands will report engine_missing"
   fi
+fi
+
+# The agent skill teaches the command that is installed, so the binary writes its own copy.
+say "agent skill -> ~/.claude/skills/baneyspaces/SKILL.md ($BIN_ABS skill install)"
+if [ "$DRY" = 0 ]; then
+  "$BIN_ABS" skill install >/dev/null 2>&1 || say "the agent skill was not installed; run: $BIN_ABS skill install"
 fi
 
 say "manifest -> $STATE/install.json"

@@ -304,6 +304,26 @@ it makes every agent window keep drawing in the background, and `set_prop` after
 mapped did not have that effect.) Without grim, or with a grim that has no `-T`, `shot` answers
 `not_supported` and says what is missing.
 
+## The agent skill
+
+`platforms/linux/skill/SKILL.md` teaches an agent the Linux command: the agent workspace, the app
+allowlist, the handoff folder, `agent run`, snapshot and refs, `agent shot`, and what is the user's.
+It is built into the binary, so the skill always describes the command that is installed:
+
+```sh
+baneyspaces skill install          # ~/.claude/skills/baneyspaces/SKILL.md, and ~/.agents/skills/baneyspaces
+                                   # when ~/.agents/skills or ~/.codex exists (written whole, then renamed)
+baneyspaces skill install --path P # that one file or folder instead
+baneyspaces skill path             # where it goes, and whether each copy is current
+baneyspaces skill print            # the text itself
+```
+
+`install.sh` runs `skill install`; `uninstall.sh` removes a copy only while its text is still the
+installed binary's or this checkout's. The text sits in the binary between `polycarp-skill|v1|begin|`
+and `polycarp-skill|v1|end|`, so `polycarp version` compares the installed skill with it without
+running anything. A unit test checks that every command, verb and flag the skill names is in
+`baneyspaces help` and parses, so the skill cannot drift from the binary.
+
 ## Install on an Omarchy seat (part 2 does this on seat-b and seat-a)
 
 ```sh
