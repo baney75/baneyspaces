@@ -72,6 +72,8 @@ same_screen "after set-value, type and toggle"
 eq "no key or pointer event reached the user's windows (cursor still)" "$(cursor)" "$USER_CURSOR"
 
 echo "-- scope: only a process BaneySpaces started, only on the agent workspace"
+# Retry never only past a 20 s cold start, which a unit test covers; a terminal opened a moment ago is retry safe.
+eq "a terminal with no accessibility tree is no_accessibility (not a title mismatch)" "$(baneyspaces agent snapshot --window "$AW" -i --compact | jq -r .error.code)" "no_accessibility"
 eq "a user window is not_in_scope" "$(baneyspaces agent snapshot --window "$W2" | jq -r .error.code)" "not_in_scope"
 baneyspaces agent move "$W3" >/dev/null; sleep 0.3
 eq "a window you parked is needs_lend (not an agent process)" "$(baneyspaces agent snapshot --window "$W3" | jq -r .error.code)" "needs_lend"

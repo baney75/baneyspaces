@@ -81,5 +81,59 @@
     "error": "window_unmatched"
    }
   ]
+ },
+ {
+  "name": "a process with no application on the accessibility bus has no accessibility tree",
+  "rules": [
+   "R-W1"
+  ],
+  "steps": [
+   {
+    "match_window": {
+     "title": "foot",
+     "candidates": [],
+     "app_on_bus": false
+    },
+    "error": "no_accessibility"
+   }
+  ]
+ },
+ {
+  "name": "a process that just started and is not on the accessibility bus yet is not a match",
+  "rules": [
+   "R-W1"
+  ],
+  "steps": [
+   {
+    "match_window": {
+     "title": "foot",
+     "candidates": [],
+     "app_on_bus": false,
+     "starting": true
+    },
+    "error": "window_unmatched"
+   }
+  ]
+ },
+ {
+  "name": "an app on the accessibility bus whose windows carry other titles is not a match",
+  "rules": [
+   "R-W1"
+  ],
+  "steps": [
+   {
+    "match_window": {
+     "title": "Notes",
+     "candidates": [
+      {
+       "id": "a2",
+       "title": "Other"
+      }
+     ],
+     "app_on_bus": true
+    },
+    "error": "window_unmatched"
+   }
+  ]
  }
 ]

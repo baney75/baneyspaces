@@ -92,6 +92,13 @@ isolation line, drawn by process:
   in the ledger in `AGENTS.md`;
 - an accessible window is matched to the compositor window by its title, and exactly one must carry
   it (`window_unmatched` otherwise): there is no fallback to "the only window of the process";
+- a process with no application on its accessibility bus at all (foot and most terminals, an app
+  built without AT-SPI) has no tree to read: `snapshot` and the other hands verbs answer
+  `no_accessibility`, with retry `safe` for the first 20 s of the process (a browser's cold start can
+  register that late) and `never` after, and say to use `agent shot` to see it and `agent run` or an
+  app with a tree to act. In its first 2 s a process may not have registered yet, so it is
+  `window_unmatched` with retry `safe` until then. The bus is asked (`list-apps`) only when the
+  process has no accessible window;
 - scope is checked again right before the engine's command: window, pid, start time and workspace
   must be what they were, or the call is refused `not_in_scope` and nothing is sent;
 - a window of yours that you park there (`agent move`) is guarded but not drivable (`needs_lend`);
@@ -268,7 +275,10 @@ never sees half a file). `NAME` is a plain file name (no `/`, no leading `.`); w
 
 The engine is not used. The daemon runs `grim -T <stableId>` (grim 1.5 or later, the system binary),
 which asks Hyprland for that one window through `ext-foreign-toplevel-list-v1` and
-`ext-image-copy-capture-v1`. Hyprland names each window in that list by the `stableId` that `hyprctl
+`ext-image-copy-capture-v1`. Each capture is a raw frame (`-t ppm`) read from grim's stdout and
+compared byte for byte with the one before; only the frame that is kept is encoded as a PNG, once,
+by the daemon (`png.rs`: RGB like grim's, fixed-code deflate, no new dependency; a flat window comes
+out about four times grim's size). Hyprland names each window in that list by the `stableId` that `hyprctl
 clients` reports, so the window is picked by its identity, never by its place on a screen, and grim
 is never given `-o` or `-g`. The window stays on `special:agent`: nothing is shown, focused or moved.
 
@@ -282,9 +292,12 @@ workspace mid-call is refused `not_in_scope` and no picture is kept. A window yo
 hidden special workspace, so the app keeps showing its last frame and the first capture after an
 action shows the window as it was before it (measured on Hyprland 0.56.2: the label read "count 0"
 after the click that made it "count 1"). A capture is a frame for the app, and it repaints after it.
-So the daemon captures until two captures in a row are the same picture, at most five, 120 ms
-apart, and answers with the last; `evidence.settled` is true when two agreed and `evidence.frames`
-is how many were taken. An app that never stops animating does not settle; its picture is then the
+So the daemon captures until two captures in a row are the same picture, at most five, and answers
+with the last; `evidence.settled` is true when two agreed and `evidence.frames` is how many were
+taken. The pause after the first capture is 50 ms, then 50, 100 and 200 ms after captures that
+changed. 50 ms is measured: on Hyprland 0.56.2 (nested) foot, mpv, a GTK 4 spinner (cairo and GL)
+and a Chromium CSS animation each drew a new frame for every capture even 10 ms apart (plus grim's own
+run, about 20 ms), so a window that keeps drawing still never settles. An app that never stops animating does not settle; its picture is then the
 newest frame it drew, at most one frame old, and `settled` is false. (Hyprland's `render_unfocused`
 window rule, applied when the window maps, also keeps a hidden window current; it is not used because
 it makes every agent window keep drawing in the background, and `set_prop` after the window has
@@ -306,9 +319,10 @@ Part 1 does not apply it to any seat.
 ## Tests
 
 ```sh
-cargo test                                  # core, the 89 conformance cases, the daemon's pure parts and the agent workspace verbs (against a fake Hyprland socket)
+cargo test                                  # core, the 92 conformance cases, the daemon's pure parts and the agent workspace verbs (against a fake Hyprland socket)
 platforms/linux/tests/omarchy-scripts.sh    # install/uninstall against a throwaway HOME
 platforms/linux/tests/nested.sh             # the integration test; prints PASS or FAIL with counts
+platforms/linux/tests/shot-speed.sh         # the agent shot speed ratchet (spec/speed.json), nested, release build
 ```
 
 `nested.sh` starts Hyprland inside its own headless host compositor (`build-host.sh`), its own D-Bus

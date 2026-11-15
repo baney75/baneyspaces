@@ -42,5 +42,15 @@
     "about": "One voice, 45 s and up, nine speakers: core/ffi/tests/speed.rs long_dictation_in_pieces. Wait after release.",
     "allAtOnceMs": 2057,
     "inPiecesMs": 81
+  },
+  "linuxAgentShot": {
+    "about": "Median and p90 ms of `baneyspaces agent shot` (CLI run included) on a still 1878x1038 foot window in a nested Hyprland, release build: platforms/linux/tests/shot-speed.sh, which fails when the median is over medianMs times regressionLimit, when the still window does not settle, or when a window that keeps drawing does. CI has no Hyprland, so it runs on an Omarchy seat. before* is origin/main 49059ac (PNG captures 120 ms apart) on the same box and window.",
+    "medianMs": 133,
+    "p90Ms": 147,
+    "beforeMedianMs": 246,
+    "beforeP90Ms": 257,
+    "runs": 20,
+    "regressionLimit": 1.25,
+    "measuredOn": "2026-11-15, Parish1, Hyprland 0.56.2 nested"
   }
 }

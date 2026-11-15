@@ -38,7 +38,10 @@ pub fn run_case(case: &Value) -> Result<(), String> {
         if let Some(m) = step.get("match_window") {
             let title = m["title"].as_str().unwrap_or("");
             let cands: Vec<(String, String)> = m["candidates"].as_array().into_iter().flatten().map(|c| (c["id"].as_str().unwrap_or("").into(), c["title"].as_str().unwrap_or("").into())).collect();
-            match (step.get("error"), crate::agent::match_window(title, &cands)) {
+            // What the accessibility bus shows of the process: on it unless the case says not.
+            let on_bus = m["app_on_bus"].as_bool().unwrap_or(true);
+            let starting = m["starting"].as_bool().unwrap_or(false);
+            match (step.get("error"), crate::agent::match_accessible(title, &cands, on_bus, starting)) {
                 (Some(code), Err(e)) if code == &json!(e.code) => {}
                 (Some(code), Err(e)) => return Err(at(format!("expected error {code}, got {}", e.code))),
                 (Some(code), Ok(_)) => return Err(at(format!("expected error {code}, but it matched"))),

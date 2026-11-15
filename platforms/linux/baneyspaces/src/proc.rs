@@ -15,6 +15,15 @@ pub fn parse_start(stat: &str) -> Option<u64> {
     rest.split_whitespace().nth(19)?.parse().ok()
 }
 
+/// How long ago the process started, from its start time and the system's uptime, or None if gone.
+pub fn age(pid: u32) -> Option<std::time::Duration> {
+    let up: f64 = fs::read_to_string("/proc/uptime").ok()?.split_whitespace().next()?.parse().ok()?;
+    // SAFETY: sysconf has no preconditions.
+    let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    let started = start_time(pid)? as f64 / if hz > 0 { hz as f64 } else { 100.0 };
+    Some(std::time::Duration::from_secs_f64((up - started).max(0.0)))
+}
+
 #[allow(dead_code)]
 pub fn alive(pid: u32) -> bool {
     start_time(pid).is_some()
@@ -130,6 +139,18 @@ mod tests {
         let m = std::cell::Cell::new(0);
         assert_eq!(settle(|| { m.set(m.get() + 1); None }, 5, || {}), None);
         assert_eq!(m.get(), 1);
+    }
+
+    #[test]
+    fn a_process_just_started_is_young_and_a_gone_one_has_no_age() {
+        let mut child = std::process::Command::new("sleep").arg("5").spawn().unwrap();
+        let young = age(child.id()).unwrap();
+        assert!(young < std::time::Duration::from_secs(2), "{young:?}");
+        // This test process has run at least as long as the child it started.
+        assert!(age(std::process::id()).unwrap() >= young);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(age(child.id()), None);
     }
 
     #[test]

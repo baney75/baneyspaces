@@ -52,6 +52,7 @@ Every `baneyspaces` command and every MCP tool result is one JSON object.
 | `needs_sandbox` | The app is not on the list of apps with a verified separate-process launch, so an agent may not start it (it could hand the request to your copy, or take over your launches). Refused before launch. |
 | `bad_arguments` | `agent open` takes the name of an allowlisted app and files inside the handoff folder, nothing else: no flags, no paths to programs, no URLs. |
 | `window_unmatched` | The compositor window cannot be matched to exactly one accessible window (by title). |
+| `no_accessibility` | The window's process has no application on the accessibility bus at all (a terminal such as foot, an app built without AT-SPI), so there is no tree to read or act on. `retry` is `never`; `agent shot` still sees the window. Within a moment of the process starting it is `window_unmatched` instead, since an app can map its window before it registers. |
 | `timeout` | Waited and nothing arrived. From a client: the request was sent and no answer came, so it may have been carried out (`retry` never). A failure to connect is `daemon_down` instead. |
 | `engine_missing` | The hands engine is not built or not found. |
 | `engine_error` | The hands engine failed; `message` carries its code. |

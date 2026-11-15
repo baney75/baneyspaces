@@ -142,7 +142,9 @@ counted in `guard.refused`.
 ### R-W1 One compositor window, one accessible window
 The accessible window an action targets is the one whose title equals the compositor window's, and
 exactly one does. There is no fallback to "the only window of the process": it could be another
-window, even one outside the agent workspace. No match, or two, is `window_unmatched`.
+window, even one outside the agent workspace. No match, or two, is `window_unmatched`, except when the
+process has no application on the accessibility bus at all: that app has no tree, and waiting does not
+change it, so it is `no_accessibility` (retry never), unless the process started a moment ago.
 
 Scope is checked again right before the engine's action command: window, pid, start time and
 workspace (`special:agent`) must still be what they were; if anything changed the call is refused

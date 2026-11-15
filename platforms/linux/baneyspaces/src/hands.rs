@@ -9,7 +9,7 @@
 use crate::daemon::{append_record, now, record, Core, Shared};
 use crate::proc;
 use crate::scheme::AGENT_SPECIAL;
-use baneyspaces_core::agent::{check_scope, match_window, ActionRecord, WindowFacts};
+use baneyspaces_core::agent::{check_scope, match_accessible, ActionRecord, WindowFacts};
 use baneyspaces_core::envelope::{Envelope, Retry};
 use serde_json::{json, Value};
 use std::io::Read;
@@ -208,19 +208,45 @@ fn run_engine(engine: &std::path::Path, args: &[String], timeout: Duration, env:
     serde_json::from_str(out.trim()).map_err(|_| Envelope::err("engine_error", "the engine printed something that is not JSON", Retry::Never, ""))
 }
 
+/// A process younger than this that is not on the accessibility bus may still be registering.
+const REGISTERING: Duration = Duration::from_secs(2);
+
+/// A process younger than this may still be on its way onto the accessibility bus: a browser's cold
+/// start under load can take this long, well past `REGISTERING`.
+const COLD_START: Duration = Duration::from_secs(20);
+
+/// Nothing was sent, so a window that may yet match is safe to ask about again. `no_accessibility`
+/// is final (retry never) only for a process past its cold start; a younger one may still register.
+fn relax_retry(e: &mut Envelope, young: bool) {
+    if let Some(er) = e.error.as_mut() {
+        if er.code == "window_unmatched" || (er.code == "no_accessibility" && young) {
+            er.retry = Retry::Safe;
+        }
+    }
+}
+
+/// Whether the engine's `list-apps` answer has an application of this process.
+pub fn app_on_bus(apps: &Value, pid: u32) -> bool {
+    apps["data"]["apps"].as_array().is_some_and(|a| a.iter().any(|x| x["pid"].as_u64() == Some(pid as u64)))
+}
+
 /// Which engine window is this Hyprland window: the one accessible window of the process whose title
 /// equals the compositor window's, and exactly one. No fallback to another window of the process
-/// (R-W1), and the process start time must agree.
+/// (R-W1), and the process start time must agree. A process with no accessible window at all is
+/// asked for once more (`list-apps`), so an app with no accessibility tree is told apart from a title
+/// that does not match.
 fn engine_window(engine: &std::path::Path, pid: u32, title: &str, start: u64, timeout: Duration, env: &[(String, String)]) -> Result<String, Envelope> {
+    let started = Instant::now();
     let r = run_engine(engine, &["list-windows".into()], timeout, env)?;
     let all = r["data"].as_array().cloned().unwrap_or_default();
     let mine: Vec<&Value> = all.iter().filter(|w| w["pid"].as_u64() == Some(pid as u64)).collect();
     let cands: Vec<(String, String)> = mine.iter().map(|w| (w["id"].as_str().unwrap_or("").to_string(), w["title"].as_str().unwrap_or("").to_string())).collect();
-    let id = match_window(title, &cands).map_err(|r| {
+    let on_bus = !cands.is_empty() || run_engine(engine, &["list-apps".into()], timeout.saturating_sub(started.elapsed()), env).map(|a| app_on_bus(&a, pid)).unwrap_or(true);
+    let age = proc::age(pid);
+    let starting = age.is_some_and(|a| a < REGISTERING);
+    let id = match_accessible(title, &cands, on_bus, starting).map_err(|r| {
         let mut e = r.envelope();
-        if let Some(er) = e.error.as_mut() {
-            er.retry = Retry::Safe; // nothing was sent
-        }
+        relax_retry(&mut e, age.is_some_and(|a| a < COLD_START));
         e
     })?;
     // process_instance is "<boot id>:<start ticks>": a second, independent pid-reuse check.
@@ -541,6 +567,20 @@ pub fn run(shared: &Shared, agent: &str, args: &Value) -> Envelope {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn no_accessibility_is_final_only_for_a_process_past_its_cold_start() {
+        use super::{relax_retry, Envelope, Retry};
+        let retry = |code: &str, young: bool| {
+            let mut e = Envelope::err(code, "m", Retry::Never, "s");
+            relax_retry(&mut e, young);
+            e.error.unwrap().retry
+        };
+        assert_eq!(retry("no_accessibility", true), Retry::Safe);
+        assert_eq!(retry("no_accessibility", false), Retry::Never);
+        assert_eq!(retry("window_unmatched", false), Retry::Safe);
+        assert_eq!(retry("not_in_scope", true), Retry::Never);
+    }
+
     use super::*;
 
     #[test]
@@ -679,5 +719,15 @@ mod tests {
         let a = build_argv("set-value", &json!({"value":"--headed"}), None, "@sa:e1").unwrap();
         assert_eq!(a, ["set-value", "--", "@sa:e1", "--headed"]);
         assert!(!refuses_headed(&a), "text after `--` is data, even when it spells the flag");
+    }
+
+    #[test]
+    fn the_bus_check_reads_list_apps_by_pid() {
+        // The engine's own answers, measured in nested Hyprland: foot's bus has nothing, a GTK 4 app lists its pid.
+        assert!(!app_on_bus(&json!({"ok": true, "data": {"apps": []}}), 375492));
+        let gtk = json!({"ok": true, "data": {"apps": [{"name": "python3.14", "pid": 375579, "presentation": "foreground"}]}});
+        assert!(app_on_bus(&gtk, 375579));
+        assert!(!app_on_bus(&gtk, 375492), "another process's app is not this one's");
+        assert!(!app_on_bus(&json!({"ok": false}), 1));
     }
 }

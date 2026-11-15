@@ -14,6 +14,11 @@
 //! `evidence.settled` says whether that happened; an app that keeps animating never settles, and its
 //! picture is then the newest frame it drew, at most one frame old.
 //!
+//! The captures are grim's raw frames (PPM on its stdout), compared byte for byte; only the frame
+//! that is kept is encoded, once, as a PNG (`png.rs`). The pause before the second capture is `GAP`,
+//! measured against the apps this can open (Chromium and GTK 4 repaint within 30 ms of a capture),
+//! and it grows after each capture that changed, so an app finishing an animation gets longer.
+//!
 //! The scope guard runs before every capture and once more before the file is written: the window,
 //! its process, its start time, its `stableId` and its workspace must still be what they were.
 
@@ -22,18 +27,25 @@ use crate::hands::{guard, screen_state};
 use baneyspaces_core::agent::ActionRecord;
 use baneyspaces_core::envelope::{Envelope, Retry};
 use serde_json::{json, Value};
+use std::cell::Cell;
 use std::io::Read;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime};
 
 /// Captures until two in a row match, at most this many.
 pub const TRIES: usize = 5;
-/// Between captures: a frame or two for the app to repaint after the last one.
-const GAP: Duration = Duration::from_millis(120);
+/// Before the second capture: time for the app to repaint after the first. Measured on Hyprland
+/// 0.56.2 (nested, 2026-11-15) with a capture every 10 ms plus grim's own run: foot, mpv, a GTK 4
+/// spinner (cairo and GL) and a Chromium CSS animation each drew a new frame for every capture.
+/// `pause_after` lengthens it for later captures.
+pub const GAP: Duration = Duration::from_millis(50);
 /// One capture.
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(8);
+/// The largest raw frame read from grim: an 8K window is about 100 MB.
+const MAX_FRAME: u64 = 256 << 20;
 /// The whole call, well inside the client's wait.
 const BUDGET: Duration = Duration::from_secs(30);
 /// The route name in the action log.
@@ -68,9 +80,9 @@ pub fn valid_stable_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 16 && id.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// grim's command line for one capture. The identifier is checked first, so it can never be read as
-/// an option, and the file is a path the daemon made.
-pub fn grim_argv(stable_id: &str, file: &Path) -> Result<Vec<String>, Envelope> {
+/// grim's command line for one capture: a raw frame (PPM) on its stdout. The identifier is checked
+/// first, so it can never be read as an option.
+pub fn grim_argv(stable_id: &str) -> Result<Vec<String>, Envelope> {
     if !valid_stable_id(stable_id) {
         return Err(Envelope::err(
             "not_supported",
@@ -79,12 +91,29 @@ pub fn grim_argv(stable_id: &str, file: &Path) -> Result<Vec<String>, Envelope> 
             "agent shot needs Hyprland 0.5x or later, which names windows for ext-foreign-toplevel-list.",
         ));
     }
-    Ok(vec!["-t".into(), "png".into(), "-T".into(), stable_id.into(), file.display().to_string()])
+    Ok(vec!["-t".into(), "ppm".into(), "-T".into(), stable_id.into(), "-".into()])
 }
 
 /// Whether grim's usage text offers `-T` (grim 1.5 or later).
 pub fn grim_has_toplevel(help: &str) -> bool {
     help.lines().any(|l| l.trim_start().starts_with("-T "))
+}
+
+/// Whether this grim offers `-T`, asked once per binary (its path and modification time), not on
+/// every shot.
+fn grim_captures_one_window(grim: &Path) -> bool {
+    static SEEN: Mutex<Option<(PathBuf, SystemTime, bool)>> = Mutex::new(None);
+    let stamp = std::fs::metadata(grim).and_then(|m| m.modified()).ok();
+    let mut seen = SEEN.lock().unwrap_or_else(|p| p.into_inner());
+    if let (Some((path, at, ok)), Some(stamp)) = (seen.as_ref(), stamp) {
+        if path == grim && *at == stamp {
+            return *ok;
+        }
+    }
+    // grim prints its usage for -h; some versions exit non-zero after it, so either answer is read.
+    let ok = run_with_deadline(grim, &["-h".into()], Duration::from_secs(5)).is_ok_and(|r| grim_has_toplevel(&(String::from_utf8_lossy(&r.out).into_owned() + &r.err)));
+    *seen = stamp.map(|s| (grim.to_path_buf(), s, ok));
+    ok
 }
 
 /// Finds grim: `$BANEYSPACES_GRIM`, else the system binary (never a copy earlier on PATH).
@@ -108,6 +137,37 @@ pub fn png_size(b: &[u8]) -> Option<(u32, u32)> {
     (w > 0 && h > 0).then_some((w, h))
 }
 
+/// The width, height and pixels of a binary PPM (`P6`, 8 bits a channel), as grim writes it, or None
+/// for anything else.
+pub fn ppm_rgb(b: &[u8]) -> Option<(u32, u32, &[u8])> {
+    if !b.starts_with(b"P6") {
+        return None;
+    }
+    let mut p = 2;
+    let mut fields = [0usize; 3];
+    for f in fields.iter_mut() {
+        let gap = p;
+        while p < b.len() && b[p].is_ascii_whitespace() {
+            p += 1;
+        }
+        let digits = p;
+        while p < b.len() && b[p].is_ascii_digit() {
+            p += 1;
+        }
+        if gap == digits || digits == p || p - digits > 9 {
+            return None;
+        }
+        *f = std::str::from_utf8(&b[digits..p]).ok()?.parse().ok()?;
+    }
+    // One whitespace byte, then the pixels.
+    if !b.get(p)?.is_ascii_whitespace() {
+        return None;
+    }
+    let [w, h, max] = fields;
+    let px = &b[p + 1..];
+    (w > 0 && h > 0 && max == 255 && px.len() == w.checked_mul(h)?.checked_mul(3)?).then_some((w as u32, h as u32, px))
+}
+
 /// SHA-256 as lowercase hex (FIPS 180-4). Here so the capture hash needs no new dependency.
 pub fn sha256_hex(data: &[u8]) -> String {
     const K: [u32; 64] = [
@@ -126,10 +186,10 @@ pub fn sha256_hex(data: &[u8]) -> String {
         msg.push(0);
     }
     msg.extend_from_slice(&bits.to_be_bytes());
-    for block in msg.chunks_exact(64) {
+    for block in msg.as_chunks::<64>().0 {
         let mut w = [0u32; 64];
-        for (i, word) in block.chunks_exact(4).enumerate() {
-            w[i] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
+        for (i, word) in block.as_chunks::<4>().0.iter().enumerate() {
+            w[i] = u32::from_be_bytes(*word);
         }
         for i in 16..64 {
             let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
@@ -160,9 +220,18 @@ pub fn sha256_hex(data: &[u8]) -> String {
     h.iter().map(|x| format!("{x:08x}")).collect()
 }
 
+/// What a program printed, and whether it exited with success.
+struct Ran {
+    ok: bool,
+    out: Vec<u8>,
+    err: String,
+}
+
 /// Runs a program with a hard deadline in a process group of its own; the group is killed at the
-/// deadline. Ok holds stdout and stderr; Err holds stderr (or why it could not run).
-fn run_with_deadline(prog: &Path, args: &[String], timeout: Duration) -> Result<String, String> {
+/// deadline. stdout is read as it comes (a raw frame is megabytes, far more than a pipe holds) and
+/// the call returns as soon as the program exits, with no polling. Err says why it could not run or
+/// that it ran out of time.
+fn run_with_deadline(prog: &Path, args: &[String], timeout: Duration) -> Result<Ran, String> {
     use std::os::unix::process::CommandExt;
     let mut child = Command::new(prog)
         .args(args)
@@ -173,32 +242,52 @@ fn run_with_deadline(prog: &Path, args: &[String], timeout: Duration) -> Result<
         .spawn()
         .map_err(|e| format!("cannot start {}: {e}", prog.display()))?;
     let group = child.id() as i32;
-    let deadline = Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let mut out = String::new();
-                let mut err = String::new();
-                if let Some(mut o) = child.stdout.take() {
-                    let _ = o.read_to_string(&mut out);
-                }
-                if let Some(mut e) = child.stderr.take() {
-                    let _ = e.read_to_string(&mut err);
-                }
-                return if status.success() {
-                    Ok(out + &err)
-                } else {
-                    Err(out + &err)
-                };
-            }
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
-            _ => {
-                // SAFETY: a signal to the process group this call created.
-                unsafe { libc::kill(-group, libc::SIGKILL) };
-                let _ = child.wait();
-                return Err("it did not finish in time".into());
-            }
+    let kill_group = move || {
+        // SAFETY: a signal to the process group this call created.
+        unsafe { libc::kill(-group, libc::SIGKILL) };
+    };
+    let (finished, deadline) = std::sync::mpsc::channel::<()>();
+    let watchdog = std::thread::spawn(move || {
+        let late = deadline.recv_timeout(timeout).is_err();
+        if late {
+            kill_group();
         }
+        late
+    });
+    let stderr = child.stderr.take();
+    let errs = std::thread::spawn(move || {
+        let mut e = vec![];
+        if let Some(s) = stderr {
+            let _ = s.take(64 << 10).read_to_end(&mut e);
+        }
+        String::from_utf8_lossy(&e).into_owned()
+    });
+    let mut out = vec![];
+    if let Some(o) = child.stdout.take() {
+        let _ = o.take(MAX_FRAME + 1).read_to_end(&mut out);
+    }
+    if out.len() as u64 > MAX_FRAME {
+        kill_group();
+    }
+    let status = child.wait();
+    let _ = finished.send(());
+    let late = watchdog.join().unwrap_or(true);
+    let err = errs.join().unwrap_or_default();
+    if late {
+        return Err("it did not finish in time".into());
+    }
+    if out.len() as u64 > MAX_FRAME {
+        return Err("its output was too large".into());
+    }
+    Ok(Ran { ok: status.is_ok_and(|s| s.success()), out, err })
+}
+
+/// Adds the time since it was made to a total when it goes out of scope.
+struct Spent<'a>(&'a Cell<Duration>, Instant);
+
+impl Drop for Spent<'_> {
+    fn drop(&mut self) {
+        self.0.set(self.0.get() + self.1.elapsed());
     }
 }
 
@@ -210,8 +299,15 @@ pub struct Settled {
     pub settled: bool,
 }
 
+/// The pause after capture `n` (from 1): `gap` after the first two, then twice and four times that.
+/// A still window pays one `gap`; one that changed waits longer for its next frame to be its last.
+pub fn pause_after(n: usize, gap: Duration) -> Duration {
+    gap * (1u32 << n.saturating_sub(2).min(4))
+}
+
 /// Captures until two captures in a row are identical, or `tries` captures were taken. `check` runs
-/// before every capture and stops the loop with its error. `capture` returns one PNG.
+/// before every capture and stops the loop with its error. `capture` returns one raw frame. The
+/// pauses between captures are `pause_after(n, gap)`.
 pub fn settle(
     tries: usize,
     gap: Duration,
@@ -227,7 +323,7 @@ pub fn settle(
         }
         last = Some(now);
         if n < tries.max(2) {
-            std::thread::sleep(gap);
+            std::thread::sleep(pause_after(n, gap));
         }
     }
     Ok(Settled { bytes: last.unwrap_or_default(), frames: tries.max(2), settled: false })
@@ -296,10 +392,8 @@ pub fn run(shared: &Shared, agent: &str, args: &Value) -> Envelope {
     let Some(grim) = locate_grim() else {
         return refuse(Envelope::err("not_supported", "agent shot needs grim (1.5 or later), and it is not installed", Retry::Never, "Install grim, which Omarchy ships, or read the window with snapshot."), Some(plan.pid));
     };
-    // grim prints its usage for -h; some versions exit non-zero after it, so either answer is read.
-    match run_with_deadline(&grim, &["-h".into()], Duration::from_secs(5)) {
-        Ok(help) | Err(help) if grim_has_toplevel(&help) => {}
-        _ => return refuse(Envelope::err("not_supported", "this grim cannot capture one window (it has no -T; grim 1.5 or later can)", Retry::Never, "Update grim, or read the window with snapshot."), Some(plan.pid)),
+    if !grim_captures_one_window(&grim) {
+        return refuse(Envelope::err("not_supported", "this grim cannot capture one window (it has no -T; grim 1.5 or later can)", Retry::Never, "Update grim, or read the window with snapshot."), Some(plan.pid));
     }
     let dir = match shots_dir(&state) {
         Ok(d) => d,
@@ -313,10 +407,14 @@ pub fn run(shared: &Shared, agent: &str, args: &Value) -> Envelope {
     }
     let started = Instant::now();
     let expect = crate::hands::SnapInfo { window: plan.window.clone(), pid: plan.pid, start: plan.start, stable: plan.stable.clone() };
+    // Where the time goes, for the trace: captures, scope checks, and (the rest of the loop) pauses.
+    let (capturing, checking) = (Cell::new(Duration::ZERO), Cell::new(Duration::ZERO));
     let still_ours = || -> Result<(), Envelope> {
+        let t = Instant::now();
         let c = crate::daemon::lock(shared);
-        let same_window = c.client(&plan.window).is_some_and(|cl| cl.stable_id == stable);
-        if guard(&c, &plan.window, Some(&expect)).is_err() || !same_window {
+        let _spent = Spent(&checking, t);
+        // `expect` carries the stableId, so the guard's one read of Hyprland's clients covers it.
+        if guard(&c, &plan.window, Some(&expect)).is_err() {
             return Err(Envelope::err("not_in_scope", "the window changed while it was being captured (it moved, or its process changed), so no picture was kept", Retry::Never, "Take a new snapshot of a window on the agent workspace."));
         }
         if started.elapsed() > BUDGET {
@@ -324,41 +422,58 @@ pub fn run(shared: &Shared, agent: &str, args: &Value) -> Envelope {
         }
         Ok(())
     };
-    let part = dir.join(format!(".capture-{}-{}.png", std::process::id(), now_nanos()));
     let capture = || -> Result<Vec<u8>, Envelope> {
-        let argv = grim_argv(&stable, &part)?;
-        run_with_deadline(&grim, &argv, CAPTURE_TIMEOUT).map_err(|e| Envelope::err("engine_error", format!("grim could not capture the window: {}", e.lines().next().unwrap_or("it failed")), Retry::Safe, "Try again; if it keeps failing, check that Hyprland offers ext-image-copy-capture-v1."))?;
-        let bytes = std::fs::read(&part).map_err(|e| Envelope::err("engine_error", format!("grim wrote no picture: {e}"), Retry::Safe, "Try again."));
-        let _ = std::fs::remove_file(&part);
-        let bytes = bytes?;
-        if png_size(&bytes).is_none() {
-            return Err(Envelope::err("engine_error", "grim's output is not a PNG", Retry::Safe, "Try again."));
+        let _spent = Spent(&capturing, Instant::now());
+        let failed = |m: &str| Envelope::err("engine_error", format!("grim could not capture the window: {m}"), Retry::Safe, "Try again; if it keeps failing, check that Hyprland offers ext-image-copy-capture-v1.");
+        let ran = run_with_deadline(&grim, &grim_argv(&stable)?, CAPTURE_TIMEOUT).map_err(|e| failed(&e))?;
+        if !ran.ok {
+            return Err(failed(ran.err.lines().next().unwrap_or("it failed")));
         }
-        Ok(bytes)
+        if ppm_rgb(&ran.out).is_none() {
+            return Err(Envelope::err("engine_error", "grim's output is not a picture", Retry::Safe, "Try again."));
+        }
+        Ok(ran.out)
     };
-    let result = settle(TRIES, GAP, still_ours, capture);
-    let _ = std::fs::remove_file(&part);
+    let result = settle(TRIES, GAP, &still_ours, capture);
+    let (settled_in, checked_in) = (started.elapsed(), checking.get());
 
-    // 3. Scope once more before anything is published, then write, record, answer.
-    let result = result.and_then(|s| still_ours().map(|_| s));
+    // 3. Encode the frame that was kept, check scope once more before anything is published, then
+    // write, record, answer.
+    let encoding = Instant::now();
+    let result = result.and_then(|s| {
+        let png = ppm_rgb(&s.bytes).and_then(|(w, h, px)| crate::png::encode_rgb(w, h, px));
+        let png = png.ok_or_else(|| Envelope::err("internal", "the capture could not be encoded", Retry::Safe, "Try again."))?;
+        still_ours().map(|_| (s, png))
+    });
     let mut env = match result {
         Err(e) => e,
-        Ok(s) => match publish(&dir, &name, &s.bytes) {
+        Ok((s, png)) => match publish(&dir, &name, &png) {
             Err(e) => e,
             Ok(path) => {
-                let (w, h) = png_size(&s.bytes).unwrap_or((0, 0));
+                let (w, h) = png_size(&png).unwrap_or((0, 0));
                 Envelope::ok(json!({
                     "path": path.display().to_string(),
                     "width": w,
                     "height": h,
                     "cursor": false,
-                    "evidence": { "kind": "capture_hash", "sha256": sha256_hex(&s.bytes), "frames": s.frames, "settled": s.settled },
+                    "evidence": { "kind": "capture_hash", "sha256": sha256_hex(&png), "frames": s.frames, "settled": s.settled },
                     "target": { "pid": plan.pid, "window": plan.window, "app": plan.class, "scope": "agent workspace" },
                 }))
             }
         },
     };
     let c = crate::daemon::lock(shared);
+    let ms = |d: Duration| d.as_millis();
+    let frames = env.data.as_ref().map(|d| d["evidence"]["frames"].clone()).unwrap_or(Value::Null);
+    c.log(&format!(
+        "shot {}: {} ms ({frames} frames; captures {} ms, checks {} ms, pauses {} ms, encode and publish {} ms)",
+        plan.window,
+        ms(started.elapsed()),
+        ms(capturing.get()),
+        ms(checking.get()),
+        ms(settled_in.saturating_sub(capturing.get() + checked_in)),
+        ms(encoding.elapsed()),
+    ));
     let changed = screen_state(&c) != before;
     if let Some(d) = env.data.as_mut() {
         d["screen_changed"] = json!(changed);
@@ -387,13 +502,13 @@ mod tests {
 
     #[test]
     fn the_grim_command_names_one_window_and_nothing_else() {
-        let a = grim_argv("18000002", Path::new("/s/.capture-1.png")).unwrap();
-        assert_eq!(a, ["-t", "png", "-T", "18000002", "/s/.capture-1.png"]);
+        let a = grim_argv("18000002").unwrap();
+        assert_eq!(a, ["-t", "ppm", "-T", "18000002", "-"]);
         // Never the whole screen: no -o, no -g, and the identifier is always given.
         assert!(!a.iter().any(|x| x == "-o" || x == "-g" || x == "-c"));
         // An identifier that is not Hyprland's hex stableId is refused, never passed on as an option or empty.
         for bad in ["", "-o", "--help", "18000002 -o", "0x18", "g1", &"a".repeat(17)] {
-            assert_eq!(grim_argv(bad, Path::new("/s/x.png")).unwrap_err().error.unwrap().code, "not_supported", "{bad:?}");
+            assert_eq!(grim_argv(bad).unwrap_err().error.unwrap().code, "not_supported", "{bad:?}");
         }
     }
 
@@ -403,6 +518,108 @@ mod tests {
         let old = "Usage: grim [options...] [output-file]\n  -t png|ppm|jpeg Set the output filetype.\n  -o <output>     Set the output name to capture.\n";
         assert!(grim_has_toplevel(new));
         assert!(!grim_has_toplevel(old));
+    }
+
+    #[test]
+    fn ppm_rgb_reads_grims_raw_frames_and_rejects_anything_else() {
+        let px: Vec<u8> = (0..2 * 3 * 3).map(|i| i as u8).collect();
+        let frame = [b"P6\n3 2\n255\n".as_slice(), &px].concat();
+        assert_eq!(ppm_rgb(&frame), Some((3, 2, px.as_slice())));
+        // Pixels that happen to start with whitespace are pixels: exactly one byte ends the header.
+        let ws = [b"P6 1 1 255 ".as_slice(), b"\n\n\n"].concat();
+        assert_eq!(ppm_rgb(&ws), Some((1, 1, b"\n\n\n".as_slice())));
+        for bad in [
+            b"P5\n1 1\n255\n\0".to_vec(),                                   // greyscale
+            b"P6\n1 1\n65535\n\0\0\0\0\0\0".to_vec(),                        // 16 bits a channel
+            b"P6\n2 1\n255\n\0\0\0".to_vec(),                               // too short
+            b"P6\n1 1\n255\n\0\0\0\0".to_vec(),                            // too long
+            b"P6\n0 1\n255\n".to_vec(),                                      // empty
+            b"P61 1\n255\n\0\0\0".to_vec(),                                  // no space after the magic
+            b"P6\n1 1\n255".to_vec(),                                         // no pixels
+            b"P6\n9999999999 1\n255\n\0".to_vec(),                            // a number too large to be a window
+            b"\x89PNG\r\n\x1a\n".to_vec(),
+        ] {
+            assert_eq!(ppm_rgb(&bad), None, "{:?}", String::from_utf8_lossy(&bad));
+        }
+    }
+
+    #[test]
+    fn a_still_window_pays_one_short_pause_and_a_changing_one_waits_longer() {
+        let pauses: Vec<u128> = (1..TRIES).map(|n| pause_after(n, GAP).as_millis()).collect();
+        assert_eq!(pauses, [50, 50, 100, 200]);
+        // Every pause is at least the gap an app was measured to need, and a window that never
+        // settles is given up on sooner than with five captures 120 ms apart.
+        assert!(pauses.iter().all(|&p| p >= GAP.as_millis()));
+        assert!(pauses.iter().sum::<u128>() < 4 * 120);
+        assert_eq!(pause_after(1, Duration::ZERO), Duration::ZERO);
+    }
+
+    #[test]
+    fn a_window_that_keeps_animating_never_settles_at_the_new_pauses() {
+        // Every capture is a new frame, as foot printing, mpv and a Chromium CSS animation were measured.
+        let mut k = 0u8;
+        let s = settle(TRIES, Duration::from_millis(1), || Ok(()), || { k += 1; Ok(vec![k]) }).unwrap();
+        assert_eq!((s.frames, s.settled, s.bytes), (TRIES, false, vec![TRIES as u8]));
+    }
+
+    #[test]
+    fn a_program_is_read_to_the_end_and_answers_as_soon_as_it_exits() {
+        let sh = Path::new("/bin/sh");
+        // Four megabytes, far more than a pipe holds: read while it runs, not after.
+        let t = Instant::now();
+        let r = run_with_deadline(sh, &["-c".into(), "head -c 4000000 /dev/zero; echo note >&2".into()], Duration::from_secs(5)).unwrap();
+        assert!(r.ok);
+        assert_eq!(r.out.len(), 4_000_000);
+        assert_eq!(r.err, "note\n");
+        assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+        // A failure is not ok, and says why.
+        let r = run_with_deadline(sh, &["-c".into(), "echo nope >&2; exit 3".into()], Duration::from_secs(5)).unwrap();
+        assert!(!r.ok);
+        assert_eq!(r.err, "nope\n");
+        // A program that outlives its deadline is killed with its whole group, children included.
+        let t = Instant::now();
+        let e = run_with_deadline(sh, &["-c".into(), "sleep 30 & sleep 30".into()], Duration::from_millis(200)).err().unwrap();
+        assert!(e.contains("in time"), "{e}");
+        assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+        assert!(run_with_deadline(Path::new("/nonexistent/grim"), &[], Duration::from_secs(1)).is_err());
+    }
+
+    #[test]
+    fn grim_is_asked_for_its_options_once_per_binary() {
+        let dir = std::env::temp_dir().join(format!("bs-grim-{}-{}", std::process::id(), now_nanos()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let grim = dir.join("grim");
+        let count = dir.join("count");
+        let script = format!("#!/bin/sh\necho x >> '{}'\necho '  -T <identifier> Set the identifier of a foreign toplevel handle to capture.'\n", count.display());
+        std::fs::write(&grim, script).unwrap();
+        std::fs::set_permissions(&grim, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let runs = || std::fs::read_to_string(&count).map(|s| s.lines().count()).unwrap_or(0);
+        assert!(grim_captures_one_window(&grim));
+        assert!(grim_captures_one_window(&grim));
+        assert_eq!(runs(), 1, "the answer is kept");
+        // The same path with a new binary (an update) is asked again.
+        let f = std::fs::File::options().write(true).open(&grim).unwrap();
+        f.set_modified(SystemTime::now() + Duration::from_secs(60)).unwrap();
+        drop(f);
+        assert!(grim_captures_one_window(&grim));
+        assert_eq!(runs(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_shot_speed_ratchet_is_in_place() {
+        // The target lives in spec/speed.json and the check that enforces it is a local script (CI has no Hyprland).
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let spec: Value = serde_json::from_str(&std::fs::read_to_string(root.join("spec/speed.json")).unwrap()).unwrap();
+        let t = &spec["linuxAgentShot"];
+        assert!(t["medianMs"].as_f64().is_some_and(|m| m > 0.0), "{t}");
+        assert!(t["beforeMedianMs"].as_f64().unwrap() >= 1.5 * t["medianMs"].as_f64().unwrap(), "the 1.5x gain is recorded");
+        assert_eq!(t["regressionLimit"].as_f64(), Some(1.25));
+        let script = root.join("platforms/linux/tests/shot-speed.sh");
+        assert!(std::fs::metadata(&script).unwrap().permissions().mode() & 0o111 != 0, "shot-speed.sh is executable");
+        let text = std::fs::read_to_string(&script).unwrap();
+        assert!(text.contains("linuxAgentShot") && text.contains("regressionLimit"), "the script reads the target");
+        assert!(std::fs::read_to_string(root.join("AGENTS.md")).unwrap().contains("shot-speed.sh"), "AGENTS.md names the check");
     }
 
     #[test]

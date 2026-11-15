@@ -254,7 +254,7 @@ impl Core {
         Ok(Self::parse_monitors(&v).iter().any(|m| m.special == AGENT_SPECIAL))
     }
 
-    fn log(&self, msg: &str) {
+    pub(crate) fn log(&self, msg: &str) {
         if self.trace {
             eprintln!("[baneyspaces] {msg}");
         }
@@ -1182,6 +1182,7 @@ pub fn append_record(c: &Core, rec: &ActionRecord) {
     append_and_maybe_prune(&c.paths, &rec.to_line(), now(), &c.last_prune);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn record(c: &Core, agent: &str, verb: &str, pid: Option<u32>, window: Option<&str>, reference: Option<&str>, route: &str, env: &Envelope) {
     append_record(c, &ActionRecord::from_result(now(), agent, verb, pid, window, reference, route, env));
 }
@@ -1663,7 +1664,7 @@ pub fn run(trace: bool) -> i32 {
                 c.dirty = true; // the focus rule cannot be confirmed: commands wait until it can
             }
             tick += 1;
-            if tick % 5 == 0 {
+            if tick.is_multiple_of(5) {
                 c.reap_tokens();
             }
             prune_if_due(&c.paths, now(), &c.last_prune);
@@ -2411,7 +2412,7 @@ pub(crate) mod tests {
 
     #[test]
     fn the_hands_budget_is_well_under_the_client_wait() {
-        assert!(crate::hands::BUDGET_SECS * 3 / 2 < CLIENT_TIMEOUT_SECS);
+        const { assert!(crate::hands::BUDGET_SECS * 3 / 2 < CLIENT_TIMEOUT_SECS) };
     }
 
     #[test]

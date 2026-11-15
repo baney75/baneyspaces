@@ -11,6 +11,7 @@
 #
 #   platforms/linux/tests/nested.sh            # builds first if needed
 #   KEEP=1 platforms/linux/tests/nested.sh     # keep the temp dir (logs) afterwards
+#   NESTED_PROFILE=release NESTED_ONLY=<script> NESTED_ARGS="..." nested.sh   # run one script on a release build (shot-speed.sh)
 set -uo pipefail
 # Noise from the nested D-Bus session and portals is not test output.
 export G_MESSAGES_DEBUG=
@@ -20,7 +21,8 @@ REPO="$(cd "$HERE/../../.." && pwd)"
 
 if [ "${1:-}" != "--inner" ]; then
   # ---- outer: build, snapshot the real session, run the inner script in a private D-Bus session ----
-  (cd "$REPO" && cargo build -q -p baneyspaces-linux) || { echo "FAIL: cargo build"; exit 1; }
+  case "${NESTED_PROFILE:=debug}" in debug) ;; release) ;; *) echo "FAIL: NESTED_PROFILE is debug or release"; exit 1;; esac
+  (cd "$REPO" && cargo build -q -p baneyspaces-linux $([ "$NESTED_PROFILE" = release ] && echo --release)) || { echo "FAIL: cargo build"; exit 1; }
   [ -x "$REPO/platforms/linux/engine/agent-desktop" ] || "$REPO/platforms/linux/scripts/build-engine.sh" --profile ci >/dev/null || { echo "FAIL: engine build"; exit 1; }
   HOST="$("$HERE/build-host.sh")" || { echo "FAIL: host compositor build"; exit 1; }
   real() { hyprctl -j "$1" 2>/dev/null | jq -S -c "$2" 2>/dev/null || echo "none"; }
@@ -29,7 +31,7 @@ if [ "${1:-}" != "--inner" ]; then
   REAL_BEFORE="$(snap)"
   echo "real session before: $REAL_BEFORE"
   # The inner run gets a clean environment: nothing that names the real Hyprland or Wayland display.
-  env -i HOME="$HOME" PATH="$PATH" USER="${USER:-}" TERM="${TERM:-dumb}" LANG="${LANG:-C.UTF-8}" KEEP="${KEEP:-}" DEBUG="${DEBUG:-}" NESTED_ONLY="${NESTED_ONLY:-}" NESTED_TMP="$NESTED_TMP" HOST="$HOST" \
+  env -i HOME="$HOME" PATH="$PATH" USER="${USER:-}" TERM="${TERM:-dumb}" LANG="${LANG:-C.UTF-8}" KEEP="${KEEP:-}" DEBUG="${DEBUG:-}" NESTED_ONLY="${NESTED_ONLY:-}" NESTED_ARGS="${NESTED_ARGS:-}" NESTED_PROFILE="$NESTED_PROFILE" NESTED_TMP="$NESTED_TMP" HOST="$HOST" \
     dbus-run-session -- bash "$HERE/nested.sh" --inner
   RC=$?
   # Nothing started inside the temp dir may outlive the run: not the nested Hyprland, not an agent's
@@ -62,7 +64,7 @@ fi
 TMP="${NESTED_TMP:-$(mktemp -d /tmp/bs-nested.XXXXXX)}"; chmod 700 "$TMP"
 mkdir -p "$TMP/run" "$TMP/home" "$TMP/state" "$TMP/config"; chmod 700 "$TMP/run"
 export XDG_RUNTIME_DIR="$TMP/run" HOME="$TMP/home" XDG_STATE_HOME="$TMP/state" XDG_CONFIG_HOME="$TMP/config"
-BIN="$REPO/target/debug"
+BIN="$REPO/target/${NESTED_PROFILE:-debug}"
 export PATH="$BIN:$PATH" BANEYSPACES_ENGINE="$REPO/platforms/linux/engine/agent-desktop" BANEYSPACES_TEST_OPS=1
 unset HYPRLAND_INSTANCE_SIGNATURE WAYLAND_DISPLAY DISPLAY
 
@@ -167,7 +169,8 @@ eq "workspace animations are off" "$(H animations | jq -r '[.[0][]|select(.name=
 eq "apps cannot take focus by asking" "$(hyprctl getoption misc:focus_on_activate | head -1)" "bool: false"
 
 # Debugging aid: run one script inside the nested session instead of the tests.
-if [ -n "${NESTED_ONLY:-}" ]; then bash "$NESTED_ONLY"; exit $?; fi
+# shellcheck disable=SC2086 # NESTED_ARGS is a list of words
+if [ -n "${NESTED_ONLY:-}" ]; then bash "$NESTED_ONLY" ${NESTED_ARGS:-}; exit $?; fi
 echo "== key bindings (Omarchy defaults replaced)"
 BINDS="$(H binds)"
 [ -n "${DEBUG:-}" ] && echo "$BINDS" | jq -c '[.[]|select((.description//"")|startswith("BaneySpaces"))]|first'

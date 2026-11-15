@@ -140,6 +140,27 @@ pub fn match_window(title: &str, candidates: &[(String, String)]) -> Result<Stri
     }
 }
 
+/// R-W1 with what the accessibility bus says about the process. When no accessible window carries
+/// the title and the process has no application on the bus at all (`app_on_bus` false), it has no
+/// accessibility tree (foot, xterm, an app built without AT-SPI): no wait and no title changes that,
+/// so it is `no_accessibility`. `starting` (the process started a moment ago) keeps that case on
+/// `window_unmatched`, since an app may map its window before it registers.
+pub fn match_accessible(title: &str, candidates: &[(String, String)], app_on_bus: bool, starting: bool) -> Result<String, Refusal> {
+    match match_window(title, candidates) {
+        Err(_) if candidates.is_empty() && !app_on_bus && starting => Err(Refusal {
+            code: "window_unmatched",
+            message: "this app has not registered with the accessibility bus yet".into(),
+            suggestion: "Wait a moment and take a new snapshot. If it says no_accessibility, the app has no accessibility tree.".into(),
+        }),
+        Err(_) if candidates.is_empty() && !app_on_bus => Err(Refusal {
+            code: "no_accessibility",
+            message: "this app has no accessibility tree: its process has no application on the accessibility bus, so there is nothing to read or act on".into(),
+            suggestion: "Use `agent shot` to see the window. To act, use `agent run` for a command, or open another allowlisted app that has an accessibility tree (a GTK app such as zenity).".into(),
+        }),
+        r => r,
+    }
+}
+
 /// Drops records older than 30 days from the text of an action log. `None` when nothing was old
 /// enough, so the caller rewrites the file only when it must.
 pub fn prune_text(text: &str, now: u64) -> Option<String> {
@@ -160,7 +181,7 @@ impl ActionRecord {
     pub fn from_result(at: u64, agent: &str, verb: &str, pid: Option<u32>, window: Option<&str>, reference: Option<&str>, route: &str, env: &Envelope) -> Self {
         let (result, refusal) = match (&env.ok, &env.error) {
             (true, _) => ("ok".to_string(), None),
-            (false, Some(e)) => (e.code.clone(), if matches!(e.code.as_str(), "not_in_scope" | "needs_lend" | "in_use" | "not_supported" | "stale_ref" | "single_instance" | "needs_sandbox" | "agent_window" | "window_unmatched") { Some(e.code.clone()) } else { None }),
+            (false, Some(e)) => (e.code.clone(), if matches!(e.code.as_str(), "not_in_scope" | "needs_lend" | "in_use" | "not_supported" | "stale_ref" | "single_instance" | "needs_sandbox" | "agent_window" | "window_unmatched" | "no_accessibility") { Some(e.code.clone()) } else { None }),
             (false, None) => ("internal".into(), None),
         };
         Self { at, agent: agent.into(), verb: verb.into(), pid, window: window.map(String::from), reference: reference.map(String::from), route: route.into(), result, refusal, screen_changed: false }
@@ -244,6 +265,24 @@ mod tests {
         assert_eq!(match_window("A", &c(&[("w2", "B")])).unwrap_err().code, "window_unmatched");
         assert_eq!(match_window("A", &c(&[("w1", "A"), ("w2", "A")])).unwrap_err().code, "window_unmatched");
         assert_eq!(match_window("A", &[]).unwrap_err().code, "window_unmatched");
+    }
+
+    #[test]
+    fn a_process_with_no_accessible_app_is_no_accessibility_not_a_title_mismatch() {
+        let c = |v: &[(&str, &str)]| v.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect::<Vec<_>>();
+        // foot: nothing of the process on the bus, long enough after it started.
+        let e = match_accessible("foot", &[], false, false).unwrap_err();
+        assert_eq!(e.code, "no_accessibility");
+        assert_eq!(e.envelope().error.unwrap().retry, Retry::Never);
+        assert!(e.suggestion.contains("agent shot") && e.suggestion.contains("agent run"), "{}", e.suggestion);
+        assert!(!e.message.contains("title"), "the title is not the problem: {}", e.message);
+        // Just started: it may not have registered yet, so waiting is still the advice.
+        assert_eq!(match_accessible("foot", &[], false, true).unwrap_err().code, "window_unmatched");
+        // On the bus but no window carries the title: the title is the problem, as before.
+        assert_eq!(match_accessible("Notes", &c(&[("w2", "Other")]), true, false).unwrap_err().code, "window_unmatched");
+        assert_eq!(match_accessible("Notes", &[], true, false).unwrap_err().code, "window_unmatched");
+        // A match is a match whatever the bus says.
+        assert_eq!(match_accessible("Notes", &c(&[("w1", "Notes")]), true, false).unwrap(), "w1");
     }
 
     #[test]
