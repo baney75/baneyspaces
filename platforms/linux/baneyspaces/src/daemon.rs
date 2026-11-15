@@ -66,6 +66,9 @@ pub struct TokenInfo {
     /// The tag of the Polycarp bridge folder this launch uses (`apps::polycarp_socket_dir`): its own for
     /// `agent run` and a Chromium-family browser, or the `agent run` shell's that opened the browser.
     pub socket: Option<String>,
+    /// A process carrying the token was seen alive. Once they are all gone the launch is over and its
+    /// token goes at the next upkeep; before one is seen, it is given a minute to start.
+    pub seen: bool,
 }
 
 pub struct Core {
@@ -75,6 +78,9 @@ pub struct Core {
     pub tokens: HashMap<String, TokenInfo>,
     /// token -> pids registered through it
     pub token_pids: HashMap<String, Vec<u32>>,
+    /// token -> upkeeps in a row that found no process carrying it, for a launch already seen. One
+    /// empty look is not enough: an app's environ reads back empty for a moment after an exec.
+    pub token_misses: HashMap<String, u8>,
     /// snapshot id -> the window and process it was taken of
     pub snaps: HashMap<String, hands::SnapInfo>,
     pub overview_shown: bool,
@@ -472,8 +478,11 @@ impl Core {
         }
     }
 
-    /// Registers `pid` as an agent process if it carries a launch token we issued. A registration
-    /// whose start time no longer matches is dropped first.
+    /// Registers `pid` as an agent process if it carries a launch token we issued, or, when its own
+    /// environ carries none, descends from a process that does (start times checked at each step). A
+    /// Chromium-family browser writes its command line over its environ (setproctitle), so its window's
+    /// process reads back with no token; it is found under the anchor shell its launch runs it in. A
+    /// registration whose start time no longer matches is dropped first.
     fn adopt_agent_pid(&mut self, pid: u32) -> bool {
         let live = proc::start_time(pid);
         if let Some(start) = self.model.agent_proc(pid) {
@@ -482,15 +491,21 @@ impl Core {
                 return true;
             }
             let _ = self.apply(Event::AgentExit { pid });
+            // The pid went to another process: it is no longer the old launch's.
+            for v in self.token_pids.values_mut() {
+                v.retain(|p| *p != pid);
+            }
         }
         // A window can map right after its process's exec, while its environ still reads empty.
-        let Some(tok) = proc::settled_token_of(pid) else {
+        let tokens = &self.tokens;
+        let Some(tok) = proc::settled_token_of(pid).or_else(|| proc::inherited_token(&proc::Live, pid, &|t| tokens.contains_key(t))) else {
             return false;
         };
         if !self.tokens.contains_key(&tok) {
             return false;
         }
         let start = live.unwrap_or(0);
+        self.mark_seen(&tok);
         self.token_pids.entry(tok).or_default().push(pid);
         let _ = self.apply(Event::AgentRegister { pid, start });
         true
@@ -654,10 +669,20 @@ impl Core {
         self.persist();
     }
 
+    /// A process of this launch was seen alive, so once none is left the launch is over. Recorded where
+    /// the daemon sees one (the open loop, a registration), not only by the upkeep's look: that runs
+    /// after the stacks it takes down, and a browser opened and closed meanwhile would wait out the minute.
+    pub fn mark_seen(&mut self, tok: &str) {
+        if let Some(i) = self.tokens.get_mut(tok).filter(|i| !i.seen) {
+            i.seen = true;
+            self.save_tokens();
+        }
+    }
+
     /// The launch tokens we issued, kept (0600) so a restart still knows the terminal an agent is
-    /// running in. A token with no live process and older than a minute is dropped.
+    /// running in. A token with no live process is dropped: after two empty looks in a row when one was seen, else after a minute.
     pub fn save_tokens(&self) {
-        let m: serde_json::Map<String, Value> = self.tokens.iter().map(|(t, i)| (t.clone(), json!({ "agent": i.agent, "app": i.app, "at": i.at, "bus_lost": i.bus_lost, "socket": i.socket, "bus": i.bus.as_ref().map(|b| json!({ "addr": b.addr, "pid": b.pid, "start": b.start })) }))).collect();
+        let m: serde_json::Map<String, Value> = self.tokens.iter().map(|(t, i)| (t.clone(), json!({ "agent": i.agent, "app": i.app, "at": i.at, "bus_lost": i.bus_lost, "socket": i.socket, "seen": i.seen, "bus": i.bus.as_ref().map(|b| json!({ "addr": b.addr, "pid": b.pid, "start": b.start })) }))).collect();
         self.paths.write_atomic("tokens.json", &Value::Object(m).to_string());
     }
 
@@ -672,8 +697,9 @@ impl Core {
             let bus_lost = v["bus_lost"].as_bool().unwrap_or(false) || (bus.is_some() && !alive);
             let bus = bus.filter(|_| alive);
             let socket = v["socket"].as_str().map(String::from);
-            let info = TokenInfo { agent: v["agent"].as_str().unwrap_or("agent").into(), app: v["app"].as_str().unwrap_or("").into(), at, bus, bus_lost, socket };
-            if now().saturating_sub(at) > 60 && proc::pids_with_token(&tok).is_empty() {
+            let seen = v["seen"].as_bool().unwrap_or(false);
+            let info = TokenInfo { agent: v["agent"].as_str().unwrap_or("agent").into(), app: v["app"].as_str().unwrap_or("").into(), at, bus, bus_lost, socket, seen };
+            if (seen || now().saturating_sub(at) > 60) && proc::pids_with_token(&tok).is_empty() {
                 // Nothing runs under it any more: its bus, profile and bridge folder go too, once every
                 // token is in (another may share the folder).
                 self.tokens.insert(tok.clone(), info);
@@ -693,6 +719,8 @@ impl Core {
     fn drop_token(&mut self, tok: &str) {
         let info = self.tokens.remove(tok);
         self.claims.remove(tok);
+        self.token_pids.remove(tok);
+        self.token_misses.remove(tok);
         let kids = self.bus_children.remove(tok);
         let socket = info.as_ref().and_then(|i| i.socket.clone());
         // Stopping a stack waits for processes to exit; that happens after the lock is released.
@@ -703,16 +731,45 @@ impl Core {
         }
     }
 
-    /// Upkeep for launch tokens: those with no live process (and older than a minute) are dropped,
-    /// and agent profiles older than a week that no live token owns are deleted.
+    /// Upkeep for launch tokens: those with no live process (seen once, or older than a minute) are
+    /// dropped, and agent profiles older than a week that no live token owns are deleted.
     pub fn reap_tokens(&mut self) {
+        self.reap_tokens_with(&proc::pids_by_token());
+    }
+
+    /// `reap_tokens` with the live processes of each token given. A launch whose processes were seen
+    /// and are gone at two upkeeps in a row is over: its token, bus, profile and bridge folder go
+    /// (a browser whose window never registered too). One no process was seen for yet gets a minute to start.
+    pub fn reap_tokens_with(&mut self, live: &HashMap<String, Vec<u32>>) {
         let t = now();
         self.claims.retain(|_, cl| cl.until >= t);
-        let gone: Vec<String> = self.tokens.iter().filter(|(tok, i)| t.saturating_sub(i.at) > 60 && proc::pids_with_token(tok).is_empty()).map(|(tok, _)| tok.clone()).collect();
+        let mut changed = false;
+        for (tok, i) in self.tokens.iter_mut() {
+            if !i.seen && live.contains_key(tok) {
+                i.seen = true;
+                changed = true;
+            }
+        }
+        let mut gone: Vec<String> = vec![];
+        for (tok, i) in &self.tokens {
+            if live.contains_key(tok) {
+                self.token_misses.remove(tok);
+            } else if i.seen {
+                // Seen and now absent: over once a second look in a row finds nothing either.
+                let m = self.token_misses.entry(tok.clone()).or_insert(0);
+                *m += 1;
+                if *m >= 2 {
+                    gone.push(tok.clone());
+                }
+            } else if t.saturating_sub(i.at) > 60 {
+                gone.push(tok.clone());
+            }
+        }
         for tok in &gone {
+            self.log(&format!("launch {} is over (no process carries its token); dropping it", &tok[..8.min(tok.len())]));
             self.drop_token(tok);
         }
-        if !gone.is_empty() {
+        if changed || !gone.is_empty() {
             self.save_tokens();
         }
         let live: HashSet<String> = self.tokens.keys().map(|t| t[..8.min(t.len())].to_string()).collect();
@@ -962,7 +1019,19 @@ const USER_ONLY: &[&str] = &["switch", "move", "focus_monitor", "agent_show", "a
 impl Core {
     /// The launch this process belongs to lost its session bus when the daemon restarted.
     pub fn bus_lost_for(&self, pid: u32) -> bool {
-        proc::token_of(pid).and_then(|t| self.tokens.get(&t)).is_some_and(|i| i.bus_lost)
+        self.launch_token(pid).and_then(|t| self.tokens.get(&t)).is_some_and(|i| i.bus_lost)
+    }
+
+    /// The launch a process belongs to: the token in its environ, or for a registered agent process
+    /// whose environ no longer says (a browser), the token it was registered through.
+    pub fn launch_token(&self, pid: u32) -> Option<String> {
+        if let Some(t) = proc::token_of(pid).filter(|t| self.tokens.contains_key(t)) {
+            return Some(t);
+        }
+        if !self.model.is_agent_pid(pid, proc::start_time(pid)?) {
+            return None;
+        }
+        self.token_pids.iter().find(|(_, v)| v.contains(&pid)).map(|(t, _)| t.clone())
     }
 
     /// Whether the process on the other end of the control socket is an agent.
@@ -1227,13 +1296,29 @@ struct Prepared {
     argv: Vec<String>,
     /// The Polycarp bridge folder (tag, path) the launch uses, made before the launch.
     socket: Option<(String, std::path::PathBuf)>,
+    /// Run under the anchor shell (`proc::anchored`): the app writes over its own environ, so its
+    /// processes are found by the tree, under the shell that keeps the token.
+    anchor: bool,
 }
 
 impl Prepared {
+    /// What is run after the environment: the app, or the anchor shell that runs it.
+    fn command(&self) -> Vec<String> {
+        if self.anchor { proc::anchored(&self.argv) } else { self.argv.clone() }
+    }
+
     /// What the launch's environment gets besides its token and bus: the bridge folder, under both names.
     fn env(&self) -> Vec<(&'static str, String)> {
-        let Some((_, dir)) = &self.socket else { return vec![] };
-        apps::POLYCARP_SOCKET_VARS.iter().map(|k| (*k, dir.to_string_lossy().into_owned())).collect()
+        let mut env: Vec<(&'static str, String)> = match &self.socket {
+            Some((_, dir)) => apps::POLYCARP_SOCKET_VARS.iter().map(|k| (*k, dir.to_string_lossy().into_owned())).collect(),
+            None => vec![],
+        };
+        // A Chromium-family browser loads its accessibility bridge only when told to (with renderer
+        // accessibility forced, its windows are on the bus): `agent snapshot` reads it.
+        if self.anchor {
+            env.push(("ACCESSIBILITY_ENABLED", "1".into()));
+        }
+        env
     }
 }
 
@@ -1315,7 +1400,8 @@ fn prepare_with(c: &Core, plan: &Plan, token: &str, caller: Option<&str>, system
             }
             let files = apps::check_files(files, &c.paths.handoff()).map_err(bad_args)?;
             let argv = with_policy(app, files)?;
-            Ok(Prepared { label: app.clone(), argv, socket: if apps::is_chromium(app) { Some(socket()?) } else { None } })
+            let chromium = apps::is_chromium(app);
+            Ok(Prepared { label: app.clone(), argv, socket: if chromium { Some(socket()?) } else { None }, anchor: chromium })
         }
         Plan::Run { cmd, dir } => {
             let terminals: [(&str, &[&str]); 4] = [("foot", &["--"]), ("ghostty", &["-e"]), ("kitty", &[]), ("alacritty", &["-e"])];
@@ -1334,13 +1420,13 @@ fn prepare_with(c: &Core, plan: &Plan, token: &str, caller: Option<&str>, system
             tail.extend(pre.iter().map(|s| s.to_string()));
             tail.extend(cmd.iter().cloned());
             let argv = with_policy(term, tail)?;
-            Ok(Prepared { label: (*term).to_string(), argv, socket: Some(socket()?) })
+            Ok(Prepared { label: (*term).to_string(), argv, socket: Some(socket()?), anchor: false })
         }
         Plan::Test { app, args, .. } => {
             let exe = which(app).ok_or_else(|| Envelope::err("not_found", format!("no program {app:?} on PATH"), Retry::Never, "Give an executable name or a full path."))?;
             let mut argv = vec![exe.to_string_lossy().into_owned()];
             argv.extend(args.iter().cloned());
-            Ok(Prepared { label: app.clone(), argv, socket: None })
+            Ok(Prepared { label: app.clone(), argv, socket: None, anchor: false })
         }
     }
 }
@@ -1417,9 +1503,9 @@ fn launch_on_agent(shared: &Shared, agent: &str, plan: Plan, opts: &OpenOpts) ->
         let cmd = format!(
             "env -u HYPRLAND_INSTANCE_SIGNATURE -u HYPRLAND_CMD BANEYSPACES_AGENT_TOKEN={token} BANEYSPACES_AGENT_ID={} {bus_env}{socket_env}{}",
             sh_quote(agent),
-            prep.argv.iter().map(|a| sh_quote(a)).collect::<Vec<_>>().join(" ")
+            prep.command().iter().map(|a| sh_quote(a)).collect::<Vec<_>>().join(" ")
         );
-        c.tokens.insert(token.clone(), TokenInfo { agent: agent.into(), app: label.clone(), at: now(), bus: bus_info, bus_lost: false, socket: prep.socket.as_ref().map(|(t, _)| t.clone()) });
+        c.tokens.insert(token.clone(), TokenInfo { agent: agent.into(), app: label.clone(), at: now(), bus: bus_info, bus_lost: false, socket: prep.socket.as_ref().map(|(t, _)| t.clone()), seen: false });
         c.save_tokens();
         if claims && !opts.session.is_empty() {
             c.claims.insert(token.clone(), Claim { session: opts.session.clone(), app: label.clone(), until: now() + CLAIM_SECS });
@@ -1448,6 +1534,9 @@ fn launch_on_agent(shared: &Shared, agent: &str, plan: Plan, opts: &OpenOpts) ->
             seen = !proc::pids_with_token(&token).is_empty(); // reads /proc, so before the lock
         }
         let mut c = lock(shared);
+        if seen {
+            c.mark_seen(&token);
+        }
         if let Some(pid) = c.token_pids.get(&token).and_then(|v| v.first()).copied() {
             if let Some(w) = c.model.agent_windows().into_iter().find(|w| c.model.pid_of(w) == Some(pid)).map(String::from) {
                 let (title, stable) = c.client(&w).map(|x| (x.title, x.stable_id)).unwrap_or_default();
@@ -1473,9 +1562,15 @@ fn launch_on_agent(shared: &Shared, agent: &str, plan: Plan, opts: &OpenOpts) ->
             break;
         }
     }
-    let c = lock(shared);
     let alive = proc::pids_with_token(&token);
+    // The process the launch started (the app, never the anchor shell or a helper the app sent off, such
+    // as Chromium's crash handler). Reads /proc, so before the lock.
+    let launched = proc::launch_pid(&proc::Live, &alive, &proc::is_anchor, &proc::all_pids()).or(alive.first().copied());
+    let mut c = lock(shared);
     let seen = seen || !alive.is_empty();
+    if seen {
+        c.mark_seen(&token);
+    }
     // `open --wait N`: the caller asked not to wait for the window, so "not here yet" is an answer.
     let short_wait = claims && opts.wait.is_some();
     // Windows that appeared while we waited and are not the agent's: the app may have forwarded to
@@ -1498,13 +1593,13 @@ fn launch_on_agent(shared: &Shared, agent: &str, plan: Plan, opts: &OpenOpts) ->
             "Agents drive only a process BaneySpaces started. Use the app's files or command line instead, or ask the user to lend it.",
         )
     } else if !short_wait {
-        Envelope::err("timeout", format!("{label} is running (pid {}) but opened no window within 8 s", alive[0]), Retry::Never, "Check `baneyspaces agent status`; the app may need a display flag.")
+        Envelope::err("timeout", format!("{label} is running (pid {}) but opened no window within 8 s", launched.unwrap_or(alive[0])), Retry::Never, "Check `baneyspaces agent status`; the app may need a display flag.")
     } else {
         // Still starting. Its first window is claimed for this session when it comes (the claim was
         // recorded with the exec), so this is not a failure: the window is just not here yet.
         let front_after = c.hypr.json("activewindow").ok().and_then(|v| v["address"].as_str().map(String::from));
         let focus = agentws::focus_json(front_before.as_deref(), front_after.as_deref(), refused_before, c.model.refused());
-        let pid = c.token_pids.get(&token).and_then(|v| v.first()).copied().or(alive.first().copied());
+        let pid = c.token_pids.get(&token).and_then(|v| v.first()).copied().or(launched);
         let claimed = c.claims.contains_key(&token);
         Envelope::ok(json!({
             "window": Value::Null,
@@ -1517,15 +1612,14 @@ fn launch_on_agent(shared: &Shared, agent: &str, plan: Plan, opts: &OpenOpts) ->
             "note": if claimed { "the app is still starting; its first window goes to your session when it appears. Run `baneyspaces agent windows` to find it." } else { "the app is still starting. Run `baneyspaces agent windows` to find its window." },
         }))
     };
-    // While the launch runs, its bridge folder is reported even when no window was matched to it (Chromium's
-    // main process can read with an empty environ, so `timeout` is common for it).
+    // While the launch runs, its bridge folder is reported even when no window was matched to it yet.
     if let (false, Some(dir)) = (alive.is_empty(), &socket_dir) {
         add_data(&mut env, "polycarp_socket_dir", json!(dir));
     }
     if !strays.is_empty() {
         add_data(&mut env, "windows_that_appeared", json!(strays));
     }
-    record(&c, agent, "open", alive.first().copied(), None, None, "exec", &env);
+    record(&c, agent, "open", launched, None, None, "exec", &env);
     env
 }
 
@@ -1653,6 +1747,7 @@ pub fn run(trace: bool) -> i32 {
         paths: paths.clone(),
         tokens: HashMap::new(),
         token_pids: HashMap::new(),
+        token_misses: HashMap::new(),
         snaps: HashMap::new(),
         overview_shown: false,
         events_seen: 0,
@@ -1722,6 +1817,11 @@ pub fn run(trace: bool) -> i32 {
           let mut tick = 0u32;
           loop {
             std::thread::sleep(Duration::from_secs(2));
+            tick += 1;
+            // While a launch runs, every tick: its token goes within 4 s of its last process. The scan
+            // reads every process's environ, which can stall on one process: never under the lock.
+            let busy = !lock(&shared).tokens.is_empty();
+            let live = (tick.is_multiple_of(5) || busy).then(proc::pids_by_token);
             let stops = {
             let mut c = lock(&shared);
             c.reconcile_agents();
@@ -1729,9 +1829,8 @@ pub fn run(trace: bool) -> i32 {
             if !c.ensure_focus_setting() {
                 c.dirty = true; // the focus rule cannot be confirmed: commands wait until it can
             }
-            tick += 1;
-            if tick.is_multiple_of(5) {
-                c.reap_tokens();
+            if let Some(live) = &live {
+                c.reap_tokens_with(live);
             }
             prune_if_due(&c.paths, now(), &c.last_prune);
             std::mem::take(&mut c.pending_stops)
@@ -1837,6 +1936,7 @@ pub(crate) mod tests {
             paths,
             tokens: HashMap::new(),
             token_pids: HashMap::new(),
+            token_misses: HashMap::new(),
             snaps: HashMap::new(),
             overview_shown: false,
             events_seen: 0,
@@ -2309,8 +2409,8 @@ pub(crate) mod tests {
         use std::os::unix::fs::PermissionsExt;
         let mut a = test_core("tokens");
         let me = proc::random_token().unwrap();
-        a.tokens.insert("fresh".into(), TokenInfo { agent: "claude".into(), app: "foot".into(), at: now(), bus: None, bus_lost: false, socket: None });
-        a.tokens.insert("old-and-dead".into(), TokenInfo { agent: "x".into(), app: "y".into(), at: now() - 3600, bus: None, bus_lost: false, socket: None });
+        a.tokens.insert("fresh".into(), TokenInfo { agent: "claude".into(), app: "foot".into(), at: now(), bus: None, bus_lost: false, socket: None, seen: false });
+        a.tokens.insert("old-and-dead".into(), TokenInfo { agent: "x".into(), app: "y".into(), at: now() - 3600, bus: None, bus_lost: false, socket: None, seen: false });
         let _ = me;
         a.save_tokens();
         let mode = std::fs::metadata(a.paths.state.join("tokens.json")).unwrap().permissions().mode() & 0o777;
@@ -2322,6 +2422,79 @@ pub(crate) mod tests {
         assert!(b.tokens.contains_key("fresh"), "a token issued a moment ago is kept");
         assert!(!b.tokens.contains_key("old-and-dead"), "an old token no process carries is dropped");
         assert_eq!(b.tokens["fresh"].agent, "claude");
+    }
+
+    /// Parish1, 11-15: a browser stopped while its `open` was pending left its bridge folder behind; the token
+    /// waited out the minute meant for a launch that has not started yet.
+    #[test]
+    fn a_launch_whose_processes_are_all_gone_is_dropped_at_the_second_look() {
+        let mut c = test_core("reap-seen");
+        let info = |tag: &str| TokenInfo { agent: "a".into(), app: "chromium".into(), at: now(), bus: None, bus_lost: false, socket: Some(tag.into()), seen: false };
+        let ran = apps::make_polycarp_socket_dir(&c.paths.run, "d92df089").unwrap();
+        let starting = apps::make_polycarp_socket_dir(&c.paths.run, "e0000000").unwrap();
+        c.tokens.insert("d92df089aaaa".into(), info("d92df089"));
+        c.tokens.insert("e0000000bbbb".into(), info("e0000000"));
+        c.token_pids.insert("d92df089aaaa".into(), vec![]);
+        // The browser runs: only its crash handler and the anchor carry the token, none registered.
+        c.reap_tokens_with(&HashMap::from([("d92df089aaaa".to_string(), vec![835418])]));
+        assert!(c.tokens["d92df089aaaa"].seen && ran.exists());
+        // One upkeep finds nothing (an exec in place reads back empty for a moment): kept.
+        c.reap_tokens_with(&HashMap::new());
+        assert!(c.tokens.contains_key("d92df089aaaa") && ran.exists(), "one empty look is not the end");
+        // Found again, then gone: the count starts over.
+        c.reap_tokens_with(&HashMap::from([("d92df089aaaa".to_string(), vec![835418])]));
+        c.reap_tokens_with(&HashMap::new());
+        assert!(c.tokens.contains_key("d92df089aaaa"));
+        // Every process of it exited: gone at the second upkeep in a row, folder and all.
+        c.reap_tokens_with(&HashMap::new());
+        assert!(!c.tokens.contains_key("d92df089aaaa") && !c.token_pids.contains_key("d92df089aaaa"));
+        assert!(!ran.exists(), "the bridge folder goes with the launch");
+        // A launch no process was seen for yet is still starting: kept.
+        assert!(c.tokens.contains_key("e0000000bbbb") && starting.exists());
+        // `seen` survives a restart, so the next daemon drops it at once too.
+        c.tokens.get_mut("e0000000bbbb").unwrap().seen = true;
+        c.save_tokens();
+        let mut b = test_core("reap-seen2");
+        b.paths = c.paths.clone();
+        b.load_tokens();
+        assert!(!b.tokens.contains_key("e0000000bbbb"), "seen, and nothing carries it now");
+    }
+
+    /// A browser's window registers through the anchor shell its launch runs it under: its own environ
+    /// has no token (Chromium writes its command line over it). The anchor never is the launch's pid.
+    #[test]
+    fn a_window_process_without_the_token_registers_under_its_anchor() {
+        use crate::proc::Procs;
+        let mut c = test_core("anchor");
+        let tok = proc::random_token().unwrap();
+        c.tokens.insert(tok.clone(), TokenInfo { agent: "a".into(), app: "chromium".into(), at: now(), bus: None, bus_lost: false, socket: None, seen: false });
+        let argv = proc::anchored(&["env".into(), "-i".into(), "sleep".into(), "30".into()]);
+        let mut sh = std::process::Command::new(&argv[0]).args(&argv[1..]).env("BANEYSPACES_AGENT_TOKEN", &tok).spawn().unwrap();
+        let anchor = sh.id();
+        let mut app = None;
+        for _ in 0..200 {
+            app = proc::all_pids().into_iter().find(|p| proc::Live.stat(*p).is_some_and(|s| s.ppid == anchor) && proc::token_of(*p).is_none());
+            if app.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let app = app.expect("the anchor's child");
+        // A process of yours with no token anywhere above it is not registered.
+        assert!(!c.adopt_agent_pid(std::process::id()));
+        // Its pid was an older launch's process, gone before the upkeep noticed (another start time).
+        c.tokens.insert("stale".into(), TokenInfo { agent: "a".into(), app: "chromium".into(), at: now(), bus: None, bus_lost: false, socket: None, seen: true });
+        c.token_pids.insert("stale".into(), vec![app]);
+        c.model.apply(Event::AgentRegister { pid: app, start: 1 }).unwrap();
+        assert!(c.adopt_agent_pid(app));
+        assert!(c.token_pids["stale"].is_empty(), "a reused pid is no longer the old launch's");
+        assert_eq!(c.token_pids[&tok], vec![app]);
+        assert!(c.tokens[&tok].seen, "registered, so the launch is over once its processes are gone");
+        assert!(c.model.is_agent_pid(app, proc::start_time(app).unwrap()));
+        assert_eq!(c.launch_token(app), Some(tok.clone()), "its launch's bus is found for snapshots");
+        let _ = std::process::Command::new("kill").arg(app.to_string()).status();
+        let _ = sh.wait();
+        assert_eq!(c.launch_token(app), None, "gone");
     }
 
     #[test]
@@ -2356,7 +2529,7 @@ pub(crate) mod tests {
     fn a_launch_profile_is_deleted_with_its_token() {
         let mut c = test_core("profile");
         let tok = "abcd1234efgh5678";
-        c.tokens.insert(tok.into(), TokenInfo { agent: "a".into(), app: "chromium".into(), at: 0, bus: None, bus_lost: false, socket: None });
+        c.tokens.insert(tok.into(), TokenInfo { agent: "a".into(), app: "chromium".into(), at: 0, bus: None, bus_lost: false, socket: None, seen: false });
         let prof = apps::profile_dir(&c.paths.state, tok);
         std::fs::create_dir_all(prof.join("Default")).unwrap();
         std::fs::write(prof.join("Default/Cookies"), "x").unwrap();
@@ -2387,7 +2560,7 @@ pub(crate) mod tests {
         std::fs::write(hosts.join("com.polycarp.browser.json"), manifest).unwrap();
         let argv = open("chromium").unwrap();
         let profile = apps::profile_dir(&c.paths.state, tok);
-        assert_eq!(argv[1..], [format!("--user-data-dir={}", profile.display()), "--no-first-run".into(), "--no-default-browser-check".into(), format!("--load-extension={}", ext.canonicalize().unwrap().display())]);
+        assert_eq!(argv[1..], [format!("--user-data-dir={}", profile.display()), "--no-first-run".into(), "--no-default-browser-check".into(), "--force-renderer-accessibility".into(), format!("--load-extension={}", ext.canonicalize().unwrap().display())]);
         assert_eq!(std::fs::read_to_string(profile.join("NativeMessagingHosts/com.polycarp.browser.json")).unwrap(), manifest);
         // Firefox gets neither.
         assert!(!open("firefox").unwrap().iter().any(|a| a.starts_with("--load-extension")));
@@ -2407,13 +2580,17 @@ pub(crate) mod tests {
             let p = prep(b);
             let dir = c.paths.run.join("polycarp/abcdef01");
             assert_eq!(p.socket, Some(("abcdef01".into(), dir.clone())), "{b}");
-            assert_eq!(p.env(), [("POLYCARP_SOCKET_DIR", dir.display().to_string()), ("TABKYRA_SOCKET_DIR", dir.display().to_string())], "{b}");
+            assert_eq!(p.env(), [("POLYCARP_SOCKET_DIR", dir.display().to_string()), ("TABKYRA_SOCKET_DIR", dir.display().to_string()), ("ACCESSIBILITY_ENABLED", "1".into())], "{b}");
+            assert!(p.anchor, "{b} runs under the anchor shell");
+            assert_eq!(p.command()[..4], ["/bin/sh", "-c", "\"$@\"; exit $?", proc::ANCHOR], "{b}");
+            assert_eq!(p.command()[4..], p.argv[..], "{b}");
             assert!(!dir.starts_with("/tmp/polycarp-bridge") && !dir.starts_with("/tmp/tabkyra-bridge"));
             assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700, "the mode the native host insists on");
         }
         for other in ["firefox", "foot", "mpv"] {
             let p = prep(other);
             assert!(p.socket.is_none() && p.env().is_empty(), "{other}");
+            assert!(!p.anchor && p.command() == p.argv, "{other} runs as itself");
         }
     }
 
@@ -2425,7 +2602,7 @@ pub(crate) mod tests {
         let dir = c.paths.run.join("polycarp/11111111");
         assert_eq!(run.socket, Some(("11111111".into(), dir.clone())));
         assert_eq!(run.env()[0], ("POLYCARP_SOCKET_DIR", dir.display().to_string()));
-        c.tokens.insert(run_tok.into(), TokenInfo { agent: "a".into(), app: "foot".into(), at: now(), bus: None, bus_lost: false, socket: Some("11111111".into()) });
+        c.tokens.insert(run_tok.into(), TokenInfo { agent: "a".into(), app: "foot".into(), at: now(), bus: None, bus_lost: false, socket: Some("11111111".into()), seen: false });
         // `agent open chromium` asked from inside that shell: the same folder, so its MCP client sees this browser.
         let browser = prepare_with(&c, &Plan::Open { app: "chromium".into(), files: vec![] }, "22222222bbbbbbbbbbbbbbbbbbbbbbbb", Some(run_tok), &installed).unwrap();
         assert_eq!(browser.socket, Some(("11111111".into(), dir.clone())));
@@ -2450,7 +2627,7 @@ pub(crate) mod tests {
     #[test]
     fn a_bridge_folder_goes_when_the_last_launch_using_it_is_dropped_and_at_startup() {
         let mut c = test_core("polycarp-drop");
-        let info = |tag: &str| TokenInfo { agent: "a".into(), app: "chromium".into(), at: 0, bus: None, bus_lost: false, socket: Some(tag.into()) };
+        let info = |tag: &str| TokenInfo { agent: "a".into(), app: "chromium".into(), at: 0, bus: None, bus_lost: false, socket: Some(tag.into()), seen: false };
         let shared = apps::make_polycarp_socket_dir(&c.paths.run, "11111111").unwrap();
         std::fs::write(shared.join("123.sock"), "").unwrap();
         c.tokens.insert("11111111aaaa".into(), info("11111111"));

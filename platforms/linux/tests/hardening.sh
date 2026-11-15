@@ -291,13 +291,14 @@ eq "and the agent's window is still the only one the agent has" "$(H clients | j
 BUSPID="$(pgrep -f "address=unix:path=$XDG_RUNTIME_DIR/baneyspaces/bus-" | head -1)"
 check "a private dbus-daemon is running for it" test -n "$BUSPID"
 kill "$UPID" "$AGPID" 2>/dev/null; sleep 1; rebase
-# Torn down with the token: once nothing runs under it, its bus and profile go.
-baneyspaces agent run -- sh -c 'sleep 2' >/dev/null; sleep 4
-NB_BEFORE="$(ls "$XDG_RUNTIME_DIR"/baneyspaces/bus-* 2>/dev/null | wc -l)"
-ctl '{"op":"test_reap","args":{}}' >/dev/null
-# The stack is taken down after the lock is released, by the upkeep thread (within a couple of seconds).
-fewer() { [ "$(ls "$XDG_RUNTIME_DIR"/baneyspaces/bus-* 2>/dev/null | wc -l)" -lt "$NB_BEFORE" ]; }
-wait_for 8 fewer
-NB_AFTER="$(ls "$XDG_RUNTIME_DIR"/baneyspaces/bus-* 2>/dev/null | wc -l)"
-check "a token's bus is torn down when its processes are gone (sockets $NB_BEFORE -> $NB_AFTER)" test "$NB_AFTER" -lt "$NB_BEFORE"
+# Torn down with the token: once nothing runs under it, its bus and profile go, by the upkeep thread
+# within about 4 s of its last process (no minute's wait: a process of it was seen).
+buses() { ls "$XDG_RUNTIME_DIR"/baneyspaces/bus-* 2>/dev/null | wc -l; }
+ctl '{"op":"test_reap","args":{}}' >/dev/null; sleep 3
+NB_BEFORE="$(buses)"
+baneyspaces agent run -- sh -c 'sleep 2' >/dev/null
+NB_DURING="$(buses)"
+wait_for 10 sh -c "[ \"\$(ls '$XDG_RUNTIME_DIR'/baneyspaces/bus-* 2>/dev/null | wc -l)\" -le $NB_BEFORE ]"
+NB_AFTER="$(buses)"
+check "a token's bus is torn down when its processes are gone (sockets $NB_BEFORE -> $NB_DURING -> $NB_AFTER)" test "$NB_DURING" -gt "$NB_BEFORE" -a "$NB_AFTER" -le "$NB_BEFORE"
 kill "$FOPID" 2>/dev/null

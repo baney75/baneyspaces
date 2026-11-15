@@ -327,6 +327,7 @@ if [ -x "$BANEYSPACES_ENGINE" ] && [ -f "$HERE/hands.sh" ]; then
   . "$HERE/hands.sh"
 fi
 . "$HERE/hardening.sh"
+. "$HERE/agent-chromium.sh"
 
 echo "== monitors come and go"
 baneyspaces focus-monitor $M2 >/dev/null; baneyspaces switch 6 >/dev/null; sleep 0.2

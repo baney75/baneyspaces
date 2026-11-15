@@ -372,7 +372,7 @@ pub(crate) fn guard(c: &Core, window: &str, expect: Option<&SnapInfo>) -> Result
             "Close it and start it again with `baneyspaces agent open` (or `agent run`).",
         ));
     }
-    let env = proc::token_of(cl.pid).and_then(|t| c.tokens.get(&t)).and_then(|i| i.bus.as_ref()).map(|b| vec![("DBUS_SESSION_BUS_ADDRESS".to_string(), b.addr.clone())]).unwrap_or_default();
+    let env = c.launch_token(cl.pid).and_then(|t| c.tokens.get(&t)).and_then(|i| i.bus.as_ref()).map(|b| vec![("DBUS_SESSION_BUS_ADDRESS".to_string(), b.addr.clone())]).unwrap_or_default();
     Ok(Plan {
         env,
         window: window.into(),

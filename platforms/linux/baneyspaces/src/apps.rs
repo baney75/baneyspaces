@@ -49,8 +49,9 @@ pub fn known(app: &str, profile: &Path) -> Option<Launch> {
         // GApplication single-instance, with the flag that turns it off.
         Some(Launch::Flags(vec!["--gtk-single-instance=false".into()]))
     } else if CHROMIUM.contains(&name) {
-        // Its own profile is its own process, and never touches yours.
-        Some(Launch::Flags(vec![format!("--user-data-dir={p}"), "--no-first-run".into(), "--no-default-browser-check".into()]))
+        // Its own profile is its own process, and never touches yours. Chromium puts its windows on the
+        // accessibility bus only with renderer accessibility forced, so `agent snapshot` has a tree to read.
+        Some(Launch::Flags(vec![format!("--user-data-dir={p}"), "--no-first-run".into(), "--no-default-browser-check".into(), "--force-renderer-accessibility".into()]))
     } else if FIREFOX.contains(&name) {
         Some(Launch::Flags(vec!["--no-remote".into(), "--profile".into(), p]))
     } else {

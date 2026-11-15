@@ -41,8 +41,16 @@ Switches are instant: the daemon turns the `workspaces` and `specialWorkspace` a
 `baneyspaces agent open <app>` runs the app as its own process with `[workspace special:agent
 silent]`, so it never appears on your workspace and never takes focus. The process carries a random
 launch token in its environment (inherited by its children); the daemon reads it from
-`/proc/<pid>/environ` when a window opens and registers the pid with its start time. That is the
-isolation line, drawn by process:
+`/proc/<pid>/environ` when a window opens and registers the pid with its start time. A process whose
+own environ carries no token is registered only when it descends from one that carries a token the
+daemon issued: up its parent chain (`/proc/<pid>/stat`), each parent started no later than its child
+and still its parent once read, and the nearest token decides. Chromium needs this: it writes its
+command line over its environ (setproctitle), so the browser, its zygotes and helpers read back with no
+token, and its crash handler, the one process that keeps it, is handed to the session's reaper. So a
+Chromium-family browser runs under a small anchor shell (`/bin/sh -c '"$@"; exit $?'
+baneyspaces-launch ...`) that carries the token, stays its parent and exits with it; the pid `open`
+reports is the anchor's child, the browser, never the crash handler. That is the isolation line, drawn
+by process:
 
 - an agent acts only on a window that is on `special:agent` (Hyprland is asked every time) **and**
   whose process the daemon registered (pid and start time, so a reused pid fails);
@@ -58,7 +66,9 @@ isolation line, drawn by process:
   way to run one. Only viewers (mpv, imv, swayimg) and browsers take files, and every one must resolve
   (realpath) inside the handoff folder (`$XDG_STATE_HOME/baneyspaces/handoff`); a flag, a URL, `..` or a symlink
   out of the folder is `bad_arguments`. The isolation flags are the only flags, and BaneySpaces
-  adds them, plus one for Polycarp: a Chromium-family browser gets `--load-extension=` with the folder
+  adds them, plus `--force-renderer-accessibility` and `ACCESSIBILITY_ENABLED=1` for a Chromium-family
+  browser (without both it never joins the accessibility bus, and `agent snapshot` has no tree), plus one
+  for Polycarp: a Chromium-family browser gets `--load-extension=` with the folder
   `polycarp update` installs (`$XDG_DATA_HOME/polycarp/browser/source/dist-chrome`, realpath, never a
   path the caller gives), when it is there. The native host manifests `polycarp-browser setup` registered
   (`com.polycarp.browser`, `ai.tabkyra.bridge`) are copied into the private profile's
@@ -77,7 +87,8 @@ isolation line, drawn by process:
   `AT_SPI_BUS_ADDRESS`, so an app on a private session bus would otherwise start a launcher that takes
   over the socket of *your* accessibility bus. The hands engine is pointed at the launch's session
   bus when it works on that launch's windows. The stack is a process group, a child of the daemon:
-  it is torn down when the token's last process exits, when the daemon exits (`stop`, `SIGTERM`,
+  it is torn down within about 4 s (two upkeeps in a row) of the token's last process exiting (a launch none of whose processes
+  was seen yet gets a minute to start), when the daemon exits (`stop`, `SIGTERM`,
   `SIGINT`, `SIGHUP`, the include being removed). If the daemon is killed outright or crashes, the
   kernel kills the three processes it started (`PR_SET_PDEATHSIG`); what those started in turn (the
   accessibility bus daemon, an activated service) is swept by the next daemon, which also removes any
