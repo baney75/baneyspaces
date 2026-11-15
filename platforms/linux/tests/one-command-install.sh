@@ -105,12 +105,14 @@ show_failure() { echo "---- output"; cat "$1"; echo "---- last lines of the log"
 
 echo "The helper functions"
 fn() { POLYCARP_INSTALL_FUNCTIONS_ONLY=1 bash -c '. "$1"; shift; "$@"' _ "$ROOT/install.sh" "$@"; }
+# A function, not sh -c '! ...': a new shell can't see fn, so ! would turn its "not found" into a pass.
+not_fn() { ! fn "$@"; }
 for url in https://github.com/baney75/polycarp https://github.com/baney75/polycarp.git https://github.com/baney75/polycarp/ \
            https://GitHub.com/Baney75/Polycarp.git git@github.com:baney75/polycarp.git ssh://git@github.com/baney75/polycarp.git; do
   chk "accepts $url" fn is_polycarp_origin "$url"
 done
 for url in "" https://github.com/someone/polycarp.git https://github.com/baney75/polycarp-fork.git "file://$T/origin.git"; do
-  chk "refuses '${url}'" sh -c '! "$@"' _ fn is_polycarp_origin "$url"
+  chk "refuses '${url}'" not_fn is_polycarp_origin "$url"
 done
 printf 'NAME="Omarchy"\nID=omarchy\nID_LIKE=arch\n' > "$T/omarchy"
 printf 'ID=ubuntu\nID_LIKE=debian\nVERSION_ID="24.04"\n' > "$T/ubuntu"
