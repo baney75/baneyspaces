@@ -175,6 +175,12 @@ fn agent_request(mut a: Vec<String>) -> Result<Value, Envelope> {
     let req = |op: &str, args: Value| Ok(json!({ "op": op, "args": args }));
     match sub.as_str() {
         "status" | "windows" => req(&format!("agent_{sub}"), json!({})),
+        // cli.md lists these for Windows as "not supported yet": they exist on the Mac and Linux, so an agent hears that
+        // they are not on this platform, not that they are unknown. `agent move --window W` is the agent's own move,
+        // never the park command that `agent move W` is.
+        "workspaces" | "arrange" | "frames" | "close" => Err(not_yet(&sub)),
+        "move" if a.iter().any(|x| x == "--window" || x == "--frame" || x.starts_with("--window=") || x.starts_with("--frame=")) => Err(not_yet("move --window")),
+        "open" if a.iter().any(|x| x == "--wait" || x.starts_with("--wait=") || x.starts_with("--new_window")) => Err(not_yet("open --wait/--new_window")),
         "open" => {
             need(&a, 1, "agent open <app> [args...]")?;
             let app = a.remove(0);
@@ -205,6 +211,15 @@ fn agent_request(mut a: Vec<String>) -> Result<Value, Envelope> {
         v if HANDS.contains(&v) => hands_request(v, a),
         _ => Err(fail("invalid_args", &format!("unknown agent command {sub:?}"), "Run `baneyspaces help`.")),
     }
+}
+
+fn not_yet(what: &str) -> Envelope {
+    Envelope::err(
+        "not_supported",
+        format!("agent {what} is not supported on Windows yet"),
+        Retry::Never,
+        "See spec/cli.md for what Windows has today: agent status, windows, open, run, move, bring and the hands verbs.",
+    )
 }
 
 fn hands_request(verb: &str, mut a: Vec<String>) -> Result<Value, Envelope> {
@@ -471,6 +486,24 @@ mod tests {
         for sub in ["press", "key", "pointer", "lend", "return"] {
             assert_eq!(request(v(&["agent", sub])).unwrap_err().error.unwrap().code, "not_supported");
         }
+    }
+
+    /// cli.md: "not supported yet" on Windows is `not_supported`, and `agent move --window` is never the park command.
+    #[test]
+    fn verbs_windows_does_not_have_yet_say_so() {
+        for words in [
+            &["agent", "workspaces"][..],
+            &["agent", "arrange", "halves"],
+            &["agent", "close", "--window", "w-1"],
+            &["agent", "move", "--window", "w-1"],
+            &["agent", "move", "--window=w-1", "--frame", "0,0,800,600"],
+            &["agent", "open", "notepad", "--wait", "5"],
+            &["agent", "open", "notepad", "--new_window=false"],
+        ] {
+            assert_eq!(request(v(words)).unwrap_err().error.unwrap().code, "not_supported", "{words:?}");
+        }
+        assert_eq!(request(v(&["agent", "move", "w-1"])).unwrap()["op"], "agent_move", "the park command still works");
+        assert_eq!(request(v(&["agent", "open", "notepad", "a.txt"])).unwrap()["op"], "agent_open");
     }
 
     #[test]
