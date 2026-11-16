@@ -79,6 +79,8 @@ pub struct Core {
     pub problems: Vec<String>,
     pub settings: serde_json::Map<String, Value>,
     pub tx: Sender<Msg>,
+    /// When the action log was last pruned (`Paths::append_action`).
+    pub last_prune: std::cell::Cell<u64>,
 }
 
 pub type Shared = Arc<Mutex<Core>>;
@@ -845,7 +847,7 @@ pub fn handle(shared: &Shared, req: &Value) -> Envelope {
                     // Who asked: the agent id and the pipe peer's pid, never the value.
                     let peer = req["_peer_pid"].as_u64().map(|p| p as u32).filter(|p| *p != 0);
                     let env = Envelope::ok(json!({}));
-                    c.paths.append("actions.jsonl", &ActionRecord::from_result(now(), &agent, "set", peer, None, None, &format!("settings:{k}"), &env).to_line());
+                    c.paths.append_action(&ActionRecord::from_result(now(), &agent, "set", peer, None, None, &format!("settings:{k}"), &env).to_line(), now(), &c.last_prune);
                     Envelope::ok(json!({ k: val, "note": "stored; the themed UI and the dock arrive in Windows part 2" }))
                 }
             }
@@ -956,7 +958,7 @@ fn agent_status(c: &Core) -> Value {
 }
 
 fn record(c: &Core, agent: &str, verb: &str, pid: Option<u32>, window: Option<&str>, reference: Option<&str>, route: &str, env: &Envelope) {
-    c.paths.append("actions.jsonl", &ActionRecord::from_result(now(), agent, verb, pid, window, reference, route, env).to_line());
+    c.paths.append_action(&ActionRecord::from_result(now(), agent, verb, pid, window, reference, route, env).to_line(), now(), &c.last_prune);
 }
 
 fn agent_log(c: &Core, args: &Value) -> Envelope {
@@ -1214,7 +1216,7 @@ fn hands(shared: &Shared, agent: &str, args: &Value) -> Envelope {
     if changed {
         rec.result = "screen_changed".into();
     }
-    c.paths.append("actions.jsonl", &rec.to_line());
+    c.paths.append_action(&rec.to_line(), now(), &c.last_prune);
     env
 }
 
@@ -1523,6 +1525,7 @@ pub fn run(trace: bool, log: Option<PathBuf>) -> i32 {
         problems: vec![],
         settings: settings::parse(&paths.read("settings.json").unwrap_or_default()),
         tx: tx.clone(),
+        last_prune: std::cell::Cell::new(0),
     };
     let shared: Shared = Arc::new(Mutex::new(core));
     let _ = SHARED.set(shared.clone());

@@ -73,6 +73,20 @@ impl Paths {
         }
     }
 
+    /// Appends one action-log record, then drops records older than 30 days, at most once an hour (as Linux does). A
+    /// daemon that stays up for weeks would otherwise keep every record from its start until it restarts. `last` is
+    /// when it last looked; 0 means never, so the first record of a run looks at once.
+    pub fn append_action(&self, line: &str, now: u64, last: &std::cell::Cell<u64>) {
+        self.append("actions.jsonl", line);
+        if last.get() != 0 && now.saturating_sub(last.get()) < baneyspaces_core::agent::PRUNE_EVERY_SECS {
+            return;
+        }
+        last.set(now);
+        if let Some(kept) = self.read("actions.jsonl").and_then(|t| baneyspaces_core::agent::prune_text(&t, now)) {
+            let _ = self.write_atomic("actions.jsonl", &kept);
+        }
+    }
+
     /// The pipe the daemon listens on. Named for the user's SID, not the user name: the name is
     /// machine-wide, and two names can collapse into one once the odd characters are filtered out.
     pub fn pipe_name(&self) -> String {
@@ -100,6 +114,39 @@ pub fn user_key() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A record over 30 days old goes while the daemon runs, not only when it starts again.
+    #[test]
+    fn old_action_records_go_while_the_daemon_runs() {
+        use baneyspaces_core::envelope::Envelope;
+        let line = |at: u64| baneyspaces_core::ActionRecord::from_result(at, "agent", "click", Some(1), Some("w-1"), None, "uia", &Envelope::ok(serde_json::json!({}))).to_line();
+        let dir = std::env::temp_dir().join(format!("bsw-prune-{}", std::process::id()));
+        let p = Paths { state: dir.clone() };
+        p.ensure().unwrap();
+        let day = 86_400;
+        let start = 100 * day;
+        p.append("actions.jsonl", &line(start));
+        let last = std::cell::Cell::new(0);
+        p.append_action(&line(start + 1), start + 1, &last);
+        assert_eq!(p.read("actions.jsonl").unwrap().lines().count(), 2, "nothing is old yet");
+        // 31 days on, the daemon never restarted: the first record is dropped.
+        let later = start + 31 * day;
+        p.append_action(&line(later), later, &last);
+        let text = p.read("actions.jsonl").unwrap();
+        assert_eq!(text.lines().count(), 1, "{text}");
+        // Within the hour the file is not read again.
+        p.append_action(&line(later + 60), later + 60, &last);
+        assert_eq!(last.get(), later);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// Every record the daemon writes goes through the pruning append.
+    #[test]
+    fn the_daemon_writes_records_through_the_pruning_append() {
+        let src = include_str!("daemon.rs");
+        assert!(!src.contains(".append(\"actions.jsonl\""), "a record written past the prune");
+        assert!(src.matches(".append_action(").count() >= 3, "record(), hands() and set all prune");
+    }
 
     #[test]
     fn atomic_write_replaces_and_reads_back() {
