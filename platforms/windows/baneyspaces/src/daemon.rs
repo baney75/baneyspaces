@@ -20,6 +20,7 @@ use crate::agent;
 use crate::apps;
 use crate::cloak::{self, Cloaker};
 use crate::cmdline;
+use crate::displays;
 use crate::engine::{self, snapshot_of};
 use crate::hidden::{self, Hidden, HiddenSet, How, Recovery};
 use crate::hook::{self, EndSession, Msg};
@@ -386,10 +387,11 @@ impl Core {
             if *w != Want::Visible {
                 continue;
             }
-            if let Some(e) = self.hidden.get(*hwnd).cloned() {
+            if let Some(mut e) = self.hidden.get(*hwnd).cloned() {
                 if cloak::on_current_desktop(to_hwnd(*hwnd)) == Some(false) {
                     continue;
                 }
+                self.carry_before_show(&mut e);
                 let c = get(&mut cloaker);
                 if cloak::show(&e, c.map(|p| unsafe { &*p })) {
                     self.hidden.remove(*hwnd);
@@ -511,6 +513,30 @@ impl Core {
         self.log(&format!("pid {pid} is in the agent job"));
         let _ = self.apply(Event::AgentRegister { pid, start });
         true
+    }
+
+    /// R-M1: a hidden window whose workspace now shows on another display goes to that display before it is shown,
+    /// so it never appears over the other display's workspace. A cloaked window is moved while still cloaked; a parked
+    /// one gets a new place to come back to, recorded first. A minimized window, a ghost and one on no display stay put.
+    fn carry_before_show(&mut self, e: &mut Hidden) {
+        if e.how == How::Ghost {
+            return;
+        }
+        let Some(Home::Workspace { n }) = self.model.home(&window_name(e.hwnd)).cloned() else { return };
+        let Some(to) = self.model.shown_on(n).map(String::from) else { return };
+        let h = to_hwnd(e.hwnd);
+        let at = if e.how == How::Park { e.rect } else { winapi::rect(h) };
+        let Some(at) = at.filter(|_| !winapi::is_iconic(h)) else { return };
+        let all: Vec<(String, displays::Rect)> = winapi::monitors().into_iter().map(|m| (m.name, m.rect)).collect();
+        let Some(r) = displays::carried(at, &all, &to, winapi::is_zoomed(h)) else { return };
+        self.log(&format!("{} carried to {to}, where workspace {n} shows: {r:?}", window_name(e.hwnd)));
+        if e.how == How::Park {
+            e.rect = Some(r);
+            self.hidden.insert(e.clone());
+            let _ = self.persist();
+        } else {
+            winapi::set_frame(h, r);
+        }
     }
 
     /// One window appeared. `existing` windows (found at start) are mirrored where they are; a

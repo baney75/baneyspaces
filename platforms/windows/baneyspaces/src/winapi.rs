@@ -68,6 +68,15 @@ pub fn is_iconic(h: HWND) -> bool {
     unsafe { IsIconic(h) != 0 }
 }
 
+pub fn is_zoomed(h: HWND) -> bool {
+    unsafe { IsZoomed(h) != 0 }
+}
+
+/// Moves and sizes `h` to `r` (left, top, right, bottom) without activating it. A cloaked window moves unseen.
+pub fn set_frame(h: HWND, r: [i32; 4]) {
+    unsafe { SetWindowPos(h, std::ptr::null_mut(), r[0], r[1], r[2] - r[0], r[3] - r[1], SWP_NOZORDER | SWP_NOACTIVATE) };
+}
+
 /// 0 when not cloaked; DWM_CLOAKED_APP 1, SHELL 2, INHERITED 4.
 pub fn cloaked(h: HWND) -> u32 {
     let mut v: u32 = 0;

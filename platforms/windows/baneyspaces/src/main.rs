@@ -7,6 +7,7 @@
 
 mod apps;
 mod cmdline;
+mod displays;
 mod engine;
 mod hidden;
 mod ipc;
