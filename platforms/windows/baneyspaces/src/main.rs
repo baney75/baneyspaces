@@ -475,6 +475,18 @@ mod tests {
         }
     }
 
+    /// cli.md's Windows column must say what the CLI does: the agent workspace always exists, so there is no `agent on|off`.
+    #[test]
+    fn cli_md_says_windows_needs_no_agent_on_or_off() {
+        for sub in ["on", "off"] {
+            assert_eq!(request(v(&["agent", sub])).unwrap_err().error.unwrap().code, "invalid_args");
+        }
+        let md = include_str!("../../../../spec/cli.md").replace("\r\n", "\n");
+        let row = md.lines().find(|l| l.starts_with("| `agent on|off` |")).expect("the agent on|off row");
+        let windows = row.trim_end_matches('|').rsplit('|').next().unwrap().trim();
+        assert_eq!(windows, "not needed (the agent workspace always exists)", "cli.md row: {row}");
+    }
+
     #[test]
     fn settings_requests() {
         assert_eq!(request(v(&["get"])).unwrap(), json!({"op":"get","args":{"key":null}}));

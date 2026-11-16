@@ -11,7 +11,7 @@ window id, or a pid.
 | `ls` | yes (session rows) | yes (windows by workspace) | yes |
 | `state` | yes (`state.json`) | yes (`state.json`) | yes |
 | `overview` | yes | records the request; the shell plugin shows it (part 2) | yes |
-| `agent on|off` | yes | not needed (the agent workspace always exists) | yes |
+| `agent on|off` | yes | not needed (the agent workspace always exists) | not needed (the agent workspace always exists) |
 | `agent-workspace show|hide|toggle` | the key | yes | yes |
 | `agent status` | yes | yes | yes |
 | `agent windows` | yes | yes | yes |
