@@ -1224,6 +1224,25 @@ fn hands(shared: &Shared, agent: &str, args: &Value) -> Envelope {
 
 // ---- putting windows back ------------------------------------------------------------------
 
+/// A window put back with no workspace to show it on lands on a display: a parked one at its recorded frame, a
+/// cloaked one where it is. Either could be on a display unplugged since it was hidden (R-M3).
+fn onto_a_display(h: &mut Hidden) {
+    let all: Vec<(String, displays::Rect)> = winapi::monitors().into_iter().map(|m| (m.name, m.rect)).collect();
+    let w = to_hwnd(h.hwnd);
+    match h.how {
+        How::Park | How::Ghost => {
+            if let Some(r) = h.rect.and_then(|r| displays::onto_a_display(r, &all)) {
+                h.rect = Some(r);
+            }
+        }
+        How::Cloak => {
+            if let Some(r) = winapi::rect(w).filter(|_| !winapi::is_iconic(w)).and_then(|r| displays::onto_a_display(r, &all)) {
+                winapi::set_frame(w, r);
+            }
+        }
+    }
+}
+
 /// Reads `state.json` and shows every window a run left hidden, except agent windows whose process
 /// still runs (they belong on the agent workspace). Works from the file alone, so it serves a
 /// start after a crash, a clean exit and a panic alike. A window that does not read back as shown
@@ -1247,7 +1266,8 @@ pub fn restore_from_file(paths: &Paths, keep_agents: bool) -> (usize, usize, usi
     let mut still: Vec<Hidden> = vec![];
     for p in plan {
         match p {
-            Recovery::Show(h) => {
+            Recovery::Show(mut h) => {
+                onto_a_display(&mut h);
                 if cloak::show(&h, cloaker.as_ref()) {
                     shown += 1;
                 } else {

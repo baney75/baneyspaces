@@ -49,6 +49,16 @@ pub fn carry(r: Rect, from: Rect, to: Rect) -> Rect {
     [x, y, x + w, y + h]
 }
 
+/// Where a window at `r` goes when it is put back with no workspace to show it on (stop, sign-out, a start after a
+/// crash): nowhere if a display holds it, else the middle of the first display, its size kept if it fits. A window
+/// hidden on a display that has since been unplugged would otherwise come back where nothing shows it (R-M3).
+pub fn onto_a_display(r: Rect, displays: &[(String, Rect)]) -> Option<Rect> {
+    if display_of(r, displays).is_some() {
+        return None;
+    }
+    displays.first().map(|(_, d)| carry(r, r, *d))
+}
+
 /// Where a window at `r` goes so that it is on display `to`, or None when it is there already or `to` is unknown
 /// (then it is left where it is). `filled`: the window is maximized, so it takes the whole work area. A window on no
 /// display, because the one it was hidden on is unplugged (R-M3), comes up in the middle of `to`, its size kept if
@@ -256,5 +266,21 @@ mod tests {
         let step = &src[show..show + src[show..].find("// 3. Hide").expect("the hide step")];
         let carry = step.find("self.carry_before_show(").expect("the show step carries the window");
         assert!(carry < step.find("cloak::show(").unwrap(), "carried before it is shown");
+    }
+
+    #[test]
+    fn a_window_put_back_from_a_display_since_unplugged_lands_on_the_first() {
+        assert_eq!(onto_a_display([5000, 100, 5800, 700], &two()), Some([560, 220, 1360, 820]), "the middle of A, the same size");
+        assert_eq!(onto_a_display([2000, 100, 2800, 700], &two()), None, "on B: left where it is");
+        assert_eq!(onto_a_display([5000, 100, 5800, 700], &[]), None, "no display: nothing to put it on");
+    }
+
+    #[test]
+    fn the_restore_puts_each_window_on_a_display_before_it_shows_it() {
+        let src = include_str!("daemon.rs").replace("\r\n", "\n");
+        let start = src.find("pub fn restore_from_file(").expect("restore_from_file");
+        let body = &src[start..start + src[start..].find("\n}\n").expect("end of restore_from_file")];
+        let on = body.find("onto_a_display(&mut h)").expect("restore_from_file must call onto_a_display(&mut h)");
+        assert!(on < body.find("cloak::show(&h").unwrap(), "before the window is shown");
     }
 }
