@@ -49,15 +49,20 @@ pub fn carry(r: Rect, from: Rect, to: Rect) -> Rect {
     [x, y, x + w, y + h]
 }
 
-/// Where a window at `r` goes so that it is on display `to`, or None when it is there already or either display is
-/// unknown (then it is left where it is). `filled`: the window is maximized, so it takes the whole work area.
+/// Where a window at `r` goes so that it is on display `to`, or None when it is there already or `to` is unknown
+/// (then it is left where it is). `filled`: the window is maximized, so it takes the whole work area. A window on no
+/// display, because the one it was hidden on is unplugged (R-M3), comes up in the middle of `to`, its size kept if
+/// it fits: left where it was, it would come back where nothing shows it.
 pub fn carried(r: Rect, displays: &[(String, Rect)], to: &str, filled: bool) -> Option<Rect> {
-    let from = display_of(r, displays)?;
+    let area = |n: &str| displays.iter().find(|(d, _)| d == n).map(|(_, a)| *a);
+    let b = area(to)?;
+    let Some(from) = display_of(r, displays) else {
+        return Some(if filled { b } else { carry(r, r, b) });
+    };
     if from == to {
         return None;
     }
-    let area = |n: &str| displays.iter().find(|(d, _)| d == n).map(|(_, a)| *a);
-    let (a, b) = (area(from)?, area(to)?);
+    let a = area(from)?;
     Some(if filled { b } else { carry(r, a, b) })
 }
 
@@ -162,6 +167,15 @@ mod tests {
         let r = carried([560, 220, 1360, 820], &two(), "B", false).expect("it is on A, so it moves");
         assert_eq!(r, [2800, 400, 3600, 1000]);
         assert_eq!(display_of(r, &two()), Some("B"));
+    }
+
+    #[test]
+    fn a_window_hidden_on_a_display_since_unplugged_comes_up_on_the_one_showing_its_workspace() {
+        // It was parked from a third display, right of B, that is gone now: 800x600 at x 5000.
+        let r = carried([5000, 100, 5800, 700], &two(), "A", false).expect("on no display, so it moves");
+        assert_eq!(r, [560, 220, 1360, 820], "in the middle of A, the same size");
+        assert_eq!(carried([5000, 100, 5800, 700], &two(), "B", true), Some([1920, 0, 4480, 1400]), "maximized, it fills B");
+        assert_eq!(carried([5000, 100, 9000, 3000], &two(), "A", false), Some([0, 0, 1920, 1040]), "too big, it shrinks to A");
     }
 
     #[test]
