@@ -32,7 +32,7 @@ use crate::settings;
 use crate::winapi::{self, hwnd as to_hwnd, id_of, window_name};
 use baneyspaces_core::agent::{check_scope, ActionRecord, WindowFacts};
 use baneyspaces_core::envelope::{Envelope, Retry};
-use baneyspaces_core::model::{Effect, Event, Home, Model, ModelError};
+use baneyspaces_core::model::{Cause, Effect, Event, Home, Model, ModelError};
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap};
 use std::io::{BufRead, BufReader, Read, Write};
