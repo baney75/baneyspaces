@@ -18,6 +18,7 @@
 
 use crate::agent;
 use crate::apps;
+use crate::cause;
 use crate::cloak::{self, Cloaker};
 use crate::cmdline;
 use crate::displays;
@@ -31,7 +32,7 @@ use crate::settings;
 use crate::winapi::{self, hwnd as to_hwnd, id_of, window_name};
 use baneyspaces_core::agent::{check_scope, ActionRecord, WindowFacts};
 use baneyspaces_core::envelope::{Envelope, Retry};
-use baneyspaces_core::model::{Cause, Effect, Event, Home, Model, ModelError};
+use baneyspaces_core::model::{Effect, Event, Home, Model, ModelError};
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -73,6 +74,8 @@ pub struct Core {
     pub snaps: HashMap<String, SnapInfo>,
     pub overview_shown: bool,
     pub events_seen: u64,
+    /// When a tracked window last closed (GetTickCount): the next activation may be Windows handing on the front.
+    closed_at: Option<u32>,
     pub started: u64,
     pub trace: bool,
     pub our_pid: u32,
@@ -573,6 +576,7 @@ impl Core {
     /// first and its entry kept until that reads back: dropping the entry of a window that still exists
     /// would leave it cloaked with no record.
     fn close_window(&mut self, id: &str) {
+        self.closed_at = Some(winapi::tick_ms());
         if let Some(i) = self.info.remove(id) {
             if let Some(e) = self.hidden.get(i.hwnd).cloned() {
                 if winapi::exists(to_hwnd(i.hwnd)) {
@@ -673,13 +677,18 @@ impl Core {
     }
 
     /// The foreground changed. Only an activation you caused may take you to another workspace (R-F1,
-    /// R-F2): Windows gives no cause, so input in the last 300 ms is yours, anything else is the app's.
+    /// R-F2). `cause::foreground_by` decides whose it was, and a close is never yours (R-E1).
     fn on_foreground(&mut self, hwnd: i64) {
         let id = window_name(hwnd);
         if !self.model.is_tracked(&id) || self.model.active() == Some(id.as_str()) {
             return;
         }
-        let cause = if winapi::idle_ms() < 300 { Cause::User } else { Cause::App };
+        let active_gone = self.model.active().and_then(|w| self.info.get(w)).is_some_and(|i| {
+            let h = to_hwnd(i.hwnd);
+            !winapi::exists(h) || !winapi::is_visible(h)
+        });
+        let since_close = self.closed_at.map(|t| winapi::tick_ms().wrapping_sub(t));
+        let cause = cause::foreground_by(winapi::idle_ms(), since_close, active_gone);
         self.log(&format!("foreground {id} cause {cause:?}"));
         let _ = self.apply(Event::Activate { window: Some(id), cause });
     }
@@ -1545,6 +1554,7 @@ pub fn run(trace: bool, log: Option<PathBuf>) -> i32 {
         snaps: HashMap::new(),
         overview_shown: false,
         events_seen: 0,
+        closed_at: None,
         started: now(),
         trace,
         our_pid: std::process::id(),

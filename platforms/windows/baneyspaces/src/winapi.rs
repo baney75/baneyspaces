@@ -328,6 +328,11 @@ pub fn shell_window() -> HWND {
     unsafe { GetShellWindow() }
 }
 
+/// Milliseconds since boot, on the same clock as `idle_ms`.
+pub fn tick_ms() -> u32 {
+    unsafe { GetTickCount() }
+}
+
 /// Milliseconds since the last keyboard or mouse input anywhere.
 pub fn idle_ms() -> u32 {
     unsafe {

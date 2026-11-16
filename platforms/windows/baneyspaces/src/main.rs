@@ -6,6 +6,7 @@
 //! map, the persisted hidden list, the engine's envelope mapping) builds and is tested anywhere.
 
 mod apps;
+mod cause;
 mod cmdline;
 mod displays;
 mod engine;
