@@ -5,7 +5,20 @@
 //! The rule is the Mac's (`Geometry.carry`): the window's middle keeps its place as a fraction of the display's work
 //! area, its size is kept when it fits, and it is kept inside the new display. A maximized window fills the new one.
 
+use baneyspaces_core::model::Event;
+
 pub type Rect = [i32; 4];
+
+/// What a change in the display list means for the model, in the order it is applied: the displays that went
+/// first, then the ones that came, in Windows' order (primary first). Removing first matters when a display is
+/// swapped for another in one poll, as when a laptop lid closes on a dock: the new display is then the first one
+/// and shows what you were on (R-M1, R-M3), instead of an empty workspace while yours goes out of sight. A
+/// reorder with the same names is no change: a workspace belongs to its display, not to its place in the list.
+pub fn monitor_events(known: &[String], now: &[String]) -> Vec<Event> {
+    let gone = known.iter().filter(|m| !now.contains(m)).map(|m| Event::MonitorRemoved { monitor: m.clone() });
+    let came = now.iter().filter(|m| !known.contains(m)).map(|m| Event::MonitorAdded { monitor: m.clone() });
+    gone.chain(came).collect()
+}
 
 fn overlap(a: Rect, b: Rect) -> i64 {
     let w = (a[2].min(b[2]) - a[0].max(b[0])).max(0) as i64;
@@ -70,6 +83,73 @@ pub fn moved_across(windows: &[(String, u8, Rect)], displays: &[(String, Rect)],
 #[cfg(test)]
 mod tests {
     use super::*;
+    use baneyspaces_core::model::Model;
+
+    /// The daemon's `sync_monitors`, on a model: the display list Windows reports now.
+    fn sync(m: &mut Model, now: &[&str]) {
+        let now: Vec<String> = now.iter().map(|s| s.to_string()).collect();
+        let known: Vec<String> = m.monitors().map(String::from).collect();
+        for ev in monitor_events(&known, &now) {
+            m.apply(ev).unwrap();
+        }
+    }
+
+    fn open(m: &mut Model, w: &str, on: &str) {
+        m.apply(Event::Open { window: w.into(), pid: 1, start: 0, app: "notepad".into(), monitor: Some(on.into()), workspace: None }).unwrap();
+    }
+
+    #[test]
+    fn a_display_plugged_in_shows_an_empty_workspace_and_the_others_keep_theirs() {
+        let mut m = Model::new();
+        sync(&mut m, &["A"]);
+        open(&mut m, "w1", "A");
+        sync(&mut m, &["A", "B"]);
+        assert_eq!((m.current("A"), m.current("B"), m.focused_monitor()), (Some(1), Some(2), Some("A")));
+        sync(&mut m, &["A"]);
+        sync(&mut m, &["A", "B"]);
+        assert_eq!(m.current("B"), Some(2), "R-M2: it shows what it showed when it was last here");
+    }
+
+    #[test]
+    fn a_display_unplugged_lets_go_of_its_workspace_and_you_go_to_the_first() {
+        let mut m = Model::new();
+        sync(&mut m, &["A", "B"]);
+        m.apply(Event::ObserveFocusMonitor { monitor: "B".into() }).unwrap();
+        open(&mut m, "w2", "B");
+        sync(&mut m, &["A"]);
+        assert_eq!((m.focused_monitor(), m.current("A")), (Some("A"), Some(1)));
+        assert_eq!(m.shown_on(2), None, "R-M3: workspace 2 is out of sight");
+        assert!(m.home("w2").is_some(), "and its window is still in it");
+    }
+
+    #[test]
+    fn a_reorder_changes_nothing() {
+        let mut m = Model::new();
+        sync(&mut m, &["A", "B"]);
+        assert!(monitor_events(&["A".into(), "B".into()], &["B".into(), "A".into()]).is_empty());
+        sync(&mut m, &["B", "A"]);
+        assert_eq!((m.current("A"), m.current("B")), (Some(1), Some(2)));
+    }
+
+    #[test]
+    fn a_display_swapped_in_one_poll_shows_what_you_were_on() {
+        // The lid closes on a dock: the laptop's display goes and the external one comes in the same poll.
+        let mut m = Model::new();
+        sync(&mut m, &["LAPTOP"]);
+        open(&mut m, "w1", "LAPTOP");
+        sync(&mut m, &["DOCK"]);
+        assert_eq!((m.current("DOCK"), m.focused_monitor()), (Some(1), Some("DOCK")), "not an empty workspace with yours out of sight");
+        assert_eq!(m.active(), Some("w1"));
+    }
+
+    #[test]
+    fn the_daemon_syncs_displays_through_monitor_events() {
+        let src = include_str!("daemon.rs").replace("\r\n", "\n");
+        let start = src.find("pub fn sync_monitors(").expect("sync_monitors");
+        let body = &src[start..start + src[start..].find("\n    }\n").expect("end of sync_monitors")];
+        assert!(body.contains("displays::monitor_events("), "sync_monitors must apply displays::monitor_events in its order");
+        assert!(!body.contains("Event::MonitorAdded"), "no second, add-first path");
+    }
 
     fn two() -> Vec<(String, Rect)> {
         // A is 1920x1040 of work area at the origin; B, to its right, is 2560x1400.

@@ -149,15 +149,8 @@ impl Core {
             return;
         }
         let known: Vec<String> = self.model.monitors().map(String::from).collect();
-        for m in &now {
-            if !known.contains(m) {
-                let _ = self.apply(Event::MonitorAdded { monitor: m.clone() });
-            }
-        }
-        for m in &known {
-            if !now.contains(m) {
-                let _ = self.apply(Event::MonitorRemoved { monitor: m.clone() });
-            }
+        for ev in displays::monitor_events(&known, &now) {
+            let _ = self.apply(ev);
         }
         if self.model.focused_monitor().is_none() {
             if let Some(m) = now.first() {

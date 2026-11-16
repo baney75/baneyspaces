@@ -281,5 +281,20 @@ cli agent log --since 120 | grep -q '"verb":"set"' && ok "the set was logged wit
 cli set dock.enabled true >/dev/null
 cli stop >/dev/null; sleep 2; daemon_start
 
+say "== 8. plug and unplug a display (R-M2, R-M3)"
+# UNTESTED LIVE: written with the fix for issue 391, never run. It needs a second display head on the VM and a
+# $VMDIR/display hook that adds or removes it (display add|remove); without the hook the case is skipped.
+if [[ -x "$VMDIR/display" ]]; then
+  mon() { cli ls | python3 -c "import sys,json; d=json.loads(sys.stdin.read())['data']; print(d['focused_monitor'], ' '.join('%s=%s' % (k, v['current']) for k, v in sorted(d['monitors'].items())))"; }
+  cli switch 1 >/dev/null; sleep 1; ONE=$(mon); say "one display: $ONE"
+  "$VMDIR/display" add >> "$LOG" 2>&1; sleep 3; TWO=$(mon); say "two displays: $TWO"
+  [[ "$TWO" == *"=1 "*"=2"* || "$TWO" == *"=2 "*"=1"* ]] && ok "the plugged-in display shows an empty workspace (2), the first keeps 1" || bad "after plug: $TWO"
+  "$VMDIR/display" remove >> "$LOG" 2>&1; sleep 3; BACK=$(mon); say "back to one: $BACK"
+  [[ "$BACK" == "$ONE" ]] && ok "unplugging it lets go of workspace 2 and leaves you where you were" || bad "after unplug: $BACK (before: $ONE)"
+  cli ls | grep -q 'Notepad' && ok "no window was lost" || bad "a window is missing after the unplug"
+else
+  say "  skip: no \$VMDIR/display hook, so no second display (untested live)"
+fi
+
 say; say "RESULT: $([[ $fail == 0 ]] && echo PASS || echo FAIL)  passed=$pass failed=$fail   (log: $LOG, shots: $OUT)"
 [[ $fail == 0 ]]
