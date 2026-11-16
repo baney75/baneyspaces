@@ -48,6 +48,25 @@ pub fn carried(r: Rect, displays: &[(String, Rect)], to: &str, filled: bool) -> 
     Some(if filled { b } else { carry(r, a, b) })
 }
 
+/// R-V4: windows you moved to another display (a drag, Win+Shift+Arrow), each with that display and the workspace it
+/// shows. `windows` are the ones on screen: (id, its workspace, its frame). One on a display showing its own workspace,
+/// on a display showing nothing of the nine, or on no display, has not moved. Nor has one whose workspace no display
+/// shows: Windows moved it off a display you unplugged, and R-M3 keeps it on its workspace, out of sight.
+pub fn moved_across(windows: &[(String, u8, Rect)], displays: &[(String, Rect)], shows: impl Fn(&str) -> Option<u8>) -> Vec<(String, String, u8)> {
+    let mut out = vec![];
+    for (id, n, r) in windows {
+        if !displays.iter().any(|(d, _)| shows(d) == Some(*n)) {
+            continue;
+        }
+        let Some(d) = display_of(*r, displays) else { continue };
+        match shows(d) {
+            Some(m) if (1..=9).contains(&m) && m != *n => out.push((id.clone(), d.to_string(), m)),
+            _ => {}
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,6 +112,46 @@ mod tests {
     fn a_window_straddling_two_displays_belongs_to_the_one_holding_its_middle() {
         assert_eq!(display_of([1500, 100, 2600, 600], &two()), Some("B"));
         assert_eq!(display_of([-500, -500, -100, -100], &two()), None, "on no display at all");
+    }
+
+    fn shows(d: &str) -> Option<u8> {
+        match d {
+            "A" => Some(1),
+            "B" => Some(2),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn a_window_dragged_to_the_other_display_joins_the_workspace_it_shows() {
+        let w = vec![("w-1".to_string(), 1, [2000, 100, 2800, 700]), ("w-2".to_string(), 1, [100, 100, 900, 700])];
+        assert_eq!(moved_across(&w, &two(), shows), vec![("w-1".to_string(), "B".to_string(), 2)], "w-2 never left A");
+    }
+
+    #[test]
+    fn a_window_on_a_display_outside_the_nine_or_on_none_has_not_moved() {
+        let w = vec![("w-1".to_string(), 1, [2000, 100, 2800, 700]), ("w-2".to_string(), 1, [-900, -900, -100, -100])];
+        assert!(moved_across(&w, &two(), |d| (d == "A").then_some(1).or(Some(0))).is_empty());
+        assert!(moved_across(&w[1..], &two(), shows).is_empty());
+    }
+
+    #[test]
+    fn windows_moved_off_an_unplugged_display_stay_on_their_workspace() {
+        // B (workspace 2) is gone; Windows put its window on A. Workspace 2 is out of sight, not moved (R-M3).
+        let a_only = vec![("A".to_string(), [0, 0, 1920, 1040])];
+        assert!(moved_across(&[("w-3".to_string(), 2, [100, 100, 900, 700])], &a_only, shows).is_empty());
+    }
+
+    /// Every poll mirrors those moves, before it decides what is hidden.
+    #[test]
+    fn the_daemon_mirrors_moves_before_it_hides_anything() {
+        // Windows checks the source out with CRLF line ends.
+        let src = &include_str!("daemon.rs").replace("\r\n", "\n");
+        let poll = &src[src.find("fn poll(&mut self)").expect("poll")..];
+        let mirror = poll.find("self.mirror_moves();").expect("poll mirrors moves");
+        assert!(mirror < poll.find("self.sync_visibility()").unwrap(), "before sync_visibility, so a moved window is never hidden");
+        let body = &src[src.find("fn mirror_moves(&mut self)").expect("mirror_moves")..];
+        assert!(body[..body.find("\n    }\n").unwrap()].contains("Event::ObserveMove"));
     }
 
     /// The daemon carries a hidden window before it shows it, while it is still out of sight.

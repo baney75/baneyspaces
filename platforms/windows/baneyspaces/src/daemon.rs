@@ -1456,6 +1456,31 @@ impl Core {
         }
     }
 
+    /// R-V4: a window you moved to another display (a drag, Win+Shift+Arrow) joins the workspace that display shows,
+    /// so the next switch on the display it left does not hide it. Only windows on screen count: a hidden one stays
+    /// where it was hidden, and is carried when it is shown. The front window takes you with it, as a click would.
+    fn mirror_moves(&mut self) {
+        let all: Vec<(String, displays::Rect)> = winapi::monitors().into_iter().map(|m| (m.name, m.rect)).collect();
+        let on_screen: Vec<(String, u8, displays::Rect)> = self
+            .info
+            .iter()
+            .filter(|(_, i)| !self.hidden.contains(i.hwnd) && !winapi::is_iconic(to_hwnd(i.hwnd)))
+            .filter_map(|(id, i)| match self.model.home(id) {
+                Some(Home::Workspace { n }) => winapi::rect(to_hwnd(i.hwnd)).map(|r| (id.clone(), *n, r)),
+                _ => None,
+            })
+            .collect();
+        let moved = displays::moved_across(&on_screen, &all, |d| self.model.current(d));
+        for (id, display, m) in moved {
+            self.log(&format!("{id} was moved to {display}: now on workspace {m}"));
+            let front = self.model.active() == Some(id.as_str());
+            let _ = self.apply(Event::ObserveMove { window: id.clone(), n: Some(m) });
+            if front {
+                let _ = self.apply(Event::Activate { window: Some(id), cause: Cause::User });
+            }
+        }
+    }
+
     /// One poll: monitors, windows, what is hidden checked against Windows, focus.
     fn poll(&mut self) {
         // An agent process that exited, or whose pid Windows gave to another program, is forgotten.
@@ -1466,6 +1491,7 @@ impl Core {
         }
         self.sync_monitors();
         self.resync_windows(false);
+        self.mirror_moves();
         if let Err(e) = self.sync_visibility() {
             self.problem(format!("could not save the hidden-window record; nothing new was hidden: {e}"));
         }
