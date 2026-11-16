@@ -89,7 +89,7 @@
       "overview": "alt+tab+tab",
       "agent_toggle": "win+grave",
       "note": "Explorer owns Win+1-9 (taskbar), so RegisterHotKey fails: the daemon swallows these chords in a WH_KEYBOARD_LL hook. Changeable. Overview has no key in part 1.",
-      "agent_workspace": "cloaked, never shown unless you ask"
+      "agent_workspace": "a ghost (alpha 0, click-through), not a cloak: UI Automation skips cloaked windows. Never shown unless you ask"
     }
   }
 }

@@ -245,6 +245,14 @@ mod tests {
     }
 
     #[test]
+    fn the_spec_says_the_agent_workspace_is_a_ghost_not_a_cloak() {
+        // The hands engine skips cloaked windows, so the agent workspace is made transparent instead (README).
+        let v: serde_json::Value = serde_json::from_str(baneyspaces_core::keymap::KEYS_JSON).unwrap();
+        let s = v["platforms"]["windows"]["agent_workspace"].as_str().expect("windows agent_workspace");
+        assert!(s.starts_with("a ghost"), "keys.json says {s:?}");
+    }
+
+    #[test]
     fn reset_forgets_everything() {
         let m = ModState::new();
         m.event(VK_LWIN, true, 1000);
