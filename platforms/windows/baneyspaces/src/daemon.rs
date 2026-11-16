@@ -22,6 +22,7 @@ use crate::cloak::{self, Cloaker};
 use crate::cmdline;
 use crate::displays;
 use crate::engine::{self, snapshot_of};
+use crate::focus;
 use crate::hidden::{self, Hidden, HiddenSet, How, Recovery};
 use crate::hook::{self, EndSession, Msg};
 use crate::keys;
@@ -679,6 +680,16 @@ impl Core {
         let cause = if winapi::idle_ms() < 300 { Cause::User } else { Cause::App };
         self.log(&format!("foreground {id} cause {cause:?}"));
         let _ = self.apply(Event::Activate { window: Some(id), cause });
+    }
+
+    /// R-S2: a press on another display puts you on it, even on its bare desktop or taskbar, where no window of yours
+    /// takes the front. A press on a window there also activates it, and that follows as before (R-F1).
+    fn on_press(&mut self, x: i32, y: i32) {
+        let at = winapi::monitor_name_at(x, y);
+        let known: Vec<&str> = self.model.monitors().collect();
+        let Some(m) = focus::after_press(self.model.focused_monitor(), at.as_deref(), &known).map(String::from) else { return };
+        self.log(&format!("a press on {m}: you are on it now"));
+        let _ = self.apply(Event::ObserveFocusMonitor { monitor: m });
     }
 
     fn on_win_event(&mut self, event: u32, hwnd: i64) {
@@ -1610,6 +1621,9 @@ pub fn run(trace: bool, log: Option<PathBuf>) -> i32 {
             }
             Ok(Msg::Win { event, hwnd }) => {
                 lock(&shared).on_win_event(event, hwnd);
+            }
+            Ok(Msg::Press { x, y }) => {
+                lock(&shared).on_press(x, y);
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(_) => break,

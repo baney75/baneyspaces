@@ -31,6 +31,8 @@ pub enum Msg {
     Chord(Vec<String>),
     /// A window event: the WinEvent id and the window.
     Win { event: u32, hwnd: i64 },
+    /// A mouse button pressed at this screen point (R-S2: the display you are on is the one you clicked into).
+    Press { x: i32, y: i32 },
     /// Look at every window again now: explorer.exe restarted, or the session was unlocked.
     Resync,
     Quit,
@@ -109,6 +111,19 @@ unsafe extern "system" fn keyboard(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT
                 }
             } else if up && SWALLOWED[vk as usize].swap(false, Ordering::Relaxed) {
                 return 1;
+            }
+        }
+    }
+    CallNextHookEx(std::ptr::null_mut(), code, wp, lp)
+}
+
+/// Reports each press and lets every mouse event through. Called for every move too, so it only compares and sends.
+unsafe extern "system" fn mouse(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if code == HC_ACTION as i32 {
+        let m = &*(lp as *const MSLLHOOKSTRUCT);
+        if crate::focus::is_a_press(wp as u32, m.flags & LLMHF_INJECTED != 0) {
+            if let Some(tx) = TX.get() {
+                let _ = tx.send(Msg::Press { x: m.pt.x, y: m.pt.y });
             }
         }
     }
@@ -206,8 +221,13 @@ pub fn start(tx: Sender<Msg>, table: Vec<Binding>, on_end: fn(EndSession)) -> Ve
             return;
         }
         let _ = r1.send(Ok(()));
+        // On the same thread and loop. Without it a click on the other display's bare desktop doesn't count; keys still work.
+        let mh = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse), std::ptr::null_mut(), 0);
         message_loop();
         UnhookWindowsHookEx(h);
+        if !mh.is_null() {
+            UnhookWindowsHookEx(mh);
+        }
     }).ok();
     std::thread::Builder::new().name("win-events".into()).spawn(move || unsafe {
         EV_THREAD.store(GetCurrentThreadId(), Ordering::Relaxed);

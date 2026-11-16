@@ -4,7 +4,7 @@
 use std::ffi::c_void;
 use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HWND, LPARAM, RECT, TRUE};
 use windows_sys::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
-use windows_sys::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, MonitorFromWindow, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW, MONITOR_DEFAULTTONEAREST};
+use windows_sys::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL};
 use windows_sys::Win32::System::SystemInformation::GetTickCount;
 use windows_sys::Win32::System::Threading::{GetCurrentThreadId, GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
@@ -282,6 +282,19 @@ pub fn monitors() -> Vec<Monitor> {
 pub fn monitor_name_of(h: HWND) -> Option<String> {
     unsafe {
         let m = MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST);
+        let mut info: MONITORINFOEXW = std::mem::zeroed();
+        info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+        (GetMonitorInfoW(m, &mut info as *mut MONITORINFOEXW as *mut MONITORINFO) != 0).then(|| wide_to_string(&info.szDevice))
+    }
+}
+
+/// The display under a screen point, by the same name `monitors` gives it; None off every display.
+pub fn monitor_name_at(x: i32, y: i32) -> Option<String> {
+    unsafe {
+        let m = MonitorFromPoint(windows_sys::Win32::Foundation::POINT { x, y }, MONITOR_DEFAULTTONULL);
+        if m.is_null() {
+            return None;
+        }
         let mut info: MONITORINFOEXW = std::mem::zeroed();
         info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
         (GetMonitorInfoW(m, &mut info as *mut MONITORINFOEXW as *mut MONITORINFO) != 0).then(|| wide_to_string(&info.szDevice))
