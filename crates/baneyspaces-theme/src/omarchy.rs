@@ -1,7 +1,7 @@
 //! `baneyspaces theme follow omarchy`: match the Omarchy system theme, and follow it when it changes.
 //!
 //! The colors come from Omarchy's `colors.toml` through the same role mapping as
-//! `spaces/scripts/gen-palettes.py`. Omarchy's colors are kept exactly wherever they already pass
+//! `scripts/gen-palettes.py`. Omarchy's colors are kept exactly wherever they already pass
 //! the contrast rules; a role that fails is moved by the smallest lightness change that passes.
 
 use super::*;

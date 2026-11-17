@@ -2068,7 +2068,7 @@ impl ApiErr {
         }
         msg
     }
-    /// The envelope's `retry` value (`spaces/spec/envelope.md`): `after` means nothing was
+    /// The envelope's `retry` value (`spec/envelope.md`): `after` means nothing was
     /// written and the same call can be sent again once the wait is over.
     fn retry(&self) -> &'static str {
         if self.code == "busy" {
@@ -2111,7 +2111,7 @@ fn pretty(v: &Json) -> String {
     serde_json::to_string_pretty(v).unwrap_or_default()
 }
 
-/// The envelope in `spaces/spec/envelope.md`, for a success.
+/// The envelope in `spec/envelope.md`, for a success.
 pub(crate) fn envelope_ok(out: &Out) -> Json {
     let mut data = out.data.clone();
     if let Some(o) = data.as_object_mut() {
