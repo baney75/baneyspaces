@@ -1,3 +1,6 @@
+> [!IMPORTANT]
+> **BaneySpaces is retired.** This is the last snapshot of the Linux and Omarchy desktop code from Polycarp, kept so installed copies have a source. The repository is archived. Polycarp covers macOS and Windows: https://github.com/baney75/polycarp. Browser and computer use for every platform is Tychicus: https://github.com/baney75/tychicus.
+
 <p align="center">
   <img src="docs/banner.png" alt="BaneySpaces: nine workspaces, one row of keys. ⌘1 through ⌘9 switches; add ⇧ and the window comes with you." width="100%">
 </p>
