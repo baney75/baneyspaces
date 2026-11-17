@@ -83,6 +83,10 @@ A change there is done when `cargo test`, `platforms/linux/tests/omarchy-scripts
 `platforms/linux/tests/nested.sh` pass (nested.sh runs its own headless Hyprland and prints PASS or
 FAIL with counts and whether the real session changed). Never edit or reload the live Hyprland config
 or session to test: use nested.sh. A rule that is not in `spec/` does not ship on one platform alone.
+A change to `agent shot` (`shot.rs`, `png.rs`) also runs `platforms/linux/tests/shot-speed.sh`: the
+median shot of a still window against `linuxAgentShot` in `spec/speed.json` (25% over fails), plus a
+still window that must settle and windows that keep drawing that must not. CI has no Hyprland, so it
+runs on an Omarchy seat; `--write` records a new target after a change that is meant to move it.
 
 ## Regression ledger
 

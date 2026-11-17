@@ -218,9 +218,25 @@ nightly builds ship for every platform; it gets tested on every platform before 
 | Agent workspace | Workspace 9, parked | A Hyprland special workspace, never shown unless you open it | Workspace 9, cloaked |
 | Focus following and its guard | FocusWatcher | Hyprland `activewindow` events | `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` |
 | Workspace Dock, launcher, ⌘Tab bar, overview | SwiftUI/AppKit | Omarchy shell (Quickshell) plugins, so they match Omarchy's look | Native overlay windows (Rust, `windows` crate) |
-| Agent hands | agent-desktop engine through its C library | agent-desktop's Linux adapter (AT-SPI) linked as a Rust crate | agent-desktop's Windows adapter (UI Automation) linked as a Rust crate |
+| Agent hands | agent-desktop engine through its C library | agent-desktop's Linux adapter (AT-SPI), built from the pinned source and run by the daemon as a child process (headless, after the scope guard) | agent-desktop's Windows adapter (UI Automation) linked as a Rust crate |
 | Sandbox | Tart macOS VM | A KVM VM (libvirt) | Hyper-V or Windows Sandbox |
 | Keys | ⌘1–9, ⌘⇧1–9 | Super+1–9, Super+Shift+1–9 (Omarchy's own bindings are rebound to BaneySpaces) | Win+1–9 is taken by the taskbar; Alt+1–9 and Alt+Shift+1–9 by default, changeable |
+
+The agent workspace verbs (`workspaces`, `open` with `new_window` and `wait`, `arrange`, `move --window`,
+`close`, child windows), per platform:
+
+| Verb | macOS | Linux (Omarchy, Hyprland) | Windows 11 |
+| --- | --- | --- | --- |
+| `workspaces` | yes | yes (`agent_workspace` is `"special:agent"`) | not supported yet |
+| `open` with `new_window`, `wait`, `reused`, `focus` | yes | yes | not supported yet |
+| `arrange` | yes | yes, applied at once while the workspace stays hidden | not supported yet |
+| `move --window` | yes, including lent and Full Access windows | the agent's own windows only; yours (also one you parked on the agent workspace) and what needs a lend or Full Access are `not_supported` (no lend sheet yet) | not supported yet |
+| `close` | only windows this session opened | the same, by Hyprland address, pid and start time | not supported yet |
+| Child windows | the child window rules above | a floating window of an agent process, on `special:agent` or on no workspace yet; any other process's dialog is refused | not supported yet |
+
+Linux details (the Hyprland dispatch each verb sends and why none takes focus, the differences and a
+list of commands to try it on a live session) are in `platforms/linux/README.md`, "Agents manage
+their own workspace". On Linux these are CLI verbs; the shared MCP catalog does not list them yet.
 
 One contract keeps them the same product: `spec/` in this repo holds the workspace rules, the key map,
 the CLI and MCP schemas (one JSON envelope everywhere) and conformance cases as JSON. Every platform's
@@ -230,8 +246,11 @@ Code layout: `Sources/` stays the macOS app; `crates/baneyspaces-core` (Rust) ho
 workspace model, CLI/MCP and hands routing for Linux and Windows; `platforms/linux` and
 `platforms/windows` hold each shell; `spec/` is shared.
 
-Testing on every platform: Linux runs in a nested Hyprland session (`Hyprland` inside a headless
-output) in CI and on seat-a, then live on seat-b and seat-a; Windows runs in a Windows 11 VM on
+Testing on every platform: on Linux, CI (the "Linux core" job in `.github/workflows/linux.yml`)
+runs `cargo test --workspace` and `platforms/linux/tests/omarchy-scripts.sh` on Ubuntu; the nested
+Hyprland session (`platforms/linux/tests/nested.sh`, Hyprland inside a headless output) does not run
+in CI, because Ubuntu's apt carries no Hyprland, so it runs on an Omarchy seat (seat-a), then live on
+seat-b and seat-a; Windows runs in a Windows 11 VM on
 seat-a (KVM, resettable, never on desktop-a); macOS on the Mac (and the Mac mini node when it has a
 key). Each platform runs the hands probe and the bench in the same shape.
 
