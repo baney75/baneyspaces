@@ -344,6 +344,42 @@ and `polycarp-skill|v1|end|`, so `polycarp version` compares the installed skill
 running anything. A unit test checks that every command, verb and flag the skill names is in
 `baneyspaces help` and parses, so the skill cannot drift from the binary.
 
+## Matching Omarchy's theme
+
+`baneyspaces theme` is the Polycarp theme command, vendored from baney75/polycarp as
+`crates/baneyspaces-theme` so its Omarchy follower lives here. It reads and writes the same theme folder
+as `polycarp theme` (`$POLYCARP_CONFIG_DIR`, else the folder `theme folder --pin` recorded, else
+`~/.config/polycarp`), under the same lock and in the same formats, and Polycarp's voice, browser and
+spaces read the result. `baneyspaces theme --help` lists every command; `baneyspaces doctor` reports
+the Omarchy line as `omarchy_theme`.
+
+- `baneyspaces theme follow omarchy` writes two user themes. `omarchy` is generated: it extends `blocks`
+  and fills the 13 colors for the mode Omarchy's theme has, and it is rewritten on every switch.
+  `omarchy-overrides` extends `omarchy`, is the current theme while following, and is yours: `theme
+  change`, `theme accent`, fonts, corners and `[surface.*]` edits go there, so no switch touches them.
+- The colors come from Omarchy's `~/.local/state/omarchy/current/theme/colors.toml` through the role
+  mapping in `scripts/gen-palettes.py`. Omarchy's colors are never refused: a color that fails the
+  contrast rules moves by the smallest lightness step that passes, and `notes` and `data.nudges` say so.
+  `background` never moves.
+- The hook is `~/.config/omarchy/hooks/theme-set.d/baneyspaces`. Its second line is
+  `# baneyspaces-managed-hook: config=<config folder>`; a hook without it, or for another config
+  folder, is never replaced or removed. Omarchy runs it after each `omarchy-theme-set`, and it runs
+  `baneyspaces theme follow omarchy --sync` with `timeout 5` where that exists, writing `FAILED` lines
+  to `follow.log` in the config folder when the sync fails.
+- polycarp's own follower keeps its own hook (`theme-set.d/polycarp`). Both follow the same settings,
+  so with both installed both hooks run on a switch and write the same files; the generated `omarchy`
+  theme keeps polycarp's first-line mark, so either may rewrite it.
+- `follow` shows what is in force, `follow reset` drops your changes on top (`undo` brings them back),
+  and `follow off` removes this hook and goes back to the theme set before following. With no
+  `config.toml` and Omarchy present, the first `theme change`, `accent`, `on` or `reset` follows first;
+  `follow omarchy --if-fresh` does only that, for installers.
+- Error codes `no_omarchy` (no `~/.local/state/omarchy`) and `not_following` (`follow reset` while not
+  following).
+
+Tests: `crates/baneyspaces-theme/tests/omarchy.rs`, with the `colors.toml` of all 22 themes bundled
+with Omarchy 4.0.4 in `tests/fixtures/omarchy/`. They run the `baneyspaces-theme` test binary, which
+runs the same code as `baneyspaces theme`, in a throwaway HOME and config folder.
+
 ## Install on an Omarchy seat (part 2 does this on seat-b and seat-a)
 
 ```sh
