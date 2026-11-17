@@ -1,0 +1,43 @@
+# Warm paper, small corners and a serif face for the interface too.
+name = "parchment"
+title = "Parchment"
+description = "Warm paper with small corners and serif text everywhere."
+extends = "polycarp"
+
+[light]
+background = "#F3E9D2"
+surface = "#FBF4E2"
+sunken = "#E8DABB"
+foreground = "#3A2E20"
+strong = "#251C12"
+muted = "#65563F"
+border = "#D3C19A"
+accent = "#7A4B2A"
+on_accent = "#FBF4E2"
+selection = "#E6D3A8"
+urgent = "#A33A2A"
+working = "#80601F"
+done = "#3D6359"
+
+[dark]
+background = "#2E261C"
+surface = "#382F23"
+sunken = "#251F16"
+foreground = "#F3E9D2"
+strong = "#FFFBF0"
+muted = "#CDBF9F"
+border = "#51442F"
+accent = "#D9A66F"
+on_accent = "#241A0F"
+selection = "#4A3C27"
+urgent = "#EA8E78"
+working = "#D2B26E"
+done = "#8CC0AE"
+
+[shape]
+radius_small = 2
+radius = 4
+radius_large = 6
+
+[type]
+ui = 'Newsreader, "Iowan Old Style", Georgia, serif'

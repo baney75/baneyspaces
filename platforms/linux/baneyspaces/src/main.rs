@@ -58,6 +58,8 @@ const HELP: &str = "baneyspaces (Linux, Hyprland)
   stop                           stop the daemon (uninstall.sh does this)
   mcp                            MCP server on stdio (agent tools only)
   doctor                         what works and what does not
+  theme ...                      the Polycarp theme files; `theme follow omarchy` matches Omarchy's
+                                 theme and follows each switch (`theme --help` lists every command)
   skill install [--path P]       write the agent skill to ~/.claude/skills/baneyspaces/SKILL.md, and to
                                  ~/.agents/skills/baneyspaces when ~/.agents/skills or ~/.codex exists
                                  (--path: to that one file or folder instead)
@@ -488,7 +490,12 @@ fn doctor(paths: &paths::Paths) -> Envelope {
         "session bus (AT-SPI is reached through it)".into(),
     );
     let ok = checks.iter().all(|c| c["ok"] == true);
-    Envelope::ok(json!({ "healthy": ok, "checks": checks }))
+    let mut data = json!({ "healthy": ok, "checks": checks });
+    // Informs only, like `polycarp doctor`'s line: not following Omarchy's theme is not unhealthy.
+    if let Some(line) = baneyspaces_theme::doctor_line() {
+        data["omarchy_theme"] = json!(line);
+    }
+    Envelope::ok(data)
 }
 
 /// What this binary was built from (build.rs). It is kept in the file as plain text so `polycarp version`
@@ -549,6 +556,10 @@ fn main() {
             }
         }
         "doctor" => print(&doctor(&paths), text),
+        "theme" => {
+            let rest: Vec<std::ffi::OsString> = std::env::args_os().skip(1).skip_while(|a| a != "theme").skip(1).collect();
+            baneyspaces_theme::run(&rest)
+        }
         "skill" => match skill::run(&args[1..], std::env::var_os("HOME").map(std::path::PathBuf::from)) {
             skill::Out::Envelope(env) => print(&env, text),
             skill::Out::Text(t) => {

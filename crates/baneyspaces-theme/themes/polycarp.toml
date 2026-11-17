@@ -1,0 +1,60 @@
+# The Polycarp brand theme. Every other built-in theme starts from this one.
+name = "polycarp"
+title = "Polycarp"
+description = "Warm paper and moss green. The default."
+
+[light]
+background = "#F6F3E8"
+surface = "#FFFDF6"
+sunken = "#ECE7D8"
+foreground = "#2B2E26"
+strong = "#1C1E18"
+muted = "#5C6152"
+border = "#D5D0BF"
+accent = "#59693F"
+on_accent = "#F6F3E8"
+selection = "#DCE3CC"
+urgent = "#A33A2A"
+working = "#856A29"
+done = "#3F6B6A"
+
+[dark]
+background = "#2B2E26"
+surface = "#34382E"
+sunken = "#23261F"
+foreground = "#F6F3E8"
+strong = "#FFFFFF"
+muted = "#BDBFAF"
+border = "#4A4E41"
+accent = "#A9BB8A"
+on_accent = "#20231A"
+selection = "#3D4634"
+urgent = "#E58A76"
+working = "#C7B07A"
+done = "#8EBDB9"
+
+[shape]
+radius_small = 6
+radius = 10
+radius_large = 16
+border_width = 1
+blur = 0
+shadow = 0.12
+density = "regular"
+indicator = "dot"
+
+[type]
+display = 'Newsreader, "Iowan Old Style", Georgia, serif'
+ui = 'system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell, sans-serif'
+mono = 'ui-monospace, "SF Mono", Menlo, Consolas, monospace'
+size = 16
+weight = 400
+line_height = 1.5
+
+[motion]
+fast = 120
+normal = 200
+slow = 320
+easing = "cubic-bezier(0.2, 0, 0, 1)"
+scale_from = 0.98
+reduced = false

@@ -1,0 +1,12 @@
+# Polycarp with no motion, no shadow and more room.
+name = "calm"
+title = "Calm"
+description = "Nothing moves. Extra room and no shadows."
+extends = "polycarp"
+
+[shape]
+shadow = 0.0
+density = "spacious"
+
+[motion]
+reduced = true

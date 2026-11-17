@@ -1,0 +1,24 @@
+# Square corners, thick borders and a monospace face, in the style of Omarchy.
+name = "blocks"
+title = "Blocks"
+description = "Square, flat and monospace. Workspaces show as numbered blocks."
+extends = "polycarp"
+
+[shape]
+radius_small = 0
+radius = 0
+radius_large = 0
+border_width = 2
+blur = 0
+shadow = 0.0
+indicator = "number-block"
+
+[type]
+ui = 'ui-monospace, "SF Mono", Menlo, Consolas, monospace'
+
+[motion]
+fast = 60
+normal = 100
+slow = 160
+easing = "linear"
+scale_from = 1.0

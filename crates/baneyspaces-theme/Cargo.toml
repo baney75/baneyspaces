@@ -1,0 +1,21 @@
+[package]
+name = "baneyspaces-theme"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "The Polycarp theme engine and its Omarchy follower, for `baneyspaces theme` (vendored from baney75/polycarp cli/src/theme)"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+toml = "1.2.0"
+
+# The command the integration tests run (and the Omarchy hook they install calls). The installed command
+# is `baneyspaces theme`; this one exists because the Linux and Windows packages both build a binary named
+# `baneyspaces`, so a test run of the whole workspace can't be sure which one that path holds.
+[[bin]]
+name = "baneyspaces-theme"
+path = "src/bin/baneyspaces-theme.rs"
+
+[dev-dependencies]
+toml = "1.2.0"

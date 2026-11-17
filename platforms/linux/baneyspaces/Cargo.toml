@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 baneyspaces-core = { path = "../../../crates/baneyspaces-core" }
+baneyspaces-theme = { path = "../../../crates/baneyspaces-theme" }
 serde.workspace = true
 serde_json.workspace = true
 libc = "0.2"
