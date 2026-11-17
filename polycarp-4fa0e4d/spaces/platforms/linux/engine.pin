@@ -1,0 +1,4 @@
+# The agent hands engine: vercel-labs/agent-desktop, the same pinned commit the macOS build uses.
+# Apache-2.0. Built from source with its own Cargo.lock (cargo build --locked), never through npm.
+repo=https://github.com/vercel-labs/agent-desktop.git
+commit=5261b5287b5208e7c4bf3713df6f66faaaf2c4cc

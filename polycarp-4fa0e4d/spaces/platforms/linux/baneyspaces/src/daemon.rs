@@ -1,0 +1,2804 @@
+//! `baneyspaces daemon`: the model driven by Hyprland's events, the control socket the CLI talks
+//! to, `state.json`, the agent workspace and the agent action log.
+
+use crate::agentws;
+use crate::apps;
+use crate::bus;
+use crate::hands;
+use crate::hypr::{parse_event, Hypr, HyprError, HyprEvent};
+use crate::paths::Paths;
+use crate::proc;
+use crate::scheme::{decode, lua_str, sh_quote, AGENT_SPECIAL, AGENT_SPECIAL_NAME};
+use baneyspaces_core::agent::{prune_text, ActionRecord, PRUNE_EVERY_SECS};
+use baneyspaces_core::envelope::{Envelope, Retry};
+use baneyspaces_core::model::{Cause, Effect, Event, Home, Model, ModelError};
+use serde_json::{json, Value};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+pub fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub struct Client {
+    pub addr: String,
+    pub pid: u32,
+    pub ws_id: i64,
+    pub ws_name: String,
+    pub monitor: i64,
+    pub class: String,
+    pub title: String,
+    pub mapped: bool,
+    /// Hyprland's `stableId`: the window's identifier in ext-foreign-toplevel-list, which `agent shot` captures by.
+    pub stable_id: String,
+    /// Floating rather than tiled. A floating window of an agent process next to its main window is a dialog.
+    pub floating: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct Mon {
+    pub id: i64,
+    pub name: String,
+    pub focused: bool,
+    pub ws_id: i64,
+    pub ws_name: String,
+    pub special: String,
+    pub disabled: bool,
+}
+
+pub struct TokenInfo {
+    pub agent: String,
+    pub app: String,
+    pub at: u64,
+    /// The private session bus this launch's processes use.
+    pub bus: Option<bus::BusInfo>,
+    /// The launch's session bus ended with an earlier daemon: its apps keep a dead bus address and
+    /// cannot be driven until they are started again.
+    pub bus_lost: bool,
+    /// The tag of the Polycarp bridge folder this launch uses (`apps::polycarp_socket_dir`): its own for
+    /// `agent run` and a Chromium-family browser, or the `agent run` shell's that opened the browser.
+    pub socket: Option<String>,
+    /// A process carrying the token was seen alive. Once they are all gone the launch is over and its
+    /// token goes at the next upkeep; before one is seen, it is given a minute to start.
+    pub seen: bool,
+}
+
+pub struct Core {
+    pub model: Model,
+    pub hypr: Hypr,
+    pub paths: Paths,
+    pub tokens: HashMap<String, TokenInfo>,
+    /// token -> pids registered through it
+    pub token_pids: HashMap<String, Vec<u32>>,
+    /// token -> upkeeps in a row that found no process carrying it, for a launch already seen. One
+    /// empty look is not enough: an app's environ reads back empty for a moment after an exec.
+    pub token_misses: HashMap<String, u8>,
+    /// snapshot id -> the window and process it was taken of
+    pub snaps: HashMap<String, hands::SnapInfo>,
+    pub overview_shown: bool,
+    pub events_seen: u64,
+    pub started: u64,
+    pub trace: bool,
+    /// The model may disagree with the compositor (a dispatch failed and a re-read did not work).
+    pub dirty: bool,
+    pub last_prune: std::cell::Cell<u64>,
+    /// `BANEYSPACES_TEST_OPS=1`: lets nested.sh fake a reused pid and a failing dispatch.
+    pub test_ops: bool,
+    pub fail_next: Option<bool>,
+    pub resyncing: bool,
+    /// Effects the rules asked for while the model was being rebuilt; run when it is done.
+    pub deferred: Vec<Effect>,
+    /// Test only: how long a hands call waits between finding the window and acting on it.
+    pub stall_ms: u64,
+    /// The private bus daemons we started, by token (the handle, to reap them).
+    pub bus_children: HashMap<String, Vec<std::process::Child>>,
+    /// Stacks to take down once the Core lock is released (stopping waits for processes).
+    pub pending_stops: Vec<bus::StopJob>,
+    /// Which windows each agent session's `open` made, so `close` closes only those.
+    pub sessions: agentws::SessionWindows,
+    /// Windows `arrange` or `move --frame` floated (so they are not mistaken for dialogs): address
+    /// -> the window's `stableId` then. Read through `is_placed`, which checks both.
+    pub placed: HashMap<String, String>,
+    /// Address -> Hyprland's `stableId` of the window the model tracks there. An address comes back
+    /// for a later window and a `stableId` does not, so a tracked address that reports another one
+    /// is a new window whose close was missed (`open_client`).
+    pub stable: HashMap<String, String>,
+    /// Launch token -> the session whose `open` sent it, recorded with the exec. The token's first
+    /// window is claimed for that session when it registers, whether or not `open` is still waiting.
+    pub claims: HashMap<String, Claim>,
+}
+
+/// A session's claim on the first window of one launch.
+#[derive(Clone, Debug)]
+pub struct Claim {
+    pub session: String,
+    pub app: String,
+    /// Unix seconds after which the claim lapses (an app that never opens a window claims nothing later).
+    pub until: u64,
+}
+
+/// How long a launch's claim waits for its first window.
+pub const CLAIM_SECS: u64 = 120;
+
+pub type Shared = Arc<Mutex<Core>>;
+
+/// The dispatches that make `monitor` show workspace `n`.
+pub fn show_steps(monitor: &str, n: u8, lives_on: Option<&str>, focused: Option<&str>) -> Vec<String> {
+    let mut v = vec![];
+    if focused.is_some_and(|f| f != monitor) {
+        v.push(format!("hl.dsp.focus({{ monitor = {} }})", lua_str(monitor)));
+    }
+    if lives_on.is_some_and(|on| on != monitor) {
+        v.push(format!("hl.dsp.workspace.move({{ workspace = {}, monitor = {} }})", lua_str(&n.to_string()), lua_str(monitor)));
+    }
+    v.push(format!("hl.dsp.focus({{ workspace = {} }})", lua_str(&n.to_string())));
+    v
+}
+
+/// Sends the steps in order. A failure says whether any earlier step went through, so a half-done
+/// switch is never reported as one that changed nothing.
+pub fn run_steps(steps: &[String], send: &mut dyn FnMut(&str) -> Result<(), HyprError>) -> Result<(), (HyprError, bool)> {
+    for (i, step) in steps.iter().enumerate() {
+        send(step).map_err(|e| (e, i > 0))?;
+    }
+    Ok(())
+}
+
+/// Why a command could not be carried out.
+#[derive(Debug)]
+pub enum ApplyError {
+    /// The rules refused it.
+    Model(ModelError),
+    /// The rules accepted it but Hyprland refused or did not answer. `delivered_any`: an earlier
+    /// step of the same command went through.
+    Compositor { err: HyprError, delivered_any: bool },
+}
+
+impl ApplyError {
+    pub fn envelope(&self) -> Envelope {
+        match self {
+            ApplyError::Model(e) => Envelope::from_model(e),
+            ApplyError::Compositor { err, delivered_any } => {
+                // Only a clean refusal before anything moved is safe to repeat.
+                let retry = if err.uncertain() || *delivered_any { Retry::Never } else { Retry::Safe };
+                Envelope::err(
+                    "compositor_error",
+                    format!("Hyprland did not carry it out: {err}"),
+                    retry,
+                    "BaneySpaces re-read Hyprland's state. Look at `baneyspaces state` before trying again.",
+                )
+                .with_data(json!({ "uncertain": err.uncertain(), "earlier_steps_went_through": delivered_any }))
+            }
+        }
+    }
+}
+
+/// Leaving the daemon takes every agent bus stack with it. (A stack is the daemon's child: it dies
+/// too if the daemon is killed outright.)
+pub fn exit_daemon(code: i32) -> ! {
+    bus::kill_all();
+    std::process::exit(code)
+}
+
+pub fn lock(s: &Shared) -> MutexGuard<'_, Core> {
+    s.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+impl Core {
+    pub fn monitors(&self) -> Vec<Mon> {
+        self.try_monitors().unwrap_or_default()
+    }
+
+    /// The displays, or the error: a failed query is not an empty list.
+    pub fn try_monitors(&self) -> Result<Vec<Mon>, String> {
+        let v = self.hypr.json("monitors")?;
+        Ok(Self::parse_monitors(&v))
+    }
+
+    fn parse_monitors(v: &Value) -> Vec<Mon> {
+        v.as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|m| Mon {
+                        id: m["id"].as_i64().unwrap_or(-1),
+                        name: m["name"].as_str().unwrap_or("").into(),
+                        focused: m["focused"].as_bool().unwrap_or(false),
+                        ws_id: m["activeWorkspace"]["id"].as_i64().unwrap_or(0),
+                        ws_name: m["activeWorkspace"]["name"].as_str().unwrap_or("").into(),
+                        special: m["specialWorkspace"]["name"].as_str().unwrap_or("").into(),
+                        disabled: m["disabled"].as_bool().unwrap_or(false),
+                    })
+                    .filter(|m| !m.disabled)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn clients(&self) -> Vec<Client> {
+        self.try_clients().unwrap_or_default()
+    }
+
+    pub fn try_clients(&self) -> Result<Vec<Client>, String> {
+        let v = self.hypr.json("clients")?;
+        Ok(Self::parse_clients(&v))
+    }
+
+    fn parse_clients(v: &Value) -> Vec<Client> {
+        v.as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|c| Client {
+                        addr: c["address"].as_str().unwrap_or("").into(),
+                        pid: c["pid"].as_u64().unwrap_or(0) as u32,
+                        ws_id: c["workspace"]["id"].as_i64().unwrap_or(0),
+                        ws_name: c["workspace"]["name"].as_str().unwrap_or("").into(),
+                        monitor: c["monitor"].as_i64().unwrap_or(-1),
+                        class: c["class"].as_str().unwrap_or("").into(),
+                        title: c["title"].as_str().unwrap_or("").into(),
+                        mapped: c["mapped"].as_bool().unwrap_or(true),
+                        stable_id: c["stableId"].as_str().unwrap_or("").into(),
+                        floating: c["floating"].as_bool().unwrap_or(false),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn client(&self, addr: &str) -> Option<Client> {
+        self.clients().into_iter().find(|c| c.addr == addr)
+    }
+
+    /// Whether the agent workspace is showing on some display, or why that cannot be known. A failed
+    /// query is not "hidden": acting on it would toggle the wrong way.
+    fn special_shown(&self) -> Result<bool, HyprError> {
+        let v = self.hypr.json("monitors").map_err(HyprError::Io)?;
+        Ok(Self::parse_monitors(&v).iter().any(|m| m.special == AGENT_SPECIAL))
+    }
+
+    pub(crate) fn log(&self, msg: &str) {
+        if self.trace {
+            eprintln!("[baneyspaces] {msg}");
+        }
+    }
+
+    // ---- Hyprland setup ------------------------------------------------------------------
+
+    /// Turns workspace animations off, stops apps taking focus by asking, and gives a display that
+    /// shows nothing of ours a workspace. Run at start and after every config reload.
+    pub fn configure_hyprland(&self, new: &[String]) -> bool {
+        // Instant switching and the focus rule are what the rest rests on: if either cannot be set,
+        // the model stays dirty and commands are refused until they can.
+        let mut ok = true;
+        for lua in [
+            "hl.animation({ leaf = \"workspaces\", enabled = false })",
+            "hl.animation({ leaf = \"specialWorkspace\", enabled = false })",
+            "hl.config({ misc = { focus_on_activate = false } })",
+        ] {
+            if let Err(e) = self.hypr.eval(lua) {
+                self.log(&format!("could not apply {lua}: {e}"));
+                ok = false;
+            }
+        }
+        self.adopt_monitors(new) && ok
+    }
+
+    /// A display showing an empty, non-persistent workspace that is not one of the nine (the
+    /// default Hyprland gives a new monitor) shows the workspace the model picked for it (R-M2).
+    /// A display showing anything you keep (workspace 10 with the work dashboard) is left alone.
+    fn adopt_monitors(&self, new: &[String]) -> bool {
+        let Ok(spaces) = self.hypr.json("workspaces") else { return false };
+        let mut ok = true;
+        let spaces = spaces.as_array().cloned().unwrap_or_default();
+        let before = self.monitors().into_iter().find(|m| m.focused).map(|m| m.name);
+        let mut moved = false;
+        for m in self.monitors() {
+            let have = decode(m.ws_id, &m.ws_name);
+            // The workspace this display is to show: the model's pick for a new one, else the first
+            // one nobody shows, decided from what the other displays show now.
+            let Some(want) = self.model.current(&m.name).filter(|n| *n != 0).or_else(|| Some(self.model.pick_for(&m.name)).filter(|n| *n != 0)) else { continue };
+            // A display that was just plugged in gets the workspace R-M2 picked whenever Hyprland's
+            // own default differs; any other display only when it shows nothing of the nine.
+            let wanted = if new.contains(&m.name) { have != Some(want) } else { have.is_none() };
+            if !wanted {
+                continue;
+            }
+            let Some(ws) = spaces.iter().find(|w| w["id"].as_i64() == Some(m.ws_id)) else { continue };
+            if ws["windows"].as_u64().unwrap_or(1) != 0 || ws["ispersistent"].as_bool().unwrap_or(true) {
+                continue;
+            }
+            ok &= self.show_workspace(&m.name, want).is_ok();
+            moved = true;
+        }
+        if let (true, Some(b)) = (moved, before) {
+            ok &= self.hypr.dispatch(&format!("hl.dsp.focus({{ monitor = {} }})", lua_str(&b))).is_ok();
+        }
+        ok
+    }
+
+    /// Makes `monitor` show workspace `n`: brings the workspace there if Hyprland keeps it on
+    /// another monitor, then focuses it. Leaves focus on `monitor`; callers put it back. On failure
+    /// the flag says whether an earlier step had already gone through.
+    fn show_workspace(&self, monitor: &str, n: u8) -> Result<(), (HyprError, bool)> {
+        let lives = self.hypr.json("workspaces").ok().and_then(|v| v.as_array().and_then(|a| a.iter().find(|w| w["id"].as_i64() == Some(n as i64)).and_then(|w| w["monitor"].as_str().map(String::from))));
+        let focused = self.monitors().into_iter().find(|m| m.focused).map(|m| m.name);
+        let steps = show_steps(monitor, n, lives.as_deref(), focused.as_deref());
+        run_steps(&steps, &mut |lua| self.hypr.dispatch(lua))
+    }
+
+    // ---- model plumbing ------------------------------------------------------------------
+
+    pub fn apply(&mut self, ev: Event) -> Result<Vec<Effect>, ApplyError> {
+        self.events_seen += 1;
+        let effects = self.model.apply(ev).map_err(ApplyError::Model)?;
+        if self.resyncing {
+            // Re-reading Hyprland only learns. What the rules want done about it is collected and
+            // run afterwards, once, with its failures recorded.
+            self.deferred.extend(effects.iter().cloned());
+            return Ok(effects);
+        }
+        let r = self.exec(&effects);
+        self.persist();
+        if let Err((err, delivered_any)) = r {
+            // The model has committed a state the compositor may not have reached. Re-read it
+            // before anything else is accepted.
+            self.log(&format!("dispatch failed ({err}); re-reading Hyprland"));
+            self.resync();
+            return Err(ApplyError::Compositor { err, delivered_any });
+        }
+        Ok(effects)
+    }
+
+    /// Before a command: if the last failure left the model unsure, learn the compositor's state
+    /// first. If it is still unsure, the command is refused (`compositor_error`, retry `after`)
+    /// rather than run against a model that may be wrong.
+    pub fn ensure_fresh(&mut self) -> Result<(), Envelope> {
+        if self.dirty {
+            self.resync();
+        }
+        if self.dirty {
+            return Err(Envelope::err(
+                "compositor_error",
+                "BaneySpaces could not read Hyprland's state after the last failure, so it will not act on a guess",
+                Retry::After,
+                "Wait a moment and send it again; check `baneyspaces doctor` if it keeps failing.",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Carries out effects. Every one is idempotent: Hyprland may already be there. A failure stops
+    /// the list and says whether any earlier effect went through.
+    fn exec(&mut self, effects: &[Effect]) -> Result<(), (HyprError, bool)> {
+        if !effects.is_empty() {
+            if let Some(io) = self.fail_next.take() {
+                let m = "test: injected failure".to_string();
+                return Err((if io { HyprError::Io(m) } else { HyprError::Refused(m) }, false));
+            }
+        }
+        for (i, e) in effects.iter().enumerate() {
+            self.log(&format!("effect {e:?}"));
+            let d = |lua: &str| self.hypr.dispatch(lua).map_err(|e| (e, false));
+            let r = match e {
+                Effect::ShowWorkspace { monitor, workspace } => self.show_workspace(monitor, *workspace),
+                Effect::FocusMonitor { monitor } => d(&format!("hl.dsp.focus({{ monitor = {} }})", lua_str(monitor))),
+                Effect::FocusWindow { window } => d(&format!("hl.dsp.focus({{ window = {} }})", lua_str(&format!("address:{window}")))),
+                Effect::MoveWindow { window, to } => {
+                    let dest = if to == "agent" { Some(AGENT_SPECIAL.to_string()) } else { to.parse::<u8>().ok().map(|n| n.to_string()) };
+                    match dest {
+                        Some(dest) => d(&format!("hl.dsp.window.move({{ workspace = {}, follow = false, window = {} }})", lua_str(&dest), lua_str(&format!("address:{window}")))),
+                        None => Ok(()),
+                    }
+                }
+                Effect::ShowAgent => match self.special_shown() {
+                    Err(e) => Err((e, false)),
+                    Ok(true) => Ok(()),
+                    Ok(false) => d(&format!("hl.dsp.workspace.toggle_special({})", lua_str(AGENT_SPECIAL_NAME))),
+                },
+                Effect::HideAgent => {
+                    // The toggle acts on the focused monitor, so go to the one that shows the agent
+                    // workspace first; the end of this function puts focus back.
+                    let shown = self.hypr.json("monitors").map_err(|e| (HyprError::Io(e), false)).map(|v| Self::parse_monitors(&v).into_iter().find(|m| m.special == AGENT_SPECIAL));
+                    match shown {
+                        Err(e) => Err(e),
+                        Ok(None) => Ok(()),
+                        Ok(Some(m)) => {
+                            let mut r = Ok(());
+                            let mut went = false;
+                            if !m.focused {
+                                r = d(&format!("hl.dsp.focus({{ monitor = {} }})", lua_str(&m.name)));
+                                went = r.is_ok();
+                            }
+                            r.and_then(|_| d(&format!("hl.dsp.workspace.toggle_special({})", lua_str(AGENT_SPECIAL_NAME))).map_err(|(e, _)| (e, went)))
+                        }
+                    }
+                }
+                Effect::RefuseFollow { .. } => Ok(()),
+            };
+            if let Err((err, partial)) = r {
+                self.log(&format!("effect failed: {err}"));
+                return Err((err, i > 0 || partial));
+            }
+        }
+        // A switch on a monitor you are not on must not take you there. Only after effects this
+        // command sent: an observed event (you moved the pointer, clicked a workspace) is the user's
+        // doing and is never undone.
+        if effects.is_empty() {
+            return Ok(());
+        }
+        if let Some(want) = self.model.focused_monitor().map(String::from) {
+            if self.monitors().iter().find(|m| m.focused).is_some_and(|m| m.name != want) {
+                self.hypr.dispatch(&format!("hl.dsp.focus({{ monitor = {} }})", lua_str(&want))).map_err(|e| (e, true))?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn persist(&self) {
+        let mut v = self.model.view();
+        v["version"] = json!(1);
+        v["platform"] = json!("linux");
+        v["agent_workspace"] = json!(AGENT_SPECIAL);
+        v["scheme"] = json!("one pool: workspace n is hyprland workspace n (1-9); agent: special:agent");
+        v["overview"] = json!({ "shown": self.overview_shown });
+        v["daemon"] = json!({ "pid": std::process::id(), "started": self.started, "events": self.events_seen });
+        self.paths.write_atomic(
+            "state.json",
+            &serde_json::to_string_pretty(&v).unwrap_or_default(),
+        );
+        let procs: Vec<Value> = self
+            .model
+            .agent_pids()
+            .into_iter()
+            .map(|(p, s)| json!({ "pid": p, "start": s }))
+            .collect();
+        self.paths
+            .write_atomic("agents.json", &json!(procs).to_string());
+    }
+
+    /// Drops every registered agent process that has died or whose pid now belongs to another
+    /// program (its start time changed), so a reused pid is never mistaken for an agent.
+    pub fn reconcile_agents(&mut self) {
+        for (pid, start) in self.model.agent_pids() {
+            let live = proc::start_time(pid);
+            if live.is_none() || (start != 0 && live != Some(start)) {
+                self.log(&format!("agent process {pid} is gone or was reused; forgetting it"));
+                let _ = self.apply(Event::AgentExit { pid });
+                for v in self.token_pids.values_mut() {
+                    v.retain(|p| *p != pid);
+                }
+            }
+        }
+    }
+
+    /// Registers `pid` as an agent process if it carries a launch token we issued, or, when its own
+    /// environ carries none, descends from a process that does (start times checked at each step). A
+    /// Chromium-family browser writes its command line over its environ (setproctitle), so its window's
+    /// process reads back with no token; it is found under the anchor shell its launch runs it in. A
+    /// registration whose start time no longer matches is dropped first.
+    fn adopt_agent_pid(&mut self, pid: u32) -> bool {
+        let live = proc::start_time(pid);
+        if let Some(start) = self.model.agent_proc(pid) {
+            if self.model.is_agent_pid(pid, live.unwrap_or(0)) && live.is_some() {
+                let _ = start;
+                return true;
+            }
+            let _ = self.apply(Event::AgentExit { pid });
+            // The pid went to another process: it is no longer the old launch's.
+            for v in self.token_pids.values_mut() {
+                v.retain(|p| *p != pid);
+            }
+        }
+        // A window can map right after its process's exec, while its environ still reads empty.
+        let tokens = &self.tokens;
+        let Some(tok) = proc::settled_token_of(pid).or_else(|| proc::inherited_token(&proc::Live, pid, &|t| tokens.contains_key(t))) else {
+            return false;
+        };
+        if !self.tokens.contains_key(&tok) {
+            return false;
+        }
+        let start = live.unwrap_or(0);
+        self.mark_seen(&tok);
+        self.token_pids.entry(tok).or_default().push(pid);
+        let _ = self.apply(Event::AgentRegister { pid, start });
+        true
+    }
+
+    /// Whether `arrange` or `move --frame` floated this very window: the address and the `stableId`
+    /// it had then. A window with no `stableId` is never taken for one that was placed.
+    pub fn is_placed(&self, c: &Client) -> bool {
+        !c.stable_id.is_empty() && self.placed.get(&c.addr) == Some(&c.stable_id)
+    }
+
+    /// Whether the window Hyprland reports at this address is another one than the model tracks
+    /// there: the tracked one closed (its event was missed) and the address was given out again.
+    fn replaced(&self, c: &Client) -> bool {
+        self.model.is_tracked(&c.addr) && self.stable.get(&c.addr).is_some_and(|known| *known != c.stable_id)
+    }
+
+    /// A window Hyprland reports: classify and feed the model. `existing` windows (found at
+    /// start, or arriving from outside the scheme) are mirrored exactly where they are; a new
+    /// window follows the placement rules.
+    pub fn open_client(&mut self, c: &Client, existing: bool) {
+        if !c.mapped {
+            return;
+        }
+        if self.model.is_tracked(&c.addr) {
+            if !self.replaced(c) {
+                return;
+            }
+            // Same address, another `stableId`: the window tracked here closed and its event was
+            // missed. It ends like any closed window (its session record and its placed record go),
+            // and this one is handled as the new window it is.
+            self.log(&format!("window {} was replaced by another at the same address; the old one's records are dropped", c.addr));
+            self.window_gone(&c.addr);
+        }
+        // A new window: nothing recorded under its address (a missed close) carries over to it. A
+        // resync rebuilds the model from windows that still exist, so their records stay, but only
+        // for the same window (`stableId`), never for another one at its address.
+        if self.resyncing {
+            self.sessions.keep_only(&c.addr, &c.stable_id);
+            if !self.is_placed(c) {
+                self.placed.remove(&c.addr);
+            }
+        } else {
+            self.sessions.forget(&c.addr);
+            self.placed.remove(&c.addr);
+        }
+        let on_agent = c.ws_name == AGENT_SPECIAL;
+        let n = if on_agent { None } else { decode(c.ws_id, &c.ws_name) };
+        if !on_agent && n.is_none() {
+            return; // outside the scheme: not ours
+        }
+        self.stable.insert(c.addr.clone(), c.stable_id.clone());
+        self.reconcile_agents();
+        self.adopt_agent_pid(c.pid);
+        let start = proc::start_time(c.pid).unwrap_or(0);
+        if existing {
+            let ev = Event::ObserveWindow { window: c.addr.clone(), pid: c.pid, start, app: c.class.clone(), workspace: n };
+            let _ = self.apply(ev);
+            self.claim_window(&c.addr, c.pid, start);
+            return;
+        }
+        let monitor = self.monitors().into_iter().find(|m| m.id == c.monitor).map(|m| m.name);
+        let _ = self.apply(Event::Open { window: c.addr.clone(), pid: c.pid, start, app: c.class.clone(), monitor, workspace: n });
+        if on_agent && !matches!(self.model.home(&c.addr), Some(Home::Agent)) {
+            let _ = self.apply(Event::AgentSend { window: c.addr.clone() });
+        }
+        self.claim_window(&c.addr, c.pid, start);
+    }
+
+    /// A new window on the agent workspace whose process is the one a launch started (the first pid
+    /// registered with that token, not any other process carrying it) takes that launch's claim:
+    /// the session whose `open` sent it. Once: the launch's later windows are not claimed.
+    pub fn claim_window(&mut self, addr: &str, pid: u32, start: u64) {
+        if !matches!(self.model.home(addr), Some(Home::Agent)) || self.model.pid_of(addr) != Some(pid) {
+            return;
+        }
+        let Some(tok) = self.token_pids.iter().find(|(_, v)| v.first() == Some(&pid)).map(|(t, _)| t.clone()) else { return };
+        let Some(claim) = self.claims.remove(&tok) else { return };
+        if claim.until < now() {
+            return;
+        }
+        // The `stableId` `open_client` just saw for this window; none recorded means no ownership.
+        let stable = self.stable.get(addr).cloned().unwrap_or_default();
+        if !self.sessions.record(&claim.session, addr, agentws::Opened { pid, start, app: claim.app.clone(), stable }) {
+            self.log(&format!("window {addr} was not claimed for session {}: another session owns it", claim.session));
+        }
+    }
+
+    /// Rebuilds the model from Hyprland. While it runs nothing is dispatched for the windows and
+    /// focus it finds: the effects the rules ask for are collected and run once at the end. (Setup,
+    /// turning animations off and giving an empty foreign display a workspace, is its own step.)
+    pub fn resync(&mut self) {
+        // Read the compositor before touching the model: if it cannot be read, the old model stays,
+        // and stays marked dirty (a failed query is not an empty desktop).
+        let (mut mons, clients) = match (self.try_monitors(), self.try_clients()) {
+            (Ok(m), Ok(c)) => (m, c),
+            (m, c) => {
+                self.log(&format!("cannot re-read Hyprland: {:?} {:?}", m.err(), c.err()));
+                self.dirty = true;
+                return;
+            }
+        };
+        self.resyncing = true;
+        self.model = Model::new();
+        self.stable.clear();
+        let order = self.paths.read("monitors.json").and_then(|t| serde_json::from_str::<Vec<String>>(&t).ok()).unwrap_or_default();
+        mons.sort_by_key(|m| (order.iter().position(|o| *o == m.name).unwrap_or(usize::MAX), m.id));
+        for m in &mons {
+            let _ = self.model.apply(Event::MonitorAdded { monitor: m.name.clone() });
+        }
+        self.paths.write_atomic("monitors.json", &json!(mons.iter().map(|m| m.name.clone()).collect::<Vec<_>>()).to_string());
+        // What each display shows NOW comes first. The setup below decides from it; deciding from the
+        // fresh model's guess (display A on 1, display B on 2) would take a workspace off the display
+        // you are looking at.
+        self.observe_monitors(false);
+        let set_up = self.configure_hyprland(&[]);
+        self.observe_monitors(false);
+        for (pid, start) in self
+            .paths
+            .read("agents.json")
+            .and_then(|t| serde_json::from_str::<Vec<Value>>(&t).ok())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|v| Some((v["pid"].as_u64()? as u32, v["start"].as_u64()?)))
+        {
+            if proc::start_time(pid) == Some(start) {
+                let _ = self.model.apply(Event::AgentRegister { pid, start });
+            }
+        }
+        self.load_tokens();
+        for c in &clients {
+            self.open_client(c, true);
+        }
+        // With the windows known, the window to put in front on the display you are on is known too.
+        if let Some(f) = mons.iter().find(|m| m.focused) {
+            let _ = self.model.apply(Event::ObserveFocusMonitor { monitor: f.name.clone() });
+        }
+        // An agent workspace found showing was not shown by you (R-G3): it is hidden again, as a
+        // deferred effect like everything else found here.
+        if mons.iter().any(|m| m.special == AGENT_SPECIAL) {
+            let _ = self.apply(Event::ObserveSpecial { shown: true });
+        }
+        // An agent window found in front is handled by the same rule as at any other time (R-G1): the
+        // user's window is put back, as a deferred effect.
+        if let Ok(v) = self.hypr.json("activewindow") {
+            if let Some(a) = v["address"].as_str() {
+                let _ = self.apply(Event::Activate { window: Some(a.into()), cause: Cause::User });
+            }
+        }
+        self.resyncing = false;
+        // What the rules want done about what was found (an agent process's window on your
+        // workspace, say) runs now. A failure here is recorded: the next command re-reads again.
+        let todo = std::mem::take(&mut self.deferred);
+        self.dirty = !set_up;
+        if !todo.is_empty() {
+            if let Err((err, _)) = self.exec(&todo) {
+                self.log(&format!("corrective effects after a re-read failed: {err}"));
+                self.dirty = true;
+            }
+        }
+        self.persist();
+    }
+
+    /// A process of this launch was seen alive, so once none is left the launch is over. Recorded where
+    /// the daemon sees one (the open loop, a registration), not only by the upkeep's look: that runs
+    /// after the stacks it takes down, and a browser opened and closed meanwhile would wait out the minute.
+    pub fn mark_seen(&mut self, tok: &str) {
+        if let Some(i) = self.tokens.get_mut(tok).filter(|i| !i.seen) {
+            i.seen = true;
+            self.save_tokens();
+        }
+    }
+
+    /// The launch tokens we issued, kept (0600) so a restart still knows the terminal an agent is
+    /// running in. A token with no live process is dropped: after two empty looks in a row when one was seen, else after a minute.
+    pub fn save_tokens(&self) {
+        let m: serde_json::Map<String, Value> = self.tokens.iter().map(|(t, i)| (t.clone(), json!({ "agent": i.agent, "app": i.app, "at": i.at, "bus_lost": i.bus_lost, "socket": i.socket, "seen": i.seen, "bus": i.bus.as_ref().map(|b| json!({ "addr": b.addr, "pid": b.pid, "start": b.start })) }))).collect();
+        self.paths.write_atomic("tokens.json", &Value::Object(m).to_string());
+    }
+
+    fn load_tokens(&mut self) {
+        let Some(Value::Object(m)) = self.paths.read("tokens.json").and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { return };
+        let mut dead = vec![];
+        for (tok, v) in m {
+            let at = v["at"].as_u64().unwrap_or(0);
+            let bus = v["bus"].as_object().map(|b| bus::BusInfo { addr: b.get("addr").and_then(Value::as_str).unwrap_or("").into(), pid: b.get("pid").and_then(Value::as_u64).unwrap_or(0) as u32, start: b.get("start").and_then(Value::as_u64).unwrap_or(0) });
+            // The stacks die with the daemon that started them, so after a restart there is none to remember.
+            let alive = bus.as_ref().is_some_and(|b| proc::start_time(b.pid) == Some(b.start));
+            let bus_lost = v["bus_lost"].as_bool().unwrap_or(false) || (bus.is_some() && !alive);
+            let bus = bus.filter(|_| alive);
+            let socket = v["socket"].as_str().map(String::from);
+            let seen = v["seen"].as_bool().unwrap_or(false);
+            let info = TokenInfo { agent: v["agent"].as_str().unwrap_or("agent").into(), app: v["app"].as_str().unwrap_or("").into(), at, bus, bus_lost, socket, seen };
+            if (seen || now().saturating_sub(at) > 60) && proc::pids_with_token(&tok).is_empty() {
+                // Nothing runs under it any more: its bus, profile and bridge folder go too, once every
+                // token is in (another may share the folder).
+                self.tokens.insert(tok.clone(), info);
+                dead.push(tok);
+                continue;
+            }
+            self.tokens.entry(tok).or_insert(info);
+        }
+        for tok in dead {
+            self.drop_token(&tok);
+        }
+        self.save_tokens();
+    }
+
+    /// A launch token whose processes are all gone: stop its private bus, delete its profile, and its
+    /// Polycarp bridge folder once no other live launch shares it.
+    fn drop_token(&mut self, tok: &str) {
+        let info = self.tokens.remove(tok);
+        self.claims.remove(tok);
+        self.token_pids.remove(tok);
+        self.token_misses.remove(tok);
+        let kids = self.bus_children.remove(tok);
+        let socket = info.as_ref().and_then(|i| i.socket.clone());
+        // Stopping a stack waits for processes to exit; that happens after the lock is released.
+        self.pending_stops.push(bus::StopJob { run: self.paths.run.clone(), token: tok.to_string(), kids, info: info.and_then(|i| i.bus) });
+        let _ = std::fs::remove_dir_all(apps::profile_dir(&self.paths.state, tok));
+        if let Some(tag) = socket.filter(|t| !self.tokens.values().any(|i| i.socket.as_ref() == Some(t))) {
+            let _ = std::fs::remove_dir_all(apps::polycarp_socket_dir(&self.paths.run, &tag));
+        }
+    }
+
+    /// Upkeep for launch tokens: those with no live process (seen once, or older than a minute) are
+    /// dropped, and agent profiles older than a week that no live token owns are deleted.
+    pub fn reap_tokens(&mut self) {
+        self.reap_tokens_with(&proc::pids_by_token());
+    }
+
+    /// `reap_tokens` with the live processes of each token given. A launch whose processes were seen
+    /// and are gone at two upkeeps in a row is over: its token, bus, profile and bridge folder go
+    /// (a browser whose window never registered too). One no process was seen for yet gets a minute to start.
+    pub fn reap_tokens_with(&mut self, live: &HashMap<String, Vec<u32>>) {
+        let t = now();
+        self.claims.retain(|_, cl| cl.until >= t);
+        let mut changed = false;
+        for (tok, i) in self.tokens.iter_mut() {
+            if !i.seen && live.contains_key(tok) {
+                i.seen = true;
+                changed = true;
+            }
+        }
+        let mut gone: Vec<String> = vec![];
+        for (tok, i) in &self.tokens {
+            if live.contains_key(tok) {
+                self.token_misses.remove(tok);
+            } else if i.seen {
+                // Seen and now absent: over once a second look in a row finds nothing either.
+                let m = self.token_misses.entry(tok.clone()).or_insert(0);
+                *m += 1;
+                if *m >= 2 {
+                    gone.push(tok.clone());
+                }
+            } else if t.saturating_sub(i.at) > 60 {
+                gone.push(tok.clone());
+            }
+        }
+        for tok in &gone {
+            self.log(&format!("launch {} is over (no process carries its token); dropping it", &tok[..8.min(tok.len())]));
+            self.drop_token(tok);
+        }
+        if changed || !gone.is_empty() {
+            self.save_tokens();
+        }
+        let live: HashSet<String> = self.tokens.keys().map(|t| t[..8.min(t.len())].to_string()).collect();
+        apps::prune_profiles(&self.paths.state, std::time::SystemTime::now(), 7 * 86_400, &live);
+    }
+
+    /// Windows the compositor has and the model lacks (an event missed), and the other way round.
+    /// A tracked address that now reports another `stableId` is both: its window closed and a new
+    /// one took the address, so `open_client` ends the old one and takes the new one in.
+    pub fn reconcile_windows(&mut self) {
+        let Ok(clients) = self.try_clients() else { return };
+        for c in &clients {
+            if !self.model.is_tracked(&c.addr) || self.replaced(c) {
+                self.open_client(c, true);
+            }
+        }
+        let live: HashSet<&str> = clients.iter().map(|c| c.addr.as_str()).collect();
+        let gone: Vec<String> = self.model.window_ids().into_iter().filter(|w| !live.contains(*w)).map(String::from).collect();
+        for w in gone {
+            self.window_gone(&w);
+        }
+    }
+
+    /// A window closed, by its event or found missing by reconciliation. Every record keyed to its
+    /// address ends here: an address can come back for a later window, which starts unowned.
+    fn window_gone(&mut self, addr: &str) {
+        self.sessions.forget(addr);
+        self.placed.remove(addr);
+        self.stable.remove(addr);
+        let _ = self.apply(Event::Close { window: addr.to_string() });
+    }
+
+    /// R-F2 on Linux rests on `misc:focus_on_activate = false`: with it, an app asking for focus
+    /// never gets it, so every activation the daemon sees is yours. Hyprland can lose the setting
+    /// (a config reload, a stray eval), so it is read back and put back.
+    pub fn ensure_focus_setting(&self) -> bool {
+        match self.hypr.json("getoption misc:focus_on_activate") {
+            Err(_) => false,
+            Ok(v) => {
+                let on = v["int"].as_i64() == Some(1) || v["bool"].as_bool() == Some(true);
+                if on {
+                    self.log("misc:focus_on_activate was on; turning it off again");
+                    return self.hypr.eval("hl.config({ misc = { focus_on_activate = false } })").is_ok();
+                }
+                true
+            }
+        }
+    }
+
+    /// Whether the include is still installed: Some(false) when hyprland.lua exists and no longer
+    /// mentions BaneySpaces.
+    pub fn include_installed() -> Option<bool> {
+        let home = std::env::var("HOME").ok()?;
+        let text = std::fs::read_to_string(std::path::Path::new(&home).join(".config/hypr/hyprland.lua")).ok()?;
+        Some(text.contains(">>> baneyspaces") || text.contains("baneyspaces/baneyspaces.lua"))
+    }
+
+    /// Mirrors what each display shows and which display has focus.
+    fn observe_monitors(&mut self, with_effects: bool) {
+        let mons = self.monitors();
+        for m in &mons {
+            let n = decode(m.ws_id, &m.ws_name).unwrap_or(0);
+            if self.model.current(&m.name) != Some(n) {
+                let ev = Event::ObserveWorkspace { monitor: m.name.clone(), n };
+                if with_effects { let _ = self.apply(ev); } else { let _ = self.model.apply(ev); }
+            }
+        }
+        if let Some(f) = mons.iter().find(|m| m.focused) {
+            if self.model.focused_monitor() != Some(f.name.as_str()) {
+                let ev = Event::ObserveFocusMonitor { monitor: f.name.clone() };
+                if with_effects { let _ = self.apply(ev); } else { let _ = self.model.apply(ev); }
+            }
+        }
+    }
+
+    /// After a display goes away Hyprland hands its workspaces to another monitor and may bring one
+    /// up there. The workspace stays out of sight until you go to it (R-M3): put each display back
+    /// on what the model says it shows.
+    fn reassert(&mut self) {
+        let before = self.monitors().into_iter().find(|m| m.focused).map(|m| m.name);
+        for m in self.monitors() {
+            let want = self.model.current(&m.name).unwrap_or(0);
+            if want != 0 && decode(m.ws_id, &m.ws_name) != Some(want) {
+                let _ = self.show_workspace(&m.name, want);
+            }
+        }
+        if let Some(b) = before {
+            let _ = self.hypr.dispatch(&format!("hl.dsp.focus({{ monitor = {} }})", lua_str(&b)));
+        }
+    }
+
+    pub fn on_hypr_event(&mut self, ev: HyprEvent) {
+        match ev {
+            HyprEvent::OpenWindow { addr } => {
+                if let Some(c) = self.client(&addr) {
+                    self.open_client(&c, false);
+                }
+            }
+            HyprEvent::CloseWindow { addr } => self.window_gone(&addr),
+            HyprEvent::ActiveWindow { addr } => {
+                // An event can arrive after the focus has moved on (our own dispatches make some: a
+                // monitor is focused for a moment to hide the agent workspace there). Only what is
+                // true now counts; a newer event follows if focus really changed.
+                let now_active = self.hypr.json("activewindow").ok().and_then(|v| v["address"].as_str().map(String::from));
+                if now_active != addr {
+                    self.log("stale activation ignored");
+                    return;
+                }
+                let _ = self.apply(Event::Activate { window: addr, cause: Cause::User });
+            }
+            HyprEvent::MonitorAdded { name } => {
+                if !self.model.monitors().any(|m| m == name) {
+                    let _ = self.model.apply(Event::MonitorAdded { monitor: name.clone() });
+                    let order: Vec<String> = {
+                        let mut v: Vec<(u32, String)> = self.model.monitors().filter_map(|m| Some((self.model.slot(m)?, m.to_string()))).collect();
+                        v.sort();
+                        v.into_iter().map(|x| x.1).collect()
+                    };
+                    self.paths.write_atomic("monitors.json", &json!(order).to_string());
+                    if !self.configure_hyprland(std::slice::from_ref(&name)) {
+                        self.dirty = true;
+                    }
+                }
+                self.observe_monitors(true);
+                self.persist();
+            }
+            HyprEvent::MonitorRemoved { name } => {
+                let _ = self.apply(Event::MonitorRemoved { monitor: name });
+                self.reassert();
+            }
+            HyprEvent::Workspace { .. } | HyprEvent::FocusedMon { .. } => self.observe_monitors(true),
+            HyprEvent::MoveWindow { addr, ws_id, ws_name } => {
+                if !self.model.is_tracked(&addr) {
+                    if let Some(c) = self.client(&addr) {
+                        self.open_client(&c, true);
+                    }
+                    return;
+                }
+                if ws_name == AGENT_SPECIAL {
+                    let _ = self.apply(Event::ObserveMove { window: addr, n: None });
+                } else if let Some(n) = decode(ws_id, &ws_name) {
+                    let _ = self.apply(Event::ObserveMove { window: addr, n: Some(n) });
+                } else {
+                    // Left the scheme (to workspace 10, a scratchpad): no longer ours.
+                    let _ = self.apply(Event::Close { window: addr });
+                }
+            }
+            HyprEvent::ActiveSpecial { .. } => {
+                match self.special_shown() {
+                    Ok(shown) => {
+                        let _ = self.apply(Event::ObserveSpecial { shown });
+                    }
+                    Err(e) => {
+                        // Not knowing is not "hidden": re-read before the next command.
+                        self.log(&format!("cannot tell whether the agent workspace is showing: {e}"));
+                        self.dirty = true;
+                    }
+                }
+            }
+            HyprEvent::ConfigReloaded => {
+                if Self::include_installed() == Some(false) {
+                    eprintln!("baneyspaces daemon: the BaneySpaces include is gone from hyprland.lua; exiting");
+                    let _ = std::fs::remove_file(self.paths.ctl_socket());
+                    exit_daemon(0);
+                }
+                if !self.configure_hyprland(&[]) {
+                    self.dirty = true;
+                }
+                self.observe_monitors(true);
+            }
+            HyprEvent::Other => {}
+        }
+    }
+}
+
+// ---- requests -----------------------------------------------------------------------------
+
+fn arg_str<'a>(a: &'a Value, k: &str) -> Option<&'a str> {
+    a.get(k).and_then(Value::as_str)
+}
+
+fn arg_n(a: &Value) -> Result<u8, Envelope> {
+    a.get("n")
+        .and_then(|v| {
+            v.as_u64()
+                .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+        })
+        .and_then(|n| u8::try_from(n).ok())
+        .ok_or_else(|| {
+            Envelope::err(
+                "invalid_args",
+                "a workspace number 1 to 9 is required",
+                Retry::Never,
+                "Example: baneyspaces switch 3",
+            )
+        })
+}
+
+/// The window `move` acts on when none is named: Hyprland's active window now. A failed query is an
+/// error and an empty desktop is "nothing to move"; the model's idea of the front window is never used.
+pub fn front_window(active: Result<Value, String>) -> Result<String, Envelope> {
+    match active {
+        Err(e) => Err(Envelope::err("compositor_error", format!("cannot tell which window is in front: {e}"), Retry::Safe, "Name the window with --window, or try again.")),
+        Ok(v) => match v["address"].as_str().filter(|a| !a.is_empty()) {
+            Some(a) => Ok(a.to_string()),
+            None => Err(Envelope::err("not_found", "there is no front window to move", Retry::Safe, "Focus a window first, or name one with --window.")),
+        },
+    }
+}
+
+fn effects_json(fx: &[Effect]) -> Value {
+    serde_json::to_value(fx).unwrap_or(Value::Null)
+}
+
+
+fn which(app: &str) -> Option<std::path::PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    let ok = |p: &std::path::Path| {
+        p.is_file()
+            && p.metadata()
+                .map(|m| m.permissions().mode() & 0o111 != 0)
+                .unwrap_or(false)
+    };
+    if app.contains('/') {
+        let p = std::path::PathBuf::from(app);
+        return ok(&p).then_some(p);
+    }
+    std::env::var("PATH")
+        .ok()?
+        .split(':')
+        .map(|d| std::path::Path::new(d).join(app))
+        .find(|p| ok(p))
+}
+
+/// Whether a caller is refused the operations that belong to the user. Fails closed: with no peer
+/// pid the caller is not known to be you.
+pub fn refuses_user_op(peer: Option<u32>, is_agent: impl Fn(u32) -> bool) -> bool {
+    peer.is_none_or(is_agent)
+}
+
+/// Operations that belong to you. A peer that is an agent (it carries a launch token we issued, or
+/// is a registered agent process) is refused them. This guards against accidents, such as an
+/// agent shell running `baneyspaces switch 3`; it is not a boundary against a hostile process of
+/// your own user, which could unset its environment.
+const USER_ONLY: &[&str] = &["switch", "move", "focus_monitor", "agent_show", "agent_hide", "agent_toggle", "agent_move", "agent_bring", "overview", "stop"];
+
+impl Core {
+    /// The launch this process belongs to lost its session bus when the daemon restarted.
+    pub fn bus_lost_for(&self, pid: u32) -> bool {
+        self.launch_token(pid).and_then(|t| self.tokens.get(&t)).is_some_and(|i| i.bus_lost)
+    }
+
+    /// The launch a process belongs to: the token in its environ, or for a registered agent process
+    /// whose environ no longer says (a browser), the token it was registered through.
+    pub fn launch_token(&self, pid: u32) -> Option<String> {
+        if let Some(t) = proc::token_of(pid).filter(|t| self.tokens.contains_key(t)) {
+            return Some(t);
+        }
+        if !self.model.is_agent_pid(pid, proc::start_time(pid)?) {
+            return None;
+        }
+        self.token_pids.iter().find(|(_, v)| v.contains(&pid)).map(|(t, _)| t.clone())
+    }
+
+    /// Whether the process on the other end of the control socket is an agent.
+    pub fn is_agent_peer(&self, pid: u32) -> bool {
+        if proc::token_of(pid).is_some_and(|t| self.tokens.contains_key(&t)) {
+            return true;
+        }
+        self.model.agent_proc(pid).is_some() && self.model.is_agent_pid(pid, proc::start_time(pid).unwrap_or(0))
+    }
+}
+
+pub fn handle(shared: &Shared, req: &Value, peer: Option<u32>) -> Envelope {
+    let op = req["op"].as_str().unwrap_or("");
+    let args = req.get("args").cloned().unwrap_or_else(|| json!({}));
+    let agent = req["agent"].as_str().unwrap_or("agent").to_string();
+    if USER_ONLY.contains(&op) {
+        let mut c = lock(shared);
+        // An unknown peer (SO_PEERCRED failed) is treated as an agent: the real CLI always has a pid.
+        if refuses_user_op(peer, |p| c.is_agent_peer(p)) {
+            let env = Envelope::err(
+                "not_in_scope",
+                format!("{op} is for you, not for an agent"),
+                Retry::Never,
+                "An agent drives only the agent workspace. Ask the user to do this.",
+            );
+            record(&c, &agent, op, peer, None, None, "ctl", &env);
+            return env;
+        }
+        if let Err(env) = c.ensure_fresh() {
+            return env;
+        }
+    }
+    if op.starts_with("test_") && !lock(shared).test_ops {
+        return Envelope::err("invalid_args", "test operations are off", Retry::Never, "");
+    }
+    match op {
+        "ping" => Envelope::ok(json!({ "pong": true, "pid": std::process::id() })),
+        "stop" => {
+            let sock = lock(shared).paths.ctl_socket();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(150));
+                let _ = std::fs::remove_file(&sock);
+                exit_daemon(0);
+            });
+            Envelope::ok(json!({ "stopping": true }))
+        }
+        "test_register_pid" => {
+            let mut c = lock(shared);
+            let pid = args["pid"].as_u64().unwrap_or(0) as u32;
+            let start = args["start"].as_u64().unwrap_or(0);
+            match c.apply(Event::AgentRegister { pid, start }) {
+                Ok(_) => Envelope::ok(json!({ "registered": pid })),
+                Err(e) => e.envelope(),
+            }
+        }
+        "test_fail_next" => {
+            lock(shared).fail_next = Some(args["io"].as_bool().unwrap_or(false));
+            Envelope::ok(json!({ "armed": true }))
+        }
+        "switch" => {
+            let n = match arg_n(&args) {
+                Ok(n) => n,
+                Err(e) => return e,
+            };
+            let mut c = lock(shared);
+            match c.apply(Event::Switch { n }) {
+                Ok(fx) => Envelope::ok(json!({ "workspace": n, "effects": effects_json(&fx) })),
+                Err(e) => e.envelope(),
+            }
+        }
+        "move" => {
+            let n = match arg_n(&args) {
+                Ok(n) => n,
+                Err(e) => return e,
+            };
+            let mut c = lock(shared);
+            let follow = !args.get("stay").and_then(Value::as_bool).unwrap_or(false);
+            // With no window named, the front window is the one Hyprland says is active right now:
+            // never one the model remembers (it may be stale), never a guess when the query fails.
+            let window = match arg_str(&args, "window").map(String::from) {
+                Some(w) => w,
+                None => match front_window(c.hypr.json("activewindow")) {
+                    Ok(w) => {
+                        if !c.model.is_tracked(&w) {
+                            if let Some(cl) = c.client(&w) {
+                                c.open_client(&cl, true); // an event that has not been handled yet
+                            }
+                        }
+                        w
+                    }
+                    Err(env) => return env,
+                },
+            };
+            match c.apply(Event::Move { n, window: Some(window), follow }) {
+                Ok(fx) => Envelope::ok(json!({ "workspace": n, "follow": follow, "effects": effects_json(&fx) })),
+                Err(e) => e.envelope(),
+            }
+        }
+        "focus_monitor" => {
+            let mut c = lock(shared);
+            match c.apply(Event::FocusMonitor { monitor: arg_str(&args, "monitor").unwrap_or("").into() }) {
+                Ok(fx) => Envelope::ok(json!({ "effects": effects_json(&fx) })),
+                Err(e) => e.envelope(),
+            }
+        }
+        "state" => {
+            let c = lock(shared);
+            let mut v = c.model.view();
+            v["version"] = json!(1);
+            Envelope::ok(v)
+        }
+        "ls" => Envelope::ok(ls(&lock(shared))),
+        "overview" => {
+            let mut c = lock(shared);
+            c.overview_shown = !c.overview_shown;
+            c.persist();
+            Envelope::ok(json!({ "shown": c.overview_shown, "note": "recorded in state.json; the overview is drawn by the Omarchy shell plugin (part 2)" }))
+        }
+        "agent_show" | "agent_hide" | "agent_toggle" => {
+            let ev = match op {
+                "agent_show" => Event::AgentShow,
+                "agent_hide" => Event::AgentHide,
+                _ => Event::AgentToggle,
+            };
+            let mut c = lock(shared);
+            match c.apply(ev) {
+                Ok(fx) => Envelope::ok(json!({ "shown": c.model.agent_shown(), "effects": effects_json(&fx) })),
+                Err(e) => e.envelope(),
+            }
+        }
+        "agent_move" | "agent_bring" => {
+            let Some(w) = arg_str(&args, "window").map(String::from) else {
+                return Envelope::err("invalid_args", "a window id is required", Retry::Never, "Run `baneyspaces ls` for window ids.");
+            };
+            let mut c = lock(shared);
+            let ev = if op == "agent_move" { Event::AgentSend { window: w } } else { Event::AgentBring { window: w } };
+            match c.apply(ev) {
+                Ok(fx) => Envelope::ok(json!({ "effects": effects_json(&fx), "drivable": false })),
+                Err(e) => e.envelope(),
+            }
+        }
+        "agent_status" | "agent_windows" => Envelope::ok(agent_status(&lock(shared))),
+        // The agent workspace verbs (the Mac's names). `agent_move_window` is the agent's `move --window`;
+        // `agent_move` above is yours (it parks one of your windows) and stays refused to agents.
+        "agent_workspaces" => agentws::workspaces(shared, &agent),
+        "agent_arrange" => agentws::arrange(shared, &agent, &args),
+        "agent_move_window" => agentws::move_window(shared, &agent, &args),
+        "agent_close" => agentws::close_window(shared, &agent, &args),
+        "agent_open" => agent_open(shared, &agent, &args, false, peer),
+        "test_open" => agent_open(shared, &agent, &args, true, peer),
+        "test_reap" => {
+            // Test only: pretend every token is old, then run the upkeep that drops dead ones.
+            let mut c = lock(shared);
+            for t in c.tokens.values_mut() {
+                t.at = 0;
+            }
+            c.reap_tokens();
+            c.save_tokens();
+            Envelope::ok(json!({ "tokens_left": c.tokens.len() }))
+        }
+        "test_stall" => {
+            lock(shared).stall_ms = args["ms"].as_u64().unwrap_or(0);
+            Envelope::ok(json!({ "stall_ms": args["ms"] }))
+        }
+        "agent_run" => agent_run(shared, &agent, &args, peer),
+        "agent_log" => agent_log(&lock(shared), &args),
+        "hands" => hands::run(shared, &agent, &args),
+        _ => Envelope::err("invalid_args", format!("unknown operation {op:?}"), Retry::Never, "Run `baneyspaces help`."),
+    }
+}
+
+fn ls(c: &Core) -> Value {
+    let clients: BTreeMap<String, Client> = c
+        .clients()
+        .into_iter()
+        .map(|x| (x.addr.clone(), x))
+        .collect();
+    let view = c.model.view();
+    let mut spaces = serde_json::Map::new();
+    if let Some(ws) = view["workspaces"].as_object() {
+        for (k, list) in ws {
+            let rows: Vec<Value> = list.as_array().into_iter().flatten().filter_map(Value::as_str).map(|w| {
+                let cl = clients.get(w);
+                json!({ "window": w, "app": cl.map(|c| c.class.clone()).unwrap_or_default(), "title": cl.map(|c| c.title.clone()).unwrap_or_default(), "pid": cl.map(|c| c.pid) })
+            }).collect();
+            spaces.insert(k.clone(), json!(rows));
+        }
+    }
+    json!({ "focused_monitor": view["focused_monitor"], "active": view["active"], "monitors": view["monitors"], "workspaces": spaces, "agent": agent_status(c) })
+}
+
+fn agent_status(c: &Core) -> Value {
+    let list = c.clients();
+    let clients: BTreeMap<String, Client> = list.iter().map(|x| (x.addr.clone(), x.clone())).collect();
+    let windows: Vec<Value> = c
+        .model
+        .agent_windows()
+        .into_iter()
+        .map(|w| {
+            let cl = clients.get(w);
+            let pid = c.model.pid_of(w);
+            // A dialog of an agent process: floating, not floated by `arrange`, not its process's first window there (`agentws::standing`).
+            let dialog = cl.filter(|x| x.floating && !c.is_placed(x) && x.ws_name == AGENT_SPECIAL && !agentws::oldest_of(&c.model, &list, x.pid, w));
+            let parent = dialog.and_then(|d| agentws::parent_of(&c.model, &list, d));
+            json!({ "window": w, "app": cl.map(|c| c.class.clone()).unwrap_or_default(), "title": cl.map(|c| c.title.clone()).unwrap_or_default(), "pid": pid, "drivable": pid.is_some_and(|p| c.model.agent_proc(p).is_some() && !c.bus_lost_for(p)), "kind": if dialog.is_some() { "dialog" } else { "window" }, "parent": parent })
+        })
+        .collect();
+    json!({ "workspace": AGENT_SPECIAL, "shown": c.model.agent_shown(), "windows": windows, "processes": c.model.agent_pids().len(), "refused": c.model.refused() })
+}
+
+/// Appends one line to the action log, and at most once an hour drops records older than 30 days.
+/// `last` holds the time of the last look; `now` is passed in so a test can move the clock.
+pub fn append_and_maybe_prune(paths: &Paths, line: &str, now: u64, last: &std::cell::Cell<u64>) {
+    paths.append("actions.jsonl", line);
+    prune_if_due(paths, now, last);
+}
+
+pub fn prune_if_due(paths: &Paths, now: u64, last: &std::cell::Cell<u64>) {
+    if last.get() != 0 && now.saturating_sub(last.get()) < PRUNE_EVERY_SECS {
+        return;
+    }
+    last.set(now);
+    if let Some(text) = paths.read("actions.jsonl") {
+        if let Some(kept) = prune_text(&text, now) {
+            paths.write_atomic("actions.jsonl", &kept);
+        }
+    }
+}
+
+pub fn append_record(c: &Core, rec: &ActionRecord) {
+    append_and_maybe_prune(&c.paths, &rec.to_line(), now(), &c.last_prune);
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn record(c: &Core, agent: &str, verb: &str, pid: Option<u32>, window: Option<&str>, reference: Option<&str>, route: &str, env: &Envelope) {
+    append_record(c, &ActionRecord::from_result(now(), agent, verb, pid, window, reference, route, env));
+}
+
+fn agent_log(c: &Core, args: &Value) -> Envelope {
+    let floor = now().saturating_sub(baneyspaces_core::agent::RETENTION_DAYS * 86_400);
+    let since = args.get("since").and_then(Value::as_u64).map(|s| now().saturating_sub(s)).unwrap_or(0).max(floor);
+    let log = baneyspaces_core::ActionLog::parse(&c.paths.read("actions.jsonl").unwrap_or_default());
+    let rows: Vec<&ActionRecord> = log.records.iter().filter(|r| r.at >= since).collect();
+    Envelope::ok(json!({ "records": rows, "retention_days": baneyspaces_core::agent::RETENTION_DAYS }))
+}
+
+fn hypr_failure(e: &HyprError, what: &str) -> Envelope {
+    let retry = if e.uncertain() { Retry::Never } else { Retry::Safe };
+    Envelope::err("compositor_error", format!("{what}: {e}"), retry, "Is Hyprland running? Check `baneyspaces doctor`.")
+}
+
+/// What an agent launch is: the named app with files, a command in a terminal, or (tests only) a
+/// raw command that skips the allowlist.
+enum Plan {
+    Open { app: String, files: Vec<String> },
+    Run { cmd: Vec<String>, dir: Option<String> },
+    Test { app: String, args: Vec<String>, private_bus: bool },
+}
+
+struct Prepared {
+    label: String,
+    argv: Vec<String>,
+    /// The Polycarp bridge folder (tag, path) the launch uses, made before the launch.
+    socket: Option<(String, std::path::PathBuf)>,
+    /// Run under the anchor shell (`proc::anchored`): the app writes over its own environ, so its
+    /// processes are found by the tree, under the shell that keeps the token.
+    anchor: bool,
+}
+
+impl Prepared {
+    /// What is run after the environment: the app, or the anchor shell that runs it.
+    fn command(&self) -> Vec<String> {
+        if self.anchor { proc::anchored(&self.argv) } else { self.argv.clone() }
+    }
+
+    /// What the launch's environment gets besides its token and bus: the bridge folder, under both names.
+    fn env(&self) -> Vec<(&'static str, String)> {
+        let mut env: Vec<(&'static str, String)> = match &self.socket {
+            Some((_, dir)) => apps::POLYCARP_SOCKET_VARS.iter().map(|k| (*k, dir.to_string_lossy().into_owned())).collect(),
+            None => vec![],
+        };
+        // A Chromium-family browser loads its accessibility bridge only when told to (with renderer
+        // accessibility forced, its windows are on the bus): `agent snapshot` reads it.
+        if self.anchor {
+            env.push(("ACCESSIBILITY_ENABLED", "1".into()));
+        }
+        env
+    }
+}
+
+fn bad_args(msg: impl Into<String>) -> Envelope {
+    Envelope::err(
+        "bad_arguments",
+        msg,
+        Retry::Never,
+        "Name an allowlisted app, then files inside the handoff folder. No flags, no paths to programs, no URLs.",
+    )
+}
+
+fn needs_sandbox(label: &str, why: &str) -> Envelope {
+    Envelope::err(
+        "needs_sandbox",
+        format!("{label}: {why}"),
+        Retry::Never,
+        "Deny by default: an app that is not known to run as its own process could hand your launches to the agent's copy, or take the agent's request into yours. Use the app's files or command line instead; a sandbox for apps like this comes later.",
+    )
+    .with_data(json!({ "allowed": apps::allowed() }))
+}
+
+/// The system binary for an allowlisted name, or the refusal.
+fn system_binary(app: &str) -> Result<std::path::PathBuf, Envelope> {
+    let path = std::env::var("PATH").unwrap_or_default();
+    match apps::resolve_system(app, &path) {
+        apps::Resolve::Ok(p) => Ok(p),
+        apps::Resolve::NotFound => Err(Envelope::err("not_found", format!("{app} is not installed"), Retry::Never, "Install it, or use another app on the list.")),
+        apps::Resolve::NotSystem(p) => Err(needs_sandbox(app, &format!("what {app} resolves to here ({}) is not the system binary", p.display()))),
+    }
+}
+
+/// Turns a plan into the command to run. Every flag in it was put there by BaneySpaces. `caller` is the
+/// launch token of the process that asked, when it is one of ours (an `agent run` shell).
+fn prepare(c: &Core, plan: &Plan, token: &str, caller: Option<&str>) -> Result<Prepared, Envelope> {
+    prepare_with(c, plan, token, caller, &system_binary)
+}
+
+/// `prepare` with the lookup of an app's system binary given, so a test needs no browser installed.
+fn prepare_with(c: &Core, plan: &Plan, token: &str, caller: Option<&str>, system_binary: &dyn Fn(&str) -> Result<std::path::PathBuf, Envelope>) -> Result<Prepared, Envelope> {
+    let profile = apps::profile_dir(&c.paths.state, token);
+    // `agent run` and a Chromium-family browser get a Polycarp bridge folder: the asking shell's, so the
+    // browser it opens is the one its MCP client sees, or else one of their own.
+    let socket = || -> Result<(String, std::path::PathBuf), Envelope> {
+        let tag = caller.and_then(|t| c.tokens.get(t)).and_then(|i| i.socket.clone()).unwrap_or_else(|| token[..8.min(token.len())].to_string());
+        let dir = apps::make_polycarp_socket_dir(&c.paths.run, &tag).map_err(|e| Envelope::err("internal", format!("cannot make the Polycarp bridge folder: {e}"), Retry::Safe, ""))?;
+        Ok((tag, dir))
+    };
+    let with_policy = |name: &str, tail: Vec<String>| -> Result<Vec<String>, Envelope> {
+        let bin = system_binary(name)?;
+        let mut argv = vec![bin.to_string_lossy().into_owned()];
+        match apps::known(name, &profile) {
+            Some(apps::Launch::Separate) => {}
+            Some(apps::Launch::Flags(f)) => {
+                let _ = std::fs::create_dir_all(&profile);
+                argv.extend(f);
+                // A Chromium-family browser comes up with Polycarp connected: the installed extension, and
+                // the native host manifests copied into its private profile, where it looks for them.
+                if apps::is_chromium(name) {
+                    apps::copy_polycarp_hosts(&c.paths.config, name, &profile);
+                    argv.extend(apps::polycarp_flags(name, apps::polycarp_extension(&c.paths.data).as_deref()));
+                }
+            }
+            None => return Err(needs_sandbox(name, "is not on the list of apps BaneySpaces can start as a separate process for an agent")),
+        }
+        argv.extend(tail);
+        Ok(argv)
+    };
+    match plan {
+        Plan::Open { app, files } => {
+            if app.contains('/') || app.is_empty() || app.starts_with('-') {
+                return Err(bad_args("name the app (such as foot), not a path or a flag"));
+            }
+            if apps::known(app, &profile).is_none() {
+                return Err(needs_sandbox(app, "is not on the list of apps BaneySpaces can start as a separate process for an agent"));
+            }
+            if !files.is_empty() && !apps::takes_files(app) {
+                return Err(bad_args(format!("{app} takes no files here: a terminal runs its argument as a command. Use `agent run` for commands.")));
+            }
+            let files = apps::check_files(files, &c.paths.handoff()).map_err(bad_args)?;
+            let argv = with_policy(app, files)?;
+            let chromium = apps::is_chromium(app);
+            Ok(Prepared { label: app.clone(), argv, socket: if chromium { Some(socket()?) } else { None }, anchor: chromium })
+        }
+        Plan::Run { cmd, dir } => {
+            let terminals: [(&str, &[&str]); 4] = [("foot", &["--"]), ("ghostty", &["-e"]), ("kitty", &[]), ("alacritty", &["-e"])];
+            let Some((term, pre)) = terminals.iter().find(|(t, _)| system_binary(t).is_ok()) else {
+                return Err(Envelope::err("not_found", "no system terminal found (foot, ghostty, kitty or alacritty)", Retry::Never, "Install one of them."));
+            };
+            let mut tail: Vec<String> = vec![];
+            if let Some(d) = dir {
+                match *term {
+                    "foot" => tail.extend(["-D".into(), d.clone()]),
+                    "kitty" => tail.extend(["-d".into(), d.clone()]),
+                    "ghostty" => tail.push(format!("--working-directory={d}")),
+                    _ => tail.extend(["--working-directory".into(), d.clone()]),
+                }
+            }
+            tail.extend(pre.iter().map(|s| s.to_string()));
+            tail.extend(cmd.iter().cloned());
+            let argv = with_policy(term, tail)?;
+            Ok(Prepared { label: (*term).to_string(), argv, socket: Some(socket()?), anchor: false })
+        }
+        Plan::Test { app, args, .. } => {
+            let exe = which(app).ok_or_else(|| Envelope::err("not_found", format!("no program {app:?} on PATH"), Retry::Never, "Give an executable name or a full path."))?;
+            let mut argv = vec![exe.to_string_lossy().into_owned()];
+            argv.extend(args.iter().cloned());
+            Ok(Prepared { label: app.clone(), argv, socket: None, anchor: false })
+        }
+    }
+}
+
+/// What `open` adds to a launch: the agent session it belongs to (`close` closes only what a
+/// session's `open` made) and how long to wait for the window (`wait`, at most 7 s as on the Mac;
+/// 8 s when it is not given).
+#[derive(Default)]
+struct OpenOpts {
+    session: String,
+    wait: Option<u64>,
+    /// The asking process, to find the `agent run` shell (and its bridge folder) it runs in.
+    peer: Option<u32>,
+}
+
+/// Starts the plan as a new process on the agent workspace, on a private session bus of its own,
+/// then waits for a window of its own.
+fn launch_on_agent(shared: &Shared, agent: &str, plan: Plan, opts: &OpenOpts) -> Envelope {
+    let token = match proc::random_token() {
+        Ok(t) => t,
+        Err(e) => return Envelope::err("internal", format!("no random bytes: {e}"), Retry::Never, ""),
+    };
+    let private_bus = !matches!(plan, Plan::Test { private_bus: false, .. });
+    // Only `open` claims its window for the session; `run` is the agent's own shell.
+    let claims = !matches!(plan, Plan::Run { .. });
+    // 1. Under the lock, briefly: check the plan and read what is needed.
+    let (prep, known, run_dir) = {
+        let c = lock(shared);
+        let caller = opts.peer.and_then(proc::token_of);
+        let prep = match prepare(&c, &plan, &token, caller.as_deref()) {
+            Ok(p) => p,
+            Err(env) => {
+                record(&c, agent, "open", None, None, None, "preflight", &env);
+                return env;
+            }
+        };
+        let known: HashSet<String> = c.model.window_ids().into_iter().map(String::from).collect();
+        (prep, known, c.paths.run.clone())
+    };
+    let label = prep.label.clone();
+    // 2. Without the lock: the bus stack takes a second or two to come up, and your keys must not wait
+    //    for it. One session bus per launch: GApplication and friends forward over it, so with a bus
+    //    of its own the agent's copy never meets yours, in either direction.
+    let mut bus_env = String::new();
+    let mut started = None;
+    if private_bus {
+        match bus::start(&run_dir, &token) {
+            Ok((kids, info)) => {
+                bus_env = format!("DBUS_SESSION_BUS_ADDRESS={} ", sh_quote(&info.addr));
+                started = Some((kids, info));
+            }
+            Err(e) => {
+                let env = Envelope::err("not_supported", format!("cannot give the app a session bus of its own, so it is not started: {e}"), Retry::Never, "Install dbus and at-spi2-core.");
+                let c = lock(shared);
+                record(&c, agent, "open", None, None, None, "preflight", &env);
+                return env;
+            }
+        }
+    }
+    // 3. Under the lock again: record the launch and start the app. The app does not get the means to
+    //    drive the compositor (its IPC signature): accident-proofing, like the rest.
+    let (front_before, refused_before) = {
+        let mut c = lock(shared);
+        let front = c.hypr.json("activewindow").ok().and_then(|v| v["address"].as_str().map(String::from));
+        let refused = c.model.refused();
+        let (kids, bus_info) = match started {
+            Some((k, i)) => (Some(k), Some(i)),
+            None => (None, None),
+        };
+        if let Some(k) = kids {
+            c.bus_children.insert(token.clone(), k);
+        }
+        let socket_env: String = prep.env().iter().map(|(k, v)| format!("{k}={} ", sh_quote(v))).collect();
+        let cmd = format!(
+            "env -u HYPRLAND_INSTANCE_SIGNATURE -u HYPRLAND_CMD BANEYSPACES_AGENT_TOKEN={token} BANEYSPACES_AGENT_ID={} {bus_env}{socket_env}{}",
+            sh_quote(agent),
+            prep.command().iter().map(|a| sh_quote(a)).collect::<Vec<_>>().join(" ")
+        );
+        c.tokens.insert(token.clone(), TokenInfo { agent: agent.into(), app: label.clone(), at: now(), bus: bus_info, bus_lost: false, socket: prep.socket.as_ref().map(|(t, _)| t.clone()), seen: false });
+        c.save_tokens();
+        if claims && !opts.session.is_empty() {
+            c.claims.insert(token.clone(), Claim { session: opts.session.clone(), app: label.clone(), until: now() + CLAIM_SECS });
+        }
+        let lua = format!("hl.dsp.exec_cmd({}, {{ workspace = \"{} silent\" }})", lua_str(&cmd), AGENT_SPECIAL);
+        if let Err(e) = c.hypr.dispatch(&lua) {
+            c.drop_token(&token);
+            c.save_tokens();
+            let env = hypr_failure(&e, "could not start the app");
+            record(&c, agent, "open", None, None, None, "exec", &env);
+            return env;
+        }
+        (front, refused)
+    };
+    let label = label.as_str();
+    // Where this launch's Polycarp bridge is: `POLYCARP_SOCKET_DIR=<dir> polycarp-browser mcp` reaches its browser.
+    let socket_dir = prep.socket.as_ref().map(|(_, d)| d.to_string_lossy().into_owned());
+    let deadline = Instant::now() + opts.wait.map(|w| Duration::from_secs(w.min(7))).unwrap_or(Duration::from_secs(8));
+    // At least one look, even with `wait: 0` (the Mac's rule).
+    // Whether a process of this launch was ever seen. Hyprland starts it after the exec is answered
+    // (sh, then env, then the app), so a short wait can end before there is one.
+    let mut seen = false;
+    loop {
+        std::thread::sleep(Duration::from_millis(50));
+        if !seen {
+            seen = !proc::pids_with_token(&token).is_empty(); // reads /proc, so before the lock
+        }
+        let mut c = lock(shared);
+        if seen {
+            c.mark_seen(&token);
+        }
+        if let Some(pid) = c.token_pids.get(&token).and_then(|v| v.first()).copied() {
+            if let Some(w) = c.model.agent_windows().into_iter().find(|w| c.model.pid_of(w) == Some(pid)).map(String::from) {
+                let (title, stable) = c.client(&w).map(|x| (x.title, x.stable_id)).unwrap_or_default();
+                let start = proc::start_time(pid);
+                let front_after = c.hypr.json("activewindow").ok().and_then(|v| v["address"].as_str().map(String::from));
+                let focus = agentws::focus_json(front_before.as_deref(), front_after.as_deref(), refused_before, c.model.refused());
+                let mut data = json!({ "window": w, "pid": pid, "app": label, "title": title, "workspace": AGENT_SPECIAL, "start": start, "reused": false, "focus": focus });
+                if let Some(d) = &socket_dir {
+                    data["polycarp_socket_dir"] = json!(d);
+                }
+                // Normally the window took the claim when it registered; this is the fallback.
+                c.claims.remove(&token);
+                if claims && !c.sessions.opened_by(&opts.session, &w, pid, start.unwrap_or(0), &stable) && !c.sessions.record(&opts.session, &w, agentws::Opened { pid, start: start.unwrap_or(0), app: label.to_string(), stable: stable.clone() }) {
+                    data["window_identified"] = json!(false);
+                    data["note"] = json!("this window is not recorded for your session (no session, or another session owns it), so `close` will refuse it");
+                }
+                let env = Envelope::ok(data);
+                record(&c, agent, "open", Some(pid), Some(&w), None, "exec", &env);
+                return env;
+            }
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+    }
+    let alive = proc::pids_with_token(&token);
+    // The process the launch started (the app, never the anchor shell or a helper the app sent off, such
+    // as Chromium's crash handler). Reads /proc, so before the lock.
+    let launched = proc::launch_pid(&proc::Live, &alive, &proc::is_anchor, &proc::all_pids()).or(alive.first().copied());
+    let mut c = lock(shared);
+    let seen = seen || !alive.is_empty();
+    if seen {
+        c.mark_seen(&token);
+    }
+    // `open --wait N`: the caller asked not to wait for the window, so "not here yet" is an answer.
+    let short_wait = claims && opts.wait.is_some();
+    // Windows that appeared while we waited and are not the agent's: the app may have forwarded to
+    // a copy of yours. They are left exactly where they are; this only says so.
+    let strays: Vec<Value> = c
+        .model
+        .window_ids()
+        .into_iter()
+        .filter(|w| !known.contains(*w) && !c.model.is_agent_window(w))
+        .map(|w| json!({ "window": w, "pid": c.model.pid_of(w) }))
+        .collect();
+    // No process now means it came and went only if one was seen, or the full default wait has
+    // passed. After a short wait with none seen yet, the app is most likely still being started.
+    let mut env = if alive.is_empty() && (seen || !short_wait) {
+        let extra = if strays.is_empty() { "" } else { "; a window of yours appeared meanwhile and was left where it is" };
+        Envelope::err(
+            "single_instance",
+            format!("{label} exited without a window of its own: it most likely handed the request to an instance that was already running{extra}"),
+            Retry::Never,
+            "Agents drive only a process BaneySpaces started. Use the app's files or command line instead, or ask the user to lend it.",
+        )
+    } else if !short_wait {
+        Envelope::err("timeout", format!("{label} is running (pid {}) but opened no window within 8 s", launched.unwrap_or(alive[0])), Retry::Never, "Check `baneyspaces agent status`; the app may need a display flag.")
+    } else {
+        // Still starting. Its first window is claimed for this session when it comes (the claim was
+        // recorded with the exec), so this is not a failure: the window is just not here yet.
+        let front_after = c.hypr.json("activewindow").ok().and_then(|v| v["address"].as_str().map(String::from));
+        let focus = agentws::focus_json(front_before.as_deref(), front_after.as_deref(), refused_before, c.model.refused());
+        let pid = c.token_pids.get(&token).and_then(|v| v.first()).copied().or(launched);
+        let claimed = c.claims.contains_key(&token);
+        Envelope::ok(json!({
+            "window": Value::Null,
+            "pending": true,
+            "pid": pid,
+            "app": label,
+            "workspace": AGENT_SPECIAL,
+            "reused": false,
+            "focus": focus,
+            "note": if claimed { "the app is still starting; its first window goes to your session when it appears. Run `baneyspaces agent windows` to find it." } else { "the app is still starting. Run `baneyspaces agent windows` to find its window." },
+        }))
+    };
+    // While the launch runs, its bridge folder is reported even when no window was matched to it yet.
+    if let (false, Some(dir)) = (alive.is_empty(), &socket_dir) {
+        add_data(&mut env, "polycarp_socket_dir", json!(dir));
+    }
+    if !strays.is_empty() {
+        add_data(&mut env, "windows_that_appeared", json!(strays));
+    }
+    record(&c, agent, "open", launched, None, None, "exec", &env);
+    env
+}
+
+/// Adds one field to an answer's data, or to its error's data.
+fn add_data(env: &mut Envelope, key: &str, value: Value) {
+    let slot = match (env.data.as_mut(), env.error.as_mut()) {
+        (Some(d), _) => d,
+        (None, Some(e)) => e.data.get_or_insert_with(|| json!({})),
+        (None, None) => env.data.get_or_insert_with(|| json!({})),
+    };
+    slot[key] = value;
+}
+
+fn str_list(a: &Value, k: &str) -> Vec<String> {
+    a.get(k).and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(String::from).collect()
+}
+
+fn agent_open(shared: &Shared, agent: &str, args: &Value, test: bool, peer: Option<u32>) -> Envelope {
+    let Some(app) = arg_str(args, "app") else {
+        return Envelope::err("invalid_args", "an app is required", Retry::Never, "Example: baneyspaces agent open foot");
+    };
+    // `targets` is the Mac's name for the files.
+    let mut list = str_list(args, "args");
+    if list.is_empty() {
+        list = str_list(args, "targets");
+    }
+    let opts = OpenOpts { session: arg_str(args, "session").unwrap_or("").to_string(), wait: args["wait"].as_u64(), peer };
+    // `new_window: false` with no files: this session's window of that app, if it still has one. Nothing starts.
+    if args["new_window"].as_bool() == Some(false) && list.is_empty() && !opts.session.is_empty() {
+        let c = lock(shared);
+        if let Some(data) = agentws::reuse(&c, &opts.session, app) {
+            let env = Envelope::ok(data);
+            record(&c, agent, "open", env.data.as_ref().and_then(|d| d["pid"].as_u64()).map(|p| p as u32), env.data.as_ref().and_then(|d| d["window"].as_str()), None, "reuse", &env);
+            return env;
+        }
+    }
+    let plan = if test {
+        Plan::Test { app: app.into(), args: list, private_bus: args["private_bus"].as_bool().unwrap_or(true) }
+    } else {
+        Plan::Open { app: app.into(), files: list }
+    };
+    launch_on_agent(shared, agent, plan, &opts)
+}
+
+/// `agent run`: a command in a terminal on the agent workspace. It is a shell with your uid, so
+/// what it runs is not limited to the allowlist; the private session bus keeps its D-Bus apps from
+/// meeting yours. Accident-proofing, not a boundary.
+fn agent_run(shared: &Shared, agent: &str, args: &Value, peer: Option<u32>) -> Envelope {
+    let cmd = str_list(args, "command");
+    if cmd.is_empty() {
+        return Envelope::err("invalid_args", "a command is required after --", Retry::Never, "Example: baneyspaces agent run --dir ~/Projects/x -- claude");
+    }
+    launch_on_agent(shared, agent, Plan::Run { cmd, dir: arg_str(args, "dir").map(String::from) }, &OpenOpts { peer, ..OpenOpts::default() })
+}
+
+// ---- serving --------------------------------------------------------------------------------
+
+/// The pid of the process on the other end of a Unix socket (SO_PEERCRED).
+fn peer_pid(s: &UnixStream) -> Option<u32> {
+    use std::os::unix::io::AsRawFd;
+    let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: `cred` and `len` are valid for the call; the fd is a live socket.
+    let r = unsafe { libc::getsockopt(s.as_raw_fd(), libc::SOL_SOCKET, libc::SO_PEERCRED, &mut cred as *mut _ as *mut libc::c_void, &mut len) };
+    (r == 0 && cred.pid > 0).then_some(cred.pid as u32)
+}
+
+fn serve_conn(shared: Shared, mut s: UnixStream) {
+    let _ = s.set_read_timeout(Some(Duration::from_secs(10)));
+    let peer = peer_pid(&s);
+    let mut line = String::new();
+    let mut r = BufReader::new(&s).take(1 << 20);
+    if r.read_line(&mut line).is_err() {
+        return;
+    }
+    let env = match serde_json::from_str::<Value>(&line) {
+        Ok(req) => handle(&shared, &req, peer),
+        Err(e) => Envelope::err("invalid_args", format!("bad request: {e}"), Retry::Never, ""),
+    };
+    let _ = writeln!(s, "{}", env.to_json());
+}
+
+pub fn run(trace: bool) -> i32 {
+    let hypr = match Hypr::from_env() {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("baneyspaces daemon: {e}");
+            return 1;
+        }
+    };
+    let paths = Paths::from_env();
+    if let Err(e) = paths.ensure() {
+        eprintln!("baneyspaces daemon: {e}");
+        return 1;
+    }
+    bus::install_signal_handlers();
+    // One daemon at a time: the lock is held for the life of the process.
+    let _lock = match take_lock(&paths) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("baneyspaces daemon: {e}");
+            return 1;
+        }
+    };
+    let sock = paths.ctl_socket();
+    if UnixStream::connect(&sock).is_ok() {
+        eprintln!("baneyspaces daemon: already running ({})", sock.display());
+        return 1;
+    }
+    let _ = std::fs::remove_file(&sock);
+    let listener = match UnixListener::bind(&sock) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("baneyspaces daemon: cannot bind {}: {e}", sock.display());
+            return 1;
+        }
+    };
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600));
+    }
+    let core = Core {
+        model: Model::new(),
+        hypr: hypr.clone(),
+        paths: paths.clone(),
+        tokens: HashMap::new(),
+        token_pids: HashMap::new(),
+        token_misses: HashMap::new(),
+        snaps: HashMap::new(),
+        overview_shown: false,
+        events_seen: 0,
+        started: now(),
+        trace,
+        dirty: false,
+        last_prune: std::cell::Cell::new(0),
+        test_ops: std::env::var("BANEYSPACES_TEST_OPS").is_ok_and(|v| v == "1"),
+        fail_next: None,
+        resyncing: false,
+        deferred: vec![],
+        stall_ms: 0,
+        bus_children: HashMap::new(),
+        pending_stops: vec![],
+        sessions: agentws::SessionWindows::default(),
+        placed: HashMap::new(),
+        stable: HashMap::new(),
+        claims: HashMap::new(),
+    };
+    let shared: Shared = Arc::new(Mutex::new(core));
+    // Connect to Hyprland's events FIRST. They queue in the socket while the state is read, so a
+    // window that opens, closes or moves in between is replayed afterwards and is never missed.
+    let stream = match hypr.events() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("baneyspaces daemon: cannot read Hyprland events: {e}");
+            return 1;
+        }
+    };
+    {
+        let mut c = lock(&shared);
+        prune_if_due(&c.paths, now(), &c.last_prune);
+        c.resync();
+        c.reap_tokens();
+        // Buses left by an earlier daemon (its directory gone, or no live token owns them) are killed.
+        let tags: HashSet<String> = c.tokens.iter().filter(|(_, i)| i.bus.is_some()).map(|(t, _)| t[..8.min(t.len())].to_string()).collect();
+        let swept = bus::sweep(&c.paths.run, &tags);
+        bus::sweep_dirs(&c.paths.run, &tags);
+        let sockets: HashSet<String> = c.tokens.values().filter_map(|i| i.socket.clone()).collect();
+        apps::sweep_polycarp_socket_dirs(&c.paths.run, &sockets);
+        if swept > 0 {
+            eprintln!("baneyspaces daemon: swept {swept} leftover bus process(es)");
+        }
+    }
+    if let Some(ms) = std::env::var("BANEYSPACES_TEST_EVENT_DELAY_MS").ok().and_then(|v| v.parse::<u64>().ok()).filter(|_| std::env::var("BANEYSPACES_TEST_OPS").is_ok_and(|v| v == "1")) {
+        std::thread::sleep(Duration::from_millis(ms)); // test only: events pile up before they are read
+    }
+    {
+        let shared = shared.clone();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stream).lines() {
+                let Ok(line) = line else { break };
+                let ev = parse_event(&line);
+                if ev != HyprEvent::Other {
+                    lock(&shared).on_hypr_event(ev);
+                }
+            }
+            eprintln!("baneyspaces daemon: Hyprland closed the event socket; exiting");
+            exit_daemon(0);
+        });
+    }
+    // Upkeep: forget agent processes that died or whose pid was reused, keep the focus setting
+    // R-F2 rests on, and let the action log shed old records.
+    {
+        let shared = shared.clone();
+        std::thread::spawn(move || {
+          let mut tick = 0u32;
+          loop {
+            std::thread::sleep(Duration::from_secs(2));
+            tick += 1;
+            // While a launch runs, every tick: its token goes within 4 s of its last process. The scan
+            // reads every process's environ, which can stall on one process: never under the lock.
+            let busy = !lock(&shared).tokens.is_empty();
+            let live = (tick.is_multiple_of(5) || busy).then(proc::pids_by_token);
+            let stops = {
+            let mut c = lock(&shared);
+            c.reconcile_agents();
+            c.reconcile_windows();
+            if !c.ensure_focus_setting() {
+                c.dirty = true; // the focus rule cannot be confirmed: commands wait until it can
+            }
+            if let Some(live) = &live {
+                c.reap_tokens_with(live);
+            }
+            prune_if_due(&c.paths, now(), &c.last_prune);
+            std::mem::take(&mut c.pending_stops)
+            };
+            // Taking a stack down waits for its processes to exit: with the lock released.
+            for job in stops {
+                job.run();
+            }
+          }
+        });
+    }
+    eprintln!("baneyspaces daemon: ready ({})", sock.display());
+    for conn in listener.incoming().flatten() {
+        let shared = shared.clone();
+        std::thread::spawn(move || serve_conn(shared, conn));
+    }
+    0
+}
+
+/// How long a starting daemon waits for the lock. A process the last daemon spawned holds a copy of
+/// its lock fd from fork to exec, so the lock can stay taken for a moment after that daemon is gone.
+/// A daemon that is really running holds it for good, and a second one still gives up.
+pub const LOCK_WAIT: Duration = Duration::from_millis(500);
+
+/// An exclusive lock on a file next to the socket. Two daemons starting together (the autostart
+/// fires on start and on reload) cannot both pass the check-then-bind that follows.
+pub fn take_lock(paths: &Paths) -> Result<std::fs::File, String> {
+    take_lock_within(paths, LOCK_WAIT)
+}
+
+fn take_lock_within(paths: &Paths, wait: Duration) -> Result<std::fs::File, String> {
+    use std::os::unix::io::AsRawFd;
+    let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(paths.run.join("daemon.lock")).map_err(|e| format!("cannot open the lock file: {e}"))?;
+    let t = Instant::now();
+    // SAFETY: a valid fd from the file just opened.
+    while unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        if t.elapsed() >= wait {
+            return Err("already running (the lock is held)".into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    Ok(f)
+}
+
+/// How long the CLI and MCP client wait for the daemon. The daemon's own budget for one hands call
+/// (`hands::BUDGET_SECS`) is well under this, so a reply always comes first unless something is wrong.
+pub const CLIENT_TIMEOUT_SECS: u64 = 90;
+
+/// Sends one request to the running daemon.
+pub fn call(paths: &Paths, req: &Value) -> Envelope {
+    call_timeout(paths, req, Duration::from_secs(CLIENT_TIMEOUT_SECS))
+}
+
+/// A connect failure means nothing was sent: `daemon_down`, safe to repeat. Once the request is
+/// written, silence is not safety: a read timeout or an empty reply is `timeout`, never repeat.
+pub fn call_timeout(paths: &Paths, req: &Value, wait: Duration) -> Envelope {
+    let down = || Envelope::err("daemon_down", "baneyspaces daemon is not running", Retry::Safe, "Start it: baneyspaces daemon (Omarchy starts it from the autostart file).");
+    let Ok(mut s) = UnixStream::connect(paths.ctl_socket()) else {
+        return down();
+    };
+    let _ = s.set_read_timeout(Some(wait));
+    if writeln!(s, "{req}").is_err() {
+        return down();
+    }
+    let uncertain = || {
+        Envelope::err(
+            "timeout",
+            "the daemon did not answer in time; the command may or may not have been carried out",
+            Retry::Never,
+            "Look at the state (`baneyspaces state`, `baneyspaces agent status`) before trying again.",
+        )
+    };
+    let mut out = String::new();
+    match BufReader::new(&s).read_line(&mut out) {
+        Ok(0) | Err(_) => uncertain(),
+        Ok(_) if out.is_empty() => uncertain(),
+        Ok(_) => serde_json::from_str(&out).unwrap_or_else(|_| Envelope::err("internal", "unreadable reply from the daemon", Retry::Never, "")),
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+
+    fn temp_paths(tag: &str) -> Paths {
+        let base = std::env::temp_dir().join(format!("bs-test-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let p = Paths { state: base.join("state"), run: base.join("run"), data: base.join("data"), config: base.join("config") };
+        p.ensure().unwrap();
+        p
+    }
+
+    fn test_core(tag: &str) -> Core {
+        let paths = temp_paths(tag);
+        let hypr = Hypr::at(paths.run.join("no-hyprland"));
+        test_core_on(paths, hypr)
+    }
+
+    fn test_core_on(paths: Paths, hypr: Hypr) -> Core {
+        Core {
+            model: Model::new(),
+            hypr,
+            paths,
+            tokens: HashMap::new(),
+            token_pids: HashMap::new(),
+            token_misses: HashMap::new(),
+            snaps: HashMap::new(),
+            overview_shown: false,
+            events_seen: 0,
+            started: now(),
+            trace: false,
+            dirty: false,
+            last_prune: std::cell::Cell::new(0),
+            test_ops: false,
+            fail_next: None,
+            resyncing: false,
+            deferred: vec![],
+            stall_ms: 0,
+            bus_children: HashMap::new(),
+            pending_stops: vec![],
+            sessions: agentws::SessionWindows::default(),
+            placed: HashMap::new(),
+        stable: HashMap::new(),
+            claims: HashMap::new(),
+        }
+    }
+
+    /// A stand-in for Hyprland's socket: answers each request with `answer(request)` and logs it.
+    pub(crate) fn fake_hypr(tag: &str, answer: impl Fn(&str) -> String + Send + 'static) -> (Core, std::sync::Arc<Mutex<Vec<String>>>) {
+        let paths = temp_paths(tag);
+        let dir = paths.run.join("hypr");
+        std::fs::create_dir_all(&dir).unwrap();
+        let l = UnixListener::bind(dir.join(".socket.sock")).unwrap();
+        let log = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen = log.clone();
+        std::thread::spawn(move || {
+            for conn in l.incoming().flatten() {
+                let mut req = String::new();
+                let mut c = conn;
+                let _ = c.read_to_string(&mut req);
+                seen.lock().unwrap().push(req.clone());
+                let _ = c.write_all(answer(&req).as_bytes());
+            }
+        });
+        (test_core_on(paths, Hypr::at(dir)), log)
+    }
+
+    pub(crate) fn mon(id: i64, name: &str, focused: bool, ws: i64) -> Value {
+        json!({ "id": id, "name": name, "focused": focused, "disabled": false, "activeWorkspace": { "id": ws, "name": ws.to_string() }, "specialWorkspace": { "name": "" } })
+    }
+
+    /// A window that closes with its event missed leaves no record behind, and a later window at the
+    /// same address, of the same process, starts unowned.
+    #[test]
+    fn a_missed_close_leaves_no_owner_for_the_address() {
+        let me = std::process::id();
+        let start = crate::proc::start_time(me).unwrap_or(0);
+        let listed: std::sync::Arc<Mutex<Vec<Value>>> = Default::default();
+        let list = listed.clone();
+        let (mut c, _log) = fake_hypr("missed-close", move |r| match r {
+            "j/clients" => Value::Array(list.lock().unwrap().clone()).to_string(),
+            "j/monitors" => json!([mon(0, "A", true, 1)]).to_string(),
+            _ => "[]".into(),
+        });
+        c.model.apply(Event::AgentRegister { pid: me, start }).unwrap();
+        let w = json!({ "address": "0xe1", "pid": me, "workspace": { "id": -98, "name": AGENT_SPECIAL }, "monitor": 0, "class": "foot", "title": "t", "mapped": true, "floating": false, "stableId": "1" });
+        let cl = Core::parse_clients(&json!([w.clone()]))[0].clone();
+        listed.lock().unwrap().push(w);
+        c.open_client(&cl, false);
+        assert!(c.sessions.record("s1", "0xe1", agentws::Opened { pid: me, start, app: "foot".into(), stable: "1".into() }));
+        c.placed.insert("0xe1".into(), "1".into());
+        // It closes; its event is missed and reconciliation finds it gone.
+        listed.lock().unwrap().clear();
+        c.reconcile_windows();
+        assert!(!c.model.is_tracked("0xe1"));
+        assert_eq!(c.sessions.owner("0xe1"), None, "reconciliation forgets the session record");
+        assert!(!c.placed.contains_key("0xe1"));
+        // A record the model no longer backs (say, from before a rebuild) does not pass to a new window there.
+        assert!(c.sessions.record("s1", "0xe1", agentws::Opened { pid: me, start, app: "foot".into(), stable: "1".into() }));
+        c.open_client(&cl, false);
+        assert!(!c.sessions.opened_by("s1", "0xe1", me, start, "1"), "a new window at that address starts unowned");
+    }
+
+    /// One window of this test process on the agent workspace, as `hyprctl -j clients` lists it.
+    fn agent_client(addr: &str, stable: &str) -> Value {
+        json!({ "address": addr, "pid": std::process::id(), "workspace": { "id": -98, "name": AGENT_SPECIAL }, "monitor": 0, "class": "foot", "title": "t", "mapped": true, "floating": true, "stableId": stable })
+    }
+
+    /// A Core that tracks window 0xe1 (`stableId` 1) of this process, opened by session s1 and floated
+    /// by `arrange`. Returns it with the list its fake Hyprland answers `clients` from, and the log.
+    #[allow(clippy::type_complexity)]
+    fn owned_window(tag: &str) -> (Core, std::sync::Arc<Mutex<Vec<Value>>>, std::sync::Arc<Mutex<Vec<String>>>) {
+        let me = std::process::id();
+        let start = crate::proc::start_time(me).unwrap_or(0);
+        let listed: std::sync::Arc<Mutex<Vec<Value>>> = Default::default();
+        let list = listed.clone();
+        let (mut c, log) = fake_hypr(tag, move |r| match r {
+            "j/clients" => Value::Array(list.lock().unwrap().clone()).to_string(),
+            "j/monitors" => json!([mon(0, "A", true, 1)]).to_string(),
+            "j/workspaces" => "[]".into(),
+            _ => "ok".into(),
+        });
+        c.model.apply(Event::AgentRegister { pid: me, start }).unwrap();
+        let w = agent_client("0xe1", "1");
+        let cl = Core::parse_clients(&json!([w.clone()]))[0].clone();
+        listed.lock().unwrap().push(w);
+        c.open_client(&cl, false);
+        assert!(c.sessions.record("s1", "0xe1", agentws::Opened { pid: me, start, app: "foot".into(), stable: "1".into() }));
+        c.placed.insert("0xe1".into(), "1".into());
+        assert!(c.sessions.opened_by("s1", "0xe1", me, start, "1") && c.is_placed(&cl), "the window is s1's and placed");
+        (c, listed, log)
+    }
+
+    /// What must hold once another window has the address of one a session opened: no session owns
+    /// it, it is not taken for a window `arrange` floated, and `close` from that session is refused
+    /// with nothing sent.
+    fn assert_replacement_is_unowned(c: Core, log: &std::sync::Arc<Mutex<Vec<String>>>) {
+        let me = std::process::id();
+        let start = crate::proc::start_time(me).unwrap_or(0);
+        let new = Core::parse_clients(&json!([agent_client("0xe1", "2")]))[0].clone();
+        assert!(c.model.is_tracked("0xe1"), "the new window is tracked");
+        assert_eq!(c.stable.get("0xe1").map(String::as_str), Some("2"));
+        assert_eq!(c.sessions.owner("0xe1"), None, "the old window's session does not own the new one");
+        for stable in ["1", "2", ""] {
+            assert!(!c.sessions.opened_by("s1", "0xe1", me, start, stable), "stableId {stable:?}");
+        }
+        assert!(!c.is_placed(&new), "and it was not floated by arrange");
+        let shared: Shared = std::sync::Arc::new(Mutex::new(c));
+        log.lock().unwrap().clear();
+        let e = agentws::close_window(&shared, "t", &json!({ "window": "0xe1", "session": "s1" }));
+        assert_eq!(e.error.as_ref().map(|e| e.code.as_str()), Some("not_in_scope"), "close is refused");
+        assert!(!log.lock().unwrap().iter().any(|r| r.starts_with("/dispatch")), "and nothing is sent");
+    }
+
+    /// The close event is missed and the same process opens another window at the same address
+    /// before reconciliation runs: its open event must not leave the old session owning it.
+    #[test]
+    fn a_window_replaced_at_its_address_loses_its_session_when_it_opens() {
+        let (mut c, listed, log) = owned_window("replaced-open");
+        *listed.lock().unwrap() = vec![agent_client("0xe1", "2")];
+        let new = Core::parse_clients(&json!([agent_client("0xe1", "2")]))[0].clone();
+        c.open_client(&new, false);
+        assert_replacement_is_unowned(c, &log);
+    }
+
+    /// The same, with the new window's open event missed too: reconciliation finds the address
+    /// still listed, with another `stableId`.
+    #[test]
+    fn a_window_replaced_at_its_address_loses_its_session_at_reconciliation() {
+        let (mut c, listed, log) = owned_window("replaced-reconcile");
+        *listed.lock().unwrap() = vec![agent_client("0xe1", "2")];
+        c.reconcile_windows();
+        assert_replacement_is_unowned(c, &log);
+    }
+
+    /// The same window seen again keeps its records, by an event, by reconciliation or by a rebuild
+    /// of the model; a rebuild that finds another window at the address drops them.
+    #[test]
+    fn the_same_window_keeps_its_session_and_a_rebuild_checks_the_stable_id() {
+        let me = std::process::id();
+        let start = crate::proc::start_time(me).unwrap_or(0);
+        let (mut c, listed, _log) = owned_window("replaced-same");
+        let same = Core::parse_clients(&json!([agent_client("0xe1", "1")]))[0].clone();
+        c.open_client(&same, false);
+        c.reconcile_windows();
+        c.resync();
+        assert!(c.sessions.opened_by("s1", "0xe1", me, start, "1"), "still s1's");
+        assert!(c.is_placed(&same), "still placed");
+        *listed.lock().unwrap() = vec![agent_client("0xe1", "2")];
+        c.resync();
+        assert_eq!(c.sessions.owner("0xe1"), None, "a rebuild does not carry the record to another window");
+        assert!(!c.placed.contains_key("0xe1"));
+    }
+
+    /// A window with no `stableId` is never owned: there is nothing to tell it from a later window
+    /// at its address.
+    #[test]
+    fn a_window_without_a_stable_id_is_owned_by_no_session() {
+        let me = std::process::id();
+        let start = crate::proc::start_time(me).unwrap_or(0);
+        let (mut c, _log) = fake_hypr("no-stable", |_| "[]".into());
+        c.model.apply(Event::AgentRegister { pid: me, start }).unwrap();
+        let cl = Core::parse_clients(&json!([agent_client("0xe1", "")]))[0].clone();
+        c.open_client(&cl, false);
+        c.sessions.record("s1", "0xe1", agentws::Opened { pid: me, start, app: "foot".into(), stable: String::new() });
+        c.placed.insert("0xe1".into(), String::new());
+        assert!(!c.sessions.opened_by("s1", "0xe1", me, start, ""), "no stableId, no ownership");
+        assert!(!c.is_placed(&cl));
+    }
+
+    /// `open --wait 0` looks once, before Hyprland has started anything: that is "not here yet", not
+    /// a failed launch, and the window still goes to the session when it comes.
+    #[test]
+    fn a_wait_shorter_than_the_launch_is_pending_and_keeps_the_claim() {
+        let kids: std::sync::Arc<Mutex<Vec<std::process::Child>>> = Default::default();
+        let spawned = kids.clone();
+        let listed: std::sync::Arc<Mutex<Vec<Value>>> = Default::default();
+        let list = listed.clone();
+        let (core, _log) = fake_hypr("slow-launch", move |r| {
+            if let Some(i) = r.find("BANEYSPACES_AGENT_TOKEN=") {
+                // As Hyprland does: the exec is answered at once and the process starts later.
+                let tok: String = r[i + 24..].chars().take_while(|ch| ch.is_ascii_hexdigit()).collect();
+                let spawned = spawned.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(400));
+                    let child = std::process::Command::new("sleep").arg("30").env("BANEYSPACES_AGENT_TOKEN", tok).spawn().unwrap();
+                    spawned.lock().unwrap().push(child);
+                });
+                return "ok".into();
+            }
+            match r {
+                "j/clients" => Value::Array(list.lock().unwrap().clone()).to_string(),
+                "j/monitors" => json!([mon(0, "A", true, 1)]).to_string(),
+                "j/workspaces" => "[]".into(),
+                _ => "ok".into(),
+            }
+        });
+        let shared: Shared = std::sync::Arc::new(Mutex::new(core));
+        let e = agent_open(&shared, "t", &json!({ "app": "sleep", "args": ["30"], "private_bus": false, "session": "s1", "wait": 0 }), true, None);
+        let d = e.data.as_ref().unwrap_or_else(|| panic!("not an error while the app is still being started: {:?}", e.error));
+        assert_eq!((d["window"].clone(), d["pending"].clone(), d["pid"].clone()), (Value::Null, json!(true), Value::Null));
+        // The process starts and its window comes: it is s1's.
+        let waited = Instant::now();
+        while kids.lock().unwrap().is_empty() && waited.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let pid = kids.lock().unwrap()[0].id();
+        let w = json!({ "address": "0xe7", "pid": pid, "workspace": { "id": -98, "name": AGENT_SPECIAL }, "monitor": 0, "class": "sleep", "title": "t", "mapped": true, "floating": false, "stableId": "7" });
+        listed.lock().unwrap().push(w.clone());
+        {
+            let mut c = shared.lock().unwrap();
+            let cl = Core::parse_clients(&json!([w]))[0].clone();
+            c.open_client(&cl, false);
+            assert_eq!(c.sessions.owner("0xe7"), Some("s1"), "the claim outlived the answer");
+            assert!(c.sessions.opened_by("s1", "0xe7", pid, crate::proc::start_time(pid).unwrap_or(0), "7"));
+        }
+        for k in kids.lock().unwrap().iter_mut() {
+            let _ = k.kill();
+            let _ = k.wait();
+        }
+    }
+
+    /// A window that maps while its process's environ still reads empty (right after the exec; CI run 43364792159 at
+    /// the test below, `left: None`) is still its session's: the adopt reads the environ again.
+    #[test]
+    fn a_window_whose_environ_reads_empty_at_first_is_still_its_sessions() {
+        let kids: std::sync::Arc<Mutex<Vec<std::process::Child>>> = Default::default();
+        let spawned = kids.clone();
+        let (core, _log) = fake_hypr("empty-environ", move |r| {
+            if let Some(i) = r.find("BANEYSPACES_AGENT_TOKEN=") {
+                let tok: String = r[i + 24..].chars().take_while(|ch| ch.is_ascii_hexdigit()).collect();
+                let child = std::process::Command::new("sleep").arg("30").env("BANEYSPACES_AGENT_TOKEN", tok).spawn().unwrap();
+                spawned.lock().unwrap().push(child);
+                return "ok".into();
+            }
+            match r {
+                "j/clients" => "[]".into(),
+                "j/monitors" => json!([mon(0, "A", true, 1)]).to_string(),
+                "j/workspaces" => "[]".into(),
+                _ => "ok".into(),
+            }
+        });
+        let shared: Shared = std::sync::Arc::new(Mutex::new(core));
+        let e = agent_open(&shared, "t", &json!({ "app": "sleep", "args": ["30"], "private_bus": false, "session": "s1", "wait": 0 }), true, None);
+        assert!(e.data.is_some(), "{:?}", e.error);
+        let pid = kids.lock().unwrap()[0].id();
+        // Past the real window: the token is readable now, so only the forced read below can read empty.
+        let t = Instant::now();
+        while proc::token_of(pid).is_none() {
+            assert!(t.elapsed() < Duration::from_secs(5), "pid {pid} never showed its token");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        proc::EMPTY_ENVIRON_READS.with(|n| n.set(1));
+        let w = json!({ "address": "0xe9", "pid": pid, "workspace": { "id": -98, "name": AGENT_SPECIAL }, "monitor": 0, "class": "sleep", "title": "t", "mapped": true, "floating": false, "stableId": "9" });
+        {
+            let mut c = shared.lock().unwrap();
+            let cl = Core::parse_clients(&json!([w]))[0].clone();
+            c.open_client(&cl, false);
+            assert_eq!(c.sessions.owner("0xe9"), Some("s1"), "an empty first read of the environ lost the window");
+        }
+        assert_eq!(proc::EMPTY_ENVIRON_READS.with(|n| n.get()), 0, "the forced empty read was the adopt's");
+        for k in kids.lock().unwrap().iter_mut() {
+            let _ = k.kill();
+            let _ = k.wait();
+        }
+    }
+
+    /// `open` with `wait: 0` answers before the window exists; the window still goes to that session,
+    /// and two sessions' launches of the same app each get only their own process's window.
+    #[test]
+    fn a_window_that_comes_after_open_answered_is_still_its_sessions() {
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        // The fake Hyprland starts a real process for each exec, carrying the launch's token, as Hyprland would.
+        let kids: std::sync::Arc<Mutex<Vec<std::process::Child>>> = Default::default();
+        let spawned = kids.clone();
+        let listed: std::sync::Arc<Mutex<Vec<Value>>> = Default::default();
+        let list = listed.clone();
+        let execs = AtomicUsize::new(0);
+        let (core, log) = fake_hypr("claims", move |r| {
+            if let Some(i) = r.find("BANEYSPACES_AGENT_TOKEN=") {
+                let tok: String = r[i + 24..].chars().take_while(|ch| ch.is_ascii_hexdigit()).collect();
+                execs.fetch_add(1, SeqCst);
+                let child = std::process::Command::new("sleep").arg("30").env("BANEYSPACES_AGENT_TOKEN", tok).spawn().unwrap();
+                spawned.lock().unwrap().push(child);
+                return "ok".into();
+            }
+            match r {
+                "j/clients" => Value::Array(list.lock().unwrap().clone()).to_string(),
+                "j/monitors" => json!([mon(0, "A", true, 1)]).to_string(),
+                "j/workspaces" => "[]".into(),
+                _ => "ok".into(),
+            }
+        });
+        let shared: Shared = std::sync::Arc::new(Mutex::new(core));
+        let open = |session: &str| agent_open(&shared, "t", &json!({ "app": "sleep", "args": ["30"], "private_bus": false, "session": session, "wait": 0 }), true, None);
+        let a = open("s1");
+        let b = open("s2");
+        for e in [&a, &b] {
+            let d = e.data.as_ref().unwrap_or_else(|| panic!("ok while the app starts: {:?}", e.error));
+            assert_eq!((d["window"].clone(), d["pending"].clone()), (Value::Null, json!(true)));
+        }
+        let pids: Vec<u32> = kids.lock().unwrap().iter().map(|k| k.id()).collect();
+        assert_eq!(pids.len(), 2);
+        // The windows come, s2's first, each on the agent workspace.
+        let window = |addr: &str, pid: u32| json!({ "address": addr, "pid": pid, "workspace": { "id": -98, "name": AGENT_SPECIAL }, "monitor": 0, "class": "sleep", "title": "t", "mapped": true, "floating": false, "stableId": "1" });
+        for (addr, pid) in [("0xe2", pids[1]), ("0xe1", pids[0])] {
+            listed.lock().unwrap().push(window(addr, pid));
+            let mut c = shared.lock().unwrap();
+            let cl = Core::parse_clients(&json!([window(addr, pid)]))[0].clone();
+            c.open_client(&cl, false);
+        }
+        {
+            let c = shared.lock().unwrap();
+            assert_eq!(c.sessions.owner("0xe1"), Some("s1"));
+            assert_eq!(c.sessions.owner("0xe2"), Some("s2"), "each launch claims only its own process's window");
+            assert!(c.claims.is_empty(), "each claim is used once");
+        }
+        let close = |w: &str, s: &str| agentws::close_window(&shared, "t", &json!({ "window": w, "session": s }));
+        log.lock().unwrap().clear();
+        let refused = close("0xe1", "s2");
+        assert_eq!(refused.error.as_ref().map(|e| e.code.as_str()), Some("not_in_scope"), "another session's window");
+        assert!(!log.lock().unwrap().iter().any(|r| r.starts_with("/dispatch")), "nothing sent for the refusal");
+        let ok = close("0xe1", "s1");
+        assert!(ok.ok, "{:?}", ok.error);
+        assert!(log.lock().unwrap().iter().any(|r| r == &format!("/dispatch {}", agentws::close("0xe1"))));
+        for k in kids.lock().unwrap().iter_mut() {
+            let _ = k.kill();
+            let _ = k.wait();
+        }
+    }
+
+    #[test]
+    fn shot_refuses_every_window_outside_scope_before_anything_is_captured() {
+        let me = std::process::id();
+        let start = crate::proc::start_time(me).unwrap_or(0);
+        let client = |addr: &str, ws: &str| json!({ "address": addr, "pid": me, "workspace": { "id": if ws == AGENT_SPECIAL { -98 } else { 3 }, "name": ws }, "monitor": 0, "class": "foot", "title": "t", "mapped": true, "stableId": "18000002" });
+        // Hyprland's view: one window of yours on workspace 3, one parked on the agent workspace by you, and
+        // one the model thinks is the agent's but Hyprland has on workspace 3 now.
+        let clients = json!([client("0xuser", "3"), client("0xparked", AGENT_SPECIAL), client("0xmoved", "3")]).to_string();
+        let (mut c, log) = fake_hypr("shot-scope", move |r| if r == "j/clients" { clients.clone() } else { "ok".into() });
+        c.model.apply(Event::ObserveWindow { window: "0xuser".into(), pid: me, start, app: "foot".into(), workspace: Some(3) }).unwrap();
+        c.model.apply(Event::ObserveWindow { window: "0xparked".into(), pid: me, start, app: "foot".into(), workspace: None }).unwrap();
+        c.model.apply(Event::ObserveWindow { window: "0xmoved".into(), pid: me, start, app: "foot".into(), workspace: None }).unwrap();
+        let state = c.paths.state.clone();
+        let shared: Shared = Arc::new(Mutex::new(c));
+        let code = |args: Value| crate::shot::run(&shared, "t", &args).error.map(|e| e.code).unwrap_or_default();
+        assert_eq!(code(json!({ "verb": "shot" })), "invalid_args", "a window is required");
+        assert_eq!(code(json!({ "verb": "shot", "window": "0xuser", "out": "../x.png" })), "invalid_args", "out is a name, never a path");
+        assert_eq!(code(json!({ "verb": "shot", "window": "0xuser" })), "not_in_scope", "your own window");
+        assert_eq!(code(json!({ "verb": "shot", "window": "0xnone" })), "not_found", "a window Hyprland does not have");
+        assert_eq!(code(json!({ "verb": "shot", "window": "0xparked" })), "needs_lend", "a window you parked is guarded, not drivable");
+        shared.lock().unwrap().model.apply(Event::AgentRegister { pid: me, start }).unwrap();
+        assert_eq!(code(json!({ "verb": "shot", "window": "0xmoved" })), "not_in_scope", "Hyprland's word on the workspace is final");
+        assert!(!state.join("shots").exists(), "nothing was captured or written");
+        assert!(log.lock().unwrap().iter().all(|r| r == "j/clients"), "only reads reached Hyprland: {:?}", log.lock().unwrap());
+        let refusals = std::fs::read_to_string(state.join("actions.jsonl")).unwrap_or_default();
+        assert_eq!(refusals.lines().filter(|l| l.contains("\"shot\"")).count(), 6, "every refusal is in the action log");
+    }
+
+    #[test]
+    fn a_resync_never_takes_a_workspace_off_the_display_you_are_looking_at() {
+        // A shows 2, B shows an empty workspace 10 outside the nine. The fresh model guesses A=1, B=2;
+        // acting on that guess would move workspace 2 onto B.
+        let monitors = json!([mon(0, "A", true, 2), mon(1, "B", false, 10)]).to_string();
+        let spaces = json!([{ "id": 2, "windows": 0, "ispersistent": false, "monitor": "A" }, { "id": 10, "windows": 0, "ispersistent": false, "monitor": "B" }]).to_string();
+        let (mut c, log) = fake_hypr("resync-guess", move |r| match r {
+            "j/monitors" => monitors.clone(),
+            "j/workspaces" => spaces.clone(),
+            "j/clients" => "[]".into(),
+            "j/activewindow" => "{}".into(),
+            r if r.starts_with("j/getoption") => "{\"int\":0}".into(),
+            _ => "ok".into(),
+        });
+        c.resync();
+        let log = log.lock().unwrap();
+        assert!(!log.iter().any(|r| r.contains("workspace.move")), "{log:?}");
+        assert_eq!(c.model.current("A"), Some(2), "what A shows is left alone");
+        assert!(log.iter().any(|r| r.contains("focus({ workspace = \"1\" })")), "B is given a free workspace: {log:?}");
+        assert!(!c.dirty);
+    }
+
+    #[test]
+    fn an_agent_window_in_front_at_resync_is_handled_and_the_users_window_put_back() {
+        let monitors = json!([mon(0, "A", true, 1)]).to_string();
+        let clients = json!([
+            { "address": "0x1", "pid": 11, "workspace": { "id": 1, "name": "1" }, "monitor": 0, "class": "foot", "title": "mine", "mapped": true },
+            { "address": "0xa", "pid": 22, "workspace": { "id": -98, "name": "special:agent" }, "monitor": 0, "class": "foot", "title": "agent's", "mapped": true }
+        ])
+        .to_string();
+        let (mut c, log) = fake_hypr("resync-guard", move |r| match r {
+            "j/monitors" => monitors.clone(),
+            "j/workspaces" => "[]".into(),
+            "j/clients" => clients.clone(),
+            "j/activewindow" => "{\"address\":\"0xa\"}".into(),
+            r if r.starts_with("j/getoption") => "{\"int\":0}".into(),
+            _ => "ok".into(),
+        });
+        c.resync();
+        assert!(log.lock().unwrap().iter().any(|r| r.contains("focus({ window = \"address:0x1\" })")), "{:?}", log.lock().unwrap());
+        assert_eq!(c.model.refused(), 1);
+        assert!(!c.dirty);
+    }
+
+    #[test]
+    fn an_agent_workspace_found_showing_at_start_is_hidden_again() {
+        let mut m = mon(0, "A", true, 1);
+        m["specialWorkspace"] = json!({ "name": "special:agent" });
+        let monitors = json!([m]).to_string();
+        let (mut c, log) = fake_hypr("resync-special", move |r| match r {
+            "j/monitors" => monitors.clone(),
+            "j/workspaces" | "j/clients" => "[]".into(),
+            "j/activewindow" => "{}".into(),
+            r if r.starts_with("j/getoption") => "{\"int\":0}".into(),
+            _ => "ok".into(),
+        });
+        c.resync();
+        assert!(log.lock().unwrap().iter().any(|r| r.contains("toggle_special")), "{:?}", log.lock().unwrap());
+    }
+
+    #[test]
+    fn a_setup_failure_keeps_the_model_dirty_and_commands_wait() {
+        let monitors = json!([mon(0, "A", true, 1)]).to_string();
+        let (mut c, _log) = fake_hypr("config-fail", move |r| match r {
+            "j/monitors" => monitors.clone(),
+            "j/workspaces" | "j/clients" => "[]".into(),
+            "j/activewindow" => "{}".into(),
+            r if r.starts_with("/eval") => "error: no".into(),
+            _ => "ok".into(),
+        });
+        c.resync();
+        assert!(c.dirty, "animations and focus_on_activate could not be set");
+        let e = c.ensure_fresh().unwrap_err().error.unwrap();
+        assert_eq!((e.code.as_str(), e.retry), ("compositor_error", Retry::After));
+    }
+
+    #[test]
+    fn a_failed_monitors_query_never_reads_as_the_agent_workspace_being_hidden() {
+        let (mut c, log) = fake_hypr("special-query", |r| if r == "j/monitors" { "not json".into() } else { "ok".into() });
+        assert!(c.special_shown().is_err());
+        let r = c.exec(&[Effect::ShowAgent]);
+        assert!(r.is_err(), "no toggle on a guess");
+        assert!(!log.lock().unwrap().iter().any(|r| r.contains("toggle_special")));
+    }
+
+    #[test]
+    fn move_acts_on_the_window_in_front_now_or_on_nothing() {
+        assert_eq!(front_window(Ok(json!({"address":"0x7"}))).unwrap(), "0x7");
+        assert_eq!(front_window(Ok(json!({}))).unwrap_err().error.unwrap().code, "not_found");
+        assert_eq!(front_window(Ok(json!({"address":""}))).unwrap_err().error.unwrap().code, "not_found");
+        let e = front_window(Err("timed out".into())).unwrap_err().error.unwrap();
+        assert_eq!((e.code.as_str(), e.retry), ("compositor_error", Retry::Safe));
+    }
+
+    #[test]
+    fn issued_tokens_survive_a_restart_privately_and_stale_ones_do_not() {
+        use std::os::unix::fs::PermissionsExt;
+        let mut a = test_core("tokens");
+        let me = proc::random_token().unwrap();
+        a.tokens.insert("fresh".into(), TokenInfo { agent: "claude".into(), app: "foot".into(), at: now(), bus: None, bus_lost: false, socket: None, seen: false });
+        a.tokens.insert("old-and-dead".into(), TokenInfo { agent: "x".into(), app: "y".into(), at: now() - 3600, bus: None, bus_lost: false, socket: None, seen: false });
+        let _ = me;
+        a.save_tokens();
+        let mode = std::fs::metadata(a.paths.state.join("tokens.json")).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        // A new daemon (same state directory) loads them.
+        let mut b = test_core("tokens2");
+        b.paths = a.paths.clone();
+        b.load_tokens();
+        assert!(b.tokens.contains_key("fresh"), "a token issued a moment ago is kept");
+        assert!(!b.tokens.contains_key("old-and-dead"), "an old token no process carries is dropped");
+        assert_eq!(b.tokens["fresh"].agent, "claude");
+    }
+
+    /// Parish1, 11-15: a browser stopped while its `open` was pending left its bridge folder behind; the token
+    /// waited out the minute meant for a launch that has not started yet.
+    #[test]
+    fn a_launch_whose_processes_are_all_gone_is_dropped_at_the_second_look() {
+        let mut c = test_core("reap-seen");
+        let info = |tag: &str| TokenInfo { agent: "a".into(), app: "chromium".into(), at: now(), bus: None, bus_lost: false, socket: Some(tag.into()), seen: false };
+        let ran = apps::make_polycarp_socket_dir(&c.paths.run, "d92df089").unwrap();
+        let starting = apps::make_polycarp_socket_dir(&c.paths.run, "e0000000").unwrap();
+        c.tokens.insert("d92df089aaaa".into(), info("d92df089"));
+        c.tokens.insert("e0000000bbbb".into(), info("e0000000"));
+        c.token_pids.insert("d92df089aaaa".into(), vec![]);
+        // The browser runs: only its crash handler and the anchor carry the token, none registered.
+        c.reap_tokens_with(&HashMap::from([("d92df089aaaa".to_string(), vec![835418])]));
+        assert!(c.tokens["d92df089aaaa"].seen && ran.exists());
+        // One upkeep finds nothing (an exec in place reads back empty for a moment): kept.
+        c.reap_tokens_with(&HashMap::new());
+        assert!(c.tokens.contains_key("d92df089aaaa") && ran.exists(), "one empty look is not the end");
+        // Found again, then gone: the count starts over.
+        c.reap_tokens_with(&HashMap::from([("d92df089aaaa".to_string(), vec![835418])]));
+        c.reap_tokens_with(&HashMap::new());
+        assert!(c.tokens.contains_key("d92df089aaaa"));
+        // Every process of it exited: gone at the second upkeep in a row, folder and all.
+        c.reap_tokens_with(&HashMap::new());
+        assert!(!c.tokens.contains_key("d92df089aaaa") && !c.token_pids.contains_key("d92df089aaaa"));
+        assert!(!ran.exists(), "the bridge folder goes with the launch");
+        // A launch no process was seen for yet is still starting: kept.
+        assert!(c.tokens.contains_key("e0000000bbbb") && starting.exists());
+        // `seen` survives a restart, so the next daemon drops it at once too.
+        c.tokens.get_mut("e0000000bbbb").unwrap().seen = true;
+        c.save_tokens();
+        let mut b = test_core("reap-seen2");
+        b.paths = c.paths.clone();
+        b.load_tokens();
+        assert!(!b.tokens.contains_key("e0000000bbbb"), "seen, and nothing carries it now");
+    }
+
+    /// A browser's window registers through the anchor shell its launch runs it under: its own environ
+    /// has no token (Chromium writes its command line over it). The anchor never is the launch's pid.
+    #[test]
+    fn a_window_process_without_the_token_registers_under_its_anchor() {
+        use crate::proc::Procs;
+        let mut c = test_core("anchor");
+        let tok = proc::random_token().unwrap();
+        c.tokens.insert(tok.clone(), TokenInfo { agent: "a".into(), app: "chromium".into(), at: now(), bus: None, bus_lost: false, socket: None, seen: false });
+        let argv = proc::anchored(&["env".into(), "-i".into(), "sleep".into(), "30".into()]);
+        let mut sh = std::process::Command::new(&argv[0]).args(&argv[1..]).env("BANEYSPACES_AGENT_TOKEN", &tok).spawn().unwrap();
+        let anchor = sh.id();
+        let mut app = None;
+        for _ in 0..200 {
+            app = proc::all_pids().into_iter().find(|p| proc::Live.stat(*p).is_some_and(|s| s.ppid == anchor) && proc::token_of(*p).is_none());
+            if app.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let app = app.expect("the anchor's child");
+        // A process of yours with no token anywhere above it is not registered.
+        assert!(!c.adopt_agent_pid(std::process::id()));
+        // Its pid was an older launch's process, gone before the upkeep noticed (another start time).
+        c.tokens.insert("stale".into(), TokenInfo { agent: "a".into(), app: "chromium".into(), at: now(), bus: None, bus_lost: false, socket: None, seen: true });
+        c.token_pids.insert("stale".into(), vec![app]);
+        c.model.apply(Event::AgentRegister { pid: app, start: 1 }).unwrap();
+        assert!(c.adopt_agent_pid(app));
+        assert!(c.token_pids["stale"].is_empty(), "a reused pid is no longer the old launch's");
+        assert_eq!(c.token_pids[&tok], vec![app]);
+        assert!(c.tokens[&tok].seen, "registered, so the launch is over once its processes are gone");
+        assert!(c.model.is_agent_pid(app, proc::start_time(app).unwrap()));
+        assert_eq!(c.launch_token(app), Some(tok.clone()), "its launch's bus is found for snapshots");
+        let _ = std::process::Command::new("kill").arg(app.to_string()).status();
+        let _ = sh.wait();
+        assert_eq!(c.launch_token(app), None, "gone");
+    }
+
+    #[test]
+    fn a_dead_or_reused_agent_pid_is_forgotten() {
+        let mut c = test_core("reuse");
+        let me = std::process::id();
+        let start = proc::start_time(me).unwrap();
+        c.model.apply(Event::AgentRegister { pid: me, start }).unwrap();
+        c.model.apply(Event::AgentRegister { pid: u32::MAX - 7, start: 5 }).unwrap(); // not a live pid
+        c.model.apply(Event::AgentRegister { pid: 1, start: 1 }).unwrap(); // a live pid with another start time
+        c.reconcile_agents();
+        let pids: Vec<u32> = c.model.agent_pids().into_iter().map(|p| p.0).collect();
+        assert_eq!(pids, vec![me], "only the live process with the matching start time stays");
+    }
+
+    #[test]
+    fn rebuilding_the_model_dispatches_nothing_until_it_is_done() {
+        let mut c = test_core("resync");
+        c.resyncing = true;
+        c.apply(Event::MonitorAdded { monitor: "A".into() }).unwrap();
+        // The second display's workspace is a corrective effect: collected, not sent.
+        let fx = c.apply(Event::MonitorAdded { monitor: "B".into() }).unwrap();
+        assert_eq!(fx.len(), 1);
+        assert_eq!(c.deferred.len(), 1);
+        // Sending it now (there is no Hyprland behind this fake) fails, and that is recorded rather than lost.
+        c.resyncing = false;
+        let todo = std::mem::take(&mut c.deferred);
+        assert!(c.exec(&todo).is_err());
+    }
+
+    #[test]
+    fn a_launch_profile_is_deleted_with_its_token() {
+        let mut c = test_core("profile");
+        let tok = "abcd1234efgh5678";
+        c.tokens.insert(tok.into(), TokenInfo { agent: "a".into(), app: "chromium".into(), at: 0, bus: None, bus_lost: false, socket: None, seen: false });
+        let prof = apps::profile_dir(&c.paths.state, tok);
+        std::fs::create_dir_all(prof.join("Default")).unwrap();
+        std::fs::write(prof.join("Default/Cookies"), "x").unwrap();
+        c.drop_token(tok);
+        assert!(!prof.exists(), "the profile goes with the token");
+        assert!(!c.tokens.contains_key(tok));
+    }
+
+    /// The system binary lookup for `prepare_with`, as if every app were installed in /usr/bin.
+    fn installed(app: &str) -> Result<std::path::PathBuf, Envelope> {
+        Ok(std::path::PathBuf::from(format!("/usr/bin/{app}")))
+    }
+
+    #[test]
+    fn an_agent_chromium_gets_the_installed_extension_and_its_native_host() {
+        let c = test_core("polycarp-ext");
+        let tok = "feedface00000000";
+        let open = |app: &str| prepare_with(&c, &Plan::Open { app: app.into(), files: vec![] }, tok, None, &installed).map(|p| p.argv);
+        let before = open("chromium").unwrap();
+        assert_eq!(before[0], "/usr/bin/chromium");
+        assert!(!before.iter().any(|a| a.starts_with("--load-extension")), "nothing installed, nothing loaded");
+        let ext = c.paths.data.join("polycarp/browser/source/dist-chrome");
+        std::fs::create_dir_all(&ext).unwrap();
+        std::fs::write(ext.join("manifest.json"), "{}").unwrap();
+        let hosts = c.paths.config.join("chromium/NativeMessagingHosts");
+        std::fs::create_dir_all(&hosts).unwrap();
+        let manifest = "{\"name\":\"com.polycarp.browser\",\"type\":\"stdio\",\"path\":\"/x/polycarp-host\",\"allowed_origins\":[\"chrome-extension://kenehmggpggpiolepbjojeenmeapgfoc/\"]}";
+        std::fs::write(hosts.join("com.polycarp.browser.json"), manifest).unwrap();
+        let argv = open("chromium").unwrap();
+        let profile = apps::profile_dir(&c.paths.state, tok);
+        assert_eq!(argv[1..], [format!("--user-data-dir={}", profile.display()), "--no-first-run".into(), "--no-default-browser-check".into(), "--force-renderer-accessibility".into(), format!("--load-extension={}", ext.canonicalize().unwrap().display())]);
+        assert_eq!(std::fs::read_to_string(profile.join("NativeMessagingHosts/com.polycarp.browser.json")).unwrap(), manifest);
+        // Firefox gets neither.
+        assert!(!open("firefox").unwrap().iter().any(|a| a.starts_with("--load-extension")));
+        // A flag from the caller still never gets in.
+        assert!(prepare_with(&c, &Plan::Open { app: "chromium".into(), files: vec!["--load-extension=/tmp/evil".into()] }, tok, None, &installed).is_err());
+    }
+
+    /// Review of #354 (first-F1): your Polycarp took the newest host in the shared `/tmp/polycarp-bridge-<user>`,
+    /// so it could attach to an agent's hidden Chromium, and an agent's client to your signed-in one.
+    #[test]
+    fn an_agent_chromium_and_only_a_chromium_gets_a_bridge_folder_of_its_own() {
+        use std::os::unix::fs::PermissionsExt;
+        let c = test_core("polycarp-sock");
+        let tok = "abcdef0123456789abcdef0123456789";
+        let prep = |app: &str| prepare_with(&c, &Plan::Open { app: app.into(), files: vec![] }, tok, None, &installed).unwrap();
+        for b in ["chromium", "google-chrome-stable", "brave", "helium"] {
+            let p = prep(b);
+            let dir = c.paths.run.join("polycarp/abcdef01");
+            assert_eq!(p.socket, Some(("abcdef01".into(), dir.clone())), "{b}");
+            assert_eq!(p.env(), [("POLYCARP_SOCKET_DIR", dir.display().to_string()), ("TABKYRA_SOCKET_DIR", dir.display().to_string()), ("ACCESSIBILITY_ENABLED", "1".into())], "{b}");
+            assert!(p.anchor, "{b} runs under the anchor shell");
+            assert_eq!(p.command()[..4], ["/bin/sh", "-c", "\"$@\"; exit $?", proc::ANCHOR], "{b}");
+            assert_eq!(p.command()[4..], p.argv[..], "{b}");
+            assert!(!dir.starts_with("/tmp/polycarp-bridge") && !dir.starts_with("/tmp/tabkyra-bridge"));
+            assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700, "the mode the native host insists on");
+        }
+        for other in ["firefox", "foot", "mpv"] {
+            let p = prep(other);
+            assert!(p.socket.is_none() && p.env().is_empty(), "{other}");
+            assert!(!p.anchor && p.command() == p.argv, "{other} runs as itself");
+        }
+    }
+
+    #[test]
+    fn agent_run_gets_a_bridge_folder_and_the_chromium_it_opens_shares_it() {
+        let mut c = test_core("polycarp-run");
+        let run_tok = "11111111aaaaaaaaaaaaaaaaaaaaaaaa";
+        let run = prepare_with(&c, &Plan::Run { cmd: vec!["claude".into()], dir: None }, run_tok, None, &installed).unwrap();
+        let dir = c.paths.run.join("polycarp/11111111");
+        assert_eq!(run.socket, Some(("11111111".into(), dir.clone())));
+        assert_eq!(run.env()[0], ("POLYCARP_SOCKET_DIR", dir.display().to_string()));
+        c.tokens.insert(run_tok.into(), TokenInfo { agent: "a".into(), app: "foot".into(), at: now(), bus: None, bus_lost: false, socket: Some("11111111".into()), seen: false });
+        // `agent open chromium` asked from inside that shell: the same folder, so its MCP client sees this browser.
+        let browser = prepare_with(&c, &Plan::Open { app: "chromium".into(), files: vec![] }, "22222222bbbbbbbbbbbbbbbbbbbbbbbb", Some(run_tok), &installed).unwrap();
+        assert_eq!(browser.socket, Some(("11111111".into(), dir.clone())));
+        // From anywhere else (your shell, an unknown token): a folder of its own.
+        let alone = prepare_with(&c, &Plan::Open { app: "chromium".into(), files: vec![] }, "33333333cccccccccccccccccccccccc", Some("not-ours"), &installed).unwrap();
+        assert_eq!(alone.socket.unwrap().0, "33333333");
+    }
+
+    #[test]
+    fn a_timeout_still_tells_the_agent_its_bridge_folder() {
+        let mut timeout = Envelope::err("timeout", "chromium is running (pid 7) but opened no window within 8 s", Retry::Never, "");
+        add_data(&mut timeout, "polycarp_socket_dir", json!("/run/user/1000/baneyspaces/polycarp/abcdef01"));
+        add_data(&mut timeout, "windows_that_appeared", json!([]));
+        let data = timeout.error.unwrap().data.unwrap();
+        assert_eq!(data["polycarp_socket_dir"], "/run/user/1000/baneyspaces/polycarp/abcdef01");
+        assert!(data["windows_that_appeared"].is_array(), "one field never replaces the other");
+        let mut ok = Envelope::ok(json!({ "window": "0x1" }));
+        add_data(&mut ok, "polycarp_socket_dir", json!("/d"));
+        assert_eq!(ok.data.unwrap(), json!({ "window": "0x1", "polycarp_socket_dir": "/d" }));
+    }
+
+    #[test]
+    fn a_bridge_folder_goes_when_the_last_launch_using_it_is_dropped_and_at_startup() {
+        let mut c = test_core("polycarp-drop");
+        let info = |tag: &str| TokenInfo { agent: "a".into(), app: "chromium".into(), at: 0, bus: None, bus_lost: false, socket: Some(tag.into()), seen: false };
+        let shared = apps::make_polycarp_socket_dir(&c.paths.run, "11111111").unwrap();
+        std::fs::write(shared.join("123.sock"), "").unwrap();
+        c.tokens.insert("11111111aaaa".into(), info("11111111"));
+        c.tokens.insert("22222222bbbb".into(), info("11111111"));
+        c.drop_token("11111111aaaa");
+        assert!(shared.exists(), "the browser the shell opened still uses it");
+        c.drop_token("22222222bbbb");
+        assert!(!shared.exists(), "gone with the last launch using it");
+        // A restart: a dead token's folder goes, a live one's stays, and an orphan from a killed daemon goes.
+        let live = apps::make_polycarp_socket_dir(&c.paths.run, "33333333").unwrap();
+        let dead = apps::make_polycarp_socket_dir(&c.paths.run, "44444444").unwrap();
+        let orphan = apps::make_polycarp_socket_dir(&c.paths.run, "55555555").unwrap();
+        c.tokens.insert("33333333cccc".into(), TokenInfo { at: now(), ..info("33333333") });
+        c.tokens.insert("44444444dddd".into(), info("44444444"));
+        c.save_tokens();
+        let mut b = test_core("polycarp-drop2");
+        b.paths = c.paths.clone();
+        b.load_tokens();
+        assert_eq!(b.tokens["33333333cccc"].socket.as_deref(), Some("33333333"), "the folder survives a restart in tokens.json");
+        assert!(live.exists() && !dead.exists());
+        let tags: HashSet<String> = b.tokens.values().filter_map(|i| i.socket.clone()).collect();
+        apps::sweep_polycarp_socket_dirs(&b.paths.run, &tags);
+        assert!(live.exists() && !orphan.exists());
+    }
+
+    #[test]
+    fn a_model_that_cannot_be_refreshed_refuses_the_command() {
+        let mut c = test_core("dirty");
+        c.dirty = true; // Hyprland is unreachable behind this fake
+        let e = c.ensure_fresh().unwrap_err();
+        let er = e.error.unwrap();
+        assert_eq!((er.code.as_str(), er.retry), ("compositor_error", Retry::After));
+        assert!(c.dirty, "and it stays dirty: the next command re-reads again");
+    }
+
+    #[test]
+    fn an_unknown_caller_is_refused_the_users_operations() {
+        assert!(refuses_user_op(None, |_| false), "no peer pid: not known to be you");
+        assert!(refuses_user_op(Some(7), |p| p == 7));
+        assert!(!refuses_user_op(Some(8), |p| p == 7));
+    }
+
+    #[test]
+    fn only_one_daemon_can_hold_the_lock() {
+        let p = temp_paths("lock");
+        let first = take_lock(&p).unwrap();
+        assert!(take_lock(&p).is_err(), "a second daemon must not get past the lock");
+        drop(first);
+        assert!(take_lock(&p).is_ok(), "and it is free again once the first is gone");
+    }
+
+    /// A process spawned by the last daemon holds a copy of its lock fd until it execs (any test here that spawns one
+    /// copies this one's fd: the lock test above failed once in 25 runs at 64 threads). That copy is forced: a forked
+    /// child keeps it for 100 ms after the first daemon is gone, and the next daemon must still start.
+    #[test]
+    fn the_lock_is_free_once_a_child_mid_spawn_lets_go_of_its_copy() {
+        let p = temp_paths("lock-fork");
+        let first = take_lock(&p).unwrap();
+        // SAFETY: the child calls only async-signal-safe functions (usleep, _exit) before it exits.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            unsafe {
+                libc::usleep(100_000);
+                libc::_exit(0);
+            }
+        }
+        drop(first);
+        let t = Instant::now();
+        let second = take_lock(&p);
+        let took = t.elapsed();
+        let mut status = 0;
+        // SAFETY: pid is the child forked above.
+        unsafe { libc::waitpid(pid, &mut status, 0) };
+        assert!(second.is_ok(), "the next daemon gave up after {took:?} while a child still held the old lock");
+    }
+
+    #[test]
+    fn a_half_done_switch_is_never_reported_as_having_changed_nothing() {
+        let steps = show_steps("B", 4, Some("A"), Some("A")); // focus B, move the workspace, focus it
+        assert_eq!(steps.len(), 3);
+        for fail_at in 0..3usize {
+            let mut seen = 0;
+            let r = run_steps(&steps, &mut |_| {
+                let i = seen;
+                seen += 1;
+                if i == fail_at { Err(HyprError::Refused("no".into())) } else { Ok(()) }
+            });
+            let (_, partial) = r.unwrap_err();
+            assert_eq!(partial, fail_at > 0, "failing step {fail_at}");
+        }
+        // And that flag is what makes the envelope's retry `never`.
+        let e = ApplyError::Compositor { err: HyprError::Refused("no".into()), delivered_any: true }.envelope();
+        assert_eq!(e.error.unwrap().retry, Retry::Never);
+        assert_eq!(show_steps("A", 4, None, Some("A")).len(), 1, "nothing to move and already focused: one dispatch");
+    }
+
+    #[test]
+    fn no_socket_is_daemon_down_and_safe() {
+        let p = temp_paths("down");
+        let e = call_timeout(&p, &json!({"op":"ping"}), Duration::from_millis(100));
+        let er = e.error.unwrap();
+        assert_eq!((er.code.as_str(), er.retry), ("daemon_down", Retry::Safe));
+    }
+
+    #[test]
+    fn silence_after_the_write_is_a_timeout_and_never_safe() {
+        let p = temp_paths("slow");
+        let l = UnixListener::bind(p.ctl_socket()).unwrap();
+        let t = std::thread::spawn(move || {
+            let (mut c, _) = l.accept().unwrap();
+            let mut buf = String::new();
+            BufReader::new(&c).read_line(&mut buf).unwrap();
+            std::thread::sleep(Duration::from_millis(600)); // never answers in time
+            let _ = writeln!(c, "{{\"ok\":true}}");
+        });
+        let e = call_timeout(&p, &json!({"op":"hands"}), Duration::from_millis(150));
+        let er = e.error.unwrap();
+        assert_eq!((er.code.as_str(), er.retry), ("timeout", Retry::Never));
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn a_closed_connection_without_a_reply_is_also_uncertain() {
+        let p = temp_paths("closed");
+        let l = UnixListener::bind(p.ctl_socket()).unwrap();
+        let t = std::thread::spawn(move || {
+            let (c, _) = l.accept().unwrap();
+            let mut buf = String::new();
+            BufReader::new(&c).read_line(&mut buf).unwrap();
+        });
+        let e = call_timeout(&p, &json!({"op":"hands"}), Duration::from_secs(2));
+        assert_eq!(e.error.unwrap().code, "timeout");
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn the_hands_budget_is_well_under_the_client_wait() {
+        const { assert!(crate::hands::BUDGET_SECS * 3 / 2 < CLIENT_TIMEOUT_SECS) };
+    }
+
+    #[test]
+    fn the_log_sheds_old_records_when_a_line_is_appended_and_not_more_than_hourly() {
+        let day = 86_400u64;
+        let p = temp_paths("prune");
+        let rec = |at: u64| format!("{{\"at\":{at},\"agent\":\"a\",\"verb\":\"click\",\"pid\":1,\"window\":null,\"ref\":null,\"route\":\"atspi\",\"result\":\"ok\",\"refusal\":null,\"screen_changed\":false}}");
+        let last = std::cell::Cell::new(0);
+        let t0 = 100 * day;
+        // An old record and a recent one are on disk; the daemon has run for 31 days since the old one.
+        p.append("actions.jsonl", &rec(t0 - 31 * day));
+        p.append("actions.jsonl", &rec(t0 - day));
+        append_and_maybe_prune(&p, &rec(t0), t0, &last);
+        let lines = p.read("actions.jsonl").unwrap().lines().count();
+        assert_eq!(lines, 2, "the 31-day-old record went on append");
+        // Within the hour it does not look again, even with a new old record on disk.
+        p.append("actions.jsonl", &rec(t0 - 40 * day));
+        append_and_maybe_prune(&p, &rec(t0 + 60), t0 + 60, &last);
+        assert_eq!(p.read("actions.jsonl").unwrap().lines().count(), 4);
+        // An hour later it does.
+        append_and_maybe_prune(&p, &rec(t0 + 3700), t0 + 3700, &last);
+        assert_eq!(p.read("actions.jsonl").unwrap().lines().count(), 4 - 1 + 1);
+    }
+
+    #[test]
+    fn effects_failure_envelope_is_never_safe_when_uncertain() {
+        let io = ApplyError::Compositor { err: HyprError::Io("timed out".into()), delivered_any: false }.envelope();
+        assert_eq!(io.error.as_ref().unwrap().retry, Retry::Never);
+        let refused = ApplyError::Compositor { err: HyprError::Refused("no".into()), delivered_any: false }.envelope();
+        assert_eq!(refused.error.as_ref().unwrap().retry, Retry::Safe);
+        let partial = ApplyError::Compositor { err: HyprError::Refused("no".into()), delivered_any: true }.envelope();
+        assert_eq!(partial.error.as_ref().unwrap().retry, Retry::Never);
+        assert_eq!(partial.error.unwrap().code, "compositor_error");
+    }
+}
