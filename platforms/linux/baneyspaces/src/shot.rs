@@ -616,6 +616,14 @@ mod tests {
         std::fs::write(&grim, script).unwrap();
         std::fs::set_permissions(&grim, std::fs::Permissions::from_mode(0o755)).unwrap();
         let runs = || std::fs::read_to_string(&count).map(|s| s.lines().count()).unwrap_or(0);
+        // Another test's fork can still hold the script's write handle for a moment (ETXTBSY), and a failed
+        // probe is remembered, so wait until the stand-in runs before the cache is tested.
+        let t = Instant::now();
+        while std::process::Command::new(&grim).output().is_err() {
+            assert!(t.elapsed() < Duration::from_secs(5), "the stand-in grim never ran");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::fs::remove_file(&count).unwrap();
         assert!(grim_captures_one_window(&grim));
         assert!(grim_captures_one_window(&grim));
         assert_eq!(runs(), 1, "the answer is kept");
